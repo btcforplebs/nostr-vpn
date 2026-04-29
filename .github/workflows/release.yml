@@ -934,6 +934,7 @@ jobs:
             if [ "${ANDROID_APP_RELEASED}" = "success" ]; then
               echo "- [Nostr VPN for Android](https://github.com/${RELEASE_REPOSITORY}/releases/download/${RELEASE_TAG}/nostr-vpn-${RELEASE_TAG}-android-arm64.apk)"
             fi
+            echo "- [Nostr VPN for iOS public beta](https://testflight.apple.com/join/jPRVxbSv)"
             echo
             if [ "${MACOS_ARTIFACT_PUBLISHED}" != "true" ]; then
               case "${MACOS_ARTIFACT_SKIP_REASON}" in

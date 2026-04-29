@@ -164,6 +164,8 @@ Changes since v0.2.26.
   assert.match(notes, /## Changes/)
   assert.match(notes, /Changes since v0\.2\.26\./)
   assert.match(notes, /### Fixed/)
+  assert.match(notes, /Nostr VPN for iOS public beta/)
+  assert.match(notes, /https:\/\/testflight\.apple\.com\/join\/jPRVxbSv/)
   assert.match(notes, /Windows x64 CLI/)
   assert.match(notes, /Built Windows x64 CLI inside a local Parallels VM\./)
   assert.match(notes, /Linux musl CLI skipped because cross was unavailable\./)

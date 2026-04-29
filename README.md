@@ -6,15 +6,17 @@
 
 - [Latest release](https://github.com/mmalmi/nostr-vpn/releases/latest)
 - [Android app on Zapstore](https://zapstore.dev/apps/to.iris.nvpn)
+- [iOS public beta on TestFlight](https://testflight.apple.com/join/jPRVxbSv)
 
 Current release artifacts:
 
 - Apple Silicon macOS desktop app
 - Windows x64 desktop installer
 - Android arm64 APK/AAB
+- iOS public beta through TestFlight
 - Headless CLI archives for Apple Silicon macOS, Windows x64, Linux x86_64, and Linux arm64
 
-Intel macOS is source-only. iOS app code is in the repo, but releases do not publish an iOS artifact yet.
+Intel macOS is source-only. iOS beta builds are distributed through TestFlight.
 
 ## Overview
 
@@ -45,7 +47,7 @@ For the current protocol-level description of invites, signaling, admin roster s
 | Apple Silicon macOS | Signed desktop app in releases, plus a CLI tarball |
 | Windows x64 | Desktop installer and CLI zip in releases; a manual GitHub Actions smoke workflow builds both CLI and GUI |
 | Android arm64 | APK/AAB artifacts built in the release workflow |
-| iOS | Tauri mobile code, Packet Tunnel integration, and generated Apple project files are checked in, but releases do not publish an iOS artifact yet |
+| iOS | Public TestFlight beta, plus checked-in Tauri mobile code, Packet Tunnel integration, and generated Apple project files |
 | Linux | CLI-focused today: release CLI tarballs plus Docker e2e coverage, but no packaged desktop app release |
 
 ## What the project does today
@@ -115,7 +117,7 @@ cargo test --workspace --exclude nostr-vpn-gui
 Additional automation:
 
 - `.github/workflows/windows-smoke.yml` can manually build the Windows CLI and GUI on `windows-latest`
-- `.github/workflows/release.yml` publishes Apple Silicon macOS, Windows x64, and Android arm64 APK/AAB app artifacts, plus CLI archives for Apple Silicon macOS, Windows x64, Linux x86_64, and Linux arm64
+- `.github/workflows/release.yml` publishes Apple Silicon macOS, Windows x64, and Android arm64 APK/AAB app artifacts, links the iOS public TestFlight beta, and publishes CLI archives for Apple Silicon macOS, Windows x64, Linux x86_64, and Linux arm64
 - `scripts/publish-zapstore-android.sh` builds a signed Android APK locally and publishes it with `zsp` using `zapstore.yaml`
 - `scripts/local-release.mjs` builds whatever this machine can produce locally, stages a hashtree-style release directory, can publish it to `releases/nostr-vpn`, and can hand the signed Android APK off to Zapstore
 
@@ -350,8 +352,8 @@ Notes:
 - on desktop, the frontend shells out to `nvpn`; mobile targets use the in-app platform-specific VPN runtime code
 - the desktop app is service-first on supported platforms: install the background service first, then use the app for normal on/off control
 - the GUI exposes network membership, invite QR/import flows, relay state, session health, MagicDNS, exit-node selection, advertised routes, timed LAN pairing, LAN discovery, autostart, and tray controls
-- tagged releases currently publish Apple Silicon macOS, Windows x64, and Android arm64 app artifacts
-- the iOS target is checked in for source builds, but the release workflow does not currently publish an iOS artifact
+- tagged releases currently publish Apple Silicon macOS, Windows x64, and Android arm64 app artifacts, plus the public TestFlight link for iOS
+- iOS builds are distributed through App Store Connect/TestFlight rather than GitHub release artifacts
 
 You can override which CLI binary the GUI uses with `NVPN_CLI_PATH`.
 
@@ -413,6 +415,6 @@ Release workflow ([`.github/workflows/release.yml`](.github/workflows/release.ym
 - publishes Apple Silicon macOS as `nostr-vpn-<version>-macos-arm64.zip` containing a signed, notarized `Nostr VPN.app`
 - publishes Windows x64 as `nostr-vpn-<version>-windows-x64-setup.exe`
 - publishes Android arm64 release artifacts as APK/AAB files
-- does not currently publish an iOS release artifact
+- links the iOS public TestFlight beta; iOS builds are distributed through App Store Connect/TestFlight rather than GitHub release artifacts
 - requires the macOS signing and notarization secrets to be configured before a release can publish the macOS app
 - generates its GitHub release notes in the workflow; local `scripts/local-release.mjs` release notes include the matching `CHANGELOG.md` section for the tag

@@ -1,6 +1,8 @@
 import { statSync } from 'node:fs'
 import { basename } from 'node:path'
 
+export const IOS_TESTFLIGHT_PUBLIC_BETA_URL = 'https://testflight.apple.com/join/jPRVxbSv'
+
 export function parseEnvFile(text) {
   const values = {}
   for (const rawLine of text.split(/\r?\n/)) {
@@ -196,7 +198,11 @@ export function renderReleaseNotes({
     lines.push('## Changes', '', ...changelogSection.split('\n'), '')
   }
 
-  lines.push('## Downloads', '')
+  lines.push(
+    '## Downloads',
+    '',
+    `- Nostr VPN for iOS public beta: [TestFlight](${IOS_TESTFLIGHT_PUBLIC_BETA_URL})`,
+  )
 
   for (const name of [...assetNames].sort((left, right) => left.localeCompare(right))) {
     if (assetBaseUrl) {
