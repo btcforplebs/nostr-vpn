@@ -33,9 +33,14 @@ if [ "${CONFIGURATION:?}" = "Release" ]; then
 fi
 
 repo_root="$(cd "${SRCROOT}/../../../../.." && pwd)"
+target_root="${CARGO_TARGET_DIR:-${repo_root}/target}"
+case "${target_root}" in
+  /*) ;;
+  *) target_root="${repo_root}/${target_root}" ;;
+esac
 artifact_dir="${SRCROOT}/Externals/${externals_arch}/${CONFIGURATION}"
 artifact_path="${artifact_dir}/libapp.a"
-source_path="${repo_root}/target/${rust_target}/${profile_dir}/libnostr_vpn_gui_lib.a"
+source_path="${target_root}/${rust_target}/${profile_dir}/libnostr_vpn_gui_lib.a"
 
 mkdir -p "${artifact_dir}"
 

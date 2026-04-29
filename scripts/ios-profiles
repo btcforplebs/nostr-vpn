@@ -1,0 +1,413 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/release_common.sh"
+
+load_release_env "$ROOT"
+load_appstoreconnect_defaults
+resolve_shared_build_metadata "$ROOT"
+
+IOS_DIST_DIR="$ROOT/dist/ios"
+IOS_BUNDLE_ID="${NVPN_IOS_BUNDLE_ID:-to.iris.nvpn}"
+IOS_PACKET_TUNNEL_BUNDLE_ID="${NVPN_IOS_PACKET_TUNNEL_BUNDLE_ID:-to.iris.nvpn.PacketTunnel}"
+IOS_PROFILE_TYPE="${NVPN_IOS_PROFILE_TYPE:-IOS_APP_STORE}"
+IOS_PROFILE_NAME="${NVPN_IOS_PROFILE_NAME:-Nostr VPN App Store main}"
+IOS_PACKET_TUNNEL_PROFILE_NAME="${NVPN_IOS_PACKET_TUNNEL_PROFILE_NAME:-Nostr VPN App Store packet tunnel}"
+IOS_CODE_SIGN_IDENTITY="${NVPN_IOS_CODE_SIGN_IDENTITY:-Apple Distribution}"
+IOS_PROFILES_ENV_PATH="${NVPN_IOS_PROFILES_ENV_PATH:-$IOS_DIST_DIR/provisioning.env}"
+ACTION="${1:-ensure}"
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/ios-profiles <ensure|list>
+
+Commands:
+  ensure   create or download App Store provisioning profiles for manual IPA export
+  list     list matching provisioning profiles known to App Store Connect
+
+Environment:
+  NVPN_ASC_CERTIFICATE_ID        optional App Store Connect certificate ID
+  NVPN_IOS_PROFILE_RECREATE     set true to force new profiles
+  NVPN_IOS_PROFILES_ENV_PATH    default dist/ios/provisioning.env
+EOF
+}
+
+case "$ACTION" in
+  ensure|list)
+    ;;
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+require_var NVPN_ASC_AUTH_KEY_PATH
+require_var NVPN_ASC_AUTH_KEY_ID
+require_var NVPN_ASC_AUTH_KEY_ISSUER_ID
+
+if [[ ! -f "$NVPN_ASC_AUTH_KEY_PATH" ]]; then
+  echo "ASC API key file not found: $NVPN_ASC_AUTH_KEY_PATH" >&2
+  exit 1
+fi
+
+ensure_dir "$IOS_DIST_DIR"
+
+export NVPN_IOS_PROFILES_ACTION="$ACTION"
+export NVPN_IOS_BUNDLE_ID="$IOS_BUNDLE_ID"
+export NVPN_IOS_PACKET_TUNNEL_BUNDLE_ID="$IOS_PACKET_TUNNEL_BUNDLE_ID"
+export NVPN_IOS_PROFILE_TYPE="$IOS_PROFILE_TYPE"
+export NVPN_IOS_PROFILE_NAME="$IOS_PROFILE_NAME"
+export NVPN_IOS_PACKET_TUNNEL_PROFILE_NAME="$IOS_PACKET_TUNNEL_PROFILE_NAME"
+export NVPN_IOS_CODE_SIGN_IDENTITY="$IOS_CODE_SIGN_IDENTITY"
+export NVPN_IOS_PROFILES_ENV_PATH="$IOS_PROFILES_ENV_PATH"
+
+python3 <<'PY'
+import base64
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import shlex
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+try:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, utils
+except ImportError as exc:
+    raise SystemExit(
+        "Python package 'cryptography' is required for App Store Connect JWT signing."
+    ) from exc
+
+
+BASE_URL = "https://api.appstoreconnect.apple.com/v1/"
+ACTION = os.environ["NVPN_IOS_PROFILES_ACTION"]
+PROFILE_TYPE = os.environ["NVPN_IOS_PROFILE_TYPE"]
+CODE_SIGN_IDENTITY = os.environ["NVPN_IOS_CODE_SIGN_IDENTITY"]
+PROFILES_ENV_PATH = Path(os.environ["NVPN_IOS_PROFILES_ENV_PATH"])
+TARGETS = [
+    {
+        "role": "app",
+        "identifier": os.environ["NVPN_IOS_BUNDLE_ID"],
+        "profile_name": os.environ["NVPN_IOS_PROFILE_NAME"],
+        "env_key": "NVPN_IOS_PROVISIONING_PROFILE_UUID",
+    },
+    {
+        "role": "packet_tunnel",
+        "identifier": os.environ["NVPN_IOS_PACKET_TUNNEL_BUNDLE_ID"],
+        "profile_name": os.environ["NVPN_IOS_PACKET_TUNNEL_PROFILE_NAME"],
+        "env_key": "NVPN_IOS_PACKET_TUNNEL_PROVISIONING_PROFILE_UUID",
+    },
+]
+
+
+def fail(message, code=1):
+    print(message, file=sys.stderr)
+    raise SystemExit(code)
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def create_token():
+    with open(os.environ["NVPN_ASC_AUTH_KEY_PATH"], "rb") as key_file:
+        private_key = serialization.load_pem_private_key(key_file.read(), password=None)
+
+    now = int(time.time())
+    header = {
+        "alg": "ES256",
+        "kid": os.environ["NVPN_ASC_AUTH_KEY_ID"],
+        "typ": "JWT",
+    }
+    payload = {
+        "iss": os.environ["NVPN_ASC_AUTH_KEY_ISSUER_ID"],
+        "iat": now,
+        "exp": now + 20 * 60,
+        "aud": "appstoreconnect-v1",
+    }
+    signing_input = (
+        f"{b64url(json.dumps(header, separators=(',', ':')).encode())}."
+        f"{b64url(json.dumps(payload, separators=(',', ':')).encode())}"
+    ).encode("ascii")
+    der_signature = private_key.sign(signing_input, ec.ECDSA(hashes.SHA256()))
+    r_value, s_value = utils.decode_dss_signature(der_signature)
+    signature = r_value.to_bytes(32, "big") + s_value.to_bytes(32, "big")
+    return signing_input.decode("ascii") + "." + b64url(signature)
+
+
+TOKEN = create_token()
+
+
+def request(method, path_or_url, params=None, body=None):
+    if path_or_url.startswith("https://"):
+        url = path_or_url
+    else:
+        url = BASE_URL + path_or_url
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {TOKEN}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+            return response.status, json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as error:
+        raw = error.read().decode("utf-8", errors="replace")
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            body = raw
+        return error.code, body
+
+
+def require_ok(status, body, operation):
+    if 200 <= status < 300:
+        return body
+    fail(f"{operation} failed: HTTP {status}\n{json.dumps(body, indent=2)}")
+
+
+def get_all(path, params=None):
+    status, body = request("GET", path, params)
+    body = require_ok(status, body, f"GET {path}")
+    data = list(body.get("data", []))
+    included = list(body.get("included", []))
+    next_url = body.get("links", {}).get("next")
+    while next_url:
+        status, body = request("GET", next_url)
+        body = require_ok(status, body, f"GET {next_url}")
+        data.extend(body.get("data", []))
+        included.extend(body.get("included", []))
+        next_url = body.get("links", {}).get("next")
+    return data, included
+
+
+def parse_time(value):
+    if not value:
+        return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def exact_bundle_id(identifier):
+    bundle_ids, _ = get_all(
+        "bundleIds",
+        {"filter[identifier]": identifier, "limit": "200"},
+    )
+    for bundle_id in bundle_ids:
+        if bundle_id.get("attributes", {}).get("identifier") == identifier:
+            return bundle_id
+    fail(f"No Apple Developer bundle ID found for {identifier}")
+
+
+def select_certificate():
+    configured = os.environ.get("NVPN_ASC_CERTIFICATE_ID", "").strip()
+    if configured:
+        return configured
+
+    certificates, _ = get_all("certificates", {"limit": "200"})
+    candidates = []
+    for certificate in certificates:
+        attrs = certificate.get("attributes", {})
+        certificate_type = attrs.get("certificateType", "")
+        if "DISTRIBUTION" not in certificate_type:
+            continue
+        expiration = parse_time(attrs.get("expirationDate"))
+        if expiration <= dt.datetime.now(dt.timezone.utc):
+            continue
+        candidates.append((expiration, certificate))
+
+    if not candidates:
+        fail("No non-expired distribution certificate found in App Store Connect")
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    certificate = candidates[0][1]
+    attrs = certificate.get("attributes", {})
+    print(
+        "Using distribution certificate "
+        f"{attrs.get('displayName', certificate['id'])} [{certificate['id']}]",
+        file=sys.stderr,
+    )
+    return certificate["id"]
+
+
+def list_profiles():
+    profiles, _ = get_all(
+        "profiles",
+        {
+            "filter[profileType]": PROFILE_TYPE,
+            "include": "bundleId",
+            "limit": "200",
+        },
+    )
+    return profiles
+
+
+def usable_profile(profile):
+    state = profile.get("attributes", {}).get("profileState")
+    return state not in {"EXPIRED", "INVALID"}
+
+
+def profile_bundle_id(profile):
+    return (
+        profile.get("relationships", {})
+        .get("bundleId", {})
+        .get("data", {})
+        .get("id")
+    )
+
+
+def find_profile(bundle_id, name=None):
+    profiles = [
+        profile
+        for profile in list_profiles()
+        if profile_bundle_id(profile) == bundle_id["id"] and usable_profile(profile)
+    ]
+    if name:
+        named = [
+            profile
+            for profile in profiles
+            if profile.get("attributes", {}).get("name") == name
+        ]
+        if named:
+            profiles = named
+    if not profiles:
+        return None
+    return sorted(
+        profiles,
+        key=lambda profile: parse_time(
+            profile.get("attributes", {}).get("createdDate")
+            or profile.get("attributes", {}).get("expirationDate")
+        ),
+        reverse=True,
+    )[0]
+
+
+def fetch_profile(profile_id):
+    status, body = request("GET", f"profiles/{profile_id}")
+    return require_ok(status, body, "Get profile").get("data")
+
+
+def install_profile(profile):
+    attrs = profile.get("attributes", {})
+    if not attrs.get("profileContent"):
+        profile = fetch_profile(profile["id"])
+        attrs = profile.get("attributes", {})
+
+    uuid = attrs.get("uuid")
+    content = attrs.get("profileContent")
+    if not uuid or not content:
+        fail(f"Profile {profile['id']} is missing uuid or content")
+
+    profile_dir = Path.home() / "Library/MobileDevice/Provisioning Profiles"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    path = profile_dir / f"{uuid}.mobileprovision"
+    path.write_bytes(base64.b64decode(content))
+    return uuid, path
+
+
+def create_profile(target, bundle_id, certificate_id):
+    name = target["profile_name"]
+    if os.environ.get("NVPN_IOS_PROFILE_NAME_SUFFIX"):
+        name = f"{name} {os.environ['NVPN_IOS_PROFILE_NAME_SUFFIX']}"
+
+    body = {
+        "data": {
+            "type": "profiles",
+            "attributes": {
+                "name": name,
+                "profileType": PROFILE_TYPE,
+            },
+            "relationships": {
+                "bundleId": {
+                    "data": {
+                        "type": "bundleIds",
+                        "id": bundle_id["id"],
+                    }
+                },
+                "certificates": {
+                    "data": [
+                        {
+                            "type": "certificates",
+                            "id": certificate_id,
+                        }
+                    ]
+                },
+            },
+        }
+    }
+    status, response = request("POST", "profiles", body=body)
+    if status == 409:
+        fallback = f"{name} {int(time.time())}"
+        body["data"]["attributes"]["name"] = fallback
+        status, response = request("POST", "profiles", body=body)
+    return require_ok(status, response, f"Create profile for {target['identifier']}").get("data")
+
+
+def ensure_profiles():
+    certificate_id = select_certificate()
+    env_values = {
+        "NVPN_IOS_SIGNING_STYLE": "manual",
+        "NVPN_IOS_CODE_SIGN_IDENTITY": CODE_SIGN_IDENTITY,
+    }
+    installed = []
+
+    for target in TARGETS:
+        bundle_id = exact_bundle_id(target["identifier"])
+        profile = None
+        if os.environ.get("NVPN_IOS_PROFILE_RECREATE") != "true":
+            profile = find_profile(bundle_id)
+        if profile is None:
+            profile = create_profile(target, bundle_id, certificate_id)
+
+        uuid, path = install_profile(profile)
+        attrs = profile.get("attributes", {})
+        env_values[target["env_key"]] = uuid
+        installed.append((target["identifier"], attrs.get("name", profile["id"]), uuid, path))
+
+    PROFILES_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with PROFILES_ENV_PATH.open("w", encoding="utf-8") as env_file:
+        for key, value in env_values.items():
+            env_file.write(f"{key}={shlex.quote(str(value))}\n")
+
+    print("Installed iOS provisioning profiles:")
+    for identifier, name, uuid, path in installed:
+        print(f"  - {identifier}: {name} [{uuid}]")
+        print(f"    {path}")
+    print(f"Wrote {PROFILES_ENV_PATH}")
+
+
+if ACTION == "list":
+    bundle_ids = {exact_bundle_id(target["identifier"])["id"]: target["identifier"] for target in TARGETS}
+    print(f"{PROFILE_TYPE} profiles for Nostr VPN:")
+    for profile in list_profiles():
+        related = bundle_ids.get(profile_bundle_id(profile))
+        if not related:
+            continue
+        attrs = profile.get("attributes", {})
+        print(
+            f"  - {related}: {attrs.get('name', profile['id'])} "
+            f"[{attrs.get('uuid')}] {attrs.get('profileState')}"
+        )
+    raise SystemExit(0)
+
+ensure_profiles()
+PY

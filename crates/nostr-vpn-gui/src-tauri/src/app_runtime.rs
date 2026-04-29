@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(target_os = "ios")]
+use std::io::Write as _;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RelayStatus {

@@ -5,8 +5,8 @@ options:
     iOS: 14.0
 fileGroups: [../../src]
 configs:
-  debug: debug
-  release: release
+  Debug: debug
+  Release: release
 settingGroups:
   app:
     base:
@@ -34,7 +34,6 @@ targets:
     sources:
       - path: Sources
       - path: Assets.xcassets
-      - path: Externals
       - path: nostr-vpn-gui_iOS
       - path: assets
         buildPhase: resources
@@ -60,10 +59,13 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.3.14
-        CFBundleVersion: "0.3.14"
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
     entitlements:
       path: nostr-vpn-gui_iOS/nostr-vpn-gui_iOS.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
     scheme:
       environmentVariables:
         RUST_BACKTRACE: full
@@ -98,7 +100,7 @@ targets:
       - script: bash "${SRCROOT}/scripts/sync-web-assets.sh"
         name: Sync Web Assets
         basedOnDependencyAnalysis: false
-      - script: pnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
+      - script: bash "${SRCROOT}/scripts/build-rust-staticlib.sh"
         name: Build Rust Code
         basedOnDependencyAnalysis: false
   nostr-vpn-gui_PacketTunnel:
@@ -112,13 +114,16 @@ targets:
     info:
       path: PacketTunnel/Info.plist
       properties:
-        CFBundleShortVersionString: "0.3.14"
-        CFBundleVersion: "0.3.14"
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
     entitlements:
       path: PacketTunnel/PacketTunnel.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
     settings:
       groups: [packet-tunnel]
       base:
@@ -143,9 +148,9 @@ targets:
           set -euo pipefail
           plist="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
           /usr/libexec/PlistBuddy -c "Delete :CFBundleShortVersionString" "${plist}" || true
-          /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 0.3.14" "${plist}"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${MARKETING_VERSION}" "${plist}"
           /usr/libexec/PlistBuddy -c "Delete :CFBundleVersion" "${plist}" || true
-          /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 0.3.14" "${plist}"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${CURRENT_PROJECT_VERSION}" "${plist}"
           /usr/libexec/PlistBuddy -c "Delete :NSExtension" "${plist}" || true
           /usr/libexec/PlistBuddy -c "Add :NSExtension dict" "${plist}"
           /usr/libexec/PlistBuddy -c "Add :NSExtension:NSExtensionPointIdentifier string com.apple.networkextension.packet-tunnel" "${plist}"

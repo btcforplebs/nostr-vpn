@@ -26,7 +26,6 @@
 		D40ECD2A6EA5C2FB7E09FB59 /* VpnShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92C38BEAA8FB61A08F0ED05 /* VpnShared.swift */; };
 		D4B603404BADBFAA9F4EEF57 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A15B206AEE516296EC0816EE /* libapp.a */; };
 		D5C975FBD9FEA71B98B704C9 /* nostr-vpn-gui_PacketTunnel.appex in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 0719B4CBF4F47B8AA25CD7ED /* nostr-vpn-gui_PacketTunnel.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		D6A01E3BB17D43BCCF4022FE /* libapp.a in Resources */ = {isa = PBXBuildFile; fileRef = 54BCBC5705F63E9A57AD6433 /* libapp.a */; };
 		E9AACC2EA48A45D300292DEC /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 672C23C861BAB505C46A8465 /* MetalKit.framework */; };
 		F91EABD9DE38D8181E0071CD /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1B28A0EA9B14D051BE65BCDE /* NetworkExtension.framework */; };
 /* End PBXBuildFile section */
@@ -58,23 +57,33 @@
 /* Begin PBXFileReference section */
 		0719B4CBF4F47B8AA25CD7ED /* nostr-vpn-gui_PacketTunnel.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = "nostr-vpn-gui_PacketTunnel.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		07C62EF447FE41D6B43F8B40 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		0B92B57F7634296A23F5901B /* gui_launch.rs */ = {isa = PBXFileReference; path = gui_launch.rs; sourceTree = "<group>"; };
 		0FE115E8CFC827F925003523 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		1295C8963EC21075031D5A24 /* mobile_runtime_state.rs */ = {isa = PBXFileReference; path = mobile_runtime_state.rs; sourceTree = "<group>"; };
 		1B28A0EA9B14D051BE65BCDE /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
+		252EDDA65098DAE723EF43FA /* android_session_planning.rs */ = {isa = PBXFileReference; path = android_session_planning.rs; sourceTree = "<group>"; };
 		2679509CCB597D7AC4F6489F /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
 		2AFA4AB4850A4468B3FCFB7F /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		35EE1DF28CD9918716C0AA56 /* service_status.rs */ = {isa = PBXFileReference; path = service_status.rs; sourceTree = "<group>"; };
 		40EAC66797E9C92228E39CBA /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		465BABA7AD8576D1091B15F6 /* ios_packet_tunnel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ios_packet_tunnel.h; sourceTree = "<group>"; };
 		469B112FC1CA685327E8FAA6 /* android_session.rs */ = {isa = PBXFileReference; path = android_session.rs; sourceTree = "<group>"; };
 		4AE948FFFC8E1DEE9F94CBF2 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		4D879BA96AB080636CB9AA07 /* android_session_runtime.rs */ = {isa = PBXFileReference; path = android_session_runtime.rs; sourceTree = "<group>"; };
+		50C3C64AA1DE036888CFEA9B /* android_session_tunnel.rs */ = {isa = PBXFileReference; path = android_session_tunnel.rs; sourceTree = "<group>"; };
 		5247467DCF5CC647E01E852C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		54BCBC5705F63E9A57AD6433 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		5A2F767E9CD38E9F17649DE3 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		5E55C0E5FFBFFEBB24FBD0E4 /* daemon_runtime.rs */ = {isa = PBXFileReference; path = daemon_runtime.rs; sourceTree = "<group>"; };
+		620F6C3ED22B067587013D6A /* backend_configuration.rs */ = {isa = PBXFileReference; path = backend_configuration.rs; sourceTree = "<group>"; };
 		672C23C861BAB505C46A8465 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		6E9B0420E233ED12B380B3AE /* path_resolution.rs */ = {isa = PBXFileReference; path = path_resolution.rs; sourceTree = "<group>"; };
+		71F1A2489A1D9F51DA1D7D7E /* backend_service.rs */ = {isa = PBXFileReference; path = backend_service.rs; sourceTree = "<group>"; };
 		77F6CBD1A548973B6B86E503 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7E8194DC4693E675EBFB98E1 /* nostr-vpn-gui_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "nostr-vpn-gui_iOS.entitlements"; sourceTree = "<group>"; };
 		83944203EA96CE766A011117 /* PacketTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PacketTunnel.entitlements; sourceTree = "<group>"; };
 		87CF3F9EA0A2CB476F47BB27 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
 		8D1812EA6F6DD8DAF60D35A0 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		926221BB6408764E19BBE1DC /* relay_operator_state.rs */ = {isa = PBXFileReference; path = relay_operator_state.rs; sourceTree = "<group>"; };
 		942D02896A51B8BCA6C937F4 /* nostr-vpn-gui_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "nostr-vpn-gui_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		99EF4EA412F6FC730D1CA1BD /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
 		9FC7C44E6EE8EE1BEB8C38B0 /* PacketTunnel-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PacketTunnel-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -83,13 +92,19 @@
 		A85AB7F84C6A9BA43487B575 /* ios_vpn.rs */ = {isa = PBXFileReference; path = ios_vpn.rs; sourceTree = "<group>"; };
 		AC4CE12B0235D6A94C71DF84 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		AD2A2F522E85AA57F63AFC81 /* mobile_wg.rs */ = {isa = PBXFileReference; path = mobile_wg.rs; sourceTree = "<group>"; };
+		B082D3D5A798169CC3BCB072 /* tauri_commands.rs */ = {isa = PBXFileReference; path = tauri_commands.rs; sourceTree = "<group>"; };
+		B50F5630EBCF405955213763 /* lan_pairing.rs */ = {isa = PBXFileReference; path = lan_pairing.rs; sourceTree = "<group>"; };
+		BE1B653E51BEB6CBFEE10544 /* app_runtime.rs */ = {isa = PBXFileReference; path = app_runtime.rs; sourceTree = "<group>"; };
 		BFEF6E745C80F001F6ADB8A4 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
 		C7476A9CFE94DBE87D18FC81 /* android_vpn.rs */ = {isa = PBXFileReference; path = android_vpn.rs; sourceTree = "<group>"; };
 		C92C38BEAA8FB61A08F0ED05 /* VpnShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VpnShared.swift; sourceTree = "<group>"; };
+		D26B112568841DF4A5BA4391 /* ios_tunnel_planning.rs */ = {isa = PBXFileReference; path = ios_tunnel_planning.rs; sourceTree = "<group>"; };
 		DB6985ABA01445BB7293696C /* wg-echo-peer.rs */ = {isa = PBXFileReference; path = "wg-echo-peer.rs"; sourceTree = "<group>"; };
 		DB9970AD0300D1A9B32E2CED /* ios_packet_tunnel.rs */ = {isa = PBXFileReference; path = ios_packet_tunnel.rs; sourceTree = "<group>"; };
+		DF696AF10B2F7612AF3DE1CC /* peer_state.rs */ = {isa = PBXFileReference; path = peer_state.rs; sourceTree = "<group>"; };
 		EAE72919B55939D343CCD4DF /* NvpnIosBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NvpnIosBridge.swift; sourceTree = "<group>"; };
 		EF608FFB643A1BF101D4E36F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F7A8F684CBAD2820D0193A99 /* tray_runtime.rs */ = {isa = PBXFileReference; path = tray_runtime.rs; sourceTree = "<group>"; };
 		F9B86EA74B98AB023DC23BB4 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -129,14 +144,6 @@
 				EAE72919B55939D343CCD4DF /* NvpnIosBridge.swift */,
 			);
 			path = VpnAppBridge;
-			sourceTree = "<group>";
-		};
-		1DE7766F0624209F689FF654 /* Externals */ = {
-			isa = PBXGroup;
-			children = (
-				C728CA75F40898A8AA079869 /* arm64 */,
-			);
-			path = Externals;
 			sourceTree = "<group>";
 		};
 		1F0C89CD19A3A0D59328D3F2 /* nostr-vpn-gui */ = {
@@ -182,6 +189,14 @@
 			path = VpnShared;
 			sourceTree = "<group>";
 		};
+		884E71F2D2E9A342DEC0A1DF /* ios_packet_tunnel */ = {
+			isa = PBXGroup;
+			children = (
+				D26B112568841DF4A5BA4391 /* ios_tunnel_planning.rs */,
+			);
+			path = ios_packet_tunnel;
+			sourceTree = "<group>";
+		};
 		89CFABDD279F0ED264D72895 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
@@ -212,33 +227,34 @@
 			path = bindings;
 			sourceTree = "<group>";
 		};
-		AC80CD2D1C5C449DFF0BC97F /* debug */ = {
-			isa = PBXGroup;
-			children = (
-				54BCBC5705F63E9A57AD6433 /* libapp.a */,
-			);
-			path = debug;
-			sourceTree = "<group>";
-		};
-		C728CA75F40898A8AA079869 /* arm64 */ = {
-			isa = PBXGroup;
-			children = (
-				AC80CD2D1C5C449DFF0BC97F /* debug */,
-			);
-			path = arm64;
-			sourceTree = "<group>";
-		};
 		DACB2623946D06863B05287B /* src */ = {
 			isa = PBXGroup;
 			children = (
+				252EDDA65098DAE723EF43FA /* android_session_planning.rs */,
+				4D879BA96AB080636CB9AA07 /* android_session_runtime.rs */,
+				50C3C64AA1DE036888CFEA9B /* android_session_tunnel.rs */,
 				469B112FC1CA685327E8FAA6 /* android_session.rs */,
 				C7476A9CFE94DBE87D18FC81 /* android_vpn.rs */,
+				BE1B653E51BEB6CBFEE10544 /* app_runtime.rs */,
+				620F6C3ED22B067587013D6A /* backend_configuration.rs */,
+				71F1A2489A1D9F51DA1D7D7E /* backend_service.rs */,
+				5E55C0E5FFBFFEBB24FBD0E4 /* daemon_runtime.rs */,
+				0B92B57F7634296A23F5901B /* gui_launch.rs */,
 				DB9970AD0300D1A9B32E2CED /* ios_packet_tunnel.rs */,
 				A85AB7F84C6A9BA43487B575 /* ios_vpn.rs */,
+				B50F5630EBCF405955213763 /* lan_pairing.rs */,
 				87CF3F9EA0A2CB476F47BB27 /* lib.rs */,
 				BFEF6E745C80F001F6ADB8A4 /* main.rs */,
+				1295C8963EC21075031D5A24 /* mobile_runtime_state.rs */,
 				AD2A2F522E85AA57F63AFC81 /* mobile_wg.rs */,
+				6E9B0420E233ED12B380B3AE /* path_resolution.rs */,
+				DF696AF10B2F7612AF3DE1CC /* peer_state.rs */,
+				926221BB6408764E19BBE1DC /* relay_operator_state.rs */,
+				35EE1DF28CD9918716C0AA56 /* service_status.rs */,
+				B082D3D5A798169CC3BCB072 /* tauri_commands.rs */,
+				F7A8F684CBAD2820D0193A99 /* tray_runtime.rs */,
 				46965E917580923BB3398E8C /* bin */,
+				884E71F2D2E9A342DEC0A1DF /* ios_packet_tunnel */,
 			);
 			name = src;
 			path = ../../src;
@@ -267,7 +283,6 @@
 				AC4CE12B0235D6A94C71DF84 /* assets */,
 				5247467DCF5CC647E01E852C /* Assets.xcassets */,
 				0FE115E8CFC827F925003523 /* LaunchScreen.storyboard */,
-				1DE7766F0624209F689FF654 /* Externals */,
 				528F482BEF949022CF0069D1 /* nostr-vpn-gui_iOS */,
 				9A8A5AB0F659685870E59529 /* PacketTunnel */,
 				89CFABDD279F0ED264D72895 /* Sources */,
@@ -275,13 +290,6 @@
 				DB1F5B826C2305D66135CC2E /* Frameworks */,
 				269308845A6D52DFDEF56EFC /* Products */,
 			);
-			sourceTree = "<group>";
-		};
-		"TEMP_D79AB221-67AF-474C-ABD1-F4E888D38F06" /* x86_64 */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = x86_64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -367,7 +375,6 @@
 				5768C4432761C5F70F176D26 /* Assets.xcassets in Resources */,
 				C63DBEA667E8AB0210A40719 /* LaunchScreen.storyboard in Resources */,
 				6FE168250C82E16F4D578F6D /* assets in Resources */,
-				D6A01E3BB17D43BCCF4022FE /* libapp.a in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -410,7 +417,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nplist=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n/usr/libexec/PlistBuddy -c \"Delete :CFBundleShortVersionString\" \"${plist}\" || true\n/usr/libexec/PlistBuddy -c \"Add :CFBundleShortVersionString string 0.3.14\" \"${plist}\"\n/usr/libexec/PlistBuddy -c \"Delete :CFBundleVersion\" \"${plist}\" || true\n/usr/libexec/PlistBuddy -c \"Add :CFBundleVersion string 0.3.14\" \"${plist}\"\n/usr/libexec/PlistBuddy -c \"Delete :NSExtension\" \"${plist}\" || true\n/usr/libexec/PlistBuddy -c \"Add :NSExtension dict\" \"${plist}\"\n/usr/libexec/PlistBuddy -c \"Add :NSExtension:NSExtensionPointIdentifier string com.apple.networkextension.packet-tunnel\" \"${plist}\"\n/usr/libexec/PlistBuddy -c \"Add :NSExtension:NSExtensionPrincipalClass string ${PRODUCT_MODULE_NAME}.PacketTunnelProvider\" \"${plist}\"\n";
+			shellScript = "set -euo pipefail\nplist=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n/usr/libexec/PlistBuddy -c \"Delete :CFBundleShortVersionString\" \"${plist}\" || true\n/usr/libexec/PlistBuddy -c \"Add :CFBundleShortVersionString string ${MARKETING_VERSION}\" \"${plist}\"\n/usr/libexec/PlistBuddy -c \"Delete :CFBundleVersion\" \"${plist}\" || true\n/usr/libexec/PlistBuddy -c \"Add :CFBundleVersion string ${CURRENT_PROJECT_VERSION}\" \"${plist}\"\n/usr/libexec/PlistBuddy -c \"Delete :NSExtension\" \"${plist}\" || true\n/usr/libexec/PlistBuddy -c \"Add :NSExtension dict\" \"${plist}\"\n/usr/libexec/PlistBuddy -c \"Add :NSExtension:NSExtensionPointIdentifier string com.apple.networkextension.packet-tunnel\" \"${plist}\"\n/usr/libexec/PlistBuddy -c \"Add :NSExtension:NSExtensionPrincipalClass string ${PRODUCT_MODULE_NAME}.PacketTunnelProvider\" \"${plist}\"\n";
 		};
 		92515B19D484B8410EFFDD4C /* Build Rust Code */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -429,7 +436,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "pnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}";
+			shellScript = "bash \"${SRCROOT}/scripts/build-rust-staticlib.sh\"";
 		};
 		F890A95607DF8B0EE155C5CC /* Build Rust Code */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -483,7 +490,38 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		144A1AAF08AD134EC9DA0EE6 /* release */ = {
+		0C78F869A0EA5CB049695F41 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "nostr-vpn-gui_iOS/nostr-vpn-gui_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "nostr-vpn-gui_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn;
+				PRODUCT_NAME = "Nostr VPN";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = Release;
+		};
+		3395118ED566A9CAAE5624BD /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -537,9 +575,9 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
 			};
-			name = release;
+			name = Release;
 		};
-		1EAAB8424AE1D5BE7EBA4220 /* release */ = {
+		457E5AA7FAC9E926B5C0C574 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
@@ -547,7 +585,6 @@
 					arm64,
 				);
 				CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements;
-				DEVELOPMENT_TEAM = "J8PPJKD7TA";
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -568,9 +605,9 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
 			};
-			name = release;
+			name = Debug;
 		};
-		4E9A8ED1666FB24B0D71AA22 /* release */ = {
+		A69B4F279ED3AF92521E7772 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
@@ -598,11 +635,40 @@
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
-				DEVELOPMENT_TEAM = "J8PPJKD7TA";
 			};
-			name = release;
+			name = Debug;
 		};
-		53D6A7C2FB224111558934ED /* debug */ = {
+		A9A306EB8554C8B30F4E5502 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = PacketTunnel/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.PacketTunnel;
+				PRODUCT_NAME = "Nostr VPN Tunnel";
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "PacketTunnel/PacketTunnel-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = Release;
+		};
+		B868B7FE9626861E8B5C27BA /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -663,70 +729,7 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 			};
-			name = debug;
-		};
-		ECEB03C508639F2B88070F38 /* debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
-				ARCHS = (
-					arm64,
-				);
-				CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements;
-				DEVELOPMENT_TEAM = "J8PPJKD7TA";
-				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"\".\"",
-				);
-				INFOPLIST_FILE = PacketTunnel/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.PacketTunnel;
-				PRODUCT_NAME = "Nostr VPN Tunnel";
-				SDKROOT = iphoneos;
-				SWIFT_OBJC_BRIDGING_HEADER = "PacketTunnel/PacketTunnel-Bridging-Header.h";
-				TARGETED_DEVICE_FAMILY = "1,2";
-				VALID_ARCHS = arm64;
-			};
-			name = debug;
-		};
-		ED8E632F63CAB4F84D7E1F4F /* debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
-				ARCHS = (
-					arm64,
-				);
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = "nostr-vpn-gui_iOS/nostr-vpn-gui_iOS.entitlements";
-				CODE_SIGN_IDENTITY = "iPhone Developer";
-				ENABLE_BITCODE = NO;
-				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"\".\"",
-				);
-				INFOPLIST_FILE = "nostr-vpn-gui_iOS/Info.plist";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) $(TOOLCHAIN_DIR)/usr/lib/swift-5.0/$(PLATFORM_NAME)";
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn;
-				PRODUCT_NAME = "Nostr VPN";
-				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				VALID_ARCHS = arm64;
-				DEVELOPMENT_TEAM = "J8PPJKD7TA";
-			};
-			name = debug;
+			name = Debug;
 		};
 /* End XCBuildConfiguration section */
 
@@ -734,29 +737,29 @@
 		2305E4AF422C2B949D150B00 /* Build configuration list for PBXNativeTarget "nostr-vpn-gui_iOS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				ED8E632F63CAB4F84D7E1F4F /* debug */,
-				4E9A8ED1666FB24B0D71AA22 /* release */,
+				A69B4F279ED3AF92521E7772 /* Debug */,
+				0C78F869A0EA5CB049695F41 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = debug;
+			defaultConfigurationName = Debug;
 		};
 		9F7A4F3BB5C26E18BA6643F9 /* Build configuration list for PBXNativeTarget "nostr-vpn-gui_PacketTunnel" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				ECEB03C508639F2B88070F38 /* debug */,
-				1EAAB8424AE1D5BE7EBA4220 /* release */,
+				457E5AA7FAC9E926B5C0C574 /* Debug */,
+				A9A306EB8554C8B30F4E5502 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = debug;
+			defaultConfigurationName = Debug;
 		};
 		CF9F2AA2BA6593917B180125 /* Build configuration list for PBXProject "nostr-vpn-gui" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				53D6A7C2FB224111558934ED /* debug */,
-				144A1AAF08AD134EC9DA0EE6 /* release */,
+				B868B7FE9626861E8B5C27BA /* Debug */,
+				3395118ED566A9CAAE5624BD /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = debug;
+			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
 	};
