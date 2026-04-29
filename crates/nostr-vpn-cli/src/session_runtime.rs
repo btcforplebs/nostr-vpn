@@ -663,6 +663,13 @@ pub(crate) async fn daemon_session(args: DaemonArgs) -> Result<()> {
     }
 
     let config_path = args.config.clone().unwrap_or_else(default_config_path);
+    #[cfg(target_os = "macos")]
+    if let Err(error) = redirect_stdio_to_daemon_log(&config_path) {
+        eprintln!("daemon: failed to redirect service log: {error}");
+    }
+    if let Err(error) = compact_daemon_log_if_needed(&config_path) {
+        eprintln!("daemon: failed to compact service log: {error}");
+    }
     #[cfg(any(target_os = "macos", test))]
     crate::ensure_macos_connect_privileges(&config_path)?;
     ensure_no_other_daemon_processes_for_config(&config_path, std::process::id())?;
@@ -842,6 +849,7 @@ pub(crate) async fn daemon_session(args: DaemonArgs) -> Result<()> {
     let mut last_mesh_count = 0_usize;
     let mut last_nat_punch_attempt: Option<(String, Instant)> = None;
     let mut last_network_check_at = unix_timestamp();
+    let mut last_log_compact_check = Instant::now();
     write_daemon_state(
         &state_file,
         &build_daemon_runtime_state(
@@ -1343,6 +1351,11 @@ pub(crate) async fn daemon_session(args: DaemonArgs) -> Result<()> {
             }
             _ = state_interval.tick() => {
                 let now = unix_timestamp();
+                if daemon_log_compact_check_due(&mut last_log_compact_check)
+                    && let Err(error) = compact_daemon_log_if_needed(&config_path)
+                {
+                    eprintln!("daemon: failed to compact service log: {error}");
+                }
                 let changed_relay_participants = reconcile_active_relay_sessions(
                     &presence,
                     tunnel_runtime.peer_status().ok().as_ref(),

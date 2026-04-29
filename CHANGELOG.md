@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 0.3.14 - 2026-04-29
+
+Changes since `0.3.13` on 2026-04-20.
+
+### Fixed
+
+- Same-port NAT recovery now skips disruptive local-endpoint punching for stale non-exit peers once that peer already has an established WireGuard runtime path, avoiding avoidable macOS tunnel churn during otherwise healthy Screen Sharing sessions.
+- macOS daemon service logs are compacted in-process at startup and periodically, capping growth while retaining a recent tail for debugging.
+- Default daemon logging now suppresses high-volume internal relay-pool and WireGuard timer noise, and the hot-loop macOS peer-planning line was removed.
+
 ## 0.3.13 - 2026-04-20
 
 Changes since `v0.3.12` on 2026-04-19.

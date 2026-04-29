@@ -715,6 +715,55 @@ fn pending_nat_punch_targets_skip_optional_stale_peer_when_another_peer_is_onlin
 }
 
 #[test]
+fn pending_nat_punch_targets_skip_stale_non_exit_peer_after_prior_handshake() {
+    let now = unix_timestamp();
+    let mut config = AppConfig::generated();
+    let participant = "11".repeat(32);
+    config.nat.enabled = true;
+    config.node.endpoint = "198.19.241.3:51820".to_string();
+    config.networks[0].participants = vec![participant.clone()];
+
+    let peer_keys = generate_keypair();
+    let announcements = HashMap::from([(
+        participant.clone(),
+        PeerAnnouncement {
+            node_id: "peer-stale".to_string(),
+            public_key: peer_keys.public_key.clone(),
+            endpoint: "203.0.113.21:51820".to_string(),
+            local_endpoint: None,
+            public_endpoint: Some("203.0.113.21:51820".to_string()),
+            relay_endpoint: None,
+            relay_pubkey: None,
+            relay_expires_at: None,
+            tunnel_ip: "10.44.0.3/32".to_string(),
+            advertised_routes: Vec::new(),
+            timestamp: 10,
+        },
+    )]);
+    let runtime_peers = HashMap::from([(
+        key_b64_to_hex(&peer_keys.public_key).expect("stale peer pubkey hex"),
+        WireGuardPeerStatus {
+            endpoint: Some("203.0.113.21:51820".to_string()),
+            last_handshake_sec: Some(now - PEER_ONLINE_GRACE_SECS - 1),
+            last_handshake_nsec: Some(0),
+            ..WireGuardPeerStatus::default()
+        },
+    )]);
+
+    assert!(
+        pending_nat_punch_targets_for_local_endpoint(
+            &config,
+            None,
+            &announcements,
+            Some(&runtime_peers),
+            "198.19.241.3:51820",
+        )
+        .is_empty(),
+        "an established non-exit peer should recover with keepalive/heartbeats instead of disruptive same-port NAT punching"
+    );
+}
+
+#[test]
 fn pending_nat_punch_targets_skip_non_exit_route_peer_when_another_peer_is_online() {
     let now = unix_timestamp();
     let mut config = AppConfig::generated();

@@ -26,6 +26,8 @@ use std::hash::{Hash, Hasher};
 #[cfg(unix)]
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+#[cfg(target_os = "macos")]
+use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
@@ -857,8 +859,11 @@ struct HolePunchArgs {
 }
 
 fn main() -> Result<()> {
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(
+            "warn,nostr_relay_pool=off,boringtun::noise::timers=error",
+        )
+    });
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     let cli = Cli::parse();
@@ -3096,22 +3101,6 @@ impl CliTunnelRuntime {
             &own_local_endpoints,
             now,
         )?;
-        #[cfg(target_os = "macos")]
-        if !planned_peers.is_empty() {
-            let summary = planned_peers
-                .iter()
-                .map(|planned| {
-                    format!(
-                        "{} endpoint={} allowed_ips=[{}]",
-                        planned.participant,
-                        planned.endpoint,
-                        planned.peer.allowed_ips.join(", ")
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" | ");
-            eprintln!("tunnel: planned macOS peers {summary}");
-        }
         let peers = planned_peers
             .iter()
             .map(|planned| planned.peer.clone())
@@ -5715,6 +5704,12 @@ fn pending_nat_punch_targets_for_local_endpoints(
                 return None;
             }
 
+            if !stale_peer_requires_disruptive_nat_punch(participant, selected_exit_node.as_deref())
+                && stale_peer_has_established_runtime_path(announcement, runtime_peers)
+            {
+                return None;
+            }
+
             if mesh_has_recent_handshake_peer
                 && !stale_peer_requires_disruptive_nat_punch(
                     participant,
@@ -5770,6 +5765,13 @@ fn stale_peer_requires_disruptive_nat_punch(
     // selected exit peer. Non-exit route peers can recover in the background without
     // stalling unrelated direct traffic.
     selected_exit_node == Some(participant)
+}
+
+fn stale_peer_has_established_runtime_path(
+    announcement: &PeerAnnouncement,
+    runtime_peers: Option<&HashMap<String, WireGuardPeerStatus>>,
+) -> bool {
+    peer_runtime_lookup(announcement, runtime_peers).is_some_and(WireGuardPeerStatus::has_handshake)
 }
 
 fn nat_punch_fingerprint(targets: &[SocketAddr], listen_port: u16) -> Option<String> {

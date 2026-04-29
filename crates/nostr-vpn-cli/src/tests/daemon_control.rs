@@ -71,6 +71,53 @@ fn read_daemon_state_trims_nul_padding() {
 }
 
 #[test]
+fn daemon_log_compaction_leaves_small_log_untouched() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock is after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("nvpn-daemon-log-small-test-{nonce}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let log_path = dir.join("daemon.log");
+    fs::write(&log_path, "short\n").expect("write daemon log");
+
+    assert!(
+        !compact_log_file_if_needed(&log_path, 64, 16).expect("compact daemon log"),
+        "small logs should not be compacted"
+    );
+    assert_eq!(
+        fs::read_to_string(&log_path).expect("read daemon log"),
+        "short\n"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn daemon_log_compaction_keeps_line_aligned_tail() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock is after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("nvpn-daemon-log-compact-test-{nonce}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let log_path = dir.join("daemon.log");
+    fs::write(&log_path, "old-0\nold-1\nold-2\nkeep-1\nkeep-2\n").expect("write daemon log");
+
+    assert!(
+        compact_log_file_if_needed(&log_path, 20, 14).expect("compact daemon log"),
+        "oversized logs should be compacted"
+    );
+    let compacted = fs::read_to_string(&log_path).expect("read compacted daemon log");
+    assert!(compacted.starts_with("[nvpn] daemon log compacted at "));
+    assert!(!compacted.contains("old-0"));
+    assert!(!compacted.contains("keep-1"));
+    assert!(compacted.ends_with("keep-2\n"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn daemon_status_ignores_and_quarantines_corrupt_daemon_state() {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)

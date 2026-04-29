@@ -202,6 +202,14 @@ pub(crate) fn pending_nat_punch_targets_for_local_endpoints(
                 return None;
             }
 
+            if !crate::stale_peer_requires_disruptive_nat_punch(
+                participant,
+                selected_exit_node.as_deref(),
+            ) && crate::stale_peer_has_established_runtime_path(announcement, runtime_peers)
+            {
+                return None;
+            }
+
             if mesh_has_recent_handshake_peer
                 && !crate::stale_peer_requires_disruptive_nat_punch(
                     participant,

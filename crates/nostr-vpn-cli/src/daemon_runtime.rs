@@ -1,5 +1,9 @@
 use super::*;
 
+const DAEMON_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const DAEMON_LOG_RETAIN_BYTES: u64 = 2 * 1024 * 1024;
+const DAEMON_LOG_COMPACT_CHECK_SECS: u64 = 60;
+
 pub(crate) fn daemon_pid_file_path(config_path: &Path) -> PathBuf {
     let parent = config_path
         .parent()
@@ -19,6 +23,104 @@ pub(crate) fn daemon_log_file_path(config_path: &Path) -> PathBuf {
         .parent()
         .map_or_else(|| Path::new(".").to_path_buf(), PathBuf::from);
     parent.join("daemon.log")
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn redirect_stdio_to_daemon_log(config_path: &Path) -> Result<()> {
+    let log_path = daemon_log_file_path(config_path);
+    if let Some(parent) = log_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("failed to open {}", log_path.display()))?;
+    let _ = set_daemon_runtime_file_permissions(&log_path);
+    let fd = log_file.as_raw_fd();
+    unsafe {
+        if libc::dup2(fd, libc::STDOUT_FILENO) < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("failed to redirect stdout to daemon log");
+        }
+        if libc::dup2(fd, libc::STDERR_FILENO) < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("failed to redirect stderr to daemon log");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn compact_daemon_log_if_needed(config_path: &Path) -> Result<bool> {
+    compact_log_file_if_needed(
+        &daemon_log_file_path(config_path),
+        DAEMON_LOG_MAX_BYTES,
+        DAEMON_LOG_RETAIN_BYTES,
+    )
+}
+
+pub(crate) fn daemon_log_compact_check_due(last_checked: &mut Instant) -> bool {
+    if last_checked.elapsed() < Duration::from_secs(DAEMON_LOG_COMPACT_CHECK_SECS) {
+        return false;
+    }
+    *last_checked = Instant::now();
+    true
+}
+
+pub(crate) fn compact_log_file_if_needed(
+    path: &Path,
+    max_bytes: u64,
+    retain_bytes: u64,
+) -> Result<bool> {
+    if max_bytes == 0 || retain_bytes == 0 || retain_bytes >= max_bytes {
+        return Ok(false);
+    }
+
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    };
+    let original_len = metadata.len();
+    if original_len <= max_bytes {
+        return Ok(false);
+    }
+
+    let retain_start = original_len.saturating_sub(retain_bytes);
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(retain_start))
+        .with_context(|| format!("failed to seek {}", path.display()))?;
+    let mut retained = Vec::with_capacity(retain_bytes as usize);
+    std::io::Read::read_to_end(&mut file, &mut retained)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    if let Some(newline) = retained.iter().position(|byte| *byte == b'\n') {
+        retained.drain(..=newline);
+    }
+
+    let header = format!(
+        "[nvpn] daemon log compacted at {}; retained {} bytes from {} bytes\n",
+        unix_timestamp(),
+        retained.len(),
+        original_len
+    );
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .with_context(|| format!("failed to compact {}", path.display()))?;
+    std::io::Write::write_all(&mut file, header.as_bytes())
+        .with_context(|| format!("failed to write compaction header to {}", path.display()))?;
+    std::io::Write::write_all(&mut file, &retained)
+        .with_context(|| format!("failed to write retained log tail to {}", path.display()))?;
+    std::io::Write::flush(&mut file)
+        .with_context(|| format!("failed to flush {}", path.display()))?;
+    Ok(true)
 }
 
 pub(crate) fn daemon_state_file_path(config_path: &Path) -> PathBuf {
@@ -1098,7 +1200,7 @@ pub(crate) fn spawn_daemon_process(args: &ConnectArgs, config_path: &Path) -> Re
     }
     let log_file = OpenOptions::new()
         .create(true)
-        .write(true)
+        .append(true)
         .truncate(true)
         .open(&log_file_path)
         .with_context(|| format!("failed to open {}", log_file_path.display()))?;
