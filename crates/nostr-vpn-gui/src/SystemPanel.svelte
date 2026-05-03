@@ -156,13 +156,15 @@
 
     <div class="updates-section">
       <div class="panel-kicker">Updates</div>
-      <div class="row settings-action-row">
+      <div>
         <button class="btn" on:click={manualCheck} disabled={updateStatus.kind === 'checking' || updateStatus.kind === 'installing'}>
           {updateStatus.kind === 'checking' ? 'Checking…' : 'Check for updates'}
         </button>
-        {#if updaterPrefs.lastCheckMs > 0}
-          <span class="config-path">Last checked {new Date(updaterPrefs.lastCheckMs).toLocaleString()}</span>
-        {/if}
+        <div class="config-path last-checked-line">
+          {updaterPrefs.lastCheckMs > 0
+            ? `Last checked ${new Date(updaterPrefs.lastCheckMs).toLocaleString()}`
+            : ''}
+        </div>
       </div>
       <label class="toggle-row">
         <input
@@ -257,5 +259,9 @@
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+  }
+  .last-checked-line {
+    margin-top: 0.25rem;
+    min-height: 1em;
   }
 </style>
