@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 0.3.16 - 2026-05-04
+
+Changes since `0.3.15` earlier on 2026-05-04.
+
+### Fixed
+
+- Background Service panel no longer shows "Enable the service to keep VPN control out of the GUI process" when the service is already installed and running. The instruction text + helper line now only appear when something is actually actionable (install in flight, repair recommended, or first-time setup); the steady-state panel relies on the green Installed/Running/Daemon Reachable badges and the running-pid status line.
+
 ## 0.3.15 - 2026-05-04
 
 Changes since `0.3.14` on 2026-04-29.
