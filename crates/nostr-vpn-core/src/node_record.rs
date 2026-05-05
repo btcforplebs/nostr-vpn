@@ -5,6 +5,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use nostr_sdk::prelude::*;
 
+use crate::data_plane::DataPlaneCapability;
+
 pub const NOSTR_KIND_NOSTR_VPN_NODE_RECORD: u16 = 30_078;
 pub const NODE_RECORD_D_TAG: &str = "nostr-vpn:node";
 pub const NODE_RECORD_RELAY_TAG: &str = "nostr-vpn-relay";
@@ -52,6 +54,8 @@ pub struct NodeRecord {
     pub mode: NodeRecordMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<NodeService>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_plane: Option<DataPlaneCapability>,
     pub updated_at: u64,
     pub expires_at: u64,
 }

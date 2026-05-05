@@ -33,6 +33,7 @@ fn node_record_deduplicates_service_discovery_tags() {
                 price_hint_msats: Some(1_000),
             },
         ],
+        data_plane: None,
         updated_at: 10,
         expires_at: 100,
     };

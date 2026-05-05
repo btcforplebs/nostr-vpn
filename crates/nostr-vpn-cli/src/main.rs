@@ -1079,6 +1079,8 @@ async fn run_command(command: Command) -> Result<()> {
                         "network_id": network_id,
                         "magic_dns_suffix": app.magic_dns_suffix,
                         "autoconnect": app.autoconnect,
+                        "private_data_plane": app.private_data_plane,
+                        "exit_data_plane": app.exit_data_plane,
                         "node_id": app.node.id,
                         "tunnel_ip": app.node.tunnel_ip,
                         "endpoint": endpoint,
@@ -1109,6 +1111,8 @@ async fn run_command(command: Command) -> Result<()> {
                 println!("network: {network_id}");
                 println!("magic_dns_suffix: {}", app.magic_dns_suffix);
                 println!("autoconnect: {}", app.autoconnect);
+                println!("private_data_plane: {}", app.private_data_plane);
+                println!("exit_data_plane: {}", app.exit_data_plane);
                 println!("node: {}", app.node.id);
                 println!("tunnel_ip: {}", app.node.tunnel_ip);
                 println!("endpoint: {endpoint}");

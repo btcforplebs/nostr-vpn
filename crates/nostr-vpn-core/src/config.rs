@@ -33,6 +33,7 @@ use crate::config_magic_dns::{
     default_peer_aliases, detected_hostname, normalize_network_entry_id, uniquify_magic_dns_label,
     uniquify_network_entry_id, uses_default_node_name,
 };
+use crate::data_plane::{ExitDataPlane, PrivateDataPlane};
 use crate::network_roster::{
     canonical_npub_key, canonicalize_inbound_join_requests, canonicalize_outbound_join_request,
     normalize_inbound_join_requests, normalize_network_admins, normalize_npub_key,
@@ -95,6 +96,10 @@ pub struct AppConfig {
     pub launch_on_startup: bool,
     #[serde(default = "default_autoconnect")]
     pub autoconnect: bool,
+    #[serde(default)]
+    pub private_data_plane: PrivateDataPlane,
+    #[serde(default)]
+    pub exit_data_plane: ExitDataPlane,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub exit_node: String,
     #[serde(default = "default_close_to_tray_on_close")]
@@ -217,6 +222,8 @@ impl Default for AppConfig {
             lan_discovery_enabled: default_lan_discovery_enabled(),
             launch_on_startup: default_launch_on_startup(),
             autoconnect: default_autoconnect(),
+            private_data_plane: PrivateDataPlane::default(),
+            exit_data_plane: ExitDataPlane::default(),
             exit_node: String::new(),
             close_to_tray_on_close: default_close_to_tray_on_close(),
             magic_dns_suffix: default_magic_dns_suffix(),
@@ -280,6 +287,14 @@ impl Default for NodeConfig {
 impl AppConfig {
     pub fn generated() -> Self {
         Self::default()
+    }
+
+    pub fn private_mesh_uses_fips(&self) -> bool {
+        self.private_data_plane == PrivateDataPlane::Fips
+    }
+
+    pub fn wireguard_exit_enabled(&self) -> bool {
+        self.exit_data_plane == ExitDataPlane::WireGuard
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -1373,6 +1388,7 @@ fn next_shared_roster_updated_at(previous: u64) -> u64 {
 mod tests {
     use super::{AppConfig, normalize_nostr_pubkey};
     use crate::config_defaults::generate_nostr_identity;
+    use crate::data_plane::{ExitDataPlane, PrivateDataPlane};
 
     #[test]
     fn ensure_defaults_keeps_existing_public_identity_without_parsing_secret_key() {
@@ -1389,5 +1405,29 @@ mod tests {
             public_key_hex
         );
         assert_eq!(config.nostr.secret_key, "not-a-secret-key");
+    }
+
+    #[test]
+    fn data_plane_defaults_keep_existing_wireguard_runtime() {
+        let config = AppConfig::default();
+
+        assert_eq!(config.private_data_plane, PrivateDataPlane::WireGuard);
+        assert_eq!(config.exit_data_plane, ExitDataPlane::WireGuard);
+    }
+
+    #[test]
+    fn data_plane_config_deserializes_fips_private_mesh_with_wireguard_exit() {
+        let mut config: AppConfig = toml::from_str(
+            r#"
+private_data_plane = "fips"
+exit_data_plane = "wireguard"
+"#,
+        )
+        .expect("config should parse");
+
+        config.ensure_defaults();
+
+        assert_eq!(config.private_data_plane, PrivateDataPlane::Fips);
+        assert_eq!(config.exit_data_plane, ExitDataPlane::WireGuard);
     }
 }

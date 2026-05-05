@@ -51,6 +51,11 @@ pub(crate) async fn connect_session(args: ConnectArgs) -> Result<()> {
             "at least one participant must be configured before running connect"
         ));
     }
+    if app.private_mesh_uses_fips() {
+        return Err(anyhow!(
+            "private_data_plane=fips is parsed but the FIPS private mesh backend is not wired into the connect runtime yet"
+        ));
+    }
 
     let relays = resolve_relays(&args.relay, &app);
     let own_pubkey = app.own_nostr_pubkey_hex().ok();
