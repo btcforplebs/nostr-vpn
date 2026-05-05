@@ -70,15 +70,13 @@ fi
   --participant "$ALICE_NPUB" \
   --participant "$BOB_NPUB" \
   --relay "$RELAY_URL" \
-  --endpoint 10.203.0.10:51820 \
-  --tunnel-ip 10.44.0.10/32 >/dev/null
+  --endpoint 10.203.0.10:51820 >/dev/null
 
 "${COMPOSE[@]}" exec -T node-b nvpn set \
   --participant "$ALICE_NPUB" \
   --participant "$BOB_NPUB" \
   --relay "$RELAY_URL" \
-  --endpoint 10.203.0.11:51820 \
-  --tunnel-ip 10.44.0.11/32 >/dev/null
+  --endpoint 10.203.0.11:51820 >/dev/null
 
 "${COMPOSE[@]}" exec -d node-a sh -lc "nvpn connect > /tmp/connect.log 2>&1"
 "${COMPOSE[@]}" exec -d node-b sh -lc "nvpn connect > /tmp/connect.log 2>&1"
@@ -112,14 +110,24 @@ fi
 
 sleep 2
 
-if ! "${COMPOSE[@]}" exec -T node-a ping -c 3 -W 2 10.44.0.11 >/tmp/ping-a.log; then
+BOB_TUNNEL_IP="$("${COMPOSE[@]}" exec -T node-a nvpn ip --peer --discover-secs 0 | head -n1 | tr -d '\r')"
+ALICE_TUNNEL_IP="$("${COMPOSE[@]}" exec -T node-b nvpn ip --peer --discover-secs 0 | head -n1 | tr -d '\r')"
+
+if [[ -z "$BOB_TUNNEL_IP" || -z "$ALICE_TUNNEL_IP" ]]; then
+  echo "connect e2e failed: unable to resolve FIPS peer tunnel IPs" >&2
+  echo "$ALICE_CONNECT_LOGS"
+  echo "$BOB_CONNECT_LOGS"
+  exit 1
+fi
+
+if ! "${COMPOSE[@]}" exec -T node-a ping -c 3 -W 2 "$BOB_TUNNEL_IP" >/tmp/ping-a.log; then
   echo "connect e2e failed: ping A -> B failed" >&2
   echo "$ALICE_CONNECT_LOGS"
   echo "$BOB_CONNECT_LOGS"
   exit 1
 fi
 
-if ! "${COMPOSE[@]}" exec -T node-b ping -c 3 -W 2 10.44.0.10 >/tmp/ping-b.log; then
+if ! "${COMPOSE[@]}" exec -T node-b ping -c 3 -W 2 "$ALICE_TUNNEL_IP" >/tmp/ping-b.log; then
   echo "connect e2e failed: ping B -> A failed" >&2
   echo "$ALICE_CONNECT_LOGS"
   echo "$BOB_CONNECT_LOGS"
@@ -150,4 +158,4 @@ cat /tmp/ping-a.log
 echo "--- Ping B -> A ---"
 cat /tmp/ping-b.log
 
-echo "connect docker e2e passed: config-driven nvpn connect kept relays available while the boringtun tunnel stayed up"
+echo "connect docker e2e passed: config-driven nvpn connect established a FIPS private mesh and passed tunnel pings"

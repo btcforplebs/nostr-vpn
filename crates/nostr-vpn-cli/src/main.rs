@@ -1046,7 +1046,7 @@ async fn run_command(command: Command) -> Result<()> {
                         "private_data_plane": app.private_data_plane,
                         "exit_data_plane": app.exit_data_plane,
                         "node_id": app.node.id,
-                        "tunnel_ip": app.node.tunnel_ip,
+                        "tunnel_ip": runtime_local_tunnel_ip(&app, &network_id),
                         "endpoint": endpoint,
                         "configured_endpoint": app.node.endpoint,
                         "listen_port": listen_port,
@@ -1076,7 +1076,7 @@ async fn run_command(command: Command) -> Result<()> {
                 println!("private_data_plane: {}", app.private_data_plane);
                 println!("exit_data_plane: {}", app.exit_data_plane);
                 println!("node: {}", app.node.id);
-                println!("tunnel_ip: {}", app.node.tunnel_ip);
+                println!("tunnel_ip: {}", runtime_local_tunnel_ip(&app, &network_id));
                 println!("endpoint: {endpoint}");
                 println!("listen_port: {listen_port}");
                 if endpoint != app.node.endpoint {
@@ -1328,17 +1328,27 @@ async fn run_command(command: Command) -> Result<()> {
                 load_config_with_overrides(&config_path, args.network_id, args.participants)?;
 
             if !args.peer {
+                let tunnel_ip = runtime_local_tunnel_ip(&app, &network_id);
                 if args.json {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&json!({
                             "node_id": app.node.id,
-                            "tunnel_ip": app.node.tunnel_ip,
-                            "ip": strip_cidr(&app.node.tunnel_ip),
+                            "tunnel_ip": tunnel_ip,
+                            "ip": strip_cidr(&tunnel_ip),
                         }))?
                     );
                 } else {
-                    println!("{}", strip_cidr(&app.node.tunnel_ip));
+                    println!("{}", strip_cidr(&tunnel_ip));
+                }
+            } else if app.private_mesh_uses_fips() {
+                let peer_ips = runtime_peer_tunnel_ips(&app, &network_id);
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&peer_ips)?);
+                } else {
+                    for ip in peer_ips {
+                        println!("{}", strip_cidr(&ip));
+                    }
                 }
             } else {
                 let relays = resolve_relays(&args.relay, &app);
@@ -1577,6 +1587,29 @@ fn runtime_effective_advertised_routes(app: &AppConfig) -> Vec<String> {
         routes.retain(|route| !is_default_exit_node_route(route));
     }
     routes
+}
+
+fn runtime_local_tunnel_ip(app: &AppConfig, network_id: &str) -> String {
+    if app.private_mesh_uses_fips()
+        && let Ok(own_pubkey) = app.own_nostr_pubkey_hex()
+        && let Some(tunnel_ip) = derive_mesh_tunnel_ip(network_id, &own_pubkey)
+    {
+        return tunnel_ip;
+    }
+    app.node.tunnel_ip.clone()
+}
+
+fn runtime_peer_tunnel_ips(app: &AppConfig, network_id: &str) -> Vec<String> {
+    let own_pubkey = app.own_nostr_pubkey_hex().ok();
+    let mut ips = app
+        .participant_pubkeys_hex()
+        .into_iter()
+        .filter(|participant| Some(participant) != own_pubkey.as_ref())
+        .filter_map(|participant| derive_mesh_tunnel_ip(network_id, &participant))
+        .collect::<Vec<_>>();
+    ips.sort();
+    ips.dedup();
+    ips
 }
 
 #[cfg(all(

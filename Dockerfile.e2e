@@ -19,7 +19,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/nostr-vpn/target/release/nvpn /usr/local/bin/nvpn
-COPY --from=builder /app/nostr-vpn/target/release/nvpn-fips-probe /usr/local/bin/nvpn-fips-probe
 COPY --from=builder /app/nostr-vpn/target/release/nostr-vpn-relay /usr/local/bin/nostr-vpn-relay
 COPY --from=builder /app/nostr-vpn/target/release/nvpn-reflector /usr/local/bin/nvpn-reflector
 

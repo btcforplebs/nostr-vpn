@@ -17,6 +17,39 @@ macro_rules! current_fips_peer_statuses {
     };
 }
 
+#[cfg(feature = "embedded-fips")]
+fn fips_peer_count(
+    app: &AppConfig,
+    own_pubkey: Option<&str>,
+    peer_statuses: &[MeshPeerStatus],
+) -> usize {
+    let participant_pubkeys = app
+        .participant_pubkeys_hex()
+        .into_iter()
+        .collect::<HashSet<_>>();
+    peer_statuses
+        .iter()
+        .filter(|status| Some(status.pubkey.as_str()) != own_pubkey)
+        .filter(|status| participant_pubkeys.contains(&status.pubkey))
+        .filter(|status| status.connected)
+        .count()
+}
+
+#[cfg(feature = "embedded-fips")]
+fn maybe_log_fips_mesh_count(
+    app: &AppConfig,
+    own_pubkey: Option<&str>,
+    peer_statuses: &[MeshPeerStatus],
+    expected_peers: usize,
+    last_mesh_count: &mut usize,
+) {
+    let connected = fips_peer_count(app, own_pubkey, peer_statuses);
+    if connected != *last_mesh_count {
+        println!("mesh: {connected}/{expected_peers} peers with presence");
+        *last_mesh_count = connected;
+    }
+}
+
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn reset_tunnel_runtime_after_macos_underlay_repair(
     tunnel_runtime: &mut CliTunnelRuntime,
@@ -84,7 +117,7 @@ pub(crate) async fn connect_session(args: ConnectArgs) -> Result<()> {
     let iface = args.iface.clone();
     let mut tunnel_runtime = CliTunnelRuntime::new(iface.clone());
     #[cfg(feature = "embedded-fips")]
-    let fips_tunnel_runtime = if app.private_mesh_uses_fips() {
+    let mut fips_tunnel_runtime = if app.private_mesh_uses_fips() {
         let config = crate::fips_private_mesh::FipsPrivateTunnelConfig::from_app(
             &app,
             &network_id,
@@ -234,6 +267,21 @@ pub(crate) async fn connect_session(args: ConnectArgs) -> Result<()> {
                 }
             }
             _ = tunnel_heartbeat_interval.tick() => {
+                #[cfg(feature = "embedded-fips")]
+                if let Some(runtime) = fips_tunnel_runtime.as_mut() {
+                    let now = unix_timestamp();
+                    if let Err(error) = runtime.ping_peers(&network_id, now).await {
+                        eprintln!("fips: peer ping failed: {error}");
+                    }
+                    let _ = runtime.drain_events();
+                    maybe_log_fips_mesh_count(
+                        &app,
+                        own_pubkey.as_deref(),
+                        &runtime.peer_statuses(),
+                        expected_peers,
+                        &mut last_mesh_count,
+                    );
+                }
                 let peer_announcements = direct_peer_announcements(&presence, relay_connected);
                 if !relay_connected
                     && let Err(error) = maybe_run_nat_punch(
@@ -484,13 +532,15 @@ pub(crate) async fn connect_session(args: ConnectArgs) -> Result<()> {
                         magic_dns_runtime.as_ref(),
                     )
                     .context("failed to apply tunnel update after stale peer expiry")?;
-                    maybe_log_presence_mesh_count(
-                        &app,
-                        own_pubkey.as_deref(),
-                        presence.active(),
-                        expected_peers,
-                        &mut last_mesh_count,
-                    );
+                    if !app.private_mesh_uses_fips() {
+                        maybe_log_presence_mesh_count(
+                            &app,
+                            own_pubkey.as_deref(),
+                            presence.active(),
+                            expected_peers,
+                            &mut last_mesh_count,
+                        );
+                    }
                 }
                 if !relay_connected {
                     continue;
@@ -648,13 +698,15 @@ pub(crate) async fn connect_session(args: ConnectArgs) -> Result<()> {
                     eprintln!("signal: targeted private announce failed: {error}");
                 }
 
-                maybe_log_presence_mesh_count(
-                    &app,
-                    own_pubkey.as_deref(),
-                    presence.active(),
-                    expected_peers,
-                    &mut last_mesh_count,
-                );
+                if !app.private_mesh_uses_fips() {
+                    maybe_log_presence_mesh_count(
+                        &app,
+                        own_pubkey.as_deref(),
+                        presence.active(),
+                        expected_peers,
+                        &mut last_mesh_count,
+                    );
+                }
             }
         }
     }
