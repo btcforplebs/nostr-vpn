@@ -35,7 +35,6 @@ final class AppManager: ObservableObject {
     private var copyClearTask: Task<Void, Never>?
     private var serviceSettlementTask: Task<Void, Never>?
     private var updateTask: Task<Void, Never>?
-    private var promptedServiceRepairKeys: Set<String> = []
     private var startupUrlsDrained = false
     private var startupUpdateCheckDone = false
     private var updateAssetUrl: URL?
@@ -202,20 +201,7 @@ final class AppManager: ObservableObject {
             return
         }
         inviteInput = trimmed
-        guard let preview = InvitePreview(invite: trimmed) else {
-            performImportInvite(trimmed)
-            return
-        }
-
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "Import \(preview.title)"
-        alert.informativeText = preview.detail
-        alert.addButton(withTitle: "Import")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            performImportInvite(trimmed)
-        }
+        performImportInvite(trimmed)
     }
 
     private func performImportInvite(_ invite: String) {
@@ -577,19 +563,8 @@ final class AppManager: ObservableObject {
         guard Self.serviceRepairRecommended(in: nextState), !actionInFlight else {
             return
         }
-        let key = "\(nextState.serviceBinaryVersion)->\(nextState.appVersion)"
-        guard !promptedServiceRepairKeys.contains(key) else {
-            return
-        }
-        promptedServiceRepairKeys.insert(key)
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Repair background service"
-        alert.informativeText = "Service \(nextState.serviceBinaryVersion), app \(nextState.appVersion)"
-        alert.addButton(withTitle: "Repair")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            installService()
+        if actionStatus.isEmpty {
+            actionStatus = "Background service needs repair"
         }
     }
 
@@ -658,41 +633,6 @@ enum UpdateError: LocalizedError {
             return "Downloaded update did not contain Nostr VPN.app."
         }
     }
-}
-
-struct InvitePreview {
-    let title: String
-    let detail: String
-
-    init?(invite: String) {
-        guard let object = parseInviteObject(invite) else {
-            return nil
-        }
-        let networkId = (object["networkId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !networkId.isEmpty else {
-            return nil
-        }
-        let networkName = (object["networkName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let admins = object["admins"] as? [Any] ?? []
-        self.title = networkName.isEmpty ? networkId : networkName
-        self.detail = "Mesh \(networkId)\nAdmins \(admins.count)"
-    }
-}
-
-private func parseInviteObject(_ invite: String) -> [String: Any]? {
-    let trimmed = invite.trimmingCharacters(in: .whitespacesAndNewlines)
-    let data: Data?
-    if trimmed.starts(with: "{") {
-        data = trimmed.data(using: .utf8)
-    } else {
-        let encoded = trimmed.replacingOccurrences(of: "nvpn://invite/", with: "")
-        data = Data(base64UrlEncoded: encoded)
-    }
-    guard let data,
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        return nil
-    }
-    return object
 }
 
 private func queryValue(_ name: String, in url: URL) -> String? {
@@ -820,19 +760,6 @@ private func updateInstallScript() throws -> URL {
     try contents.write(to: script, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
     return script
-}
-
-private extension Data {
-    init?(base64UrlEncoded value: String) {
-        var normalized = value
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        let remainder = normalized.count % 4
-        if remainder > 0 {
-            normalized += String(repeating: "=", count: 4 - remainder)
-        }
-        self.init(base64Encoded: normalized)
-    }
 }
 
 func settingsPatch(
