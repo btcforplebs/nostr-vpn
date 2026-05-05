@@ -21,6 +21,7 @@ import {
   androidReleaseAssetName,
   autoDetectWindowsVmName,
   buildReleaseManifest,
+  linuxReleaseTargetsForDockerPlatform,
   normalizeTag,
   parseEnvFile,
   readWorkspaceVersionTag,
@@ -72,6 +73,7 @@ Options:
   --env-file <path>        Extra dotenv file to load (repeatable)
   --only <csv>             Limit steps to verify,macos,android,linux,windows
   --skip <csv>             Skip steps by name
+  --allow-partial          Stage/publish even if a selected platform build fails
   --allow-unsigned-macos   Build the macOS app without signing when local signing inputs are unavailable
   --help                   Show this help
 
@@ -91,6 +93,7 @@ function parseArgs(argv) {
     envFiles: [],
     only: null,
     skip: new Set(),
+    allowPartial: false,
     allowUnsignedMacos: false,
   }
 
@@ -132,6 +135,9 @@ function parseArgs(argv) {
         for (const value of splitCsv(argv[++index] ?? '')) {
           options.skip.add(value)
         }
+        break
+      case '--allow-partial':
+        options.allowPartial = true
         break
       case '--allow-unsigned-macos':
         options.allowUnsignedMacos = true
@@ -702,7 +708,19 @@ function buildLinuxArtifacts({ env, tag, dryRun, builtLines }) {
     throw new SkipStepError('Skipping Linux artifacts because docker is not on PATH.')
   }
 
-  const platform = env.NVPN_LINUX_DOCKER_PLATFORM || 'linux/amd64'
+  // Default to the host arch so docker doesn't run x86_64 under QEMU
+  // (tauri-cli panics under emulation: Option::unwrap on None at
+  // rust.rs:1142 → SIGABRT). Apple Silicon hosts get a native arm64
+  // build; x86_64 hosts get amd64. Override with NVPN_LINUX_DOCKER_PLATFORM
+  // if you need a different target and have working emulation or a
+  // native cross host.
+  const hostPlatform = process.arch === 'arm64' ? 'linux/arm64' : 'linux/amd64'
+  const platform = env.NVPN_LINUX_DOCKER_PLATFORM || hostPlatform
+  const {
+    linuxArchSuffix,
+    muslTriple,
+  } = linuxReleaseTargetsForDockerPlatform(platform)
+
   const imageName = 'nostr-vpn-linux-release'
   run(
     'docker',
@@ -710,9 +728,9 @@ function buildLinuxArtifacts({ env, tag, dryRun, builtLines }) {
     { cwd: repoRoot, dryRun },
   )
 
-  const linuxAppImageName = `nostr-vpn-${tag}-linux-x64.AppImage`
-  const linuxDebName = `nostr-vpn-${tag}-linux-x64.deb`
-  const linuxCliTarball = `nvpn-${tag}-x86_64-unknown-linux-musl.tar.gz`
+  const linuxAppImageName = `nostr-vpn-${tag}-linux-${linuxArchSuffix}.AppImage`
+  const linuxDebName = `nostr-vpn-${tag}-linux-${linuxArchSuffix}.deb`
+  const linuxCliTarball = `nvpn-${tag}-${muslTriple}.tar.gz`
 
   if (!dryRun) {
     rmSync(join(distDir, linuxAppImageName), { force: true })
@@ -728,14 +746,15 @@ function buildLinuxArtifacts({ env, tag, dryRun, builtLines }) {
   // (the bind-mounted host repo).
   const innerScript = [
     'set -euo pipefail',
+    `rustup target add ${muslTriple}`,
     'rsync -a --exclude node_modules --exclude target --exclude dist --exclude .git /work/ /build/',
     'cd /build',
     'pnpm --dir crates/nostr-vpn-gui install --frozen-lockfile',
     'pnpm --dir crates/nostr-vpn-gui exec tauri build --bundles appimage,deb --ci',
     `cp "$(ls -1t target/release/bundle/appimage/*.AppImage | head -1)" "/work/dist/${linuxAppImageName}"`,
     `cp "$(ls -1t target/release/bundle/deb/*.deb | head -1)" "/work/dist/${linuxDebName}"`,
-    'cargo build --release --target x86_64-unknown-linux-musl -p nostr-vpn-cli',
-    `tar -czf "/work/dist/${linuxCliTarball}" -C target/x86_64-unknown-linux-musl/release nvpn`,
+    `cargo build --release --target ${muslTriple} -p nostr-vpn-cli`,
+    `tar -czf "/work/dist/${linuxCliTarball}" -C target/${muslTriple}/release nvpn`,
   ].join(' && ')
 
   if (!dryRun) {
@@ -763,7 +782,7 @@ function buildLinuxArtifacts({ env, tag, dryRun, builtLines }) {
     { dryRun },
   )
 
-  builtLines.push(`Built Linux x64 AppImage, deb, and musl CLI in Docker (${platform}).`)
+  builtLines.push(`Built Linux ${linuxArchSuffix} AppImage, deb, and musl CLI in Docker (${platform}).`)
 }
 
 function ensureAndroidSdkEnv(env) {
@@ -1170,6 +1189,7 @@ function main() {
   const builtLines = []
   const skippedLines = []
   const allowUnsignedMacos = options.allowUnsignedMacos || envFlagEnabled(env.NVPN_ALLOW_UNSIGNED_MACOS)
+  const allowPartial = options.allowPartial || envFlagEnabled(env.NVPN_RELEASE_ALLOW_PARTIAL)
   const publishZapstore = options.publishZapstore || envFlagEnabled(env.NVPN_PUBLISH_ZAPSTORE)
 
   console.log(`Release tag: ${tag}`)
@@ -1217,7 +1237,11 @@ function main() {
       if (name === 'verify') {
         throw error
       }
-      skippedLines.push(`${name} build failed: ${error.message}`)
+      const failure = `${name} build failed: ${error.message}`
+      skippedLines.push(failure)
+      if (!allowPartial) {
+        throw new Error(`${failure}\nPass --allow-partial or set NVPN_RELEASE_ALLOW_PARTIAL=1 to stage/publish without this artifact.`)
+      }
     }
   }
 

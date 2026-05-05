@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 0.3.23 - 2026-05-05
+
+Changes since `0.3.22` earlier on 2026-05-05.
+
+### Fixed
+
+- Linux Docker step now defaults to the host architecture (`linux/arm64` on Apple Silicon, `linux/amd64` on Intel) instead of forcing `linux/amd64`. The forced cross caused Docker to run an emulated x86_64 image under QEMU on Apple Silicon, where tauri-cli panicked with `Option::unwrap on None at rust.rs:1142` → SIGABRT during the AppImage/deb bundle step. Native-arch builds skip QEMU entirely. Override is still available via `NVPN_LINUX_DOCKER_PLATFORM` for hosts with a real x86_64 environment that want cross-arch artifacts.
+- Linux artifact filenames now match the actual built arch — `*-linux-arm64.AppImage` / `*-linux-arm64.deb` and `nvpn-*-aarch64-unknown-linux-musl.tar.gz` on arm64 hosts, the `x64` / `x86_64` equivalents on amd64. Previously the script always wrote `-linux-x64` regardless of what was built.
+- Linux AppImage bundling now has `xdg-mime` available in the Docker image via `xdg-utils`; Tauri's bundler calls it while assembling the AppImage.
+- Local release now fails on selected platform build failures by default instead of publishing partial releases with missing assets. Use `--allow-partial` / `NVPN_RELEASE_ALLOW_PARTIAL=1` only when that is intentional.
+
+### Changed
+
+- `Dockerfile.linux-release`: dropped the hardcoded `rustup target add x86_64-unknown-linux-musl` so the inner build script adds whichever musl target matches the running arch. Added `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc` so aarch64 musl builds link cleanly with the same toolchain.
+
 ## 0.3.22 - 2026-05-05
 
 Changes since `0.3.21` earlier on 2026-05-05.

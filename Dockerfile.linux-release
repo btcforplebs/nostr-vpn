@@ -1,7 +1,7 @@
 FROM rust:1.93-bookworm
 
 # Tauri/GTK desktop deps for AppImage + deb bundling, plus musl-tools so the
-# CLI can be built as a static x86_64-unknown-linux-musl tarball alongside.
+# CLI can be built as a static musl tarball for the container architecture.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates \
@@ -18,14 +18,18 @@ RUN apt-get update \
       patchelf \
       pkg-config \
       rsync \
+      xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /build
 
 RUN npm install -g pnpm@10
-RUN rustup target add x86_64-unknown-linux-musl
 
+# musl-gcc is the only musl linker apt provides; it works for both
+# x86_64-unknown-linux-musl and aarch64-unknown-linux-musl when the
+# container's host arch matches the cargo --target.
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
 ENV PATH="/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 WORKDIR /work

@@ -47,6 +47,31 @@ export function splitCsv(value) {
     .filter(Boolean)
 }
 
+export function linuxReleaseTargetsForDockerPlatform(platform) {
+  const normalized = String(platform || '').trim()
+  const match = normalized.match(/^linux\/([^/]+)(?:\/[^/]+)?$/)
+  if (!match) {
+    throw new Error(`Unsupported Linux Docker platform: ${normalized || '<empty>'}`)
+  }
+
+  const dockerArch = match[1]
+  if (dockerArch === 'arm64' || dockerArch === 'aarch64') {
+    return {
+      linuxArchSuffix: 'arm64',
+      muslTriple: 'aarch64-unknown-linux-musl',
+    }
+  }
+
+  if (dockerArch === 'amd64' || dockerArch === 'x86_64') {
+    return {
+      linuxArchSuffix: 'x64',
+      muslTriple: 'x86_64-unknown-linux-musl',
+    }
+  }
+
+  throw new Error(`Unsupported Linux Docker architecture: ${dockerArch}`)
+}
+
 export function readWorkspaceVersionTag(cargoTomlText) {
   const match = cargoTomlText.match(
     /^\[workspace\.package\][\s\S]*?^version\s*=\s*"([^"\n]+)"/m,
@@ -121,6 +146,12 @@ export function describeAsset(name) {
   }
   if (/^nostr-vpn-.*-linux-x64\.deb$/.test(name)) {
     return 'Linux x64 Debian package'
+  }
+  if (/^nostr-vpn-.*-linux-arm64\.AppImage$/.test(name)) {
+    return 'Linux ARM64 AppImage'
+  }
+  if (/^nostr-vpn-.*-linux-arm64\.deb$/.test(name)) {
+    return 'Linux ARM64 Debian package'
   }
   if (/^nostr-vpn-.*-windows-x64-setup\.exe$/.test(name)) {
     return 'Windows x64 installer'

@@ -10,6 +10,7 @@ import {
   buildReleaseManifest,
   describeAsset,
   extractChangelogSection,
+  linuxReleaseTargetsForDockerPlatform,
   parseEnvFile,
   readWorkspaceVersionTag,
   renderReleaseNotes,
@@ -53,6 +54,25 @@ version = "0.2.27"
   assert.equal(tag, 'v0.2.27')
 })
 
+test('linuxReleaseTargetsForDockerPlatform maps Docker platforms to release targets', () => {
+  assert.deepEqual(linuxReleaseTargetsForDockerPlatform('linux/arm64'), {
+    linuxArchSuffix: 'arm64',
+    muslTriple: 'aarch64-unknown-linux-musl',
+  })
+  assert.deepEqual(linuxReleaseTargetsForDockerPlatform('linux/arm64/v8'), {
+    linuxArchSuffix: 'arm64',
+    muslTriple: 'aarch64-unknown-linux-musl',
+  })
+  assert.deepEqual(linuxReleaseTargetsForDockerPlatform('linux/amd64'), {
+    linuxArchSuffix: 'x64',
+    muslTriple: 'x86_64-unknown-linux-musl',
+  })
+  assert.throws(
+    () => linuxReleaseTargetsForDockerPlatform('linux/arm/v7'),
+    /Unsupported Linux Docker architecture/,
+  )
+})
+
 test('autoDetectWindowsVmName returns the only running Windows VM', () => {
   const name = autoDetectWindowsVmName(`
 UUID                                    STATUS       IP_ADDR         NAME
@@ -80,6 +100,18 @@ test('describeAsset maps release filenames to readable labels', () => {
   assert.equal(
     describeAsset('nvpn-v0.2.27-aarch64-pc-windows-msvc.zip'),
     'Windows ARM64 CLI',
+  )
+  assert.equal(
+    describeAsset('nostr-vpn-v0.3.23-linux-arm64.AppImage'),
+    'Linux ARM64 AppImage',
+  )
+  assert.equal(
+    describeAsset('nostr-vpn-v0.3.23-linux-arm64.deb'),
+    'Linux ARM64 Debian package',
+  )
+  assert.equal(
+    describeAsset('nvpn-v0.3.23-aarch64-unknown-linux-musl.tar.gz'),
+    'Linux ARM64 CLI (versioned)',
   )
 })
 
