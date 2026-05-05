@@ -4,6 +4,7 @@ import SwiftUI
 @main
 struct NostrVpnMacApp: App {
     @StateObject private var manager = AppManager()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) private var openWindow
 
@@ -12,6 +13,7 @@ struct NostrVpnMacApp: App {
             RootView(manager: manager)
                 .frame(minWidth: 880, minHeight: 620)
                 .onAppear {
+                    appDelegate.configure(manager: manager)
                     manager.start()
                 }
                 .onOpenURL { url in
@@ -29,6 +31,7 @@ struct NostrVpnMacApp: App {
         MenuBarExtra("Nostr VPN", systemImage: manager.state.sessionActive ? "network" : "network.slash") {
             StatusMenuView(manager: manager) {
                 openWindow(id: "main")
+                appDelegate.showMainWindow()
                 NSApp.activate(ignoringOtherApps: true)
             }
         }

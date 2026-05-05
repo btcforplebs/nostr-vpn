@@ -1,5 +1,6 @@
 import AppKit
 import CoreImage
+import Darwin
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -11,10 +12,35 @@ final class AppManager: ObservableObject {
     @Published private(set) var actionStatus = ""
     @Published private(set) var copiedValue: CopyValue?
     @Published private(set) var copiedPeerNpub: String?
+    @Published private(set) var serviceSettling = false
+    @Published private(set) var updateChecking = false
+    @Published private(set) var updateInstalling = false
+    @Published private(set) var updateAvailable = false
+    @Published private(set) var updateVersion = ""
+    @Published private(set) var updateStatus = ""
+    @Published var autoCheckUpdates = UserDefaults.standard.object(forKey: "updates.autoCheck") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(autoCheckUpdates, forKey: "updates.autoCheck")
+        }
+    }
+    @Published var autoInstallUpdates = UserDefaults.standard.bool(forKey: "updates.autoInstall") {
+        didSet {
+            UserDefaults.standard.set(autoInstallUpdates, forKey: "updates.autoInstall")
+        }
+    }
+    @Published var inviteInput = ""
 
     private let app: FfiApp
     private var refreshTask: Task<Void, Never>?
     private var copyClearTask: Task<Void, Never>?
+    private var serviceSettlementTask: Task<Void, Never>?
+    private var updateTask: Task<Void, Never>?
+    private var promptedServiceRepairKeys: Set<String> = []
+    private var startupUrlsDrained = false
+    private var startupUpdateCheckDone = false
+    private var updateAssetUrl: URL?
+    private let updateManifestUrl = URL(string: "https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases/nostr-vpn/latest/release.json")!
+    let launchedHidden: Bool
 
     init() {
         let dataDir = FileManager.default
@@ -26,6 +52,8 @@ final class AppManager: ObservableObject {
         let app = FfiApp(dataDir: dataDir, appVersion: version)
         self.app = app
         self.state = app.state()
+        self.launchedHidden = CommandLine.arguments.contains("--autostart")
+            || ProcessInfo.processInfo.environment["NVPN_AUTOSTART"] == "1"
     }
 
     var activeNetwork: NativeNetworkState? {
@@ -36,7 +64,16 @@ final class AppManager: ObservableObject {
         state.networks.filter { !$0.enabled }
     }
 
+    var serviceRepairRecommended: Bool {
+        Self.serviceRepairRecommended(in: state)
+    }
+
     func start() {
+        drainStartupUrls()
+        if autoCheckUpdates && !startupUpdateCheckDone {
+            startupUpdateCheckDone = true
+            checkForUpdates(manual: false)
+        }
         guard refreshTask == nil else {
             return
         }
@@ -56,11 +93,12 @@ final class AppManager: ObservableObject {
             }.value
             await MainActor.run {
                 self.state = nextState
+                self.maybePromptServiceRepair(nextState)
             }
         }
     }
 
-    func dispatch(_ action: NativeAppAction, status: String = "") {
+    func dispatch(_ action: NativeAppAction, status: String = "", settleService: Bool = false) {
         guard !actionInFlight else {
             return
         }
@@ -75,6 +113,10 @@ final class AppManager: ObservableObject {
                 self.state = nextState
                 self.actionInFlight = false
                 self.actionStatus = nextState.error.isEmpty ? "" : nextState.error
+                self.maybePromptServiceRepair(nextState)
+                if settleService {
+                    self.startServiceSettlementPolling()
+                }
             }
         }
     }
@@ -116,9 +158,32 @@ final class AppManager: ObservableObject {
     func handle(url: URL) {
         let raw = url.absoluteString
         if raw.starts(with: "nvpn://invite/") {
-            importInvite(raw)
-        } else if raw.starts(with: "nvpn://debug/tick") {
+            confirmAndImportInvite(raw)
+            return
+        }
+
+        guard url.scheme == "nvpn", url.host == "debug" else {
+            return
+        }
+        let action = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        switch action {
+        case "tick":
             dispatch(.tick, status: "Refreshing")
+        case "request-join":
+            let networkId = queryValue("networkId", in: url) ?? queryValue("network", in: url) ?? activeNetwork?.id
+            if let networkId {
+                requestNetworkJoin(networkId: networkId)
+            }
+        case "accept-join":
+            let networkId = queryValue("networkId", in: url) ?? queryValue("network", in: url) ?? activeNetwork?.id
+            let requester = queryValue("requester", in: url)
+                ?? queryValue("requesterNpub", in: url)
+                ?? activeNetwork?.inboundJoinRequests.first?.requesterNpub
+            if let networkId, let requester {
+                acceptJoinRequest(networkId: networkId, requesterNpub: requester)
+            }
+        default:
+            break
         }
     }
 
@@ -127,7 +192,34 @@ final class AppManager: ObservableObject {
         guard !trimmed.isEmpty else {
             return
         }
-        dispatch(.importNetworkInvite(invite: trimmed), status: "Importing invite")
+        inviteInput = trimmed
+        confirmAndImportInvite(trimmed)
+    }
+
+    private func confirmAndImportInvite(_ invite: String) {
+        let trimmed = invite.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        inviteInput = trimmed
+        guard let preview = InvitePreview(invite: trimmed) else {
+            performImportInvite(trimmed)
+            return
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Import \(preview.title)"
+        alert.informativeText = preview.detail
+        alert.addButton(withTitle: "Import")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            performImportInvite(trimmed)
+        }
+    }
+
+    private func performImportInvite(_ invite: String) {
+        dispatch(.importNetworkInvite(invite: invite), status: "Importing invite")
     }
 
     func chooseInviteQrImage() {
@@ -180,7 +272,12 @@ final class AppManager: ObservableObject {
     }
 
     func setLaunchOnStartup(_ enabled: Bool) {
-        dispatch(.updateSettings(patch: settingsPatch(launchOnStartup: enabled)), status: "Saving startup option")
+        do {
+            try configureLaunchAgent(enabled: enabled)
+            dispatch(.updateSettings(patch: settingsPatch(launchOnStartup: enabled)), status: "Saving startup option")
+        } catch {
+            actionStatus = error.localizedDescription
+        }
     }
 
     func setCloseToTray(_ enabled: Bool) {
@@ -274,19 +371,19 @@ final class AppManager: ObservableObject {
     }
 
     func installService() {
-        dispatch(.installSystemService, status: "Installing service")
+        dispatch(.installSystemService, status: "Installing service", settleService: true)
     }
 
     func enableService() {
-        dispatch(.enableSystemService, status: "Enabling service")
+        dispatch(.enableSystemService, status: "Enabling service", settleService: true)
     }
 
     func disableService() {
-        dispatch(.disableSystemService, status: "Disabling service")
+        dispatch(.disableSystemService, status: "Disabling service", settleService: true)
     }
 
     func uninstallService() {
-        dispatch(.uninstallSystemService, status: "Uninstalling service")
+        dispatch(.uninstallSystemService, status: "Uninstalling service", settleService: true)
     }
 
     func startLanPairing() {
@@ -295,6 +392,83 @@ final class AppManager: ObservableObject {
 
     func stopLanPairing() {
         dispatch(.stopLanPairing, status: "Stopping LAN pairing")
+    }
+
+    func checkForUpdates(manual: Bool = true) {
+        guard !updateChecking else {
+            return
+        }
+        updateTask?.cancel()
+        updateChecking = true
+        if manual {
+            updateStatus = "Checking for updates"
+        }
+        updateTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            do {
+                let manifestUrl = await MainActor.run { self.updateManifestUrl }
+                let (data, _) = try await URLSession.shared.data(from: manifestUrl)
+                let manifest = try JSONDecoder().decode(ReleaseManifest.self, from: data)
+                let currentVersion = await MainActor.run { self.state.appVersion }
+                let asset = manifest.preferredMacAsset()
+                let assetUrl = asset.flatMap { URL(string: $0.path, relativeTo: manifestUrl)?.absoluteURL }
+                let isNewer = versionIsNewer(manifest.tag, than: currentVersion)
+                await MainActor.run {
+                    self.updateChecking = false
+                    self.updateAvailable = isNewer
+                    self.updateVersion = manifest.tag
+                    self.updateAssetUrl = isNewer ? assetUrl : nil
+                    if isNewer {
+                        self.updateStatus = assetUrl == nil ? "Update \(manifest.tag) found without a macOS asset" : "Update \(manifest.tag) available"
+                        if self.autoInstallUpdates, assetUrl != nil {
+                            self.installUpdate()
+                        }
+                    } else if manual {
+                        self.updateStatus = "Up to date"
+                    } else {
+                        self.updateStatus = ""
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.updateChecking = false
+                    if manual {
+                        self.updateStatus = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+
+    func installUpdate() {
+        guard let updateAssetUrl else {
+            updateStatus = "No macOS update asset found"
+            return
+        }
+        guard !updateInstalling else {
+            return
+        }
+        updateInstalling = true
+        updateStatus = "Downloading \(updateVersion)"
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+            do {
+                let (downloadedUrl, _) = try await URLSession.shared.download(from: updateAssetUrl)
+                let savedUrl = try moveDownloadedUpdate(downloadedUrl, from: updateAssetUrl)
+                try await MainActor.run {
+                    try self.installDownloadedUpdate(savedUrl)
+                }
+            } catch {
+                await MainActor.run {
+                    self.updateInstalling = false
+                    self.updateStatus = error.localizedDescription
+                }
+            }
+        }
     }
 
     private func decodeQrCode(from url: URL) throws -> String {
@@ -316,6 +490,131 @@ final class AppManager: ObservableObject {
         }
         throw QrImportError.noQrCode
     }
+
+    private func drainStartupUrls() {
+        guard !startupUrlsDrained else {
+            return
+        }
+        startupUrlsDrained = true
+        for argument in CommandLine.arguments where argument.starts(with: "nvpn://") {
+            if let url = URL(string: argument) {
+                handle(url: url)
+            }
+        }
+    }
+
+    private func configureLaunchAgent(enabled: Bool) throws {
+        let manager = FileManager.default
+        let agentsDir = manager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+        let plistUrl = agentsDir.appendingPathComponent("to.iris.nvpn.macos.plist")
+        if enabled {
+            guard let executable = Bundle.main.executableURL?.path else {
+                throw LaunchAgentError.missingExecutable
+            }
+            try manager.createDirectory(at: agentsDir, withIntermediateDirectories: true)
+            try launchAgentPlist(executable: executable).write(to: plistUrl, atomically: true, encoding: .utf8)
+            _ = runLaunchctl(["bootstrap", "gui/\(getuid())", plistUrl.path])
+        } else {
+            _ = runLaunchctl(["bootout", "gui/\(getuid())", plistUrl.path])
+            if manager.fileExists(atPath: plistUrl.path) {
+                try manager.removeItem(at: plistUrl)
+            }
+        }
+    }
+
+    private func installDownloadedUpdate(_ archiveUrl: URL) throws {
+        updateStatus = "Installing \(updateVersion)"
+        if archiveUrl.lastPathComponent.hasSuffix(".app.tar.gz") {
+            let unpackDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("NostrVpnUpdate-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: unpackDir, withIntermediateDirectories: true)
+            try runProcess("/usr/bin/tar", arguments: ["-xzf", archiveUrl.path, "-C", unpackDir.path])
+            guard let newApp = findAppBundle(in: unpackDir) else {
+                throw UpdateError.missingAppBundle
+            }
+            let script = try updateInstallScript()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = [script.path, Bundle.main.bundleURL.path, newApp.path]
+            try process.run()
+            NSApp.terminate(nil)
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([archiveUrl])
+            updateInstalling = false
+            updateStatus = "Downloaded \(archiveUrl.lastPathComponent)"
+        }
+    }
+
+    private func startServiceSettlementPolling() {
+        serviceSettlementTask?.cancel()
+        serviceSettling = true
+        serviceSettlementTask = Task { [weak self] in
+            for _ in 0..<8 {
+                guard !Task.isCancelled else {
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                guard let self else {
+                    return
+                }
+                let app = await MainActor.run { self.app }
+                let nextState = await Task.detached {
+                    app.refresh()
+                }.value
+                await MainActor.run {
+                    self.state = nextState
+                    self.maybePromptServiceRepair(nextState)
+                }
+            }
+            await MainActor.run {
+                self?.serviceSettling = false
+            }
+        }
+    }
+
+    private func maybePromptServiceRepair(_ nextState: NativeAppState) {
+        guard Self.serviceRepairRecommended(in: nextState), !actionInFlight else {
+            return
+        }
+        let key = "\(nextState.serviceBinaryVersion)->\(nextState.appVersion)"
+        guard !promptedServiceRepairKeys.contains(key) else {
+            return
+        }
+        promptedServiceRepairKeys.insert(key)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Repair background service"
+        alert.informativeText = "Service \(nextState.serviceBinaryVersion), app \(nextState.appVersion)"
+        alert.addButton(withTitle: "Repair")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            installService()
+        }
+    }
+
+    private static func serviceRepairRecommended(in state: NativeAppState) -> Bool {
+        state.serviceInstalled
+            && !state.serviceBinaryVersion.isEmpty
+            && !state.appVersion.isEmpty
+            && state.serviceBinaryVersion != state.appVersion
+    }
+}
+
+struct ReleaseManifest: Decodable {
+    let tag: String
+    let assets: [ReleaseAsset]
+
+    func preferredMacAsset() -> ReleaseAsset? {
+        assets.first { $0.name.hasSuffix("-macos-arm64.app.tar.gz") }
+            ?? assets.first { $0.name.hasSuffix("-macos-arm64.zip") }
+            ?? assets.first { $0.name.hasSuffix("-macos-arm64.dmg") }
+    }
+}
+
+struct ReleaseAsset: Decodable {
+    let name: String
+    let path: String
 }
 
 enum CopyValue {
@@ -336,6 +635,203 @@ enum QrImportError: LocalizedError {
         case .noQrCode:
             return "No QR invite was found in the selected image."
         }
+    }
+}
+
+enum LaunchAgentError: LocalizedError {
+    case missingExecutable
+
+    var errorDescription: String? {
+        switch self {
+        case .missingExecutable:
+            return "App executable was not found."
+        }
+    }
+}
+
+enum UpdateError: LocalizedError {
+    case missingAppBundle
+
+    var errorDescription: String? {
+        switch self {
+        case .missingAppBundle:
+            return "Downloaded update did not contain Nostr VPN.app."
+        }
+    }
+}
+
+struct InvitePreview {
+    let title: String
+    let detail: String
+
+    init?(invite: String) {
+        guard let object = parseInviteObject(invite) else {
+            return nil
+        }
+        let networkId = (object["networkId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !networkId.isEmpty else {
+            return nil
+        }
+        let networkName = (object["networkName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let admins = object["admins"] as? [Any] ?? []
+        self.title = networkName.isEmpty ? networkId : networkName
+        self.detail = "Mesh \(networkId)\nAdmins \(admins.count)"
+    }
+}
+
+private func parseInviteObject(_ invite: String) -> [String: Any]? {
+    let trimmed = invite.trimmingCharacters(in: .whitespacesAndNewlines)
+    let data: Data?
+    if trimmed.starts(with: "{") {
+        data = trimmed.data(using: .utf8)
+    } else {
+        let encoded = trimmed.replacingOccurrences(of: "nvpn://invite/", with: "")
+        data = Data(base64UrlEncoded: encoded)
+    }
+    guard let data,
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return nil
+    }
+    return object
+}
+
+private func queryValue(_ name: String, in url: URL) -> String? {
+    URLComponents(url: url, resolvingAgainstBaseURL: false)?
+        .queryItems?
+        .first(where: { $0.name == name })?
+        .value?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func launchAgentPlist(executable: String) -> String {
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>Label</key>
+        <string>to.iris.nvpn.macos</string>
+        <key>ProgramArguments</key>
+        <array>
+            <string>\(xmlEscaped(executable))</string>
+            <string>--autostart</string>
+        </array>
+        <key>RunAtLoad</key>
+        <true/>
+    </dict>
+    </plist>
+    """
+}
+
+private func xmlEscaped(_ value: String) -> String {
+    value
+        .replacingOccurrences(of: "&", with: "&amp;")
+        .replacingOccurrences(of: "<", with: "&lt;")
+        .replacingOccurrences(of: ">", with: "&gt;")
+        .replacingOccurrences(of: "\"", with: "&quot;")
+}
+
+private func runLaunchctl(_ arguments: [String]) -> Bool {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    process.arguments = arguments
+    do {
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    } catch {
+        return false
+    }
+}
+
+private func moveDownloadedUpdate(_ downloadedUrl: URL, from assetUrl: URL) throws -> URL {
+    let fileName = assetUrl.lastPathComponent.isEmpty ? "nostr-vpn-update" : assetUrl.lastPathComponent
+    let destination = FileManager.default.temporaryDirectory
+        .appendingPathComponent("NostrVpnDownloads", isDirectory: true)
+        .appendingPathComponent(fileName)
+    try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+    if FileManager.default.fileExists(atPath: destination.path) {
+        try FileManager.default.removeItem(at: destination)
+    }
+    try FileManager.default.moveItem(at: downloadedUrl, to: destination)
+    return destination
+}
+
+private func versionIsNewer(_ candidate: String, than current: String) -> Bool {
+    let left = versionParts(candidate)
+    let right = versionParts(current)
+    for index in 0..<max(left.count, right.count) {
+        let leftValue = index < left.count ? left[index] : 0
+        let rightValue = index < right.count ? right[index] : 0
+        if leftValue != rightValue {
+            return leftValue > rightValue
+        }
+    }
+    return false
+}
+
+private func versionParts(_ value: String) -> [Int] {
+    value
+        .trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
+        .split { !$0.isNumber }
+        .map { Int($0) ?? 0 }
+}
+
+private func runProcess(_ executable: String, arguments: [String]) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    try process.run()
+    process.waitUntilExit()
+    if process.terminationStatus != 0 {
+        throw CocoaError(.executableLoad)
+    }
+}
+
+private func findAppBundle(in directory: URL) -> URL? {
+    guard let enumerator = FileManager.default.enumerator(
+        at: directory,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+    ) else {
+        return nil
+    }
+    for case let url as URL in enumerator where url.pathExtension == "app" {
+        if url.lastPathComponent == "Nostr VPN.app" || url.lastPathComponent == "NostrVpnMac.app" {
+            return url
+        }
+    }
+    return nil
+}
+
+private func updateInstallScript() throws -> URL {
+    let script = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nostr-vpn-install-update-\(UUID().uuidString).sh")
+    let contents = """
+    #!/bin/sh
+    set -eu
+    current_app="$1"
+    new_app="$2"
+    sleep 1
+    rm -rf "$current_app"
+    ditto "$new_app" "$current_app"
+    open "$current_app"
+    """
+    try contents.write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    return script
+}
+
+private extension Data {
+    init?(base64UrlEncoded value: String) {
+        var normalized = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let remainder = normalized.count % 4
+        if remainder > 0 {
+            normalized += String(repeating: "=", count: 4 - remainder)
+        }
+        self.init(base64Encoded: normalized)
     }
 }
 

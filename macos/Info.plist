@@ -35,5 +35,7 @@
 	<string>14.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Scan Nostr VPN invite QR codes.</string>
 </dict>
 </plist>

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -6,8 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use nostr_sdk::prelude::{PublicKey, ToBech32};
 use nostr_vpn_core::config::{
     AppConfig, NetworkConfig, PendingInboundJoinRequest, PendingOutboundJoinRequest,
     derive_mesh_tunnel_ip, maybe_autoconfigure_node, normalize_advertised_route,
@@ -17,6 +16,14 @@ use nostr_vpn_core::diagnostics::ProbeStatus;
 use serde::Deserialize;
 
 use crate::actions::NativeAppAction;
+use crate::invite::{
+    active_network_invite_code, apply_network_invite_to_active_network, parse_network_invite,
+    preferred_join_request_recipient, to_npub,
+};
+use crate::lan_pairing::{
+    LAN_PAIRING_DURATION, LAN_PAIRING_STALE_AFTER, LanPairingAnnouncement, LanPairingSignal,
+    LanPairingWorker, spawn_lan_pairing_worker,
+};
 use crate::native_state::{
     NativeAppState, NativeHealthIssue, NativeInboundJoinRequestState, NativeLanPeerState,
     NativeNetworkState, NativeNetworkSummary, NativeOutboundJoinRequestState,
@@ -30,8 +37,6 @@ use crate::state::{
 };
 
 const NVPN_BIN_ENV: &str = "NVPN_CLI_PATH";
-const NETWORK_INVITE_PREFIX: &str = "nvpn://invite/";
-const NETWORK_INVITE_VERSION: u8 = 3;
 const SERVICE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(uniffi::Object, Debug)]
@@ -110,6 +115,15 @@ struct NativeAppRuntime {
     service_status_detail: String,
     service_binary_version: String,
     last_service_status_refresh_at: Option<Instant>,
+    lan_pairing_worker: Option<LanPairingWorker>,
+    lan_pairing_expires_at: Option<SystemTime>,
+    lan_peers: HashMap<String, LanPeerRecord>,
+}
+
+#[derive(Debug, Clone)]
+struct LanPeerRecord {
+    signal: LanPairingSignal,
+    last_seen: SystemTime,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,25 +153,6 @@ struct CliServiceStatusResponse {
     plist_path: String,
     #[serde(default)]
     binary_version: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NetworkInvite {
-    v: u8,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    network_name: String,
-    network_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    inviter_npub: String,
-    #[serde(default)]
-    inviter_node_name: String,
-    #[serde(default)]
-    admins: Vec<String>,
-    #[serde(default)]
-    participants: Vec<String>,
-    #[serde(default)]
-    relays: Vec<String>,
 }
 
 impl NativeAppRuntime {
@@ -195,6 +190,9 @@ impl NativeAppRuntime {
             service_status_detail: String::new(),
             service_binary_version: String::new(),
             last_service_status_refresh_at: None,
+            lan_pairing_worker: None,
+            lan_pairing_expires_at: None,
+            lan_peers: HashMap::new(),
         };
         let _ = runtime.refresh_status();
         Ok(runtime)
@@ -223,6 +221,9 @@ impl NativeAppRuntime {
             service_status_detail: "Service status unavailable during startup failure".to_string(),
             service_binary_version: String::new(),
             last_service_status_refresh_at: None,
+            lan_pairing_worker: None,
+            lan_pairing_expires_at: None,
+            lan_peers: HashMap::new(),
         }
     }
 
@@ -308,8 +309,8 @@ impl NativeAppRuntime {
             magic_dns_suffix: self.config.magic_dns_suffix.clone(),
             magic_dns_status: self.magic_dns_status(),
             autoconnect: self.config.autoconnect,
-            lan_pairing_active: false,
-            lan_pairing_remaining_secs: 0,
+            lan_pairing_active: self.lan_pairing_active(),
+            lan_pairing_remaining_secs: self.lan_pairing_remaining_secs(),
             launch_on_startup: self.config.launch_on_startup,
             close_to_tray_on_close: self.config.close_to_tray_on_close,
             connected_peer_count: connected_peer_count as u64,
@@ -324,7 +325,7 @@ impl NativeAppRuntime {
             networks: self.network_states(&own_pubkey_hex),
             relays: self.relay_states(),
             relay_summary: self.relay_summary(),
-            lan_peers: Vec::<NativeLanPeerState>::new(),
+            lan_peers: self.lan_peer_states(),
         }
     }
 
@@ -430,12 +431,14 @@ impl NativeAppRuntime {
                     .set_network_join_requests_enabled(&network_id, enabled)?;
                 self.save_reload_and_refresh()
             }
-            NativeAppAction::RequestNetworkJoin { .. }
-            | NativeAppAction::AcceptJoinRequest { .. }
-            | NativeAppAction::StartLanPairing
-            | NativeAppAction::StopLanPairing => Err(anyhow!(
-                "this native macOS action is not wired yet; core state/action ownership is in place"
-            )),
+            NativeAppAction::RequestNetworkJoin { network_id } => {
+                self.request_network_join(&network_id)
+            }
+            NativeAppAction::StartLanPairing => self.start_lan_pairing(),
+            NativeAppAction::StopLanPairing => {
+                self.stop_lan_pairing();
+                Ok(())
+            }
             NativeAppAction::AddParticipant {
                 network_id,
                 npub,
@@ -456,15 +459,11 @@ impl NativeAppRuntime {
                 self.save_reload_and_refresh()
             }
             NativeAppAction::ImportNetworkInvite { invite } => {
-                let output = self.run_nvpn([
-                    "import-invite",
-                    "--config",
-                    self.config_path_str()?,
-                    &invite,
-                ])?;
-                self.reload_config_from_disk()?;
-                let _ = self.refresh_status();
-                ensure_success("nvpn import-invite", &output)
+                self.import_network_invite(&invite)?;
+                if !self.session_active {
+                    self.connect_session()?;
+                }
+                Ok(())
             }
             NativeAppAction::RemoveParticipant { network_id, npub } => {
                 self.config
@@ -475,6 +474,10 @@ impl NativeAppRuntime {
                 self.config.remove_admin_from_network(&network_id, &npub)?;
                 self.save_reload_and_refresh()
             }
+            NativeAppAction::AcceptJoinRequest {
+                network_id,
+                requester_npub,
+            } => self.accept_join_request(&network_id, &requester_npub),
             NativeAppAction::SetParticipantAlias { npub, alias } => {
                 self.config.set_peer_alias(&npub, &alias)?;
                 self.save_reload_and_refresh()
@@ -507,6 +510,197 @@ impl NativeAppRuntime {
                 self.save_reload_and_refresh()
             }
         }
+    }
+
+    fn import_network_invite(&mut self, invite: &str) -> Result<()> {
+        let parsed = parse_network_invite(invite)?;
+        apply_network_invite_to_active_network(&mut self.config, &parsed)?;
+        self.save_reload_and_refresh()
+    }
+
+    fn request_network_join(&mut self, network_id: &str) -> Result<()> {
+        let network = self
+            .config
+            .network_by_id(network_id)
+            .ok_or_else(|| anyhow!("network not found"))?
+            .clone();
+        let recipient = preferred_join_request_recipient(&network)
+            .ok_or_else(|| anyhow!("this network was not imported from an invite"))?;
+        if network
+            .outbound_join_request
+            .as_ref()
+            .is_some_and(|existing| existing.recipient == recipient)
+        {
+            return Ok(());
+        }
+
+        let network = self
+            .config
+            .network_by_id_mut(network_id)
+            .ok_or_else(|| anyhow!("network not found"))?;
+        network.outbound_join_request = Some(PendingOutboundJoinRequest {
+            recipient,
+            requested_at: unix_timestamp(),
+        });
+        self.save_reload_and_refresh()?;
+        if !self.daemon_running {
+            self.connect_session()?;
+        }
+        Ok(())
+    }
+
+    fn accept_join_request(&mut self, network_id: &str, requester_npub: &str) -> Result<()> {
+        let requester = normalize_nostr_pubkey(requester_npub)?;
+        let requester_node_name = self
+            .config
+            .network_by_id(network_id)
+            .and_then(|network| {
+                network
+                    .inbound_join_requests
+                    .iter()
+                    .find(|pending| pending.requester == requester)
+                    .map(|pending| pending.requester_node_name.clone())
+            })
+            .unwrap_or_default();
+
+        self.config
+            .add_participant_to_network(network_id, &requester)?;
+        if !requester_node_name.trim().is_empty() {
+            let _ = self.config.set_peer_alias(&requester, &requester_node_name);
+        }
+        if let Some(network) = self.config.network_by_id_mut(network_id) {
+            network
+                .inbound_join_requests
+                .retain(|pending| pending.requester != requester);
+        }
+        self.save_reload_and_refresh()?;
+        if !self.daemon_running {
+            self.connect_session()?;
+        }
+        Ok(())
+    }
+
+    fn start_lan_pairing(&mut self) -> Result<()> {
+        self.refresh_lan_pairing();
+        if self.lan_pairing_active() {
+            return Ok(());
+        }
+
+        let own_npub = to_npub(&self.config.own_nostr_pubkey_hex()?);
+        let invite = active_network_invite_code(&self.config)?;
+        let endpoint = self
+            .daemon_state
+            .as_ref()
+            .and_then(|state| non_empty(&state.advertised_endpoint))
+            .unwrap_or_else(|| self.config.node.endpoint.clone());
+        let expires_at = SystemTime::now()
+            .checked_add(LAN_PAIRING_DURATION)
+            .unwrap_or(SystemTime::now());
+        let announcement = LanPairingAnnouncement {
+            npub: own_npub,
+            node_name: self.config.node_name.clone(),
+            endpoint,
+            invite,
+        };
+        let worker = spawn_lan_pairing_worker(announcement, expires_at)?;
+        self.lan_pairing_worker = Some(worker);
+        self.lan_pairing_expires_at = Some(expires_at);
+        self.lan_peers.clear();
+        Ok(())
+    }
+
+    fn stop_lan_pairing(&mut self) {
+        if let Some(mut worker) = self.lan_pairing_worker.take() {
+            worker.stop();
+        }
+        self.lan_pairing_expires_at = None;
+        self.lan_peers.clear();
+    }
+
+    fn refresh_lan_pairing(&mut self) {
+        let now = SystemTime::now();
+        if self
+            .lan_pairing_expires_at
+            .is_some_and(|expires_at| expires_at <= now)
+        {
+            self.stop_lan_pairing();
+            return;
+        }
+
+        let Some(worker) = &mut self.lan_pairing_worker else {
+            return;
+        };
+        let signals = worker.drain();
+        for signal in signals {
+            if self.lan_signal_is_existing_peer(&signal) {
+                continue;
+            }
+            let key = format!("{}:{}", signal.network_id, signal.npub);
+            self.lan_peers.insert(
+                key,
+                LanPeerRecord {
+                    signal,
+                    last_seen: now,
+                },
+            );
+        }
+    }
+
+    fn lan_pairing_active(&self) -> bool {
+        self.lan_pairing_worker.is_some() && self.lan_pairing_remaining_secs() > 0
+    }
+
+    fn lan_pairing_remaining_secs(&self) -> u64 {
+        self.lan_pairing_expires_at
+            .and_then(|expires_at| expires_at.duration_since(SystemTime::now()).ok())
+            .map_or(0, |remaining| remaining.as_secs())
+    }
+
+    fn lan_peer_states(&self) -> Vec<NativeLanPeerState> {
+        let mut peers = self
+            .lan_peers
+            .values()
+            .filter(|record| {
+                record
+                    .last_seen
+                    .elapsed()
+                    .is_ok_and(|age| age <= LAN_PAIRING_STALE_AFTER)
+            })
+            .map(|record| NativeLanPeerState {
+                npub: record.signal.npub.clone(),
+                node_name: record.signal.node_name.clone(),
+                endpoint: record.signal.endpoint.clone(),
+                network_name: record.signal.network_name.clone(),
+                network_id: record.signal.network_id.clone(),
+                invite: record.signal.invite.clone(),
+                last_seen_text: record.last_seen.elapsed().map_or_else(
+                    |_| "just now".to_string(),
+                    |age| compact_age_text(age.as_secs()),
+                ),
+            })
+            .collect::<Vec<_>>();
+        peers.sort_by(|left, right| {
+            left.network_name
+                .cmp(&right.network_name)
+                .then_with(|| left.node_name.cmp(&right.node_name))
+                .then_with(|| left.npub.cmp(&right.npub))
+        });
+        peers
+    }
+
+    fn lan_signal_is_existing_peer(&self, signal: &LanPairingSignal) -> bool {
+        let Ok(sender_hex) = normalize_nostr_pubkey(&signal.npub) else {
+            return false;
+        };
+        let signal_network_id = normalize_runtime_network_id(&signal.network_id);
+        self.config.networks.iter().any(|network| {
+            normalize_runtime_network_id(&network.network_id) == signal_network_id
+                && (network.admins.iter().any(|admin| admin == &sender_hex)
+                    || network
+                        .participants
+                        .iter()
+                        .any(|participant| participant == &sender_hex))
+        })
     }
 
     fn apply_settings_patch(&mut self, patch: SettingsPatch) -> Result<()> {
@@ -572,6 +766,7 @@ impl NativeAppRuntime {
     fn refresh_status(&mut self) -> Result<()> {
         self.reload_config_from_disk()?;
         self.refresh_service_status_if_due();
+        self.refresh_lan_pairing();
         let output = self.run_nvpn([
             "status",
             "--json",
@@ -1041,6 +1236,12 @@ impl NativeAppRuntime {
     }
 }
 
+impl Drop for NativeAppRuntime {
+    fn drop(&mut self) {
+        self.stop_lan_pairing();
+    }
+}
+
 fn native_outbound_join_request(
     request: &PendingOutboundJoinRequest,
 ) -> NativeOutboundJoinRequestState {
@@ -1318,45 +1519,6 @@ fn parse_advertised_routes(input: &str) -> Vec<String> {
     routes.sort();
     routes.dedup();
     routes
-}
-
-fn active_network_invite_code(config: &AppConfig) -> Result<String> {
-    let active_network = config.active_network();
-    let roster = config.shared_network_roster(&active_network.id)?;
-    if roster.admins.is_empty() {
-        return Err(anyhow!("active network has no admin configured"));
-    }
-    let invite = NetworkInvite {
-        v: NETWORK_INVITE_VERSION,
-        network_name: String::new(),
-        network_id: roster.network_id,
-        inviter_npub: String::new(),
-        inviter_node_name: String::new(),
-        admins: roster.admins.iter().map(|admin| to_npub(admin)).collect(),
-        participants: Vec::new(),
-        relays: normalized_invite_relays(&config.nostr.relays),
-    };
-    let encoded = URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(&invite).context("failed to encode network invite JSON")?);
-    Ok(format!("{NETWORK_INVITE_PREFIX}{encoded}"))
-}
-
-fn normalized_invite_relays(relays: &[String]) -> Vec<String> {
-    let mut normalized = relays
-        .iter()
-        .map(|relay| relay.trim().trim_end_matches('/').to_string())
-        .filter(|relay| relay.starts_with("ws://") || relay.starts_with("wss://"))
-        .collect::<Vec<_>>();
-    normalized.sort();
-    normalized.dedup();
-    normalized
-}
-
-fn to_npub(pubkey_hex: &str) -> String {
-    PublicKey::parse(pubkey_hex)
-        .ok()
-        .and_then(|pubkey| pubkey.to_bech32().ok())
-        .unwrap_or_else(|| pubkey_hex.to_string())
 }
 
 fn short_pubkey(pubkey_hex: &str) -> String {

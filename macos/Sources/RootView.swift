@@ -14,15 +14,15 @@ struct RootView: View {
     @State private var relayInput = ""
     @State private var participantInput = ""
     @State private var participantAliasInput = ""
-    @State private var inviteInput = ""
     @State private var networkNameInput = ""
     @State private var exitNodeSearch = ""
     @State private var networkNameDrafts: [String: String] = [:]
     @State private var networkMeshDrafts: [String: String] = [:]
     @State private var participantAliasDrafts: [String: String] = [:]
     @State private var diagnosticsExpanded = false
-    @State private var systemExpanded = false
     @State private var savedExpanded = true
+    @State private var showingQrScanner = false
+    @State private var selectedSidebarItem: SidebarItem? = .overview
     @State private var lastSyncedRev: UInt64 = 0
 
     private var state: NativeAppState {
@@ -37,25 +37,7 @@ struct RootView: View {
         NavigationSplitView {
             sidebar
         } detail: {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    heroSection
-                    if let activeNetwork {
-                        activeNetworkSection(activeNetwork)
-                        participantsSection(activeNetwork)
-                        routingSection(activeNetwork)
-                    }
-                    savedNetworksSection
-                    diagnosticsSection
-                    relaySection
-                    systemSection
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 34)
-                .padding(.bottom, 28)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .background(Color(nsColor: .windowBackgroundColor))
+            detailPane
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -76,36 +58,30 @@ struct RootView: View {
                 diagnosticsExpanded = true
             }
         }
+        .sheet(isPresented: $showingQrScanner) {
+            QRCodeScannerSheet { code in
+                manager.importInvite(code)
+                showingQrScanner = false
+            }
+        }
     }
 
     private var sidebar: some View {
-        List {
-            Section("Networks") {
-                ForEach(state.networks, id: \.id) { network in
-                    HStack(spacing: 10) {
-                        Image(systemName: network.enabled ? "circle.fill" : "circle")
-                            .foregroundStyle(network.enabled ? .green : .secondary)
-                            .imageScale(.small)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(displayName(network))
-                                .lineLimit(1)
-                            Text("\(network.onlineCount)/\(network.expectedCount)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if !network.enabled {
-                            Button {
-                                manager.setNetworkEnabled(networkId: network.id, enabled: true)
-                            } label: {
-                                Image(systemName: "arrow.right.circle")
-                            }
-                            .buttonStyle(.borderless)
-                            .disabled(manager.actionInFlight)
-                        }
-                    }
-                }
+        List(selection: $selectedSidebarItem) {
+            Section {
+                sidebarItem(.overview, "Status", "power")
+                sidebarItem(.devices, "Devices", "desktopcomputer")
+                sidebarItem(.sharing, "Invite", "qrcode")
+                sidebarItem(.routing, "Exit Nodes", "arrow.triangle.branch")
+                sidebarItem(.networks, "Networks", "rectangle.stack")
+                sidebarItem(.deviceSettings, "Device", "macwindow")
+                sidebarItem(.service, "Service", "gearshape.2")
+                sidebarItem(.updates, "Updates", "arrow.triangle.2.circlepath")
+                sidebarItem(.cli, "CLI", "terminal")
+                sidebarItem(.relays, "Relays", "antenna.radiowaves.left.and.right")
+                sidebarItem(.diagnostics, "Diagnostics", "waveform.path.ecg")
             }
+
             Section {
                 HStack {
                     TextField("Name", text: $networkNameInput)
@@ -120,7 +96,73 @@ struct RootView: View {
                 }
             }
         }
-        .navigationSplitViewColumnWidth(min: 230, ideal: 270)
+        .navigationSplitViewColumnWidth(min: 210, ideal: 230)
+    }
+
+    private func sidebarItem(_ item: SidebarItem, _ title: String, _ systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .tag(item)
+    }
+
+    private var detailPane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                switch selectedSidebarItem ?? .overview {
+                case .overview:
+                    heroSection
+                    if let activeNetwork {
+                        activeNetworkSection(activeNetwork)
+                    }
+                case .devices:
+                    pageTitle("Devices", "desktopcomputer")
+                    if let activeNetwork {
+                        participantsSection(activeNetwork)
+                    }
+                case .sharing:
+                    pageTitle("Invite", "qrcode")
+                    if let activeNetwork {
+                        inviteSection(activeNetwork)
+                    }
+                case .routing:
+                    pageTitle("Exit Nodes", "arrow.triangle.branch")
+                    if let activeNetwork {
+                        routingSection(activeNetwork)
+                    }
+                case .networks:
+                    pageTitle("Networks", "rectangle.stack")
+                    savedNetworksSection
+                case .deviceSettings:
+                    pageTitle("Device", "macwindow")
+                    deviceSettings
+                case .service:
+                    pageTitle("Service", "gearshape.2")
+                    serviceControls
+                case .updates:
+                    pageTitle("Updates", "arrow.triangle.2.circlepath")
+                    updateControls
+                case .cli:
+                    pageTitle("CLI", "terminal")
+                    cliControls
+                case .relays:
+                    pageTitle("Relays", "antenna.radiowaves.left.and.right")
+                    relaySection
+                case .diagnostics:
+                    pageTitle("Diagnostics", "waveform.path.ecg")
+                    diagnosticsSection
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 28)
+            .frame(maxWidth: 980, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func pageTitle(_ title: String, _ systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.system(size: 28, weight: .semibold))
     }
 
     private var heroSection: some View {
@@ -291,14 +333,19 @@ struct RootView: View {
                         .disabled(state.activeNetworkInvite.isEmpty)
                     }
                     HStack {
-                        TextField("nvpn://invite/...", text: $inviteInput)
+                        TextField("nvpn://invite/...", text: $manager.inviteInput)
                             .onSubmit {
-                                manager.importInvite(inviteInput)
+                                manager.importInvite(manager.inviteInput)
                             }
                         Button {
-                            manager.importInvite(inviteInput)
+                            manager.importInvite(manager.inviteInput)
                         } label: {
                             Label("Import", systemImage: "square.and.arrow.down")
+                        }
+                        Button {
+                            showingQrScanner = true
+                        } label: {
+                            Label("Scan", systemImage: "camera.viewfinder")
                         }
                         Button {
                             manager.chooseInviteQrImage()
@@ -660,27 +707,6 @@ struct RootView: View {
         }
     }
 
-    private var systemSection: some View {
-        DisclosureGroup(isExpanded: $systemExpanded) {
-            VStack(alignment: .leading, spacing: 12) {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), alignment: .leading)], alignment: .leading, spacing: 10) {
-                    metric("App", state.appVersion)
-                    metric("Daemon", state.daemonBinaryVersion.isEmpty ? "-" : state.daemonBinaryVersion)
-                    metric("Service", state.serviceBinaryVersion.isEmpty ? "-" : state.serviceBinaryVersion)
-                    metric("Config", state.configPath)
-                    metric("DNS", state.magicDnsStatus)
-                }
-
-                serviceControls
-                cliControls
-                deviceSettings
-            }
-            .padding(.top, 10)
-        } label: {
-            sectionHeader("System", systemImage: "gearshape")
-        }
-    }
-
     private var serviceControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -689,8 +715,16 @@ struct RootView: View {
                 if state.serviceDisabled {
                     badge("Disabled", style: .bad)
                 }
+                if manager.serviceRepairRecommended {
+                    badge("Repair", style: .warn)
+                }
+                if manager.serviceSettling {
+                    ProgressView()
+                        .controlSize(.small)
+                    badge("Settling", style: .muted)
+                }
             }
-            Text(state.serviceStatusDetail)
+            Text(manager.serviceRepairRecommended ? "\(state.serviceStatusDetail) · service \(state.serviceBinaryVersion), app \(state.appVersion)" : state.serviceStatusDetail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -698,7 +732,7 @@ struct RootView: View {
                 Button {
                     manager.installService()
                 } label: {
-                    Label(state.serviceInstalled ? "Reinstall Service" : "Install Service", systemImage: "arrow.down.to.line")
+                    Label(serviceInstallButtonTitle, systemImage: manager.serviceRepairRecommended ? "wrench.and.screwdriver" : "arrow.down.to.line")
                 }
                 Button {
                     state.serviceDisabled ? manager.enableService() : manager.disableService()
@@ -713,7 +747,47 @@ struct RootView: View {
                 }
                 .disabled(!state.serviceInstalled || manager.actionInFlight)
             }
-            .disabled(!state.serviceSupported || manager.actionInFlight)
+            .disabled(!state.serviceSupported || manager.actionInFlight || manager.serviceSettling)
+        }
+    }
+
+    private var updateControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                badge(manager.updateAvailable ? "Update \(manager.updateVersion)" : "Current", style: manager.updateAvailable ? .warn : .ok)
+                if manager.updateChecking {
+                    ProgressView()
+                        .controlSize(.small)
+                    badge("Checking", style: .muted)
+                }
+                if manager.updateInstalling {
+                    ProgressView()
+                        .controlSize(.small)
+                    badge("Installing", style: .muted)
+                }
+            }
+            if !manager.updateStatus.isEmpty {
+                Text(manager.updateStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            HStack {
+                Button {
+                    manager.checkForUpdates()
+                } label: {
+                    Label("Check Updates", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(manager.updateChecking || manager.updateInstalling)
+                Button {
+                    manager.installUpdate()
+                } label: {
+                    Label("Install Update", systemImage: "square.and.arrow.down")
+                }
+                .disabled(!manager.updateAvailable || manager.updateInstalling)
+                Toggle("Auto-check", isOn: $manager.autoCheckUpdates)
+                Toggle("Auto-install", isOn: $manager.autoInstallUpdates)
+            }
         }
     }
 
@@ -928,6 +1002,13 @@ struct RootView: View {
         return short(state.exitNode, prefix: 10, suffix: 8)
     }
 
+    private var serviceInstallButtonTitle: String {
+        if manager.serviceRepairRecommended {
+            return "Repair Service"
+        }
+        return state.serviceInstalled ? "Reinstall Service" : "Install Service"
+    }
+
     private var shouldShowVpnDisclosure: Bool {
         state.mobile || state.vpnSessionControlSupported
     }
@@ -1065,6 +1146,20 @@ struct InviteQRCodeView: View {
         image.addRepresentation(representation)
         return image
     }
+}
+
+enum SidebarItem: Hashable {
+    case overview
+    case devices
+    case sharing
+    case routing
+    case networks
+    case deviceSettings
+    case service
+    case updates
+    case cli
+    case relays
+    case diagnostics
 }
 
 enum BadgeStyle {

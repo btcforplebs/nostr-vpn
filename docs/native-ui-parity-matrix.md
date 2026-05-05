@@ -16,7 +16,7 @@ native shells while keeping product truth in Rust.
 | App state owner | Rust | Rust | Rust | Rust | Rust |
 | Rendering owner | Native | Native | Native | Native | Native |
 | Secure/platform effects | Keychain, launch agent, status item | Credential Manager, service/UAC, tray | Secret Service fallback, desktop entry, tray/status notifier | Keystore, VpnService, camera/share intents | Keychain, NetworkExtension, camera/share sheet |
-| VPN control model | Background service + userspace WireGuard | Windows service + Wintun/userspace WireGuard | Background service + tun/userspace WireGuard | Android VpnService runtime | NetworkExtension Packet Tunnel |
+| VPN control model | Background service + FIPS private mesh | Windows service + FIPS private mesh | Background service + tun/FIPS private mesh | Android VpnService runtime | NetworkExtension Packet Tunnel |
 | Package target | `.app`/DMG or signed archive | Installer/MSIX or NSIS | AppImage/deb/rpm later | APK/AAB/Zapstore | TestFlight/App Store |
 
 ## Rust Core Boundary
@@ -147,22 +147,22 @@ Status legend:
 | Periodic refresh | `tick` interval | Ready | `AppManager.start()` refreshes every 1500ms. | Later replace polling with a core update stream if added. |
 | Action lock/error recovery | `runAction`, action flags | Ready | `AppManager` serializes typed actions, shows in-flight status, and projects core errors into the shell. | Add per-control progress text if native e2e tests require it. |
 | Main status hero | `HeroStatusPanel.svelte` | Ready | Shows active network title, admin badge, mesh state, daemon/VPN/FIPS badges, peer/tunnel/exit metrics, disclosure, identity, and VPN toggle. | Tune copy if product policy text changes. |
-| VPN connect/disconnect | `connect_session`, `disconnect_session` | Ready | Connect/disconnect dispatches typed native actions; Rust runs elevated `nvpn` on macOS. | Add service-repair retry heuristics when daemon version mismatch is detected. |
+| VPN connect/disconnect | `connect_session`, `disconnect_session` | Ready | Connect/disconnect dispatches typed native actions; Rust runs elevated `nvpn` on macOS. | None. |
 | Privacy disclosure | `shouldShowVpnDataDisclosure` | Ready | Native hero renders the VPN data disclosure when VPN control/mobile-like policy applies. | Move exact policy text into core if reused by more shells. |
 | Own npub display/copy | `HeroStatusPanel.svelte` | Ready | Native hero renders `ownNpub`, supports selection, and gives transient copy feedback. | None. |
-| Active network summary | `ActiveNetworkPanel.svelte` | Ready | Native active-network panel supports name edit, mesh ID edit/copy, admin summary, join-request toggle/list, invite, and admin-gated controls. | Add parsed invite confirmation parity. |
+| Active network summary | `ActiveNetworkPanel.svelte` | Ready | Native active-network panel supports name edit, mesh ID edit/copy, admin summary, join-request toggle/list, invite, and admin-gated controls. | None. |
 | Mesh ID editing | `mesh-id.js`, `set_network_mesh_id` | Ready | Mesh ID edits dispatch typed Rust action; Rust normalizes/canonicalizes and reports errors. | Add blur/Enter auto-commit if preferred over explicit save icon. |
 | Invite generation/copy | `InviteShareSection.svelte` | Ready | Invite comes from Rust, can be copied/shared, and renders a native CoreImage QR. | None. |
-| Invite deep-link import | `nvpn://invite/...` handler | Partial | `WindowGroup.onOpenURL` imports invite URLs and debug tick links while app is running. | Add startup URL drain, parsed confirmation, cancel-to-fill behavior, and auto-connect after import. |
-| Invite paste/import | `InviteImportPanel.svelte` | Ready | Native invite field imports pasted/typed `nvpn://invite/...` values through typed core action. | Add parsed target confirmation before import. |
+| Invite deep-link import | `nvpn://invite/...` handler | Ready | Native handles running-app and startup invite URLs, shows parsed confirmation, leaves canceled invite text in the field, and app-core auto-connects after import. | None. |
+| Invite paste/import | `InviteImportPanel.svelte` | Ready | Native invite field imports pasted/typed `nvpn://invite/...` values through typed core action with parsed target confirmation. | None. |
 | Invite QR generation | `qrcode` | Ready | Native CoreImage QR exactly encodes `activeNetworkInvite`. | None. |
-| Invite QR scan | `jsQR`, camera/image input | Partial | Native image picker decodes QR images and imports the invite. | Add live AVFoundation camera scan. |
+| Invite QR scan | `jsQR`, camera/image input | Ready | Native image picker decodes QR images, and live AVFoundation QR scan imports through the same confirmation path. | None. |
 | Participant list | `ActiveNetworkPanel.svelte` | Ready | Shows participants, reachability, transport/presence badges, npub copy, alias, MagicDNS, traffic, routes, admin, exit-node, and remove controls. | None. |
 | Manual add participant | `add_participant` | Ready | Admin can add participant npub with optional alias. | None. |
 | Participant alias editing | `set_participant_alias` | Ready | Alias edits dispatch typed Rust action and show MagicDNS suffix/name. | Add debounce if explicit save feels too heavy. |
 | Participant admin/remove actions | `add_admin`, `remove_admin`, `remove_participant` | Ready | Admin toggle and remove icon dispatch typed core actions with local-admin gating. | Add destructive confirmation if needed. |
 | Participant traffic/path details | Participant runtime fields | Ready | `NativeParticipantState` now mirrors traffic, routes, exit-node capability, tunnel IP, transport, presence, and last-signal details. | None. |
-| LAN pairing | `start_lan_pairing`, `stop_lan_pairing`, `lanPeers` | Partial | Native UI exposes LAN pair start/stop and nearby-peer rows in the typed state. | Reimplement LAN pairing runtime in app-core; current Rust actions still return the not-wired error. |
+| LAN pairing | `start_lan_pairing`, `stop_lan_pairing`, `lanPeers` | Ready | Native UI exposes LAN pair start/stop and nearby-peer rows; app-core owns the multicast runtime, countdown, stale-peer pruning, and invite metadata decoding. | None. |
 | Saved networks list | `SavedNetworksPanel.svelte` | Ready | Sidebar and saved-networks disclosure support add, activate, rename, delete, mesh edit, participant preview, and participant removal. | Add inactive invite/import and join-request detail expansion if needed. |
 | Activate saved network | `set_network_enabled` | Ready | Inactive network rows dispatch typed activation and daemon reload handling from Rust. | None. |
 | Delete saved network | `remove_network` | Ready | Native saved-network delete dispatches typed core removal and core preserves the last-network rule. | Add confirmation if needed. |
@@ -172,21 +172,21 @@ Status legend:
 | Exit node search/select | `exitNode` | Ready | Searchable native candidate list supports no-exit selection and offered-exit peers. | None. |
 | Diagnostics panel | `AdvancedPanels.svelte` | Ready | Native diagnostics disclosure renders health issues, interface/IP/gateway, captive portal, and port-mapping state; opens when health count increases. | None. |
 | Relay list/status | Relay panel | Ready | Shows relay URLs, status text, summary badges, add, remove, and disables removal of the last relay. | None. |
-| Session options | `autoconnect` | Ready | Native system panel includes autoconnect, launch-on-startup, and menu-bar-on-close settings toggles. | Add native LaunchAgent effect for startup toggle. |
-| Device settings | `SystemPanel.svelte` | Ready | Native system panel includes name, endpoint, tunnel IP, listen port, MagicDNS suffix/status, app/config/version fields, CLI controls, and service controls. | Add updater controls. |
+| Session options | `autoconnect` | Ready | Native system panel includes autoconnect, launch-on-startup with LaunchAgent registration, and menu-bar-on-close settings toggles. | None. |
+| Device settings | `SystemPanel.svelte` | Ready | Native system panel includes name, endpoint, tunnel IP, listen port, MagicDNS suffix/status, app/config/version fields, CLI controls, service controls, and updater controls. | None. |
 | MagicDNS | `magicDnsStatus`, `magicDnsSuffix` | Ready | Native state projects MagicDNS status/name/suffix; UI exposes suffix editor and participant DNS labels. | None. |
-| Background service panel | `ServiceActionPanel.svelte` | Partial | Native state queries `nvpn service status --json`; UI supports install/reinstall/enable/disable/uninstall with elevated actions and status details. | Add stale-service repair recommendation and settlement polling. |
+| Background service panel | `ServiceActionPanel.svelte` | Ready | Native state queries `nvpn service status --json`; UI supports install/reinstall/enable/disable/uninstall, stale-version repair prompts, and settlement polling after service actions. | None. |
 | CLI install/uninstall | `install_cli`, `uninstall_cli` | Ready | Native UI shows CLI status and runs elevated install/reinstall/uninstall actions. | None. |
-| Launch on startup | Autostart plugin | Partial | Native UI persists the setting through typed core state. | Implement real macOS LaunchAgent/SMAppService registration and hidden launch argument. |
-| Close to tray/status item | Tray runtime | Partial | Native `MenuBarExtra` supports open, VPN toggle, exit toggle, copy this device, network devices, exit-node selection, refresh, and quit. | Enforce close-to-menu-bar window behavior when the setting is enabled. |
-| Autostart hidden launch | `--autostart` | Missing | No launch-mode handling. | Add hidden launch path and single-instance conflict handling. |
-| Single-instance handling | Legacy singleton plugin | Missing | No native singleton coordination. | Route new opens/deep links into existing app instance. |
-| Debug automation deep links | `nvpn://debug/...` | Partial | Native handler supports `nvpn://debug/tick`. | Add request-join and accept-join debug links. |
-| Hashtree updater | `UpdateBanner.svelte`, updater panel | Missing | No updater UI/effects. | Port update check/download/install and desktop update prefs. |
+| Launch on startup | Autostart plugin | Ready | Native UI persists the setting and writes/removes a per-user LaunchAgent with `--autostart`. | None. |
+| Close to tray/status item | Tray runtime | Ready | Native `MenuBarExtra` supports open, VPN toggle, exit toggle, copy this device, network devices, exit-node selection, refresh, and quit; close hides the main window when enabled. | None. |
+| Autostart hidden launch | `--autostart` | Ready | LaunchAgent starts the app with `--autostart`, and the main window hides after startup unless a deep link is being handled. | None. |
+| Single-instance handling | Legacy singleton plugin | Ready | Native app holds a local lock and routes duplicate-process startup URLs into the existing instance through distributed notifications. | None. |
+| Debug automation deep links | `nvpn://debug/...` | Ready | Native handler supports `nvpn://debug/tick`, `request-join`, and `accept-join` with active-network fallbacks. | None. |
+| Hashtree updater | `UpdateBanner.svelte`, updater panel | Ready | Native updater checks the hashtree release manifest, preserves auto-check/auto-install prefs, downloads macOS assets, and can install `.app.tar.gz` archives by relaunching into the replacement app. | None. |
 | Responsive/adaptive layout | Svelte CSS | Ready | Native split-view desktop layout builds and was checked with an app-window screenshot at 1100x760. | Add compact-window and accessibility passes. |
 | Copy feedback | `copiedValue` timeout | Ready | Clipboard writes show transient checkmark feedback for identity, mesh, invite, and peer npub copy buttons. | None. |
 | Collapsible panels | `<details>` state | Ready | Native saved networks, diagnostics, and system sections use disclosure groups; diagnostics opens when health issues increase. | Persist expanded state if users want it. |
-| Mock/demo fixtures | `mock-backend.ts` | Missing | No SwiftUI previews/fixtures. | Add fixture snapshots from Rust state for previews and screenshot tests. |
+| Mock/demo fixtures | `mock-backend.ts` | Ready | `macos/Resources/preview-state.json` provides a native state snapshot for previews and screenshot tests without the old mock backend. | None. |
 | Public relay fallback UI | Removed relay fallback/public services code | Removed | Removed upstream in `origin/master`; native shell also omits those fields and controls. | No parity work unless product reintroduces a public-service feature. |
 
 ## Native Implementation Phases
@@ -194,7 +194,7 @@ Status legend:
 | Phase | Deliverable | Exit criteria |
 | --- | --- | --- |
 | 0. Contract extraction | Move backend state, settings patches, action handlers, derived labels, invite parsing, mesh ID validation, and tray projections into a native-ready Rust app core | `crates/nostr-vpn-app-core` exposes typed UniFFI state/actions and the macOS shell consumes `FfiApp` directly; remaining legacy behavior is tracked as explicit native parity work. |
-| 1. Desktop minimum | macOS, Windows, and Linux render the main status, active network, invite import/share, participant management, routing, diagnostics, relays, service panel, system settings, deep links, and tray/menu actions | Desktop smoke tests can import invites, request/accept join, toggle VPN, and exercise tray actions. macOS now covers the main shell surface; remaining partial rows are live QR scan, LAN pairing runtime, startup/single-instance behavior, service repair heuristics, and updater. |
+| 1. Desktop minimum | macOS, Windows, and Linux render the main status, active network, invite import/share, participant management, routing, diagnostics, relays, service panel, system settings, deep links, and tray/menu actions | Desktop smoke tests can import invites, request/accept join, toggle VPN, and exercise tray actions. macOS covers the native shell surface; Linux is the next desktop shell to bring to parity. |
 | 2. Mobile minimum | Android and iPhone render the same state/action surface with native VPN permission/session control, invite QR scan/share, LAN pairing, saved networks, routing, diagnostics, relays, and deep links | Android emulator/device and iPhone simulator/device smoke tests can import invites and start supported VPN flows |
 | 3. Desktop niceties | Hashtree updater, CLI install/uninstall, startup registration, close-to-tray, service repair prompts, single-instance conflict handling | Legacy desktop e2e scenarios have native replacements |
 | 4. Polish/parity hardening | Platform screenshots, accessibility pass, empty/error states, fixture preview coverage | All rows above are either implemented or explicitly marked removed/deferred in this file |

@@ -1,5 +1,7 @@
 pub mod actions;
 mod ffi;
+mod invite;
+mod lan_pairing;
 pub mod native_state;
 pub mod platform;
 pub mod state;
