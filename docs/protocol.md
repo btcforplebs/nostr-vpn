@@ -289,4 +289,4 @@ If this document and the code diverge, the code wins. The main protocol implemen
 - `crates/nostr-vpn-core/src/config.rs`
 - `crates/nostr-vpn-core/src/paths.rs`
 - `crates/nostr-vpn-cli/src/main.rs`
-- `crates/nostr-vpn-gui/src-tauri/src/lib.rs`
+- `crates/nostr-vpn-app-core/src/ffi.rs`

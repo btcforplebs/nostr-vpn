@@ -1,15 +1,3 @@
-FROM node:22-bookworm AS web-builder
-WORKDIR /work/crates/nostr-vpn-gui
-
-RUN npm install -g pnpm@10.22.0
-
-COPY crates/nostr-vpn-gui/package.json crates/nostr-vpn-gui/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
-
-COPY crates/nostr-vpn-gui ./
-ENV VITE_NVPN_API_BASE=/api
-RUN pnpm build
-
 FROM rust:1.94-bookworm AS rust-builder
 WORKDIR /work
 
@@ -31,7 +19,6 @@ RUN apt-get update \
 
 COPY --from=rust-builder /work/target/release/nvpn /usr/local/bin/nvpn
 COPY --from=rust-builder /work/target/release/nostr-vpn-web /usr/local/bin/nvpn-web
-COPY --from=web-builder /work/crates/nostr-vpn-gui/dist /usr/share/nostr-vpn/web
 
 ENV HOME=/data/home \
     XDG_CONFIG_HOME=/data/config \

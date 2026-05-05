@@ -20,24 +20,6 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-          run_install: false
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: crates/nostr-vpn-gui/pnpm-lock.yaml
-
-      - name: Build frontend
-        run: |
-          pnpm --dir crates/nostr-vpn-gui install --frozen-lockfile
-          pnpm --dir crates/nostr-vpn-gui build
-
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
@@ -45,7 +27,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Run clippy
-        run: cargo clippy --workspace --exclude nostr-vpn-gui --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace --exclude nostr-vpn-gui
+        run: cargo test --workspace

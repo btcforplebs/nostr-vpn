@@ -1,29 +1,19 @@
 FROM rust:1.93-bookworm
 
-# Tauri/GTK desktop deps for AppImage + deb bundling, plus musl-tools so the
-# CLI can be built as a static musl tarball for the container architecture.
+# musl-tools lets the CLI be built as a static musl tarball for the
+# container architecture.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
       file \
-      libayatana-appindicator3-dev \
-      libgtk-3-dev \
-      librsvg2-dev \
       libssl-dev \
-      libwebkit2gtk-4.1-dev \
       musl-tools \
-      nodejs \
-      npm \
-      patchelf \
       pkg-config \
       rsync \
-      xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /build
-
-RUN npm install -g pnpm@10
 
 # musl-gcc is the only musl linker apt provides; it works for both
 # x86_64-unknown-linux-musl and aarch64-unknown-linux-musl when the

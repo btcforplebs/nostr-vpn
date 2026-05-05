@@ -10,6 +10,7 @@ FRAMEWORKS_DIR="$MACOS_DIR/Frameworks"
 BUILD_DIR="$MACOS_DIR/.build"
 PROFILE="${NVPN_MACOS_RUST_PROFILE:-debug}"
 TARGETS="${NVPN_MACOS_RUST_TARGETS:-$(rustc -vV | awk '/host:/ {print $2}')}"
+XCODE_CONFIGURATION="${NVPN_MACOS_XCODE_CONFIGURATION:-Debug}"
 PROJECT="$MACOS_DIR/NostrVpnMac.xcodeproj"
 SCHEME="NostrVpnMac"
 
@@ -207,6 +208,8 @@ run_macos_build() {
   xcodebuild \
     -project "$PROJECT" \
     -scheme "$SCHEME" \
+    -configuration "$XCODE_CONFIGURATION" \
+    -derivedDataPath "$BUILD_DIR/DerivedData" \
     -destination "platform=macOS,arch=$host_arch" \
     CODE_SIGNING_ALLOWED=NO \
     build

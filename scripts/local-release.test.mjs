@@ -260,8 +260,6 @@ Changes since v0.2.26.
   assert.match(notes, /## Changes/)
   assert.match(notes, /Changes since v0\.2\.26\./)
   assert.match(notes, /### Fixed/)
-  assert.match(notes, /Nostr VPN for iOS public beta/)
-  assert.match(notes, /https:\/\/testflight\.apple\.com\/join\/jPRVxbSv/)
   assert.match(notes, /### Most People Will Want/)
   assert.match(notes, /### Command Line/)
   assert.match(notes, /Windows x64 CLI/)

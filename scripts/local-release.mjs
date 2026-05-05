@@ -4,8 +4,8 @@ import { spawnSync } from 'node:child_process'
 import {
   copyFileSync,
   existsSync,
-  mkdtempSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -18,40 +18,24 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 import {
-  androidReleaseAssetName,
   autoDetectWindowsVmName,
-  buildReleaseManifestFiles,
   buildReleaseManifest,
+  buildReleaseManifestFiles,
   linuxReleaseTargetsForDockerPlatform,
   normalizeTag,
   parseEnvFile,
   readWorkspaceVersionTag,
   renderReleaseNotes,
-  shouldBlockLocalLinuxAmd64Qemu,
   splitCsv,
   validateReleaseAssetSet,
 } from './local-release-lib.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
-const guiRoot = join(repoRoot, 'crates', 'nostr-vpn-gui')
 const rootCargoToml = join(repoRoot, 'Cargo.toml')
 const changelogPath = join(repoRoot, 'CHANGELOG.md')
 const distDir = join(repoRoot, 'dist')
-const defaultEnvFiles = [
-  join(repoRoot, '.env.release.local'),
-  join(repoRoot, '.env.zapstore.local'),
-]
-const macosSigningP12RequiredEnv = [
-  'MACOS_SIGNING_IDENTITY',
-  'MACOS_CERTIFICATE_P12',
-  'MACOS_CERTIFICATE_PASSWORD',
-]
-const macosNotarizationP12RequiredEnv = [
-  'MACOS_NOTARIZE_APPLE_ID',
-  'MACOS_NOTARIZE_APP_PASSWORD',
-  'MACOS_NOTARIZE_TEAM_ID',
-]
+const defaultEnvFiles = [join(repoRoot, '.env.release.local')]
 const versionlessCliAssets = new Map([
   ['nvpn-aarch64-apple-darwin.tar.gz', 'nvpn-{tag}-aarch64-apple-darwin.tar.gz'],
   ['nvpn-x86_64-unknown-linux-musl.tar.gz', 'nvpn-{tag}-x86_64-unknown-linux-musl.tar.gz'],
@@ -63,32 +47,30 @@ class SkipStepError extends Error {}
 function usage() {
   console.log(`Usage: node scripts/local-release.mjs [options]
 
-Build locally-available release artifacts, stage a hashtree release directory, and optionally publish it.
+Build local Rust/native release artifacts, stage a hashtree release directory,
+and optionally publish it.
 
 Options:
   --publish                 Publish the staged release tree with htree
-  --publish-zapstore       Publish the built Android APK to Zapstore
   --dry-run                 Print the plan without running build or publish commands
   --skip-verify            Skip fmt/clippy/test verification
-  --tag <tag>              Release tag (defaults to workspace version, for example v0.2.27)
+  --tag <tag>              Release tag (defaults to workspace version, for example v0.3.23)
   --release-tree <name>    htree release tree name (default: releases/nostr-vpn)
   --stage-dir <path>       Directory used for staged release metadata
   --env-file <path>        Extra dotenv file to load (repeatable)
-  --only <csv>             Limit steps to verify,macos,android,linux,windows
+  --only <csv>             Limit steps to verify,macos,linux,windows
   --skip <csv>             Skip steps by name
   --allow-partial          Stage/publish even if a selected platform build fails
-  --allow-unsigned-macos   Build the macOS app without signing when local signing inputs are unavailable
   --help                   Show this help
 
-The script auto-loads .env.release.local and .env.zapstore.local when present.
-Shell environment variables override values from those files.`)
+The script auto-loads .env.release.local when present. Shell environment
+variables override values from that file.`)
 }
 
 function parseArgs(argv) {
   const options = {
     dryRun: false,
     publish: false,
-    publishZapstore: false,
     skipVerify: false,
     releaseTree: null,
     stageDir: null,
@@ -97,7 +79,6 @@ function parseArgs(argv) {
     only: null,
     skip: new Set(),
     allowPartial: false,
-    allowUnsignedMacos: false,
   }
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -112,9 +93,6 @@ function parseArgs(argv) {
         break
       case '--dry-run':
         options.dryRun = true
-        break
-      case '--publish-zapstore':
-        options.publishZapstore = true
         break
       case '--skip-verify':
         options.skipVerify = true
@@ -142,9 +120,6 @@ function parseArgs(argv) {
       case '--allow-partial':
         options.allowPartial = true
         break
-      case '--allow-unsigned-macos':
-        options.allowUnsignedMacos = true
-        break
       default:
         throw new Error(`Unknown argument: ${arg}`)
     }
@@ -161,7 +136,6 @@ function readOptionalEnvFiles(envFiles) {
     if (!existsSync(envFile)) {
       continue
     }
-
     Object.assign(loaded, parseEnvFile(readFileSync(envFile, 'utf8')))
     loadedPaths.push(envFile)
   }
@@ -187,37 +161,6 @@ function envFlagEnabled(value) {
   return /^(1|true|yes|on)$/i.test(String(value ?? '').trim())
 }
 
-function missingEnvVars(names, env) {
-  return names.filter((name) => !String(env[name] ?? '').trim())
-}
-
-function detectLocalMacosReleaseCapabilities(env) {
-  // Login-keychain mode: identity already in login keychain, notary creds stored
-  // as a notarytool keychain profile. No secrets need to live in env vars.
-  const signingIdentity = String(env.MACOS_SIGNING_IDENTITY ?? '').trim()
-  const notaryProfile = String(env.MACOS_NOTARY_PROFILE ?? '').trim()
-  if (signingIdentity && notaryProfile) {
-    return {
-      mode: 'login-keychain',
-      signingReady: true,
-      notarizationReady: true,
-      missingSigning: [],
-      missingNotarization: [],
-    }
-  }
-
-  // Legacy / CI-compatible mode: p12 + base64 + apple-id/password/team-id env vars.
-  const missingSigning = missingEnvVars(macosSigningP12RequiredEnv, env)
-  const missingNotarization = missingEnvVars(macosNotarizationP12RequiredEnv, env)
-  return {
-    mode: 'p12',
-    signingReady: missingSigning.length === 0,
-    notarizationReady: missingNotarization.length === 0,
-    missingSigning,
-    missingNotarization,
-  }
-}
-
 function run(command, args, { cwd = repoRoot, env = process.env, capture = false, dryRun = false } = {}) {
   const rendered = [command, ...args].map(quote).join(' ')
   console.log(`$ ${rendered}`)
@@ -231,29 +174,11 @@ function run(command, args, { cwd = repoRoot, env = process.env, capture = false
     encoding: 'utf8',
     stdio: capture ? 'pipe' : 'inherit',
   })
-
   if (result.status !== 0) {
     const stderr = capture ? result.stderr.trim() : ''
     throw new Error(stderr || `${command} exited with status ${result.status ?? 'unknown'}`)
   }
-
   return capture ? result.stdout.trim() : ''
-}
-
-function resolveHostPnpmInvocation() {
-  if (commandExists('pnpm')) {
-    return ['pnpm']
-  }
-  if (commandExists('corepack')) {
-    return ['corepack', 'pnpm']
-  }
-
-  throw new Error('Missing pnpm (or corepack) on the local host')
-}
-
-function runPnpm(pnpmInvocation, args, options = {}) {
-  const [command, ...prefix] = pnpmInvocation
-  return run(command, [...prefix, ...args], options)
 }
 
 function writeUnixInstallScript(path) {
@@ -278,37 +203,8 @@ default_install_dir() {
 }
 
 INSTALL_DIR="\${1:-$(default_install_dir)}"
-
-echo "Installing nvpn to \${INSTALL_DIR}"
-
-if [ -e "\${INSTALL_DIR}" ] && [ ! -d "\${INSTALL_DIR}" ]; then
-  echo "Install target exists but is not a directory: \${INSTALL_DIR}" >&2
-  exit 1
-fi
-
-if [ ! -d "\${INSTALL_DIR}" ]; then
-  PARENT_DIR="$(dirname "\${INSTALL_DIR}")"
-  if [ ! -w "\${PARENT_DIR}" ]; then
-    echo "Need sudo to create \${INSTALL_DIR}"
-    sudo mkdir -p "\${INSTALL_DIR}"
-  else
-    mkdir -p "\${INSTALL_DIR}"
-  fi
-fi
-
-if [ ! -w "\${INSTALL_DIR}" ]; then
-  echo "Need sudo to install to \${INSTALL_DIR}"
-  sudo install -m 755 nvpn "\${INSTALL_DIR}/"
-else
-  install -m 755 nvpn "\${INSTALL_DIR}/"
-fi
-
-echo "Installed nvpn"
-if ! path_contains "\${INSTALL_DIR}"; then
-  echo "Note: \${INSTALL_DIR} is not currently in PATH"
-fi
-echo "Verify with:"
-echo "  nvpn --help"
+install -d "\${INSTALL_DIR}"
+install -m 755 nvpn "\${INSTALL_DIR}/"
 `,
   )
 }
@@ -323,16 +219,8 @@ Binary included:
   nvpn  - CLI control plane
 
 Quick install:
-  ./install.sh              # installs to /opt/homebrew/bin on Apple Silicon macOS when appropriate, otherwise /usr/local/bin
-  ./install.sh ~/.local/bin # installs to a custom directory
-
-Manual install:
-  cp nvpn /usr/local/bin/
-
-Quick start:
-  nvpn init --participant npub1...alice --participant npub1...bob
-  nvpn up
-  nvpn status
+  ./install.sh
+  ./install.sh ~/.local/bin
 `,
   )
 }
@@ -352,232 +240,10 @@ function packageUnixCliTarball({ binaryPath, targetTriple, tag, dryRun }) {
   const unversioned = join(distDir, `nvpn-${targetTriple}.tar.gz`)
   const versioned = join(distDir, `nvpn-${tag}-${targetTriple}.tar.gz`)
   run('tar', ['-czf', unversioned, '-C', distDir, 'nvpn'], { dryRun })
-  if (!dryRun && !existsSync(unversioned)) {
-    throw new Error(`Expected CLI archive at ${unversioned}`)
-  }
   if (!dryRun) {
     copyFileSync(unversioned, versioned)
   }
   return [unversioned, versioned]
-}
-
-function findFirstFile(root, matcher) {
-  if (!existsSync(root)) {
-    return null
-  }
-
-  const entries = readdirSync(root)
-  const match = entries.find((entry) => matcher(entry))
-  return match ? join(root, match) : null
-}
-
-function prepareLocalMacosSigning(env, { mode, dryRun }) {
-  if (mode === 'login-keychain') {
-    // Identity already lives in the user's login keychain; just verify it's there.
-    const identities = run('security', ['find-identity', '-v', '-p', 'codesigning'], {
-      capture: true,
-      dryRun,
-    })
-    if (!dryRun && !identities.includes(env.MACOS_SIGNING_IDENTITY)) {
-      throw new Error(
-        `Expected signing identity not found in login keychain: ${env.MACOS_SIGNING_IDENTITY}`,
-      )
-    }
-    return { keychainPath: null, cleanup() {} }
-  }
-
-  const tempRoot = dryRun ? join(os.tmpdir(), 'nvpn-local-signing-dry-run') : mkdtempSync(join(os.tmpdir(), 'nvpn-local-signing-'))
-  const keychainPath = join(tempRoot, 'nvpn-signing.keychain-db')
-  const certPath = join(tempRoot, 'nvpn-signing-cert.p12')
-  const keychainPassword = env.MACOS_KEYCHAIN_PASSWORD || 'temp_signing_password'
-
-  if (!dryRun) {
-    writeFileSync(certPath, Buffer.from(env.MACOS_CERTIFICATE_P12, 'base64'))
-  }
-
-  run('security', ['create-keychain', '-p', keychainPassword, keychainPath], { dryRun })
-  run('security', ['set-keychain-settings', '-lut', '21600', keychainPath], { dryRun })
-  run('security', ['unlock-keychain', '-p', keychainPassword, keychainPath], { dryRun })
-  run(
-    'security',
-    [
-      'import',
-      certPath,
-      '-k',
-      keychainPath,
-      '-P',
-      env.MACOS_CERTIFICATE_PASSWORD,
-      '-T',
-      '/usr/bin/codesign',
-      '-T',
-      '/usr/bin/security',
-    ],
-    { dryRun },
-  )
-  run(
-    'security',
-    ['set-key-partition-list', '-S', 'apple-tool:,apple:', '-k', keychainPassword, keychainPath],
-    { dryRun },
-  )
-
-  const identities = run('security', ['find-identity', '-v', '-p', 'codesigning', keychainPath], {
-    capture: true,
-    dryRun,
-  })
-  if (!dryRun && !identities.includes(env.MACOS_SIGNING_IDENTITY)) {
-    throw new Error(`Expected signing identity not found: ${env.MACOS_SIGNING_IDENTITY}`)
-  }
-
-  return {
-    keychainPath,
-    cleanup() {
-      if (dryRun) {
-        return
-      }
-      rmSync(certPath, { force: true })
-      run('security', ['delete-keychain', keychainPath], { dryRun })
-      rmSync(tempRoot, { recursive: true, force: true })
-    },
-  }
-}
-
-function signLocalMacosApp({ appPath, env, keychainPath, dryRun }) {
-  const entitlementsPath = join(guiRoot, 'src-tauri', 'Release.entitlements')
-  const args = ['--force', '--deep', '--options', 'runtime', '--timestamp']
-  if (keychainPath) {
-    args.push('--keychain', keychainPath)
-  }
-  if (existsSync(entitlementsPath)) {
-    args.push('--entitlements', entitlementsPath)
-  }
-  args.push('--sign', env.MACOS_SIGNING_IDENTITY, appPath)
-
-  run('codesign', args, { dryRun })
-  run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath], { dryRun })
-}
-
-function notarytoolAuthArgs(env, mode) {
-  if (mode === 'login-keychain') {
-    return ['--keychain-profile', env.MACOS_NOTARY_PROFILE]
-  }
-  return [
-    '--apple-id',
-    env.MACOS_NOTARIZE_APPLE_ID,
-    '--password',
-    env.MACOS_NOTARIZE_APP_PASSWORD,
-    '--team-id',
-    env.MACOS_NOTARIZE_TEAM_ID,
-  ]
-}
-
-function submitNotarization({ artifactPath, authArgs, label, dryRun }) {
-  const submitOutput = run(
-    'xcrun',
-    [
-      'notarytool',
-      'submit',
-      artifactPath,
-      ...authArgs,
-      '--wait',
-      '--output-format',
-      'json',
-    ],
-    { capture: true, dryRun },
-  )
-
-  if (!dryRun) {
-    const submission = JSON.parse(submitOutput)
-    if (submission.status !== 'Accepted') {
-      if (submission.id) {
-        try {
-          run('xcrun', ['notarytool', 'log', submission.id, ...authArgs], { dryRun })
-        } catch {}
-      }
-      throw new Error(`${label} notarization status was '${submission.status}' (expected 'Accepted').`)
-    }
-  }
-}
-
-function notarizeLocalMacosApp({ appPath, env, mode, dryRun }) {
-  const tempRoot = dryRun ? join(os.tmpdir(), 'nvpn-local-notary-dry-run') : mkdtempSync(join(os.tmpdir(), 'nvpn-local-notary-'))
-  const notaryZipPath = join(tempRoot, 'nvpn-notarize.zip')
-  const authArgs = notarytoolAuthArgs(env, mode)
-
-  try {
-    run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, notaryZipPath], { dryRun })
-    submitNotarization({ artifactPath: notaryZipPath, authArgs, label: 'macOS app', dryRun })
-    run('xcrun', ['stapler', 'staple', appPath], { dryRun })
-    run('xcrun', ['stapler', 'validate', appPath], { dryRun })
-  } finally {
-    if (!dryRun) {
-      rmSync(tempRoot, { recursive: true, force: true })
-    }
-  }
-
-  return authArgs
-}
-
-function createDmgFromApp({ appPath, dmgPath, volumeName, dryRun }) {
-  const stageDir = dryRun
-    ? join(os.tmpdir(), 'nvpn-dmg-dry-run')
-    : mkdtempSync(join(os.tmpdir(), 'nvpn-dmg-'))
-
-  try {
-    if (!dryRun) {
-      rmSync(dmgPath, { force: true })
-    }
-    run('ditto', [appPath, join(stageDir, basename(appPath))], { dryRun })
-    run('ln', ['-s', '/Applications', join(stageDir, 'Applications')], { dryRun })
-    run(
-      'hdiutil',
-      ['create', '-volname', volumeName, '-srcfolder', stageDir, '-fs', 'HFS+', '-format', 'UDZO', '-ov', dmgPath],
-      { dryRun },
-    )
-  } finally {
-    if (!dryRun) {
-      rmSync(stageDir, { recursive: true, force: true })
-    }
-  }
-}
-
-function notarizeAndStapleDmg({ dmgPath, authArgs, dryRun }) {
-  submitNotarization({ artifactPath: dmgPath, authArgs, label: 'macOS DMG', dryRun })
-  run('xcrun', ['stapler', 'staple', dmgPath], { dryRun })
-  run('xcrun', ['stapler', 'validate', dmgPath], { dryRun })
-}
-
-function verifyPackagedMacosArtifact({ appPath, signed, notarized, dryRun }) {
-  if (signed) {
-    run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath], { dryRun })
-  }
-  if (notarized) {
-    run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath], { dryRun })
-  }
-}
-
-function assertMacosAppVersion({ appPath, tag, dryRun }) {
-  if (dryRun) {
-    return
-  }
-
-  const expectedVersion = tag.replace(/^v/, '')
-  const infoPlistPath = join(appPath, 'Contents', 'Info.plist')
-  const shortVersion = run(
-    '/usr/libexec/PlistBuddy',
-    ['-c', 'Print :CFBundleShortVersionString', infoPlistPath],
-    { capture: true },
-  )
-  const bundleVersion = run(
-    '/usr/libexec/PlistBuddy',
-    ['-c', 'Print :CFBundleVersion', infoPlistPath],
-    { capture: true },
-  )
-
-  if (shortVersion !== expectedVersion || bundleVersion !== expectedVersion) {
-    throw new Error(
-      `macOS app bundle version mismatch: expected ${expectedVersion}, got CFBundleShortVersionString=${shortVersion || '<empty>'}, CFBundleVersion=${bundleVersion || '<empty>'}.`,
-    )
-  }
 }
 
 function defaultSharedWindowsRepoPath() {
@@ -618,78 +284,54 @@ function windowsArtifactArch(targetTriple) {
   if (targetTriple.startsWith('aarch64-')) {
     return 'arm64'
   }
-
   return targetTriple
 }
 
 function syncRepoToWindowsVm({ vmName, sharedRepoPath, dryRun }) {
-  const script = `
+  runWindowsPowerShell(
+    vmName,
+    `
 $sharedRepo = ${psQuote(sharedRepoPath)}
 $guestRepo = Join-Path $env:USERPROFILE 'src\\nostr-vpn'
 $guestRoot = Split-Path $guestRepo
 New-Item -ItemType Directory -Force -Path $guestRoot | Out-Null
-robocopy $sharedRepo $guestRepo /MIR /XD target dist .git node_modules .pnpm-store artifacts /XF .env.release.local .env.zapstore.local | Out-Null
-$binDir = Join-Path $env:USERPROFILE 'bin'
-New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-$shimPath = Join-Path $binDir 'pnpm.cmd'
-$shimLines = @(
-  '@echo off'
-  'corepack pnpm %*'
-)
-Set-Content -Encoding ASCII -Path $shimPath -Value $shimLines
-`
-
-  runWindowsPowerShell(vmName, script, { dryRun })
+robocopy $sharedRepo $guestRepo /MIR /XD target dist .git artifacts /XF .env.release.local | Out-Null
+`,
+    { dryRun },
+  )
 }
 
-function buildWindowsArtifacts({
-  env,
-  tag,
-  dryRun,
-  builtLines,
-}) {
+function buildWindowsArtifacts({ env, tag, dryRun, builtLines }) {
   if (process.platform !== 'darwin') {
     throw new SkipStepError('Windows VM builds are only wired up for the macOS + Parallels workflow.')
   }
   if (!commandExists('prlctl')) {
-    throw new SkipStepError('Skipping Windows artifacts because prlctl is unavailable.')
+    throw new SkipStepError('Skipping Windows CLI artifacts because prlctl is unavailable.')
   }
 
   const sharedRepoPath = env.NVPN_WINDOWS_SHARED_REPO_PATH || defaultSharedWindowsRepoPath()
   if (!sharedRepoPath) {
-    throw new SkipStepError('Skipping Windows artifacts because the shared repo path could not be derived; set NVPN_WINDOWS_SHARED_REPO_PATH.')
+    throw new SkipStepError('Skipping Windows CLI artifacts because the shared repo path could not be derived; set NVPN_WINDOWS_SHARED_REPO_PATH.')
   }
 
   const vmName =
     env.NVPN_WINDOWS_VM_NAME ||
     autoDetectWindowsVmName(run('prlctl', ['list', '-a'], { capture: true, dryRun }))
   if (!vmName) {
-    throw new SkipStepError('Skipping Windows artifacts because no unique running Windows VM was detected; set NVPN_WINDOWS_VM_NAME.')
+    throw new SkipStepError('Skipping Windows CLI artifacts because no unique running Windows VM was detected; set NVPN_WINDOWS_VM_NAME.')
   }
 
   syncRepoToWindowsVm({ vmName, sharedRepoPath, dryRun })
 
   const llvmBin = env.NVPN_WINDOWS_LLVM_BIN || 'C:\\Program Files\\LLVM\\bin'
-  const cliTargets = splitCsv(
+  const targets = splitCsv(
     env.NVPN_WINDOWS_CLI_TARGETS || 'x86_64-pc-windows-msvc,aarch64-pc-windows-msvc',
   )
-  const guiTargets = splitCsv(env.NVPN_WINDOWS_GUI_TARGETS || 'x86_64-pc-windows-msvc')
-
   const guestRepo = "(Join-Path $env:USERPROFILE 'src\\nostr-vpn')"
   const distPath = `${sharedRepoPath}\\dist`
-  const pathSetup = `$env:PATH = (Join-Path $env:USERPROFILE 'bin') + ';' + ${psQuote(llvmBin)} + ';' + $env:PATH`
+  const pathSetup = `$env:PATH = ${psQuote(llvmBin)} + ';' + $env:PATH`
 
-  runWindowsPowerShell(
-    vmName,
-    `
-${pathSetup}
-Set-Location ${guestRepo}
-corepack pnpm --dir crates/nostr-vpn-gui install --frozen-lockfile
-`,
-    { dryRun },
-  )
-
-  for (const target of cliTargets) {
+  for (const target of targets) {
     const archiveName = `nvpn-${tag}-${target}.zip`
     runWindowsPowerShell(
       vmName,
@@ -710,106 +352,39 @@ Remove-Item -Recurse -Force $tempDir
     )
     builtLines.push(`Built Windows ${windowsArtifactArch(target)} CLI inside Parallels VM ${vmName}.`)
   }
-
-  for (const target of guiTargets) {
-    const arch = windowsArtifactArch(target)
-    const installerName = `nostr-vpn-${tag}-windows-${arch}-setup.exe`
-    runWindowsPowerShell(
-      vmName,
-      `
-${pathSetup}
-Set-Location ${guestRepo}
-corepack pnpm --dir crates/nostr-vpn-gui run tauri build --target ${psQuote(target)} --ci
-$bundleDir = Join-Path ${guestRepo} ${psQuote(`target\\${target}\\release\\bundle\\nsis`)}
-$installer = Get-ChildItem $bundleDir -Filter '*-setup.exe' | Select-Object -First 1
-if (-not $installer) { throw "No installer found for ${target}" }
-Copy-Item $installer.FullName ${psQuote(`${distPath}\\${installerName}`)} -Force
-`,
-      { dryRun },
-    )
-    builtLines.push(`Built Windows ${arch} desktop installer inside Parallels VM ${vmName}.`)
-  }
 }
 
 function buildLinuxArtifacts({ env, tag, dryRun, builtLines }) {
   if (!commandExists('docker')) {
-    throw new SkipStepError('Skipping Linux artifacts because docker is not on PATH.')
+    throw new SkipStepError('Skipping Linux CLI artifacts because docker is not on PATH.')
   }
 
-  // Linux desktop releases should be x64 by default. Docker Desktop's amd64
-  // emulation on Apple Silicon currently crashes rustc, which makes tauri-cli
-  // panic while detecting the Rust host triple. Build x64 on a native amd64
-  // Docker host, or explicitly opt into linux/arm64 when producing an extra
-  // ARM64 Linux artifact.
   const platform = env.NVPN_LINUX_DOCKER_PLATFORM || 'linux/amd64'
-  if (
-    shouldBlockLocalLinuxAmd64Qemu({
-      platform,
-      hostPlatform: process.platform,
-      hostArch: process.arch,
-      allowQemu: envFlagEnabled(env.NVPN_ALLOW_DOCKER_QEMU_LINUX_AMD64),
-    })
-  ) {
-    throw new Error(
-      'Linux x64 desktop artifacts need a native amd64 Docker host. Docker/QEMU on Apple Silicon segfaults rustc; run this step on amd64 Linux or set NVPN_LINUX_DOCKER_PLATFORM=linux/arm64 to explicitly build optional ARM64 Linux artifacts.',
-    )
-  }
-
-  const {
-    linuxArchSuffix,
-    muslTriple,
-  } = linuxReleaseTargetsForDockerPlatform(platform)
-
+  const { linuxArchSuffix, muslTriple } = linuxReleaseTargetsForDockerPlatform(platform)
   const imageName = 'nostr-vpn-linux-release'
-  run(
-    'docker',
-    ['build', '--platform', platform, '-f', 'Dockerfile.linux-release', '-t', imageName, '.'],
-    { cwd: repoRoot, dryRun },
-  )
-
-  const linuxAppImageName = `nostr-vpn-${tag}-linux-${linuxArchSuffix}.AppImage`
-  const linuxDebName = `nostr-vpn-${tag}-linux-${linuxArchSuffix}.deb`
-  const linuxCliTarball = `nvpn-${tag}-${muslTriple}.tar.gz`
-
-  if (!dryRun && existsSync(distDir)) {
-    const linuxAssetNamesForTag = new Set([
-      `nostr-vpn-${tag}-linux-x64.AppImage`,
-      `nostr-vpn-${tag}-linux-x64.deb`,
-      `nostr-vpn-${tag}-linux-arm64.AppImage`,
-      `nostr-vpn-${tag}-linux-arm64.deb`,
-      `nvpn-${tag}-x86_64-unknown-linux-musl.tar.gz`,
-      `nvpn-${tag}-aarch64-unknown-linux-musl.tar.gz`,
-    ])
-
-    for (const entry of readdirSync(distDir, { withFileTypes: true }).filter((entry) => entry.isFile())) {
-      if (linuxAssetNamesForTag.has(entry.name)) {
-        rmSync(join(distDir, entry.name), { force: true })
-      }
-    }
-  }
-
-  // The repo's node_modules and target/ are populated for the host platform
-  // (macOS aarch64 in dev). Sharing those into the Linux container would
-  // make pnpm purge the wrong-arch modules and cargo invalidate the Mac
-  // build cache. Snapshot the source into /build inside the container,
-  // run the build there, and only copy the artifacts back into /work/dist
-  // (the bind-mounted host repo).
-  const innerScript = [
-    'set -euo pipefail',
-    `rustup target add ${muslTriple}`,
-    'rsync -a --exclude node_modules --exclude target --exclude dist --exclude .git /work/ /build/',
-    'cd /build',
-    'pnpm --dir crates/nostr-vpn-gui install --frozen-lockfile',
-    'pnpm --dir crates/nostr-vpn-gui exec tauri build --bundles appimage,deb --ci',
-    `cp "$(ls -1t target/release/bundle/appimage/*.AppImage | head -1)" "/work/dist/${linuxAppImageName}"`,
-    `cp "$(ls -1t target/release/bundle/deb/*.deb | head -1)" "/work/dist/${linuxDebName}"`,
-    `cargo build --release --target ${muslTriple} -p nostr-vpn-cli`,
-    `tar -czf "/work/dist/${linuxCliTarball}" -C target/${muslTriple}/release nvpn`,
-  ].join(' && ')
+  run('docker', ['build', '--platform', platform, '-f', 'Dockerfile.linux-release', '-t', imageName, '.'], {
+    dryRun,
+  })
 
   if (!dryRun) {
     mkdirSync(distDir, { recursive: true })
   }
+
+  const innerScript = [
+    'set -euo pipefail',
+    `rustup target add ${muslTriple}`,
+    'rsync -a --exclude target --exclude dist --exclude .git /work/ /build/',
+    'cd /build',
+    `cargo build --release --target ${muslTriple} -p nostr-vpn-cli`,
+    'rm -rf /work/dist/nvpn',
+    'mkdir -p /work/dist/nvpn',
+    `cp target/${muslTriple}/release/nvpn /work/dist/nvpn/`,
+    "printf '%s\\n' '#!/bin/bash' 'set -e' 'install -d \"${1:-/usr/local/bin}\"' 'install -m 755 nvpn \"${1:-/usr/local/bin}/\"' > /work/dist/nvpn/install.sh",
+    'chmod +x /work/dist/nvpn/install.sh',
+    "printf '%s\\n' 'nvpn - Nostr-signaled WireGuard control plane' > /work/dist/nvpn/README.txt",
+    `tar -czf /work/dist/nvpn-${muslTriple}.tar.gz -C /work/dist nvpn`,
+    `cp /work/dist/nvpn-${muslTriple}.tar.gz /work/dist/nvpn-${tag}-${muslTriple}.tar.gz`,
+  ].join(' && ')
 
   run(
     'docker',
@@ -818,8 +393,6 @@ function buildLinuxArtifacts({ env, tag, dryRun, builtLines }) {
       '--rm',
       '--platform',
       platform,
-      '-e',
-      'CI=true',
       '-v',
       `${repoRoot}:/work`,
       '-w',
@@ -832,171 +405,22 @@ function buildLinuxArtifacts({ env, tag, dryRun, builtLines }) {
     { dryRun },
   )
 
-  builtLines.push(`Built Linux ${linuxArchSuffix} AppImage, deb, and musl CLI in Docker (${platform}).`)
+  builtLines.push(`Built Linux ${linuxArchSuffix} musl CLI in Docker (${platform}).`)
 }
 
-function ensureAndroidSdkEnv(env) {
-  const updated = { ...env }
-
-  if (!updated.ANDROID_SDK_ROOT) {
-    const candidate = join(os.homedir(), 'Library', 'Android', 'sdk')
-    if (existsSync(candidate)) {
-      updated.ANDROID_SDK_ROOT = candidate
-    }
-  }
-
-  if (!updated.ANDROID_HOME && updated.ANDROID_SDK_ROOT) {
-    updated.ANDROID_HOME = updated.ANDROID_SDK_ROOT
-  }
-
-  return updated
-}
-
-function buildAndroidArtifacts({ env, pnpmInvocation, tag, dryRun, builtLines }) {
-  const androidEnv = ensureAndroidSdkEnv(env)
-  if (!androidEnv.ANDROID_SDK_ROOT && !androidEnv.ANDROID_HOME) {
-    throw new SkipStepError('Skipping Android artifacts because ANDROID_SDK_ROOT/ANDROID_HOME is not configured.')
-  }
-
-  const installedTargets = run('rustup', ['target', 'list', '--installed'], {
-    capture: true,
-    dryRun,
-  })
-  if (!installedTargets.includes('aarch64-linux-android')) {
-    run('rustup', ['target', 'add', 'aarch64-linux-android'], { dryRun })
-  }
-
-  const androidDir = join(guiRoot, 'src-tauri', 'gen', 'android')
-  const aclManifestPath = join(guiRoot, 'src-tauri', 'gen', 'schemas', 'acl-manifests.json')
-  const originalAclManifest =
-    !dryRun && existsSync(aclManifestPath) ? readFileSync(aclManifestPath, 'utf8') : null
-  const keyPropertiesPath = join(androidDir, 'key.properties')
-  const tempKeystorePath = join(androidDir, 'upload-keystore.jks')
-  let wroteKeyProperties = false
-  let wroteTempKeystore = false
-
-  try {
-    const keystorePath =
-      androidEnv.ANDROID_KEYSTORE_PATH ||
-      (androidEnv.ANDROID_KEYSTORE_B64 ? tempKeystorePath : '')
-    if (androidEnv.ANDROID_KEYSTORE_B64 && !dryRun) {
-      writeFileSync(tempKeystorePath, Buffer.from(androidEnv.ANDROID_KEYSTORE_B64, 'base64'))
-      wroteTempKeystore = true
-    }
-
-    const hasSigning =
-      keystorePath &&
-      androidEnv.ANDROID_KEYSTORE_PASSWORD &&
-      (androidEnv.ANDROID_KEY_ALIAS || 'nostr-vpn-upload') &&
-      (androidEnv.ANDROID_KEY_PASSWORD || androidEnv.ANDROID_KEYSTORE_PASSWORD)
-
-    if (hasSigning && !dryRun) {
-      writeFileSync(
-        keyPropertiesPath,
-        `storePassword=${androidEnv.ANDROID_KEYSTORE_PASSWORD}
-keyPassword=${androidEnv.ANDROID_KEY_PASSWORD || androidEnv.ANDROID_KEYSTORE_PASSWORD}
-keyAlias=${androidEnv.ANDROID_KEY_ALIAS || 'nostr-vpn-upload'}
-storeFile=${keystorePath}
-`,
-      )
-      wroteKeyProperties = true
-    }
-
-    runPnpm(
-      pnpmInvocation,
-      ['--dir', guiRoot, 'exec', 'tauri', 'android', 'build', '--target', 'aarch64', '--apk', '--aab', '--ci'],
-      { env: androidEnv, dryRun },
-    )
-
-    const apkPath = findFirstFile(
-      join(androidDir, 'app', 'build', 'outputs', 'apk', 'universal', 'release'),
-      (entry) => entry.endsWith('.apk'),
-    )
-    const aabPath = findFirstFile(
-      join(androidDir, 'app', 'build', 'outputs', 'bundle', 'universalRelease'),
-      (entry) => entry.endsWith('.aab'),
-    )
-
-    if (!dryRun && (!apkPath || !aabPath)) {
-      throw new Error('Expected Android APK/AAB outputs were not produced.')
-    }
-
-    const apkDest = join(
-      distDir,
-      androidReleaseAssetName(tag, { extension: 'apk', signed: hasSigning }),
-    )
-    const aabDest = join(
-      distDir,
-      androidReleaseAssetName(tag, { extension: 'aab', signed: hasSigning }),
-    )
-    if (!dryRun) {
-      copyFileSync(apkPath, apkDest)
-      copyFileSync(aabPath, aabDest)
-    }
-
-    builtLines.push(
-      hasSigning
-        ? 'Built signed Android arm64 APK/AAB locally.'
-        : 'Built unsigned Android arm64 APK/AAB locally.',
-    )
-  } finally {
-    if (originalAclManifest != null && existsSync(aclManifestPath)) {
-      writeFileSync(aclManifestPath, originalAclManifest)
-    }
-    if (wroteKeyProperties && existsSync(keyPropertiesPath)) {
-      rmSync(keyPropertiesPath, { force: true })
-    }
-    if (wroteTempKeystore && existsSync(tempKeystorePath)) {
-      rmSync(tempKeystorePath, { force: true })
-    }
-  }
-}
-
-function findSignedAndroidApkPath(tag) {
-  const signedApkPath = join(distDir, androidReleaseAssetName(tag, { extension: 'apk' }))
-  if (existsSync(signedApkPath)) {
-    return signedApkPath
-  }
-
-  const unsignedApkPath = join(
-    distDir,
-    androidReleaseAssetName(tag, { extension: 'apk', signed: false }),
-  )
-  if (existsSync(unsignedApkPath)) {
-    throw new Error(
-      `Cannot publish ${basename(unsignedApkPath)} to Zapstore because it is unsigned. Configure Android signing and rebuild the Android release artifact first.`,
-    )
-  }
-
-  throw new Error(
-    `Cannot publish to Zapstore because ${basename(signedApkPath)} was not found in dist. Include the Android release build in this run or provide the signed artifact first.`,
-  )
-}
-
-function publishAndroidToZapstore({ env, tag, dryRun, builtLines }) {
-  const apkPath = dryRun
-    ? join(distDir, androidReleaseAssetName(tag, { extension: 'apk' }))
-    : findSignedAndroidApkPath(tag)
-
-  run('bash', [join(repoRoot, 'scripts', 'publish-zapstore-android.sh')], {
-    env: {
-      ...env,
-      APK_PATH: apkPath,
-    },
-    dryRun,
-  })
-
-  builtLines.push(`Published Android arm64 APK ${basename(apkPath)} to Zapstore.`)
-}
-
-function buildMacosArtifacts({ env, pnpmInvocation, tag, dryRun, builtLines, allowUnsignedMacos }) {
+function buildMacosArtifacts({ tag, dryRun, builtLines }) {
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
     throw new SkipStepError('Skipping macOS artifacts because the host is not Apple Silicon macOS.')
   }
 
-  run('cargo', ['build', '--release', '--target', 'aarch64-apple-darwin', '-p', 'nostr-vpn-cli'], {
-    dryRun,
-  })
+  const env = {
+    ...process.env,
+    NVPN_MACOS_RUST_PROFILE: 'release',
+    NVPN_MACOS_XCODE_CONFIGURATION: 'Release',
+    NVPN_MACOS_RUST_TARGETS: 'aarch64-apple-darwin',
+  }
+  run('bash', [join(repoRoot, 'scripts', 'macos-build'), 'macos-build'], { env, dryRun })
+
   packageUnixCliTarball({
     binaryPath: join(repoRoot, 'target', 'aarch64-apple-darwin', 'release', 'nvpn'),
     targetTriple: 'aarch64-apple-darwin',
@@ -1005,104 +429,29 @@ function buildMacosArtifacts({ env, pnpmInvocation, tag, dryRun, builtLines, all
   })
   builtLines.push('Built Apple Silicon CLI locally.')
 
-  const macosAppTarPath = join(distDir, `nostr-vpn-${tag}-macos-arm64.app.tar.gz`)
-  const macosDmgPath = join(distDir, `nostr-vpn-${tag}-macos-arm64.dmg`)
-  const macosBundleDir = join(repoRoot, 'target', 'aarch64-apple-darwin', 'release', 'bundle', 'macos')
-  if (!dryRun) {
-    rmSync(macosAppTarPath, { force: true })
-    rmSync(macosDmgPath, { force: true })
-    rmSync(macosBundleDir, { recursive: true, force: true })
-  }
-
-  const capabilities = detectLocalMacosReleaseCapabilities(env)
-  if (!capabilities.signingReady && !allowUnsignedMacos) {
-    const missing = capabilities.missingSigning.join(', ')
-    throw new SkipStepError(
-      `Skipping macOS desktop app because signing inputs are missing (${missing}). Pass --allow-unsigned-macos or set NVPN_ALLOW_UNSIGNED_MACOS=1 to force an unsigned build.`,
-    )
-  }
-
-  runPnpm(
-    pnpmInvocation,
-    ['--dir', guiRoot, 'exec', 'tauri', 'build', '--target', 'aarch64-apple-darwin', '--bundles', 'app', '--no-sign', '--ci'],
-    { dryRun },
-  )
-
-  const appPath = findFirstFile(
-    macosBundleDir,
-    (entry) => entry.endsWith('.app'),
-  )
+  const productsDir = join(repoRoot, 'macos', '.build', 'DerivedData', 'Build', 'Products', 'Release')
+  const appPath = existsSync(productsDir)
+    ? readdirSync(productsDir)
+        .map((entry) => join(productsDir, entry))
+        .find((entry) => entry.endsWith('.app'))
+    : null
   if (!dryRun && !appPath) {
-    throw new Error('No macOS .app bundle found in build output.')
-  }
-  const appPathForZip = appPath || '<macos-app-bundle>'
-  if (appPath) {
-    assertMacosAppVersion({ appPath, tag, dryRun })
-  }
-
-  let signed = false
-  let notarized = false
-  let notaryAuthArgs = null
-  let signingContext = null
-  try {
-    if (capabilities.signingReady) {
-      signingContext = prepareLocalMacosSigning(env, { mode: capabilities.mode, dryRun })
-      signLocalMacosApp({
-        appPath: appPathForZip,
-        env,
-        keychainPath: signingContext.keychainPath,
-        dryRun,
-      })
-      signed = true
-
-      if (capabilities.notarizationReady) {
-        notaryAuthArgs = notarizeLocalMacosApp({
-          appPath: appPathForZip,
-          env,
-          mode: capabilities.mode,
-          dryRun,
-        })
-        notarized = true
-      }
-    }
-  } finally {
-    signingContext?.cleanup()
-  }
-
-  // hashtree-updater installs AppBundle assets by gunzipping + untarring,
-  // so the .app.tar.gz must be a real tar.gz (ditto -c -k makes a zip).
-  if (appPath) {
-    run('tar', ['-czf', macosAppTarPath, '-C', dirname(appPath), basename(appPath)], { dryRun })
+    throw new Error(`No native macOS app bundle found under ${productsDir}.`)
   }
 
   if (appPath) {
-    createDmgFromApp({ appPath, dmgPath: macosDmgPath, volumeName: 'Nostr VPN', dryRun })
-    if (notarized && notaryAuthArgs) {
-      notarizeAndStapleDmg({ dmgPath: macosDmgPath, authArgs: notaryAuthArgs, dryRun })
-    }
+    const zipPath = join(distDir, `nostr-vpn-${tag}-macos-arm64.zip`)
+    rmSync(zipPath, { force: true })
+    run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath], { dryRun })
   }
-
-  verifyPackagedMacosArtifact({ appPath: appPathForZip, signed, notarized, dryRun })
-
-  if (notarized) {
-    builtLines.push('Built signed and notarized Apple Silicon macOS app locally.')
-  } else if (signed) {
-    const missing = capabilities.notarizationReady ? '' : ` Missing notarization inputs: ${capabilities.missingNotarization.join(', ')}.`
-    builtLines.push(`Built signed Apple Silicon macOS app locally without notarization.${missing}`)
-  } else {
-    builtLines.push('Built unsigned Apple Silicon macOS app locally because unsigned output was explicitly allowed.')
-  }
+  builtLines.push('Built native Apple Silicon macOS app locally.')
 }
 
-function runVerify({ pnpmInvocation, dryRun, builtLines }) {
-  runPnpm(pnpmInvocation, ['--dir', guiRoot, 'install', '--frozen-lockfile'], { dryRun })
-  runPnpm(pnpmInvocation, ['--dir', guiRoot, 'build'], { dryRun })
+function runVerify({ dryRun, builtLines }) {
   run('cargo', ['fmt', '--check'], { dryRun })
-  run('cargo', ['clippy', '--workspace', '--exclude', 'nostr-vpn-gui', '--all-targets', '--', '-D', 'warnings'], {
-    dryRun,
-  })
-  run('cargo', ['test', '--workspace', '--exclude', 'nostr-vpn-gui'], { dryRun })
-  builtLines.push('Ran frontend build, cargo fmt --check, cargo clippy, and cargo test.')
+  run('cargo', ['clippy', '--workspace', '--all-targets', '--', '-D', 'warnings'], { dryRun })
+  run('cargo', ['test', '--workspace'], { dryRun })
+  builtLines.push('Ran cargo fmt --check, cargo clippy, and cargo test.')
 }
 
 function shouldRunStep(step, options) {
@@ -1112,10 +461,7 @@ function shouldRunStep(step, options) {
   if (options.only && !options.only.has(step)) {
     return false
   }
-  if (options.skip.has(step)) {
-    return false
-  }
-  return true
+  return !options.skip.has(step)
 }
 
 function collectReleaseAssetPaths(tag) {
@@ -1126,19 +472,17 @@ function collectReleaseAssetPaths(tag) {
   const versionedNames = new Set(
     readdirSync(distDir).filter((entry) => entry.includes(`-${tag}-`) || entry.includes(`${tag}-`)),
   )
-
   const paths = []
+
   for (const entry of readdirSync(distDir).sort()) {
     const fullPath = join(distDir, entry)
     if (!statSync(fullPath).isFile()) {
       continue
     }
-
     if (entry.includes(tag)) {
       paths.push(fullPath)
       continue
     }
-
     const companionPattern = versionlessCliAssets.get(entry)
     if (companionPattern && versionedNames.has(companionPattern.replace('{tag}', tag))) {
       paths.push(fullPath)
@@ -1148,20 +492,10 @@ function collectReleaseAssetPaths(tag) {
   return paths
 }
 
-function stageRelease({
-  tag,
-  commit,
-  stageDir,
-  builtLines,
-  skippedLines,
-  dryRun,
-  allowLinuxArm64DesktopOnly = false,
-}) {
+function stageRelease({ tag, commit, stageDir, builtLines, skippedLines, dryRun }) {
   const assetPaths = collectReleaseAssetPaths(tag)
   const assetNames = assetPaths.map((assetPath) => basename(assetPath))
-  validateReleaseAssetSet(assetNames, {
-    allowLinuxArm64DesktopOnly,
-  })
+  validateReleaseAssetSet(assetNames)
 
   if (dryRun) {
     console.log(`Would stage ${assetPaths.length} currently visible asset(s) into ${stageDir}`)
@@ -1255,19 +589,12 @@ function main() {
   const releaseTree = options.releaseTree || env.NVPN_RELEASE_TREE || 'releases/nostr-vpn'
   const stageDir =
     options.stageDir || join(os.tmpdir(), `nostr-vpn-release-${tag.replace(/[^\w.-]/g, '_')}`)
-
+  const allowPartial = options.allowPartial || envFlagEnabled(env.NVPN_RELEASE_ALLOW_PARTIAL)
   const builtLines = []
   const skippedLines = []
-  const allowUnsignedMacos = options.allowUnsignedMacos || envFlagEnabled(env.NVPN_ALLOW_UNSIGNED_MACOS)
-  const allowPartial = options.allowPartial || envFlagEnabled(env.NVPN_RELEASE_ALLOW_PARTIAL)
-  const publishZapstore = options.publishZapstore || envFlagEnabled(env.NVPN_PUBLISH_ZAPSTORE)
-  const allowLinuxArm64DesktopOnly = envFlagEnabled(env.NVPN_ALLOW_LINUX_ARM64_DESKTOP_ONLY)
 
   console.log(`Release tag: ${tag}`)
   console.log(`Release tree: ${releaseTree}`)
-  if (publishZapstore) {
-    console.log('Zapstore publishing enabled for the signed Android APK.')
-  }
   if (loadedPaths.length > 0) {
     console.log(`Loaded env files: ${loadedPaths.join(', ')}`)
   }
@@ -1275,19 +602,9 @@ function main() {
     console.log('Dry run mode: no build, copy, or publish commands will be executed.')
   }
 
-  const pnpmInvocation = resolveHostPnpmInvocation()
-
   const steps = [
-    ['verify', () => runVerify({ pnpmInvocation, dryRun: options.dryRun, builtLines })],
-    ['macos', () => buildMacosArtifacts({
-      env,
-      pnpmInvocation,
-      tag,
-      dryRun: options.dryRun,
-      builtLines,
-      allowUnsignedMacos,
-    })],
-    ['android', () => buildAndroidArtifacts({ env, pnpmInvocation, tag, dryRun: options.dryRun, builtLines })],
+    ['verify', () => runVerify({ dryRun: options.dryRun, builtLines })],
+    ['macos', () => buildMacosArtifacts({ tag, dryRun: options.dryRun, builtLines })],
     ['linux', () => buildLinuxArtifacts({ env, tag, dryRun: options.dryRun, builtLines })],
     ['windows', () => buildWindowsArtifacts({ env, tag, dryRun: options.dryRun, builtLines })],
   ]
@@ -1324,37 +641,22 @@ function main() {
     builtLines,
     skippedLines,
     dryRun: options.dryRun,
-    allowLinuxArm64DesktopOnly,
   })
 
   if (options.publish) {
     if (!commandExists('htree')) {
       throw new Error('Missing htree; cannot publish release.')
     }
-    const cid = publishRelease({
-      stageDir,
-      releaseTree,
-      tag,
-      dryRun: options.dryRun,
-    })
+    const cid = publishRelease({ stageDir, releaseTree, tag, dryRun: options.dryRun })
     console.log(`Published ${tag} to ${releaseTree} via ${cid}`)
-  } else {
-    console.log(`Staged release at ${stageDir}`)
-  }
-
-  if (publishZapstore) {
-    publishAndroidToZapstore({
-      env,
-      tag,
-      dryRun: options.dryRun,
-      builtLines,
-    })
+  } else if (!options.dryRun) {
+    console.log(`Staged ${tag} at ${stageDir}`)
   }
 }
 
 try {
   main()
 } catch (error) {
-  console.error(error.message)
+  console.error(error instanceof Error ? error.message : String(error))
   process.exit(1)
 }

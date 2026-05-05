@@ -7,14 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g., v0.2.3)'
+        description: 'Tag to release (e.g., v0.3.23)'
         required: true
 
 env:
   CARGO_TERM_COLOR: always
-  ANDROID_SDK_API_LEVEL: '36'
-  ANDROID_BUILD_TOOLS: '36.0.0'
-  ANDROID_NDK_VERSION: '28.2.13676358'
 
 jobs:
   verify:
@@ -31,24 +28,6 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-          run_install: false
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: crates/nostr-vpn-gui/pnpm-lock.yaml
-
-      - name: Build frontend
-        run: |
-          pnpm --dir crates/nostr-vpn-gui install --frozen-lockfile
-          pnpm --dir crates/nostr-vpn-gui build
-
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
@@ -56,13 +35,13 @@ jobs:
         run: cargo fmt --check
 
       - name: Run clippy
-        run: cargo clippy --workspace --exclude nostr-vpn-gui --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace --exclude nostr-vpn-gui
+        run: cargo test --workspace
 
   build-cli:
-    name: Build CLI release artifacts (${{ matrix.target }})
+    name: Build CLI release artifact (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     needs: verify
     permissions:
@@ -79,6 +58,9 @@ jobs:
             cross: true
           - os: macos-14
             target: aarch64-apple-darwin
+            cross: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
             cross: false
     steps:
       - name: Checkout repository
@@ -98,23 +80,31 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Build CLI (cross)
+      - name: Build CLI with cross
         if: ${{ matrix.cross }}
         run: cross build --release --target ${{ matrix.target }} -p nostr-vpn-cli
 
-      - name: Build CLI (native)
+      - name: Build CLI natively
         if: ${{ !matrix.cross }}
         run: cargo build --release --target ${{ matrix.target }} -p nostr-vpn-cli
 
-      - name: Package CLI artifacts
+      - name: Package CLI artifact
         shell: bash
         run: |
+          set -euo pipefail
           RELEASE_VERSION="${{ github.event.inputs.tag || github.ref_name }}"
-          BIN_DIR="target/${{ matrix.target }}/release"
+          TARGET="${{ matrix.target }}"
+          BIN_DIR="target/${TARGET}/release"
+          rm -rf dist/nvpn
           mkdir -p dist/nvpn
 
-          cp "${BIN_DIR}/nvpn" dist/nvpn/
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "${BIN_DIR}/nvpn.exe" dist/nvpn/
+            powershell -NoProfile -Command "Compress-Archive -Path 'dist/nvpn/*' -DestinationPath 'dist/nvpn-${RELEASE_VERSION}-${TARGET}.zip' -Force"
+            exit 0
+          fi
 
+          cp "${BIN_DIR}/nvpn" dist/nvpn/
           cat > dist/nvpn/install.sh << 'INSTALL_SCRIPT'
           #!/bin/bash
           set -e
@@ -135,37 +125,8 @@ jobs:
           }
 
           INSTALL_DIR="${1:-$(default_install_dir)}"
-
-          echo "Installing nvpn to ${INSTALL_DIR}"
-
-          if [ -e "${INSTALL_DIR}" ] && [ ! -d "${INSTALL_DIR}" ]; then
-            echo "Install target exists but is not a directory: ${INSTALL_DIR}" >&2
-            exit 1
-          fi
-
-          if [ ! -d "${INSTALL_DIR}" ]; then
-            PARENT_DIR="$(dirname "${INSTALL_DIR}")"
-            if [ ! -w "${PARENT_DIR}" ]; then
-              echo "Need sudo to create ${INSTALL_DIR}"
-              sudo mkdir -p "${INSTALL_DIR}"
-            else
-              mkdir -p "${INSTALL_DIR}"
-            fi
-          fi
-
-          if [ ! -w "${INSTALL_DIR}" ]; then
-            echo "Need sudo to install to ${INSTALL_DIR}"
-            sudo install -m 755 nvpn "${INSTALL_DIR}/"
-          else
-            install -m 755 nvpn "${INSTALL_DIR}/"
-          fi
-
-          echo "Installed nvpn"
-          if ! path_contains "${INSTALL_DIR}"; then
-            echo "Note: ${INSTALL_DIR} is not currently in PATH"
-          fi
-          echo "Verify with:"
-          echo "  nvpn --help"
+          install -d "${INSTALL_DIR}"
+          install -m 755 nvpn "${INSTALL_DIR}/"
           INSTALL_SCRIPT
           chmod +x dist/nvpn/install.sh
 
@@ -177,53 +138,28 @@ jobs:
             nvpn  - CLI control plane
 
           Quick install:
-            ./install.sh              # installs to /opt/homebrew/bin on Apple Silicon macOS when appropriate, otherwise /usr/local/bin
-            ./install.sh ~/.local/bin # installs to custom directory
-
-          Manual install:
-            cp nvpn /usr/local/bin/
-
-          Quick start:
-            nvpn init --participant npub1...alice --participant npub1...bob
-            nvpn up
-            nvpn status
-
-          More info: https://github.com/${{ github.repository }}
+            ./install.sh
+            ./install.sh ~/.local/bin
           README_TXT
 
-          cd dist
-          tar -czvf "nvpn-${{ matrix.target }}.tar.gz" nvpn
-          cp "nvpn-${{ matrix.target }}.tar.gz" "nvpn-${RELEASE_VERSION}-${{ matrix.target }}.tar.gz"
-          rm -rf nvpn
+          tar -czf "dist/nvpn-${TARGET}.tar.gz" -C dist nvpn
+          cp "dist/nvpn-${TARGET}.tar.gz" "dist/nvpn-${RELEASE_VERSION}-${TARGET}.tar.gz"
 
-      - name: Upload CLI artifacts
+      - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
           name: cli-${{ matrix.target }}
           path: |
+            dist/nvpn-${{ github.event.inputs.tag || github.ref_name }}-${{ matrix.target }}.*
             dist/nvpn-${{ matrix.target }}.tar.gz
-            dist/nvpn-${{ github.event.inputs.tag || github.ref_name }}-${{ matrix.target }}.tar.gz
           retention-days: 7
 
   build-macos-app:
-    name: Build macOS desktop app
+    name: Build native macOS app
     runs-on: macos-14
     needs: verify
     permissions:
       contents: read
-    outputs:
-      macos_signed: ${{ steps.macos_release_status.outputs.signed }}
-      macos_notarized: ${{ steps.macos_release_status.outputs.notarized }}
-      macos_artifact_published: ${{ steps.macos_release_status.outputs.artifact_published }}
-      macos_artifact_skip_reason: ${{ steps.macos_release_status.outputs.artifact_skip_reason }}
-    env:
-      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
-      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-      MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
-      MACOS_NOTARIZE_APPLE_ID: ${{ secrets.MACOS_NOTARIZE_APPLE_ID }}
-      MACOS_NOTARIZE_APP_PASSWORD: ${{ secrets.MACOS_NOTARIZE_APP_PASSWORD }}
-      MACOS_NOTARIZE_TEAM_ID: ${{ secrets.MACOS_NOTARIZE_TEAM_ID }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -235,661 +171,47 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-          run_install: false
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: crates/nostr-vpn-gui/pnpm-lock.yaml
-
-      - name: Install GUI dependencies
-        run: pnpm --dir crates/nostr-vpn-gui install --frozen-lockfile
-
-      - name: Detect macOS release capabilities
-        id: macos_capabilities
-        shell: bash
-        run: |
-          signing_required=(
-            MACOS_SIGNING_IDENTITY
-            MACOS_CERTIFICATE_P12
-            MACOS_CERTIFICATE_PASSWORD
-          )
-          notarization_required=(
-            MACOS_NOTARIZE_APPLE_ID
-            MACOS_NOTARIZE_APP_PASSWORD
-            MACOS_NOTARIZE_TEAM_ID
-          )
-          missing_signing=()
-          missing_notarization=()
-
-          for name in "${signing_required[@]}"; do
-            if [ -z "${!name}" ]; then
-              missing_signing+=("${name}")
-            fi
-          done
-
-          for name in "${notarization_required[@]}"; do
-            if [ -z "${!name}" ]; then
-              missing_notarization+=("${name}")
-            fi
-          done
-
-          signing_ready=true
-          notarization_ready=true
-
-          if [ "${#missing_signing[@]}" -ne 0 ]; then
-            signing_ready=false
-          fi
-
-          if [ "${#missing_notarization[@]}" -ne 0 ]; then
-            notarization_ready=false
-          fi
-
-          publish_ready=false
-          if [ "${signing_ready}" = "true" ] && [ "${notarization_ready}" = "true" ]; then
-            publish_ready=true
-          fi
-
-          echo "signing_ready=${signing_ready}" >> "${GITHUB_OUTPUT}"
-          echo "notarization_ready=${notarization_ready}" >> "${GITHUB_OUTPUT}"
-          echo "publish_ready=${publish_ready}" >> "${GITHUB_OUTPUT}"
-
-          if [ "${publish_ready}" != "true" ]; then
-            missing=("${missing_signing[@]}" "${missing_notarization[@]}")
-            echo "::warning::macOS signing/notarization secrets missing: ${missing[*]}. The GitHub release will continue without a macOS desktop artifact."
-          fi
-
-      - name: Install macOS signing certificate
-        if: ${{ steps.macos_capabilities.outputs.publish_ready == 'true' }}
-        shell: bash
-        run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/nvpn-signing.keychain-db"
-          KEYCHAIN_PASSWORD="${MACOS_KEYCHAIN_PASSWORD:-temp_signing_password}"
-          CERT_PATH="$RUNNER_TEMP/nvpn-signing-cert.p12"
-
-          printf '%s' "${MACOS_CERTIFICATE_P12}" | base64 --decode > "${CERT_PATH}" 2>/dev/null || \
-            printf '%s' "${MACOS_CERTIFICATE_P12}" | base64 -D > "${CERT_PATH}"
-
-          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
-          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-          security import "${CERT_PATH}" -k "${KEYCHAIN_PATH}" -P "${MACOS_CERTIFICATE_PASSWORD}" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple: -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-          security list-keychains -d user -s "${KEYCHAIN_PATH}"
-          security default-keychain -d user -s "${KEYCHAIN_PATH}"
-
-          if ! security find-identity -v -p codesigning "${KEYCHAIN_PATH}" | grep -Fq "${MACOS_SIGNING_IDENTITY}"; then
-            echo "Expected signing identity not found: ${MACOS_SIGNING_IDENTITY}"
-            exit 1
-          fi
-
-      - name: Build macOS app bundle
-        id: build_macos_app_bundle
-        if: ${{ steps.macos_capabilities.outputs.publish_ready == 'true' }}
-        continue-on-error: true
-        run: pnpm --dir crates/nostr-vpn-gui exec tauri build --target aarch64-apple-darwin --bundles app --no-sign --ci
-
-      - name: Code sign macOS app
-        id: code_sign_macos_app
-        if: ${{ steps.macos_capabilities.outputs.publish_ready == 'true' && steps.build_macos_app_bundle.outcome == 'success' }}
-        continue-on-error: true
-        shell: bash
-        run: |
-          APP_PATH="$(find target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-          if [ -z "${APP_PATH}" ]; then
-            echo "No macOS .app bundle found in build output"
-            exit 1
-          fi
-
-          if [ -f "crates/nostr-vpn-gui/src-tauri/Release.entitlements" ]; then
-            codesign --force --deep --options runtime --timestamp \
-              --entitlements crates/nostr-vpn-gui/src-tauri/Release.entitlements \
-              --sign "${MACOS_SIGNING_IDENTITY}" \
-              "${APP_PATH}"
-          else
-            codesign --force --deep --options runtime --timestamp \
-              --sign "${MACOS_SIGNING_IDENTITY}" \
-              "${APP_PATH}"
-          fi
-
-          codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
-
-      - name: Notarize macOS app
-        id: notarize_macos_app
-        if: ${{ steps.macos_capabilities.outputs.publish_ready == 'true' && steps.code_sign_macos_app.outcome == 'success' }}
-        continue-on-error: true
-        shell: bash
-        run: |
-          APP_PATH="$(find target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-          if [ -z "${APP_PATH}" ]; then
-            echo "No macOS .app bundle found in build output"
-            exit 1
-          fi
-
-          NOTARIZE_ZIP="$RUNNER_TEMP/nvpn-notarize.zip"
-          ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "${NOTARIZE_ZIP}"
-
-          set +e
-          SUBMIT_OUTPUT="$(xcrun notarytool submit "${NOTARIZE_ZIP}" \
-            --apple-id "${MACOS_NOTARIZE_APPLE_ID}" \
-            --password "${MACOS_NOTARIZE_APP_PASSWORD}" \
-            --team-id "${MACOS_NOTARIZE_TEAM_ID}" \
-            --wait \
-            --output-format json 2>&1)"
-          submit_status=$?
-          set -e
-
-          echo "${SUBMIT_OUTPUT}"
-
-          if [ "${submit_status}" -ne 0 ]; then
-            failure_reason="macos-notarization-submit-failed"
-            if printf '%s' "${SUBMIT_OUTPUT}" | grep -Fq 'A required agreement is missing or has expired'; then
-              failure_reason="apple-developer-agreement-inactive"
-              echo "::warning::Apple rejected notarization because the Developer Program agreement for team ${MACOS_NOTARIZE_TEAM_ID} is missing or expired."
-            fi
-            echo "failure_reason=${failure_reason}" >> "${GITHUB_OUTPUT}"
-            exit 1
-          fi
-
-          SUBMISSION_ID="$(printf '%s' "${SUBMIT_OUTPUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')"
-          SUBMISSION_STATUS="$(printf '%s' "${SUBMIT_OUTPUT}" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
-
-          if [ "${SUBMISSION_STATUS}" != "Accepted" ]; then
-            failure_reason="macos-notarization-status-$(printf '%s' "${SUBMISSION_STATUS:-unknown}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')"
-            echo "failure_reason=${failure_reason}" >> "${GITHUB_OUTPUT}"
-            echo "Notarization status was '${SUBMISSION_STATUS}' (expected 'Accepted')."
-            if [ -n "${SUBMISSION_ID}" ]; then
-              xcrun notarytool log "${SUBMISSION_ID}" \
-                --apple-id "${MACOS_NOTARIZE_APPLE_ID}" \
-                --password "${MACOS_NOTARIZE_APP_PASSWORD}" \
-                --team-id "${MACOS_NOTARIZE_TEAM_ID}" || true
-            fi
-            exit 1
-          fi
-
-          xcrun stapler staple "${APP_PATH}"
-          xcrun stapler validate "${APP_PATH}"
-
-      - name: Record macOS release status
-        id: macos_release_status
-        if: ${{ always() }}
-        shell: bash
+      - name: Build native macOS app
         env:
-          PUBLISH_READY: ${{ steps.macos_capabilities.outputs.publish_ready }}
-          SIGNING_READY: ${{ steps.macos_capabilities.outputs.signing_ready }}
-          NOTARIZATION_READY: ${{ steps.macos_capabilities.outputs.notarization_ready }}
-          BUILD_OUTCOME: ${{ steps.build_macos_app_bundle.outcome }}
-          SIGN_OUTCOME: ${{ steps.code_sign_macos_app.outcome }}
-          NOTARIZE_OUTCOME: ${{ steps.notarize_macos_app.outcome }}
-          NOTARIZE_FAILURE_REASON: ${{ steps.notarize_macos_app.outputs.failure_reason }}
-        run: |
-          signed=false
-          notarized=false
-          artifact_published=false
-          artifact_skip_reason=
+          NVPN_MACOS_RUST_PROFILE: release
+          NVPN_MACOS_XCODE_CONFIGURATION: Release
+          NVPN_MACOS_RUST_TARGETS: aarch64-apple-darwin
+        run: ./scripts/macos-build macos-build
 
-          if [ "${SIGN_OUTCOME}" = "success" ]; then
-            signed=true
-          fi
-
-          if [ "${NOTARIZE_OUTCOME}" = "success" ]; then
-            notarized=true
-          fi
-
-          echo "signed=${signed}" >> "${GITHUB_OUTPUT}"
-          echo "notarized=${notarized}" >> "${GITHUB_OUTPUT}"
-          if [ "${PUBLISH_READY}" = "true" ] && [ "${BUILD_OUTCOME}" = "success" ] && [ "${signed}" = "true" ] && [ "${notarized}" = "true" ]; then
-            artifact_published=true
-          fi
-          echo "artifact_published=${artifact_published}" >> "${GITHUB_OUTPUT}"
-
-          if [ "${PUBLISH_READY}" != "true" ]; then
-            artifact_skip_reason="macos-release-secrets-missing"
-            echo "::warning::Skipping macOS desktop artifact because signing/notarization secrets are not fully configured."
-          elif [ "${BUILD_OUTCOME}" != "success" ]; then
-            artifact_skip_reason="macos-app-build-failed"
-            echo "::warning::Skipping macOS desktop artifact because the macOS app bundle failed to build."
-          elif [ "${signed}" != "true" ]; then
-            artifact_skip_reason="macos-code-signing-failed"
-            echo "::warning::Skipping macOS desktop artifact because code signing failed."
-          elif [ "${notarized}" != "true" ]; then
-            artifact_skip_reason="${NOTARIZE_FAILURE_REASON:-macos-notarization-failed}"
-            if [ "${artifact_skip_reason}" = "apple-developer-agreement-inactive" ]; then
-              echo "::warning::Skipping macOS desktop artifact because the Apple Developer agreement for notarization is missing or expired."
-            else
-              echo "::warning::Skipping macOS desktop artifact because notarization failed."
-            fi
-          fi
-          echo "artifact_skip_reason=${artifact_skip_reason}" >> "${GITHUB_OUTPUT}"
-
-      - name: Package macOS artifacts
-        if: ${{ steps.macos_release_status.outputs.artifact_published == 'true' }}
+      - name: Package native macOS app
         shell: bash
         run: |
+          set -euo pipefail
           RELEASE_VERSION="${{ github.event.inputs.tag || github.ref_name }}"
-          MACOS_ZIP="nostr-vpn-${RELEASE_VERSION}-macos-arm64.zip"
+          PRODUCTS_DIR="macos/.build/DerivedData/Build/Products/Release"
+          APP_PATH="$(find "${PRODUCTS_DIR}" -maxdepth 2 -name 'Nostr VPN.app' -print -quit)"
+          if [ -z "${APP_PATH}" ]; then
+            echo "No native macOS app bundle found under ${PRODUCTS_DIR}"
+            exit 1
+          fi
           mkdir -p dist
-          APP_PATH="$(find target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-          if [ -z "${APP_PATH}" ]; then
-            echo "No macOS .app bundle found in build output"
-            exit 1
-          fi
+          ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "dist/nostr-vpn-${RELEASE_VERSION}-macos-arm64.zip"
 
-          ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "dist/${MACOS_ZIP}"
-
-      - name: Verify packaged macOS artifact
-        if: ${{ steps.macos_release_status.outputs.artifact_published == 'true' }}
-        shell: bash
-        env:
-          MACOS_SIGNED: ${{ steps.macos_release_status.outputs.signed }}
-          MACOS_NOTARIZED: ${{ steps.macos_release_status.outputs.notarized }}
-        run: |
-          RELEASE_VERSION="${{ github.event.inputs.tag || github.ref_name }}"
-          MACOS_ZIP="dist/nostr-vpn-${RELEASE_VERSION}-macos-arm64.zip"
-          VERIFY_DIR="$RUNNER_TEMP/macos-package-verify"
-          rm -rf "${VERIFY_DIR}"
-          mkdir -p "${VERIFY_DIR}"
-
-          ditto -x -k "${MACOS_ZIP}" "${VERIFY_DIR}"
-
-          APP_PATH="$(find "${VERIFY_DIR}" -maxdepth 1 -name '*.app' -print -quit)"
-          if [ -z "${APP_PATH}" ]; then
-            echo "Packaged zip did not contain a macOS .app bundle"
-            exit 1
-          fi
-
-          if [ "${MACOS_SIGNED}" = "true" ]; then
-            codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
-          else
-            echo "Skipping codesign verification because macOS signing was not configured."
-          fi
-
-          if [ "${MACOS_NOTARIZED}" = "true" ]; then
-            spctl --assess --type execute --verbose=4 "${APP_PATH}"
-          else
-            echo "Skipping Gatekeeper assessment because the app was not notarized."
-          fi
-
-      - name: Upload macOS artifacts
-        if: ${{ steps.macos_release_status.outputs.artifact_published == 'true' }}
+      - name: Upload native macOS app
         uses: actions/upload-artifact@v4
         with:
           name: macos-arm64
           path: dist/nostr-vpn-${{ github.event.inputs.tag || github.ref_name }}-macos-arm64.zip
           retention-days: 7
 
-      - name: Cleanup macOS signing keychain
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/nvpn-signing.keychain-db"
-          security delete-keychain "${KEYCHAIN_PATH}" || true
-          rm -f "$RUNNER_TEMP/nvpn-signing-cert.p12" "$RUNNER_TEMP/nvpn-notarize.zip"
-
-  build-linux-app:
-    name: Build Linux desktop app
-    runs-on: ubuntu-22.04
-    needs: verify
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-          run_install: false
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: crates/nostr-vpn-gui/pnpm-lock.yaml
-
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            file \
-            libayatana-appindicator3-dev \
-            libfuse2 \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            patchelf
-
-      - name: Install GUI dependencies
-        run: pnpm --dir crates/nostr-vpn-gui install --frozen-lockfile
-
-      - name: Build Linux desktop bundles
-        run: pnpm --dir crates/nostr-vpn-gui exec tauri build --bundles appimage,deb --ci
-
-      - name: Package Linux artifacts
-        shell: bash
-        run: |
-          RELEASE_VERSION="${{ github.event.inputs.tag || github.ref_name }}"
-          APPIMAGE_PATH="$(find target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)"
-          DEB_PATH="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
-          mkdir -p dist
-
-          if [ -z "${APPIMAGE_PATH}" ] || [ -z "${DEB_PATH}" ]; then
-            echo "Expected Linux desktop release artifacts were not produced."
-            echo "APPIMAGE_PATH=${APPIMAGE_PATH}"
-            echo "DEB_PATH=${DEB_PATH}"
-            exit 1
-          fi
-
-          cp "${APPIMAGE_PATH}" "dist/nostr-vpn-${RELEASE_VERSION}-linux-x64.AppImage"
-          cp "${DEB_PATH}" "dist/nostr-vpn-${RELEASE_VERSION}-linux-x64.deb"
-
-      - name: Verify Linux artifacts
-        shell: bash
-        run: |
-          RELEASE_VERSION="${{ github.event.inputs.tag || github.ref_name }}"
-          file "dist/nostr-vpn-${RELEASE_VERSION}-linux-x64.AppImage"
-          dpkg-deb --info "dist/nostr-vpn-${RELEASE_VERSION}-linux-x64.deb" >/dev/null
-
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-x64
-          path: |
-            dist/nostr-vpn-${{ github.event.inputs.tag || github.ref_name }}-linux-x64.AppImage
-            dist/nostr-vpn-${{ github.event.inputs.tag || github.ref_name }}-linux-x64.deb
-          retention-days: 7
-
-  build-windows-app:
-    name: Build Windows desktop app
-    runs-on: windows-latest
-    needs: verify
-    permissions:
-      contents: read
-    env:
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      AZURE_CODE_SIGNING_ENDPOINT: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT }}
-      AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
-      AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-          run_install: false
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: crates/nostr-vpn-gui/pnpm-lock.yaml
-
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install GUI dependencies
-        run: pnpm --dir crates/nostr-vpn-gui install --frozen-lockfile
-
-      - name: Build Windows CLI
-        run: cargo build --release -p nostr-vpn-cli
-
-      - name: Build Windows installer
-        run: pnpm --dir crates/nostr-vpn-gui run tauri build --ci
-
-      - name: Detect Windows signing capabilities
-        id: windows_capabilities
-        shell: bash
-        run: |
-          signing_required=(
-            AZURE_TENANT_ID
-            AZURE_CLIENT_ID
-            AZURE_CLIENT_SECRET
-            AZURE_CODE_SIGNING_ENDPOINT
-            AZURE_CODE_SIGNING_ACCOUNT_NAME
-            AZURE_CERTIFICATE_PROFILE_NAME
-          )
-          missing=()
-          for name in "${signing_required[@]}"; do
-            if [ -z "${!name}" ]; then
-              missing+=("${name}")
-            fi
-          done
-
-          if [ "${#missing[@]}" -eq 0 ]; then
-            echo "signing_ready=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "signing_ready=false" >> "${GITHUB_OUTPUT}"
-            echo "::warning::Windows signing secrets missing: ${missing[*]}. The release will continue with an unsigned installer."
-          fi
-
-      - name: Sign Windows installer
-        id: sign_windows
-        if: ${{ steps.windows_capabilities.outputs.signing_ready == 'true' }}
-        continue-on-error: true
-        uses: azure/trusted-signing-action@v0.5.0
-        with:
-          azure-tenant-id: ${{ env.AZURE_TENANT_ID }}
-          azure-client-id: ${{ env.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ env.AZURE_CLIENT_SECRET }}
-          endpoint: ${{ env.AZURE_CODE_SIGNING_ENDPOINT }}
-          trusted-signing-account-name: ${{ env.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ env.AZURE_CERTIFICATE_PROFILE_NAME }}
-          files-folder: ${{ github.workspace }}/target/release/bundle/nsis
-          files-folder-filter: exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Warn if signing failed
-        if: ${{ steps.windows_capabilities.outputs.signing_ready == 'true' && steps.sign_windows.outcome == 'failure' }}
-        shell: bash
-        run: echo "::warning::Windows code signing was attempted but failed (identity validation may still be pending). The release will continue with an unsigned installer."
-
-      - name: Package Windows artifacts
-        run: |
-          $releaseTag = "${{ github.event.inputs.tag || github.ref_name }}"
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-
-          $installer = Get-ChildItem target/release/bundle/nsis -Filter '*-setup.exe' |
-            Select-Object -First 1
-          if (-not $installer) {
-            throw "No NSIS Windows installer found under target/release/bundle/nsis"
-          }
-          Copy-Item $installer.FullName "dist/nostr-vpn-$releaseTag-windows-x64-setup.exe"
-
-          $cli = "target/release/nvpn.exe"
-          if (-not (Test-Path $cli)) {
-            throw "Expected Windows CLI binary not found: $cli"
-          }
-
-          $cliDir = Join-Path $PWD 'dist\nvpn-windows'
-          New-Item -ItemType Directory -Force -Path $cliDir | Out-Null
-          Copy-Item $cli $cliDir
-          Compress-Archive -Path "$cliDir\\*" -DestinationPath "dist/nvpn-$releaseTag-x86_64-pc-windows-msvc.zip" -Force
-          Remove-Item -Recurse -Force $cliDir
-
-      - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-x64
-          path: |
-            dist/nostr-vpn-${{ github.event.inputs.tag || github.ref_name }}-windows-x64-setup.exe
-            dist/nvpn-${{ github.event.inputs.tag || github.ref_name }}-x86_64-pc-windows-msvc.zip
-          retention-days: 7
-
-  build-android-app:
-    name: Build Android app
-    runs-on: ubuntu-latest
-    needs: verify
-    permissions:
-      contents: read
-    env:
-      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-      ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
-      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-          run_install: false
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: crates/nostr-vpn-gui/pnpm-lock.yaml
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: >-
-            platform-tools
-            platforms;android-36
-            build-tools;36.0.0
-            ndk;28.2.13676358
-
-      - name: Export Android SDK environment
-        shell: bash
-        run: |
-          {
-            printf 'ANDROID_HOME=%s\n' "${ANDROID_SDK_ROOT}"
-            printf 'ANDROID_SDK_ROOT=%s\n' "${ANDROID_SDK_ROOT}"
-            printf 'ANDROID_NDK_HOME=%s\n' "${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
-            printf 'NDK_HOME=%s\n' "${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
-          } >> "${GITHUB_ENV}"
-
-      - name: Install GUI dependencies
-        run: pnpm --dir crates/nostr-vpn-gui install --frozen-lockfile
-
-      - name: Validate Android signing secret completeness (optional)
-        if: ${{ (env.ANDROID_KEYSTORE_B64 != '' || env.ANDROID_KEYSTORE_PASSWORD != '' || env.ANDROID_KEY_ALIAS != '' || env.ANDROID_KEY_PASSWORD != '') && !(env.ANDROID_KEYSTORE_B64 != '' && env.ANDROID_KEYSTORE_PASSWORD != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '') }}
-        run: |
-          echo "Android signing requires all four secrets or none."
-          echo "Required: ANDROID_KEYSTORE_B64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD"
-          exit 1
-
-      - name: Prepare Android signing files (optional)
-        if: ${{ env.ANDROID_KEYSTORE_B64 != '' && env.ANDROID_KEYSTORE_PASSWORD != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' }}
-        shell: bash
-        run: |
-          printf '%s' "${ANDROID_KEYSTORE_B64}" | base64 --decode > crates/nostr-vpn-gui/src-tauri/gen/android/upload-keystore.jks 2>/dev/null || \
-            printf '%s' "${ANDROID_KEYSTORE_B64}" | base64 -D > crates/nostr-vpn-gui/src-tauri/gen/android/upload-keystore.jks
-
-          {
-            printf 'storePassword=%s\n' "${ANDROID_KEYSTORE_PASSWORD}"
-            printf 'keyPassword=%s\n' "${ANDROID_KEY_PASSWORD}"
-            printf 'keyAlias=%s\n' "${ANDROID_KEY_ALIAS}"
-            printf 'storeFile=%s\n' "upload-keystore.jks"
-          } > crates/nostr-vpn-gui/src-tauri/gen/android/key.properties
-
-      - name: Build Android artifacts
-        run: pnpm --dir crates/nostr-vpn-gui exec tauri android build --target aarch64 --apk --aab --ci
-
-      - name: Package Android artifacts
-        shell: bash
-        run: |
-          mkdir -p dist
-
-          APK_PATH="$(find crates/nostr-vpn-gui/src-tauri/gen/android/app/build/outputs/apk/universal/release -maxdepth 1 -name '*.apk' -print -quit)"
-          AAB_PATH="$(find crates/nostr-vpn-gui/src-tauri/gen/android/app/build/outputs/bundle/universalRelease -maxdepth 1 -name '*.aab' -print -quit)"
-
-          if [ -z "${APK_PATH}" ] || [ -z "${AAB_PATH}" ]; then
-            echo "Expected Android release artifacts were not produced."
-            echo "APK_PATH=${APK_PATH}"
-            echo "AAB_PATH=${AAB_PATH}"
-            exit 1
-          fi
-
-          if [ -f crates/nostr-vpn-gui/src-tauri/gen/android/key.properties ]; then
-            APK_DEST="dist/nostr-vpn-${RELEASE_TAG}-android-arm64.apk"
-            AAB_DEST="dist/nostr-vpn-${RELEASE_TAG}-android-arm64.aab"
-          else
-            APK_DEST="dist/nostr-vpn-${RELEASE_TAG}-android-arm64-unsigned.apk"
-            AAB_DEST="dist/nostr-vpn-${RELEASE_TAG}-android-arm64-unsigned.aab"
-          fi
-
-          cp "${APK_PATH}" "${APK_DEST}"
-          cp "${AAB_PATH}" "${AAB_DEST}"
-
-      - name: Upload Android artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-arm64
-          path: dist/nostr-vpn-${{ env.RELEASE_TAG }}-android-arm64*
-          retention-days: 7
-
-      - name: Cleanup Android signing files (optional)
-        if: ${{ always() && env.ANDROID_KEYSTORE_B64 != '' && env.ANDROID_KEYSTORE_PASSWORD != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' }}
-        run: rm -f crates/nostr-vpn-gui/src-tauri/gen/android/key.properties crates/nostr-vpn-gui/src-tauri/gen/android/upload-keystore.jks
-
   release:
-    name: Create GitHub Release
+    name: Create GitHub release
     if: ${{ always() && needs.verify.result == 'success' && needs.build-cli.result == 'success' }}
     needs:
       - verify
       - build-cli
       - build-macos-app
-      - build-linux-app
-      - build-windows-app
-      - build-android-app
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -905,50 +227,16 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: List artifacts
-        run: ls -la artifacts/
-
       - name: Prepare release notes
         shell: bash
         env:
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-          LINUX_APP_RELEASED: ${{ needs.build-linux-app.result }}
-          WINDOWS_APP_RELEASED: ${{ needs.build-windows-app.result }}
-          ANDROID_APP_RELEASED: ${{ needs.build-android-app.result }}
-          MACOS_SIGNED: ${{ needs.build-macos-app.outputs.macos_signed }}
-          MACOS_NOTARIZED: ${{ needs.build-macos-app.outputs.macos_notarized }}
-          MACOS_ARTIFACT_PUBLISHED: ${{ needs.build-macos-app.outputs.macos_artifact_published }}
-          MACOS_ARTIFACT_SKIP_REASON: ${{ needs.build-macos-app.outputs.macos_artifact_skip_reason }}
+          MACOS_APP_RELEASED: ${{ needs.build-macos-app.result }}
         run: |
           skipped_args=()
-          if [ "${MACOS_ARTIFACT_PUBLISHED}" != "true" ]; then
-            case "${MACOS_ARTIFACT_SKIP_REASON}" in
-              apple-developer-agreement-inactive)
-                skipped_args+=(--skipped-line "macOS desktop app: Apple Developer agreement for notarization is missing or expired.")
-                ;;
-              macos-release-secrets-missing)
-                skipped_args+=(--skipped-line "macOS desktop app: macOS signing/notarization secrets are not fully configured.")
-                ;;
-              macos-app-build-failed)
-                skipped_args+=(--skipped-line "macOS desktop app: app build failed.")
-                ;;
-              macos-code-signing-failed)
-                skipped_args+=(--skipped-line "macOS desktop app: code signing failed.")
-                ;;
-              *)
-                skipped_args+=(--skipped-line "macOS desktop app: notarization failed.")
-                ;;
-            esac
-          fi
-          if [ "${WINDOWS_APP_RELEASED}" != "success" ]; then
-            skipped_args+=(--skipped-line "Windows desktop app: build did not complete.")
-          fi
-          if [ "${ANDROID_APP_RELEASED}" != "success" ]; then
-            skipped_args+=(--skipped-line "Android app: build did not complete.")
-          fi
-          if [ "${LINUX_APP_RELEASED}" != "success" ]; then
-            skipped_args+=(--skipped-line "Linux desktop app: build did not complete.")
+          if [ "${MACOS_APP_RELEASED}" != "success" ]; then
+            skipped_args+=(--skipped-line "macOS native app: build did not complete.")
           fi
 
           node scripts/render-release-notes.mjs \
@@ -960,7 +248,7 @@ jobs:
             --out release-notes.md \
             "${skipped_args[@]}"
 
-      - name: Create GitHub Release
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}

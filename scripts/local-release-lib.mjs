@@ -1,8 +1,6 @@
 import { statSync } from 'node:fs'
 import { basename } from 'node:path'
 
-export const IOS_TESTFLIGHT_PUBLIC_BETA_URL = 'https://testflight.apple.com/join/jPRVxbSv'
-
 export function parseEnvFile(text) {
   const values = {}
   for (const rawLine of text.split(/\r?\n/)) {
@@ -265,7 +263,6 @@ function pushDownloadSections(lines, assetNames, assetBaseUrl = '') {
   pushAssetLine(lines, usedAssets, sortedNames, 'Nostr VPN for Android', [
     /^nostr-vpn-.*-android-arm64\.apk$/,
   ], assetBaseUrl)
-  lines.push(`- Nostr VPN for iOS public beta: [TestFlight](${IOS_TESTFLIGHT_PUBLIC_BETA_URL})`)
 
   const cliLines = []
   const addCliAsset = (label, preferredPatterns, duplicatePatterns = preferredPatterns) => {
@@ -344,7 +341,7 @@ export function buildReleaseManifestFiles(manifest) {
   const text = `${JSON.stringify(manifest, null, 2)}\n`
   return [
     ['release.json', text],
-    // Legacy tauri-plugin-hashtree-updater builds used manifest.json during
+    // Older desktop updater builds used manifest.json during
     // install even though checks read release.json. Keep both names identical
     // so old installed apps can update into a fixed build.
     ['manifest.json', text],

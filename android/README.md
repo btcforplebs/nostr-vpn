@@ -8,6 +8,6 @@ Responsibilities:
 - render `UiState` with native Compose screens
 - dispatch `NativeAppAction` values into the shared Rust core
 - own Keystore access, camera/image QR scanning, share intents, deep links, and Android `VpnService` permission/control
-- preserve the current Android VPN runtime behavior while replacing the Tauri webview UI
+- preserve the Android VPN runtime behavior while replacing the legacy webview UI
 
 The parity checklist is in `docs/native-ui-parity-matrix.md`.

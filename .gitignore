@@ -2,23 +2,13 @@
 dist/
 .claude/
 .codex_tmp*
-crates/nostr-vpn-gui/node_modules
-crates/nostr-vpn-gui/dist
 umbrel/.data
-crates/nostr-vpn-gui/src-tauri/target
-crates/nostr-vpn-gui/src-tauri/gen/android/key.properties
 **/*.rs.bk
 .DS_Store
 *.log
 *.swp
-.pnpm-store/
 artifacts/
 .env.release.local
-.env.zapstore.local
-crates/nostr-vpn-gui/src-tauri/icons/android/
-crates/nostr-vpn-gui/src-tauri/icons/ios/
-
-crates/nostr-vpn-gui/src-tauri/binaries/
 
 macos/.build/
 macos/Frameworks/

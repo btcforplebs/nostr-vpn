@@ -5,22 +5,19 @@
 ## Downloads
 
 - [Latest release](https://github.com/mmalmi/nostr-vpn/releases/latest)
-- [Android app on Zapstore](https://zapstore.dev/apps/to.iris.nvpn)
-- [iOS public beta on TestFlight](https://testflight.apple.com/join/jPRVxbSv)
 
 Current release artifacts:
 
 - Apple Silicon macOS desktop app
-- Windows x64 desktop installer
-- Android arm64 APK/AAB
-- iOS public beta through TestFlight
 - Headless CLI archives for Apple Silicon macOS, Windows x64, Linux x86_64, and Linux arm64
 
-Intel macOS is source-only. iOS beta builds are distributed through TestFlight.
+Intel macOS is source-only. The old Tauri desktop/mobile app was removed; new
+native shells are being built from the shared Rust app core, starting with
+macOS and then Linux.
 
 ## Overview
 
-`nostr-vpn` is a Rust workspace for a Tailscale-style mesh VPN control plane built on Nostr signaling and userspace WireGuard. It includes the `nvpn` CLI plus a Tauri/Svelte app codebase that targets desktop and mobile platforms.
+`nostr-vpn` is a Rust workspace for a Tailscale-style mesh VPN control plane built on Nostr signaling and userspace WireGuard. It includes the `nvpn` CLI, a shared native app core, and native platform shells.
 
 <p align="center">
   <img src="docs/images/desktop-gui-overview.png" alt="Nostr VPN desktop app showing a connected network, device identity, status badges, and join controls." width="900">
@@ -31,11 +28,11 @@ It currently ships:
 | Component | Purpose |
 | --- | --- |
 | `nvpn` | Main CLI for config, daemon lifecycle, networking, diagnostics, and tunnel sessions |
-| `nostr-vpn-gui` | Tauri + Svelte GUI app for desktop releases plus Android/iOS targets |
 | `nostr-vpn-relay` | Minimal local websocket relay used for integration and e2e testing |
 | `nvpn-reflector` | Minimal UDP reflector used for NAT discovery and hole-punch testing |
 | `nostr-vpn-core` | Shared library for config, signaling, NAT helpers, diagnostics, MagicDNS, and WireGuard helpers |
 | `nostr-vpn-app-core` | Native app state/action contract and UniFFI bridge used by the Rust-core/native-front rewrite |
+| `macos` | SwiftUI/AppKit native shell over `nostr-vpn-app-core` |
 
 ## Protocol
 
@@ -45,11 +42,11 @@ For the current protocol-level description of invites, signaling, admin roster s
 
 | Platform | Current status |
 | --- | --- |
-| Apple Silicon macOS | Signed desktop app in releases, plus a CLI tarball |
-| Windows x64 | Desktop installer and CLI zip in releases; a manual GitHub Actions smoke workflow builds both CLI and GUI |
-| Android arm64 | APK/AAB artifacts built in the release workflow |
-| iOS | Public TestFlight beta, plus checked-in Tauri mobile code, Packet Tunnel integration, and generated Apple project files |
-| Linux | CLI-focused today: release CLI tarballs plus Docker e2e coverage, but no packaged desktop app release |
+| Apple Silicon macOS | Native SwiftUI/AppKit desktop app plus CLI tarball |
+| Windows x64 | CLI zip; native shell scaffold exists but app packaging is pending |
+| Android arm64 | Native shell scaffold exists; Zapstore packaging is pending |
+| iOS | Native shell scaffold exists; TestFlight packaging is pending |
+| Linux | CLI tarballs plus Docker e2e coverage; native GTK/libadwaita shell is next |
 
 ## What the project does today
 
@@ -60,7 +57,7 @@ For the current protocol-level description of invites, signaling, admin roster s
 - Tracks peer endpoints, including NAT-discovered public endpoints and hole-punch attempts
 - Supports route advertisement and exit-node selection
 - Exposes JSON status, relay checks, network diagnostics, and doctor bundles
-- Includes a desktop GUI with service-first session control, invite QR/import flows, tray integration, autostart, timed LAN pairing, MagicDNS controls, health reporting, and port-mapping status
+- Includes a native macOS GUI with service-first session control, invite QR/import flows, menu bar integration, MagicDNS controls, health reporting, and port-mapping status
 - Includes Linux-focused Docker e2e coverage for signaling, mesh formation, NAT traversal, and exit-node routing
 
 ## Default relays
@@ -99,28 +96,22 @@ Nodes that should talk to each other must share the same `network_id` and list e
 Prerequisites:
 
 - Rust stable
-- Node 22 + `corepack`/`pnpm` for the GUI
 - OS permissions to create tunnel interfaces when running real sessions
 - On Linux Docker e2e: Docker with Compose and `/dev/net/tun`
 
 CI currently runs:
 
 ```bash
-corepack enable
-pnpm --dir crates/nostr-vpn-gui install --frozen-lockfile
-pnpm --dir crates/nostr-vpn-gui build
-
 cargo fmt --check
-cargo clippy --workspace --exclude nostr-vpn-gui --all-targets -- -D warnings
-cargo test --workspace --exclude nostr-vpn-gui
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 Additional automation:
 
-- `.github/workflows/windows-smoke.yml` can manually build the Windows CLI and GUI on `windows-latest`
-- `.github/workflows/release.yml` publishes Apple Silicon macOS, Windows x64, and Android arm64 APK/AAB app artifacts, links the iOS public TestFlight beta, and publishes CLI archives for Apple Silicon macOS, Windows x64, Linux x86_64, and Linux arm64
-- `scripts/publish-zapstore-android.sh` builds a signed Android APK locally and publishes it with `zsp` using `zapstore.yaml`
-- `scripts/local-release.mjs` builds local release artifacts, stages a hashtree-style release directory, can publish it to `releases/nostr-vpn`, and can hand the signed Android APK off to Zapstore
+- `.github/workflows/windows-smoke.yml` can manually build the Windows CLI on `windows-latest`
+- `.github/workflows/release.yml` publishes CLI archives and the native macOS app when signing is configured
+- `scripts/local-release.mjs` builds local release artifacts and stages a hashtree-style release directory that can be published to `releases/nostr-vpn`
 
 ### Local release
 
@@ -128,56 +119,28 @@ Typical flow:
 
 ```bash
 cp .env.release.example .env.release.local
-cp .env.zapstore.example .env.zapstore.local
 $EDITOR .env.release.local
-$EDITOR .env.zapstore.local
-node scripts/local-release.mjs --publish --publish-zapstore
+node scripts/local-release.mjs --publish
 ```
 
 Notes:
 
 - `.env.release.local` is local-only and gitignored
-- the script auto-loads `.env.release.local` and `.env.zapstore.local` when present
+- the script auto-loads `.env.release.local` when present
 - shell environment variables override values from those files
-- on Apple Silicon macOS it can build the macOS app/CLI locally, Android APK/AAB when the Android toolchain is configured, and Windows artifacts through a running Parallels VM
-- Linux desktop release artifacts are x64 by default and should be built on native amd64 Linux; Docker/QEMU on Apple Silicon currently crashes `rustc`. Set `NVPN_LINUX_DOCKER_PLATFORM=linux/arm64` only when intentionally building optional ARM64 Linux artifacts.
-- add `--publish-zapstore` or set `NVPN_PUBLISH_ZAPSTORE=1` when the release should also publish the signed Android APK to Zapstore
+- on Apple Silicon macOS it can build the native macOS app/CLI locally and Windows CLI artifacts through a running Parallels VM
+- Linux release artifacts are CLI tarballs until the native Linux shell lands
 - Windows VM selection can be forced with `NVPN_WINDOWS_VM_NAME`; otherwise the script auto-detects a single running Windows guest
 - by default it runs the same frontend build, `cargo fmt --check`, `cargo clippy`, and `cargo test` verification steps as the release workflow
 - staged local release notes include the matching `CHANGELOG.md` section for the release tag, so update `CHANGELOG.md` before publishing
 - omit `--publish` if you only want staged release metadata under the local temp directory
 
-### Publish Android to Zapstore
+### Native macOS App
 
-The repo includes a committed [`zapstore.yaml`](zapstore.yaml) plus a local-only env template in `.env.zapstore.example`.
-
-Android-only local flow:
+Build the native macOS shell:
 
 ```bash
-cp .env.zapstore.example .env.zapstore.local
-$EDITOR .env.zapstore.local
-./scripts/publish-zapstore-android.sh
-```
-
-Notes:
-
-- the main release flow can reuse an already-built signed APK via `node scripts/local-release.mjs --publish --publish-zapstore`
-- the publish script reads signing config from the shell environment or `.env.zapstore.local`
-- it stops with a clear error if no signing env is present
-- set either `SIGN_WITH` directly or `NOSTR_KEY_PATH` for the Nostr signer
-- set `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, and `ANDROID_KEY_PASSWORD`, and optionally `ANDROID_KEY_ALIAS`
-- if the keystore path does not exist yet, the script creates it locally
-- the first publish path also uses `nak` to send the signed APK certificate proof to `wss://relay.zapstore.dev`
-- Android signing secrets are written only to a temporary `key.properties` file during the build and then removed
-- the script defaults to non-interactive `zsp` publishing; set `ZSP_AUTO_CONFIRM=0` or `ZSP_SKIP_PREVIEW=0` if you explicitly want the interactive prompts back
-- set `SKIP_PUBLISH=1` to stop after the local signed APK build and validation steps
-- set `INSTALL_ON_DEVICE=1` to install the APK over `adb`
-- set `CAPTURE_SCREENSHOT=1` to save a screenshot to `artifacts/android/nostr-vpn-home.png`
-
-If you touch the Tauri shell:
-
-```bash
-cargo check -p nostr-vpn-gui
+./scripts/macos-build macos-build
 ```
 
 If you only want the CLI and test binaries:
@@ -261,7 +224,7 @@ nvpn up
 nvpn down
 ```
 
-Daemonized flow used by the GUI:
+Daemonized flow used by native desktop apps:
 
 ```bash
 nvpn start --daemon --connect
@@ -328,40 +291,19 @@ Lower-level commands:
 - `ip`
 - `whois`
 
-## GUI app
+## Native Apps
 
-The GUI lives in [`crates/nostr-vpn-gui`](crates/nostr-vpn-gui). It is the Tauri/Svelte app codebase for the shipped desktop app, the Android build, and the in-repo iOS target.
-
-The commands below are the desktop flow. Android and iOS use Tauri mobile tooling and the platform-specific code under `src-tauri/`.
+Native app work is split into a Rust-owned state/action core and platform shells.
 
 The native UI rewrite parity target is tracked in [`docs/native-ui-parity-matrix.md`](docs/native-ui-parity-matrix.md).
 The shared native app contract lives in [`crates/nostr-vpn-app-core`](crates/nostr-vpn-app-core), with native shell targets under [`macos`](macos), [`windows`](windows), [`linux`](linux), [`android`](android), and [`ios`](ios).
 The macOS native shell can be built with `./scripts/macos-build macos-build` and launched with `./tools/run-macos`.
 
-Run it in development:
-
-```bash
-corepack enable
-pnpm --dir crates/nostr-vpn-gui install --frozen-lockfile
-pnpm --dir crates/nostr-vpn-gui tauri:dev
-```
-
-Build a packaged app:
-
-```bash
-pnpm --dir crates/nostr-vpn-gui tauri:build
-```
-
 Notes:
 
-- `tauri:dev` and `tauri:build` automatically prepare an `nvpn` sidecar binary for desktop targets
-- on desktop, the frontend shells out to `nvpn`; mobile targets use the in-app platform-specific VPN runtime code
-- the desktop app is service-first on supported platforms: install the background service first, then use the app for normal on/off control
-- the GUI exposes network membership, invite QR/import flows, relay state, session health, MagicDNS, exit-node selection, advertised routes, timed LAN pairing, LAN discovery, autostart, and tray controls
-- tagged releases currently publish Apple Silicon macOS, Windows x64, and Android arm64 app artifacts, plus the public TestFlight link for iOS
-- iOS builds are distributed through App Store Connect/TestFlight rather than GitHub release artifacts
-
-You can override which CLI binary the GUI uses with `NVPN_CLI_PATH`.
+- desktop shells use the installed/bundled `nvpn` binary for privileged service/session work
+- mobile shells will own their platform VPN runtime bridges while sharing the same Rust app contract
+- the legacy Tauri/Svelte app was removed after the native rewrite became the canonical architecture
 
 ## Local relay and NAT test binaries
 
@@ -397,9 +339,6 @@ Docker e2e scripts under [`scripts/`](scripts):
   Verifies daemon mode across separate Docker NATs, public endpoint discovery, handshake success, and ping.
 - `./scripts/e2e-exit-node-docker.sh`
   Verifies exit-node advertisement, selection, tunnel traffic to the chosen exit node, and default-route traffic crossing the exit path to an external target. Set `NVPN_EXIT_NODE_E2E_PUBLIC_IP=9.9.9.9` (or another reachable public IP) to also prove a real internet hop routes through the tunnel.
-- `./scripts/e2e-tauri-driver-docker.sh`
-  Builds the GUI in a Linux container, runs the Tauri-driver GUI smoke plus invite join-request regression flow, and writes screenshots to `artifacts/screenshots/`.
-
 These flows are Linux-oriented because they require real tunnel devices and container networking privileges.
 
 ## Workspace layout
@@ -407,20 +346,18 @@ These flows are Linux-oriented because they require real tunnel devices and cont
 - [`Cargo.toml`](Cargo.toml): workspace definition
 - [`crates/nostr-vpn-core`](crates/nostr-vpn-core): shared config, signaling, diagnostics, MagicDNS, NAT, and WireGuard helpers
 - [`crates/nostr-vpn-cli`](crates/nostr-vpn-cli): `nvpn` CLI and daemon implementation
-- [`crates/nostr-vpn-gui`](crates/nostr-vpn-gui): Tauri/Svelte GUI app for desktop plus Android/iOS targets
+- [`crates/nostr-vpn-app-core`](crates/nostr-vpn-app-core): native app state/action contract and UniFFI bridge
+- [`macos`](macos), [`linux`](linux), [`windows`](windows), [`android`](android), [`ios`](ios): native platform shells
 - [`crates/nostr-vpn-relay`](crates/nostr-vpn-relay): test relay and reflector binaries
-- [`scripts`](scripts): Docker and GUI smoke-test entrypoints
+- [`scripts`](scripts): build, release, and Docker e2e entrypoints
 
 ## Release workflow notes
 
 Release workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)):
 
 - runs on pushed `v*` tags or manual dispatch
-- verifies frontend build, formatting, clippy, and tests before publishing artifacts
+- verifies formatting, clippy, and tests before publishing artifacts
 - publishes CLI archives for Apple Silicon macOS, Windows x64, Linux x86_64, and Linux arm64
-- publishes Apple Silicon macOS as `nostr-vpn-<version>-macos-arm64.zip` containing a signed, notarized `Nostr VPN.app`
-- publishes Windows x64 as `nostr-vpn-<version>-windows-x64-setup.exe`
-- publishes Android arm64 release artifacts as APK/AAB files
-- links the iOS public TestFlight beta; iOS builds are distributed through App Store Connect/TestFlight rather than GitHub release artifacts
+- publishes Apple Silicon macOS as a native `Nostr VPN.app` archive when signing is configured
 - requires the macOS signing and notarization secrets to be configured before a release can publish the macOS app
 - generates its GitHub release notes in the workflow; local `scripts/local-release.mjs` release notes include the matching `CHANGELOG.md` section for the tag

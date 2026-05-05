@@ -53,16 +53,6 @@ git_commit_timestamp_utc() {
 
 package_version() {
   local root="$1"
-  local version
-
-  version="$(
-    node -e "console.log(require(process.argv[1]).version || '')" \
-      "$root/crates/nostr-vpn-gui/package.json" 2>/dev/null || true
-  )"
-  if [[ -n "$version" ]]; then
-    printf '%s\n' "$version"
-    return 0
-  fi
 
   awk '
     /^\[workspace.package\]/ { inside = 1; next }
