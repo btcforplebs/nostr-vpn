@@ -1,6 +1,7 @@
 package org.nostrvpn.app
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -34,7 +35,7 @@ class MainActivity : ComponentActivity() {
                     state.copy(error = error.message ?: "Android action failed")
                 }
                 if (!wasActive && state.sessionActive) {
-                    startService(
+                    startVpnService(
                         Intent(this, NostrVpnService::class.java)
                             .setAction(NostrVpnService.ACTION_CONNECT)
                             .putExtra(
@@ -43,7 +44,7 @@ class MainActivity : ComponentActivity() {
                             ),
                     )
                 } else if (wasActive && !state.sessionActive) {
-                    startService(
+                    startVpnService(
                         Intent(this, NostrVpnService::class.java)
                             .setAction(NostrVpnService.ACTION_DISCONNECT),
                     )
@@ -85,5 +86,13 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         deepLink = intent.dataString
+    }
+
+    private fun startVpnService(intent: Intent) {
+        if (intent.action == NostrVpnService.ACTION_CONNECT && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
     }
 }

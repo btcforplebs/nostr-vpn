@@ -1,9 +1,18 @@
 package org.nostrvpn.app.vpn
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
 import android.net.VpnService
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import org.json.JSONObject
+import org.nostrvpn.app.MainActivity
+import org.nostrvpn.app.R
 import org.nostrvpn.app.core.NativeCore
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -20,15 +29,17 @@ class NostrVpnService : VpnService() {
         when (intent?.action) {
             ACTION_DISCONNECT -> {
                 stopTunnel()
+                stopServiceForeground()
                 stopSelf()
             }
             else -> startTunnel(intent?.getStringExtra(EXTRA_CONFIG_JSON).orEmpty())
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         stopTunnel()
+        stopServiceForeground()
         super.onDestroy()
     }
 
@@ -39,19 +50,27 @@ class NostrVpnService : VpnService() {
         }
         stopTunnel()
 
-        val config = JSONObject(configJson)
+        val config = try {
+            JSONObject(configJson)
+        } catch (_: Exception) {
+            stopSelf()
+            return
+        }
         if (config.optString("error").isNotBlank()) {
             stopSelf()
             return
         }
+        startServiceForeground()
 
         val descriptor = buildVpnInterface(config) ?: run {
+            stopServiceForeground()
             stopSelf()
             return
         }
         val handle = NativeCore.mobileTunnelNew(configJson)
         if (handle == 0L) {
             descriptor.close()
+            stopServiceForeground()
             stopSelf()
             return
         }
@@ -152,11 +171,76 @@ class NostrVpnService : VpnService() {
         return Cidr(address, prefix)
     }
 
+    private fun startServiceForeground() {
+        createNotificationChannel()
+        val notification = tunnelNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun stopServiceForeground() {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+    }
+
+    private fun createNotificationChannel() {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                getString(R.string.app_name),
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                setShowBadge(false)
+            },
+        )
+    }
+
+    private fun tunnelNotification(): Notification {
+        val openAppIntent = packageManager.getLaunchIntentForPackage(packageName)
+            ?: Intent(this, MainActivity::class.java)
+        val openApp = PendingIntent.getActivity(
+            this,
+            0,
+            openAppIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val disconnect = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, NostrVpnService::class.java).setAction(ACTION_DISCONNECT),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_monochrome)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.vpn_notification_connected))
+            .setContentIntent(openApp)
+            .setOngoing(true)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .addAction(
+                Notification.Action.Builder(
+                    Icon.createWithResource(this, R.drawable.ic_launcher_monochrome),
+                    getString(R.string.vpn_notification_disconnect),
+                    disconnect,
+                ).build(),
+            )
+            .build()
+    }
+
     private data class Cidr(val address: String, val prefix: Int)
 
     companion object {
         const val ACTION_CONNECT = "org.nostrvpn.app.vpn.CONNECT"
         const val ACTION_DISCONNECT = "org.nostrvpn.app.vpn.DISCONNECT"
         const val EXTRA_CONFIG_JSON = "configJson"
+        private const val NOTIFICATION_CHANNEL_ID = "vpn"
+        private const val NOTIFICATION_ID = 7001
     }
 }
