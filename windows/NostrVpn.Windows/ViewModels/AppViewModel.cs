@@ -33,6 +33,8 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     private string _participantInput = "";
     private string _participantAliasInput = "";
     private string _networkNameInput = "";
+    private string _networkNameDraft = "";
+    private string _networkMeshIdDraft = "";
     private string _relayInput = "";
     private string _nodeName = "";
     private string _endpoint = "";
@@ -71,6 +73,10 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         SaveNodeCommand = new AsyncRelayCommand(_ => SaveNodeAsync(), _ => !ActionInFlight);
         SaveRoutesCommand = new AsyncRelayCommand(_ => DispatchAsync(NativeActions.UpdateSettings(new SettingsPatch { AdvertisedRoutes = AdvertisedRoutes }), "Saving routes"));
         AddNetworkCommand = new AsyncRelayCommand(_ => AddNetworkAsync(), _ => !ActionInFlight && !string.IsNullOrWhiteSpace(NetworkNameInput));
+        SaveNetworkNameCommand = new AsyncRelayCommand(_ => RenameActiveNetworkAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(NetworkNameDraft));
+        SaveNetworkMeshIdCommand = new AsyncRelayCommand(_ => SaveActiveNetworkMeshIdAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(NetworkMeshIdDraft));
+        CopyNetworkIdCommand = new RelayCommand(_ => CopyText(ActiveNetwork?.NetworkId ?? ""), _ => !string.IsNullOrWhiteSpace(ActiveNetwork?.NetworkId));
+        RequestNetworkJoinCommand = new AsyncRelayCommand(_ => RequestActiveNetworkJoinAsync(), _ => !ActionInFlight && CanRequestActiveNetworkJoin);
         AddRelayCommand = new AsyncRelayCommand(_ => AddRelayAsync(), _ => !ActionInFlight && !string.IsNullOrWhiteSpace(RelayInput));
         InstallServiceCommand = new AsyncRelayCommand(_ => DispatchAsync(NativeActions.InstallSystemService(), "Installing service"), _ => !ActionInFlight && State.ServiceSupported);
         EnableServiceCommand = new AsyncRelayCommand(_ => DispatchAsync(NativeActions.EnableSystemService(), "Enabling service"), _ => !ActionInFlight && State.ServiceEnablementSupported);
@@ -137,6 +143,28 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public string ParticipantInput { get => _participantInput; set => SetField(ref _participantInput, value); }
     public string ParticipantAliasInput { get => _participantAliasInput; set => SetField(ref _participantAliasInput, value); }
     public string NetworkNameInput { get => _networkNameInput; set => SetField(ref _networkNameInput, value); }
+    public string NetworkNameDraft
+    {
+        get => _networkNameDraft;
+        set
+        {
+            if (SetField(ref _networkNameDraft, value))
+            {
+                CommandManager.InvalidateRequerySuggested();
+            }
+        }
+    }
+    public string NetworkMeshIdDraft
+    {
+        get => _networkMeshIdDraft;
+        set
+        {
+            if (SetField(ref _networkMeshIdDraft, value))
+            {
+                CommandManager.InvalidateRequerySuggested();
+            }
+        }
+    }
     public string RelayInput { get => _relayInput; set => SetField(ref _relayInput, value); }
     public string NodeName { get => _nodeName; set => SetField(ref _nodeName, value); }
     public string Endpoint { get => _endpoint; set => SetField(ref _endpoint, value); }
@@ -185,6 +213,25 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public string LanPairingText => State.LanPairingActive ? $"{State.LanPairingRemainingSecs}s" : "Pair nearby";
     public string ServiceSummary => State.ServiceInstalled ? "Service installed" : "Service missing";
     public string CliSummary => State.CliInstalled ? "CLI installed" : "CLI missing";
+    public string DiagnosticsInterface => string.IsNullOrWhiteSpace(State.Network.DefaultInterface) ? "unknown" : State.Network.DefaultInterface;
+    public string DiagnosticsIpv4 => string.IsNullOrWhiteSpace(State.Network.PrimaryIpv4) ? "-" : State.Network.PrimaryIpv4;
+    public string DiagnosticsIpv6 => string.IsNullOrWhiteSpace(State.Network.PrimaryIpv6) ? "-" : State.Network.PrimaryIpv6;
+    public string DiagnosticsGateway => FirstNonEmpty(State.Network.GatewayIpv4, State.Network.GatewayIpv6, "unknown");
+    public string DiagnosticsMapping => string.IsNullOrWhiteSpace(State.PortMapping.ActiveProtocol) ? "none" : State.PortMapping.ActiveProtocol;
+    public string DiagnosticsExternal => string.IsNullOrWhiteSpace(State.PortMapping.ExternalEndpoint) ? "stun/direct" : State.PortMapping.ExternalEndpoint;
+    public bool CanRequestActiveNetworkJoin => ActiveNetwork is { OutboundJoinRequest: null } network && !string.IsNullOrWhiteSpace(network.InviteInviterNpub);
+    public string ActiveNetworkJoinStatus
+    {
+        get
+        {
+            var network = ActiveNetwork;
+            if (network?.OutboundJoinRequest is not null)
+            {
+                return "Join requested";
+            }
+            return CanRequestActiveNetworkJoin ? "Invite needs approval" : "";
+        }
+    }
 
     public ICommand ShowDevicesCommand { get; }
     public ICommand ShowShareCommand { get; }
@@ -202,6 +249,10 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public ICommand SaveNodeCommand { get; }
     public ICommand SaveRoutesCommand { get; }
     public ICommand AddNetworkCommand { get; }
+    public ICommand SaveNetworkNameCommand { get; }
+    public ICommand SaveNetworkMeshIdCommand { get; }
+    public ICommand CopyNetworkIdCommand { get; }
+    public ICommand RequestNetworkJoinCommand { get; }
     public ICommand AddRelayCommand { get; }
     public ICommand InstallServiceCommand { get; }
     public ICommand EnableServiceCommand { get; }
@@ -317,10 +368,39 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         return DispatchAsync(NativeActions.SetNetworkJoinRequestsEnabled(networkId, enabled), "Saving join requests");
     }
 
+    public Task RenameActiveNetworkAsync()
+    {
+        var network = ActiveNetwork;
+        var name = NetworkNameDraft.Trim();
+        return network is null || string.IsNullOrWhiteSpace(name)
+            ? Task.CompletedTask
+            : DispatchAsync(NativeActions.RenameNetwork(network.Id, name), "Renaming network");
+    }
+
+    public Task SaveActiveNetworkMeshIdAsync()
+    {
+        var network = ActiveNetwork;
+        var meshId = NetworkMeshIdDraft.Trim();
+        return network is null || string.IsNullOrWhiteSpace(meshId)
+            ? Task.CompletedTask
+            : DispatchAsync(NativeActions.SetNetworkMeshId(network.Id, meshId), "Saving network ID");
+    }
+
+    public Task RequestActiveNetworkJoinAsync()
+    {
+        var network = ActiveNetwork;
+        return network is null ? Task.CompletedTask : DispatchAsync(NativeActions.RequestNetworkJoin(network.Id), "Requesting access");
+    }
+
     public Task AcceptJoinRequestAsync(NativeInboundJoinRequestState request)
     {
         var network = ActiveNetwork;
         return network is null ? Task.CompletedTask : DispatchAsync(NativeActions.AcceptJoinRequest(network.Id, request.RequesterNpub), "Accepting join request");
+    }
+
+    public Task SetParticipantAliasAsync(NativeParticipantState participant, string alias)
+    {
+        return DispatchAsync(NativeActions.SetParticipantAlias(participant.Npub, alias.Trim()), "Saving alias");
     }
 
     public void CopyText(string value)
@@ -472,12 +552,15 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
 
     private void SyncDrafts(NativeAppState state)
     {
+        var active = state.Networks.FirstOrDefault(network => network.Enabled) ?? state.Networks.FirstOrDefault();
         NodeName = state.NodeName;
         Endpoint = state.Endpoint;
         TunnelIp = state.TunnelIp;
         ListenPort = state.ListenPort.ToString();
         MagicDnsSuffix = state.MagicDnsSuffix;
         AdvertisedRoutes = string.Join(", ", state.AdvertisedRoutes);
+        NetworkNameDraft = active?.Name ?? "";
+        NetworkMeshIdDraft = active?.NetworkId ?? "";
     }
 
     private static string DisplayNetworkName(NativeNetworkState? network)
@@ -501,6 +584,23 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(LanPairingText));
         OnPropertyChanged(nameof(ServiceSummary));
         OnPropertyChanged(nameof(CliSummary));
+        OnPropertyChanged(nameof(DiagnosticsInterface));
+        OnPropertyChanged(nameof(DiagnosticsIpv4));
+        OnPropertyChanged(nameof(DiagnosticsIpv6));
+        OnPropertyChanged(nameof(DiagnosticsGateway));
+        OnPropertyChanged(nameof(DiagnosticsMapping));
+        OnPropertyChanged(nameof(DiagnosticsExternal));
+        OnPropertyChanged(nameof(CanRequestActiveNetworkJoin));
+        OnPropertyChanged(nameof(ActiveNetworkJoinStatus));
+    }
+
+    private static string FirstNonEmpty(string first, string second, string fallback)
+    {
+        if (!string.IsNullOrWhiteSpace(first))
+        {
+            return first;
+        }
+        return string.IsNullOrWhiteSpace(second) ? fallback : second;
     }
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string propertyName = "")

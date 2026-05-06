@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using NostrVpn.Windows.Core;
 using NostrVpn.Windows.ViewModels;
 
@@ -47,6 +48,16 @@ public partial class MainWindow : Window
         if (sender is Button { Tag: NativeParticipantState participant })
         {
             await ViewModel.RemoveParticipantAsync(participant);
+        }
+    }
+
+    private async void SetParticipantAlias_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: NativeParticipantState participant } button
+            && FindParent<Grid>(button) is { } row
+            && FindChild<TextBox>(row, "AliasInput") is { } aliasInput)
+        {
+            await ViewModel.SetParticipantAliasAsync(participant, aliasInput.Text);
         }
     }
 
@@ -143,5 +154,37 @@ public partial class MainWindow : Window
         {
             await ViewModel.RemoveRelayAsync(relay);
         }
+    }
+
+    private static T? FindParent<T>(DependencyObject child) where T : DependencyObject
+    {
+        var current = VisualTreeHelper.GetParent(child);
+        while (current is not null)
+        {
+            if (current is T match)
+            {
+                return match;
+            }
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return null;
+    }
+
+    private static T? FindChild<T>(DependencyObject parent, string name) where T : FrameworkElement
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T element && element.Name == name)
+            {
+                return element;
+            }
+            var nested = FindChild<T>(child, name);
+            if (nested is not null)
+            {
+                return nested;
+            }
+        }
+        return null;
     }
 }

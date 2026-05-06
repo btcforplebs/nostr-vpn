@@ -3,8 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:NostrVpn.Windows.Controls"
         Title="Nostr VPN"
-        Width="1060"
-        Height="680"
+        Width="920"
+        Height="640"
         MinWidth="760"
         MinHeight="560"
         WindowStartupLocation="CenterScreen"
@@ -114,16 +114,39 @@
 
             <Expander Header="Manage Devices" Margin="0,4,0,14">
               <Border Style="{StaticResource Card}" Margin="0,8,0,0">
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="180" />
-                    <ColumnDefinition Width="Auto" />
-                  </Grid.ColumnDefinitions>
-                  <TextBox Text="{Binding ParticipantInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
-                  <TextBox Grid.Column="1" Text="{Binding ParticipantAliasInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
-                  <Button Grid.Column="2" Content="Add" Command="{Binding AddParticipantCommand}" />
-                </Grid>
+                <StackPanel>
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="180" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox Text="{Binding ParticipantInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
+                    <TextBox Grid.Column="1" Text="{Binding ParticipantAliasInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
+                    <Button Grid.Column="2" Content="Add" Command="{Binding AddParticipantCommand}" />
+                  </Grid>
+
+                  <ItemsControl ItemsSource="{Binding ActiveNetwork.Participants}" Margin="0,12,0,0">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Grid Margin="0,0,0,8">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="170" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                          </Grid.ColumnDefinitions>
+                          <TextBlock Text="{Binding MagicDnsName}" VerticalAlignment="Center" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,0,8,0" />
+                          <TextBox x:Name="AliasInput" Grid.Column="1" Text="{Binding MagicDnsAlias, Mode=OneWay}" Margin="0,0,8,0" />
+                          <Button Grid.Column="2" Content="Save" Tag="{Binding}" Click="SetParticipantAlias_Click" Margin="0,0,8,0" />
+                          <Button Grid.Column="3" Content="Admin" Tag="{Binding}" Click="ToggleAdmin_Click" Margin="0,0,8,0" />
+                          <Button Grid.Column="4" Content="Remove" Tag="{Binding}" Click="RemoveParticipant_Click" />
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
               </Border>
             </Expander>
 
@@ -167,6 +190,10 @@
                     <TextBox Text="{Binding InviteInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
                     <Button Grid.Column="1" Content="Import" Command="{Binding ImportInviteCommand}" />
                   </Grid>
+                  <StackPanel Orientation="Horizontal" Margin="0,10,0,0" Visibility="{Binding ActiveNetworkJoinStatus, Converter={StaticResource NonEmptyStringToVisibility}}">
+                    <TextBlock Text="{Binding ActiveNetworkJoinStatus}" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                    <Button Content="Request Access" Command="{Binding RequestNetworkJoinCommand}" Visibility="{Binding CanRequestActiveNetworkJoin, Converter={StaticResource BoolToVisibility}}" />
+                  </StackPanel>
                 </StackPanel>
               </Grid>
             </Border>
@@ -273,6 +300,26 @@
                   <TextBox Text="{Binding NetworkNameInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
                   <Button Grid.Column="1" Content="Add" Command="{Binding AddNetworkCommand}" />
                 </Grid>
+                <Grid Margin="0,12,0,0">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="110" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                  </Grid.RowDefinitions>
+                  <TextBlock Text="Active" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" />
+                  <TextBox Grid.Column="1" Text="{Binding NetworkNameDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,8" />
+                  <Button Grid.Column="2" Content="Save" Command="{Binding SaveNetworkNameCommand}" Margin="0,0,0,8" />
+                  <TextBlock Grid.Row="1" Text="Network ID" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" />
+                  <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding NetworkMeshIdDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
+                  <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal">
+                    <Button Content="Copy" Command="{Binding CopyNetworkIdCommand}" Margin="0,0,8,0" />
+                    <Button Content="Save" Command="{Binding SaveNetworkMeshIdCommand}" />
+                  </StackPanel>
+                </Grid>
                 <ItemsControl ItemsSource="{Binding InactiveNetworks}">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
@@ -307,6 +354,52 @@
                 </StackPanel>
               </StackPanel>
             </Border>
+
+            <Expander Header="Diagnostics" Margin="0,0,0,14">
+              <Border Style="{StaticResource Card}" Margin="0,8,0,0">
+                <StackPanel>
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="110" />
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="110" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                      <RowDefinition Height="Auto" />
+                      <RowDefinition Height="Auto" />
+                      <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Text="Interface" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,8" />
+                    <TextBlock Grid.Column="1" Text="{Binding DiagnosticsInterface}" TextTrimming="CharacterEllipsis" Margin="0,0,16,8" />
+                    <TextBlock Grid.Column="2" Text="Gateway" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,8" />
+                    <TextBlock Grid.Column="3" Text="{Binding DiagnosticsGateway}" TextTrimming="CharacterEllipsis" Margin="0,0,0,8" />
+                    <TextBlock Grid.Row="1" Text="IPv4" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,8" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding DiagnosticsIpv4}" TextTrimming="CharacterEllipsis" Margin="0,0,16,8" />
+                    <TextBlock Grid.Row="1" Grid.Column="2" Text="IPv6" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,8" />
+                    <TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding DiagnosticsIpv6}" TextTrimming="CharacterEllipsis" Margin="0,0,0,8" />
+                    <TextBlock Grid.Row="2" Text="Mapping" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,0" />
+                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding DiagnosticsMapping}" TextTrimming="CharacterEllipsis" Margin="0,0,16,0" />
+                    <TextBlock Grid.Row="2" Grid.Column="2" Text="External" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,0" />
+                    <TextBlock Grid.Row="2" Grid.Column="3" Text="{Binding DiagnosticsExternal}" TextTrimming="CharacterEllipsis" />
+                  </Grid>
+
+                  <ItemsControl ItemsSource="{Binding State.Health}" Margin="0,12,0,0">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <DockPanel Margin="0,0,0,8">
+                          <TextBlock DockPanel.Dock="Left" Text="{Binding Severity}" Foreground="{StaticResource Warn}" FontWeight="SemiBold" Width="82" />
+                          <StackPanel>
+                            <TextBlock Text="{Binding Summary}" />
+                            <TextBlock Text="{Binding Detail}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" />
+                          </StackPanel>
+                        </DockPanel>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+            </Expander>
 
             <Expander Header="Discovery Relays" Margin="0,0,0,14">
               <Border Style="{StaticResource Card}" Margin="0,8,0,0">

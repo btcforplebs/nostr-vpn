@@ -13,6 +13,7 @@ public static class NativeActions
     public static string AddNetwork(string name) => AppCoreClient.Action(new { type = "add_network", name });
     public static string RenameNetwork(string networkId, string name) => AppCoreClient.Action(new { type = "rename_network", networkId, name });
     public static string RemoveNetwork(string networkId) => AppCoreClient.Action(new { type = "remove_network", networkId });
+    public static string SetNetworkMeshId(string networkId, string meshId) => AppCoreClient.Action(new { type = "set_network_mesh_id", networkId, meshId });
     public static string SetNetworkEnabled(string networkId, bool enabled) => AppCoreClient.Action(new { type = "set_network_enabled", networkId, enabled });
     public static string SetNetworkJoinRequestsEnabled(string networkId, bool enabled) => AppCoreClient.Action(new { type = "set_network_join_requests_enabled", networkId, enabled });
     public static string RequestNetworkJoin(string networkId) => AppCoreClient.Action(new { type = "request_network_join", networkId });
