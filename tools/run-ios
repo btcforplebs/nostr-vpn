@@ -116,7 +116,7 @@ run_app() {
     exit 1
   fi
   xcrun simctl install "$device" "$app_path"
-  xcrun simctl launch "$device" to.iris.nvpn.ios
+  xcrun simctl launch "$device" to.iris.nvpn
   sleep 3
   mkdir -p "$ROOT/artifacts"
   xcrun simctl io "$device" screenshot "$ROOT/artifacts/nostr-vpn-ios.png"

@@ -155,7 +155,11 @@ impl MobileTunnel {
             .await
             .context("failed to bind mobile FIPS endpoint")?;
         let endpoint = Arc::new(endpoint);
-        let mesh = Arc::new(RwLock::new(FipsMeshRuntime::new(config.peers)));
+        let local_routes = vec![config.local_address.clone()];
+        let mesh = Arc::new(RwLock::new(FipsMeshRuntime::with_local_routes(
+            config.peers,
+            local_routes,
+        )));
         let (outbound_tx, mut outbound_rx) =
             tokio_mpsc::channel::<Vec<u8>>(TUNNEL_CHANNEL_CAPACITY);
         let (inbound_tx, inbound_rx) = mpsc::sync_channel::<Vec<u8>>(TUNNEL_CHANNEL_CAPACITY);
@@ -258,7 +262,7 @@ fn fips_endpoint_config(
 ) -> FipsConfig {
     let mut config = FipsConfig::new();
     config.node.discovery.nostr.enabled = !relays.is_empty();
-    config.node.discovery.nostr.advertise = false;
+    config.node.discovery.nostr.advertise = !relays.is_empty() && !peers.is_empty();
     config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
     config.node.discovery.nostr.app = scope.to_string();
     if !relays.is_empty() {
@@ -266,9 +270,10 @@ fn fips_endpoint_config(
         config.node.discovery.nostr.dm_relays = relays.to_vec();
     }
     config.transports.udp = TransportInstances::Single(UdpConfig {
-        outbound_only: Some(true),
+        bind_addr: Some("0.0.0.0:0".to_string()),
+        outbound_only: Some(false),
         accept_connections: Some(false),
-        advertise_on_nostr: Some(false),
+        advertise_on_nostr: Some(!relays.is_empty() && !peers.is_empty()),
         public: Some(false),
         ..UdpConfig::default()
     });
@@ -375,5 +380,49 @@ mod tests {
         let json = tunnel_config_json("\0/not-a-path");
         let value: serde_json::Value = serde_json::from_str(&json).expect("json");
         assert!(value["error"].as_str().is_some());
+    }
+
+    #[test]
+    fn mobile_fips_config_advertises_ephemeral_nat_when_relays_and_peers_exist() {
+        let peer = FipsMeshPeerConfig::from_participant_pubkey(
+            "26525c442dd039de4e728b41ee8d7f717b267ab25b7c219d53a3249e1c9174cc",
+            vec!["10.44.22.44/32".to_string()],
+        )
+        .expect("peer");
+        let relays = vec!["wss://relay.example".to_string()];
+
+        let config = fips_endpoint_config("nostr-vpn:test", &relays, &[peer]);
+
+        assert!(config.node.discovery.nostr.enabled);
+        assert!(config.node.discovery.nostr.advertise);
+        assert_eq!(
+            config.node.discovery.nostr.policy,
+            NostrDiscoveryPolicy::ConfiguredOnly
+        );
+        let TransportInstances::Single(udp) = &config.transports.udp else {
+            panic!("expected single udp transport");
+        };
+        assert_eq!(udp.bind_addr(), "0.0.0.0:0");
+        assert!(!udp.outbound_only());
+        assert!(!udp.accept_connections());
+        assert!(udp.advertise_on_nostr());
+        assert!(!udp.is_public());
+        assert_eq!(config.peers.len(), 1);
+        assert!(config.peers[0].via_nostr);
+    }
+
+    #[test]
+    fn mobile_fips_config_does_not_advertise_without_peers() {
+        let relays = vec!["wss://relay.example".to_string()];
+
+        let config = fips_endpoint_config("nostr-vpn:test", &relays, &[]);
+
+        assert!(config.node.discovery.nostr.enabled);
+        assert!(!config.node.discovery.nostr.advertise);
+        let TransportInstances::Single(udp) = &config.transports.udp else {
+            panic!("expected single udp transport");
+        };
+        assert!(!udp.advertise_on_nostr());
+        assert!(config.peers.is_empty());
     }
 }

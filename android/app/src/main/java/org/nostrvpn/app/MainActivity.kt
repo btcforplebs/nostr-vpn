@@ -3,6 +3,7 @@ package org.nostrvpn.app
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.net.VpnService
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.DisposableEffect
@@ -19,10 +20,12 @@ import org.nostrvpn.app.vpn.NostrVpnService
 
 class MainActivity : ComponentActivity() {
     private var deepLink by mutableStateOf<String?>(null)
+    private var debugAction by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         deepLink = intent?.dataString
+        debugAction = intent?.getStringExtra(EXTRA_DEBUG_ACTION)
         val core = AppCoreClient(filesDir.resolve("app-core").absolutePath, BuildConfig.VERSION_NAME)
 
         setContent {
@@ -64,11 +67,34 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            LaunchedEffect(deepLink) {
+            LaunchedEffect(deepLink, debugAction) {
                 val invite = deepLink
                 if (!invite.isNullOrBlank() && invite.startsWith("nvpn://", ignoreCase = true)) {
                     dispatch(NativeActions.importInvite(invite))
                     deepLink = null
+                }
+                when (val action = debugAction) {
+                    DEBUG_ACTION_CONNECT -> {
+                        if (BuildConfig.DEBUG) {
+                            val prepareIntent = VpnService.prepare(this@MainActivity)
+                            if (prepareIntent == null) {
+                                dispatch(NativeActions.connectSession())
+                            } else {
+                                startActivity(prepareIntent)
+                            }
+                        }
+                        debugAction = null
+                    }
+                    DEBUG_ACTION_DISCONNECT -> {
+                        if (BuildConfig.DEBUG) {
+                            dispatch(NativeActions.disconnectSession())
+                        }
+                        debugAction = null
+                    }
+                    null -> Unit
+                    else -> {
+                        debugAction = null
+                    }
                 }
             }
 
@@ -86,6 +112,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         deepLink = intent.dataString
+        debugAction = intent.getStringExtra(EXTRA_DEBUG_ACTION)
     }
 
     private fun startVpnService(intent: Intent) {
@@ -94,5 +121,11 @@ class MainActivity : ComponentActivity() {
         } else {
             startService(intent)
         }
+    }
+
+    companion object {
+        const val EXTRA_DEBUG_ACTION = "org.nostrvpn.app.DEBUG_ACTION"
+        const val DEBUG_ACTION_CONNECT = "connect"
+        const val DEBUG_ACTION_DISCONNECT = "disconnect"
     }
 }

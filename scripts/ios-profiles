@@ -14,9 +14,16 @@ IOS_DIST_DIR="$ROOT/dist/ios"
 IOS_BUNDLE_ID="${NVPN_IOS_BUNDLE_ID:-to.iris.nvpn}"
 IOS_PACKET_TUNNEL_BUNDLE_ID="${NVPN_IOS_PACKET_TUNNEL_BUNDLE_ID:-to.iris.nvpn.PacketTunnel}"
 IOS_PROFILE_TYPE="${NVPN_IOS_PROFILE_TYPE:-IOS_APP_STORE}"
-IOS_PROFILE_NAME="${NVPN_IOS_PROFILE_NAME:-Nostr VPN App Store main}"
-IOS_PACKET_TUNNEL_PROFILE_NAME="${NVPN_IOS_PACKET_TUNNEL_PROFILE_NAME:-Nostr VPN App Store packet tunnel}"
-IOS_CODE_SIGN_IDENTITY="${NVPN_IOS_CODE_SIGN_IDENTITY:-Apple Distribution}"
+if [[ "$IOS_PROFILE_TYPE" == *DEVELOPMENT* ]]; then
+  DEFAULT_PROFILE_LABEL="Development"
+  DEFAULT_CODE_SIGN_IDENTITY="Apple Development"
+else
+  DEFAULT_PROFILE_LABEL="App Store"
+  DEFAULT_CODE_SIGN_IDENTITY="Apple Distribution"
+fi
+IOS_PROFILE_NAME="${NVPN_IOS_PROFILE_NAME:-Nostr VPN $DEFAULT_PROFILE_LABEL main}"
+IOS_PACKET_TUNNEL_PROFILE_NAME="${NVPN_IOS_PACKET_TUNNEL_PROFILE_NAME:-Nostr VPN $DEFAULT_PROFILE_LABEL packet tunnel}"
+IOS_CODE_SIGN_IDENTITY="${NVPN_IOS_CODE_SIGN_IDENTITY:-$DEFAULT_CODE_SIGN_IDENTITY}"
 IOS_PROFILES_ENV_PATH="${NVPN_IOS_PROFILES_ENV_PATH:-$IOS_DIST_DIR/provisioning.env}"
 ACTION="${1:-ensure}"
 
@@ -30,6 +37,7 @@ Commands:
 
 Environment:
   NVPN_ASC_CERTIFICATE_ID        optional App Store Connect certificate ID
+  NVPN_IOS_DEVICE_UDIDS          comma-separated UDIDs for development/ad hoc profiles
   NVPN_IOS_PROFILE_RECREATE     set true to force new profiles
   NVPN_IOS_PROFILES_ENV_PATH    default dist/ios/provisioning.env
 EOF
@@ -67,6 +75,7 @@ export NVPN_IOS_PROFILE_NAME="$IOS_PROFILE_NAME"
 export NVPN_IOS_PACKET_TUNNEL_PROFILE_NAME="$IOS_PACKET_TUNNEL_PROFILE_NAME"
 export NVPN_IOS_CODE_SIGN_IDENTITY="$IOS_CODE_SIGN_IDENTITY"
 export NVPN_IOS_PROFILES_ENV_PATH="$IOS_PROFILES_ENV_PATH"
+export NVPN_IOS_DEVICE_UDIDS="${NVPN_IOS_DEVICE_UDIDS:-}"
 
 python3 <<'PY'
 import base64
@@ -95,6 +104,11 @@ ACTION = os.environ["NVPN_IOS_PROFILES_ACTION"]
 PROFILE_TYPE = os.environ["NVPN_IOS_PROFILE_TYPE"]
 CODE_SIGN_IDENTITY = os.environ["NVPN_IOS_CODE_SIGN_IDENTITY"]
 PROFILES_ENV_PATH = Path(os.environ["NVPN_IOS_PROFILES_ENV_PATH"])
+DEVICE_UDIDS = [
+    udid.strip()
+    for udid in os.environ.get("NVPN_IOS_DEVICE_UDIDS", "").split(",")
+    if udid.strip()
+]
 TARGETS = [
     {
         "role": "app",
@@ -223,12 +237,13 @@ def select_certificate():
     if configured:
         return configured
 
+    required_type = "DEVELOPMENT" if "DEVELOPMENT" in PROFILE_TYPE else "DISTRIBUTION"
     certificates, _ = get_all("certificates", {"limit": "200"})
     candidates = []
     for certificate in certificates:
         attrs = certificate.get("attributes", {})
         certificate_type = attrs.get("certificateType", "")
-        if "DISTRIBUTION" not in certificate_type:
+        if required_type not in certificate_type:
             continue
         expiration = parse_time(attrs.get("expirationDate"))
         if expiration <= dt.datetime.now(dt.timezone.utc):
@@ -236,17 +251,58 @@ def select_certificate():
         candidates.append((expiration, certificate))
 
     if not candidates:
-        fail("No non-expired distribution certificate found in App Store Connect")
+        fail(f"No non-expired {required_type.lower()} certificate found in App Store Connect")
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     certificate = candidates[0][1]
     attrs = certificate.get("attributes", {})
     print(
-        "Using distribution certificate "
+        f"Using {required_type.lower()} certificate "
         f"{attrs.get('displayName', certificate['id'])} [{certificate['id']}]",
         file=sys.stderr,
     )
     return certificate["id"]
+
+
+def profile_requires_devices():
+    return PROFILE_TYPE in {"IOS_APP_DEVELOPMENT", "IOS_APP_ADHOC"}
+
+
+def select_devices():
+    if not profile_requires_devices():
+        return []
+
+    devices, _ = get_all("devices", {"filter[platform]": "IOS", "limit": "200"})
+    candidates = []
+    requested = set(DEVICE_UDIDS)
+    found = set()
+    for device in devices:
+        attrs = device.get("attributes", {})
+        udid = attrs.get("udid") or attrs.get("identifier")
+        if attrs.get("status") not in {None, "ENABLED"}:
+            continue
+        if requested and udid not in requested:
+            continue
+        candidates.append(device)
+        if udid:
+            found.add(udid)
+
+    missing = sorted(requested - found)
+    if missing:
+        fail("No enabled App Store Connect device registration found for: " + ", ".join(missing))
+    if not candidates:
+        hint = "matching " if requested else ""
+        fail(f"No {hint}enabled iOS devices found in App Store Connect")
+
+    print(
+        "Using iOS devices: "
+        + ", ".join(
+            f"{device.get('attributes', {}).get('name', device['id'])}"
+            for device in candidates
+        ),
+        file=sys.stderr,
+    )
+    return candidates
 
 
 def list_profiles():
@@ -324,7 +380,7 @@ def install_profile(profile):
     return uuid, path
 
 
-def create_profile(target, bundle_id, certificate_id):
+def create_profile(target, bundle_id, certificate_id, devices):
     name = target["profile_name"]
     if os.environ.get("NVPN_IOS_PROFILE_NAME_SUFFIX"):
         name = f"{name} {os.environ['NVPN_IOS_PROFILE_NAME_SUFFIX']}"
@@ -354,6 +410,16 @@ def create_profile(target, bundle_id, certificate_id):
             },
         }
     }
+    if devices:
+        body["data"]["relationships"]["devices"] = {
+            "data": [
+                {
+                    "type": "devices",
+                    "id": device["id"],
+                }
+                for device in devices
+            ]
+        }
     status, response = request("POST", "profiles", body=body)
     if status == 409:
         fallback = f"{name} {int(time.time())}"
@@ -364,6 +430,7 @@ def create_profile(target, bundle_id, certificate_id):
 
 def ensure_profiles():
     certificate_id = select_certificate()
+    devices = select_devices()
     env_values = {
         "NVPN_IOS_SIGNING_STYLE": "manual",
         "NVPN_IOS_CODE_SIGN_IDENTITY": CODE_SIGN_IDENTITY,
@@ -376,7 +443,7 @@ def ensure_profiles():
         if os.environ.get("NVPN_IOS_PROFILE_RECREATE") != "true":
             profile = find_profile(bundle_id)
         if profile is None:
-            profile = create_profile(target, bundle_id, certificate_id)
+            profile = create_profile(target, bundle_id, certificate_id, devices)
 
         uuid, path = install_profile(profile)
         attrs = profile.get("attributes", {})

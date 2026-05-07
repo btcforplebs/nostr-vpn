@@ -288,7 +288,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn;
 				PRODUCT_MODULE_NAME = NostrVpnIos;
 				PRODUCT_NAME = "Nostr VPN";
 				SDKROOT = iphoneos;
@@ -313,7 +313,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn;
 				PRODUCT_MODULE_NAME = NostrVpnIos;
 				PRODUCT_NAME = "Nostr VPN";
 				SDKROOT = iphoneos;
@@ -404,7 +404,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.ios.PacketTunnel;
+				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.PacketTunnel;
 				PRODUCT_MODULE_NAME = PacketTunnel;
 				PRODUCT_NAME = "Nostr VPN Tunnel";
 				SDKROOT = iphoneos;
@@ -428,7 +428,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.ios.PacketTunnel;
+				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.PacketTunnel;
 				PRODUCT_MODULE_NAME = PacketTunnel;
 				PRODUCT_NAME = "Nostr VPN Tunnel";
 				SDKROOT = iphoneos;

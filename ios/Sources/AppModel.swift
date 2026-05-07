@@ -13,6 +13,7 @@ final class AppModel: ObservableObject {
     private let vpnController = PacketTunnelController()
     private var refreshTask: Task<Void, Never>?
     private var copyClearTask: Task<Void, Never>?
+    private var launchAutomationHandled = false
 
     init() {
         let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -45,6 +46,7 @@ final class AppModel: ObservableObject {
                 self?.refresh()
             }
         }
+        runLaunchAutomationIfRequested()
     }
 
     func refresh() {
@@ -108,6 +110,20 @@ final class AppModel: ObservableObject {
         let action = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if action == "tick" {
             refresh()
+        }
+    }
+
+    private func runLaunchAutomationIfRequested() {
+        guard !launchAutomationHandled else {
+            return
+        }
+        launchAutomationHandled = true
+
+        let arguments = Set(ProcessInfo.processInfo.arguments)
+        if arguments.contains("--nvpn-connect"), !state.sessionActive {
+            toggleSession()
+        } else if arguments.contains("--nvpn-disconnect"), state.sessionActive {
+            toggleSession()
         }
     }
 

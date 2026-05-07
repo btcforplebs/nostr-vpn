@@ -16,7 +16,7 @@ enum PacketTunnelControllerError: LocalizedError {
 }
 
 final class PacketTunnelController {
-    private let providerBundleIdentifier = "to.iris.nvpn.ios.PacketTunnel"
+    private let providerBundleIdentifier = "to.iris.nvpn.PacketTunnel"
 
     func start(state: AppState, network: NetworkState?, tunnelConfigJson: String) async throws {
         let manager = try await loadOrCreateManager()

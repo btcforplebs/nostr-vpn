@@ -26,7 +26,7 @@ targets:
       base:
         PRODUCT_NAME: Nostr VPN
         PRODUCT_MODULE_NAME: NostrVpnIos
-        PRODUCT_BUNDLE_IDENTIFIER: to.iris.nvpn.ios
+        PRODUCT_BUNDLE_IDENTIFIER: to.iris.nvpn
         INFOPLIST_FILE: Info.plist
         CODE_SIGN_ENTITLEMENTS: NostrVpnIos.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -52,7 +52,7 @@ targets:
       base:
         PRODUCT_NAME: Nostr VPN Tunnel
         PRODUCT_MODULE_NAME: PacketTunnel
-        PRODUCT_BUNDLE_IDENTIFIER: to.iris.nvpn.ios.PacketTunnel
+        PRODUCT_BUNDLE_IDENTIFIER: to.iris.nvpn.PacketTunnel
         INFOPLIST_FILE: PacketTunnel/Info.plist
         CODE_SIGN_ENTITLEMENTS: PacketTunnel/PacketTunnel.entitlements
         HEADER_SEARCH_PATHS: $(PROJECT_DIR)/Bindings
