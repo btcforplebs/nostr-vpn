@@ -24,9 +24,6 @@
           <Button Style="{StaticResource NavButton}" Command="{Binding ShowDevicesCommand}">
             <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE772;" Width="24" /><TextBlock Text="Devices" /></StackPanel>
           </Button>
-          <Button Style="{StaticResource NavButton}" Command="{Binding ShowShareCommand}">
-            <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C8;" Width="24" /><TextBlock Text="Share" /></StackPanel>
-          </Button>
           <Button Style="{StaticResource NavButton}" Command="{Binding ShowExitNodesCommand}">
             <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B8;" Width="24" /><TextBlock Text="Exit Nodes" /></StackPanel>
           </Button>
@@ -74,7 +71,7 @@
           <StackPanel Visibility="{Binding Page, Converter={StaticResource PageVisibility}, ConverterParameter=Devices}">
             <Border Style="{StaticResource Card}">
               <DockPanel LastChildFill="True">
-                <Button DockPanel.Dock="Right" Command="{Binding ShowShareCommand}" Content="Add device" />
+                <Button DockPanel.Dock="Right" Command="{Binding ShowShareCommand}" Content="+" />
                 <TextBlock Text="Devices" FontSize="18" FontWeight="SemiBold" />
               </DockPanel>
             </Border>

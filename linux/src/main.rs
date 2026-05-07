@@ -727,7 +727,6 @@ fn build_sidebar(app: &AppRef, sidebar: &gtk::Box, state: &NativeAppState, page:
 
     for (target, title, icon) in [
         (Page::Devices, "Devices", ""),
-        (Page::Share, "Share", "emblem-shared-symbolic"),
         (Page::ExitNodes, "Exit Nodes", ""),
         (Page::Settings, "Settings", "emblem-system-symbolic"),
     ] {
@@ -790,7 +789,21 @@ fn build_devices_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     };
 
     let devices = card();
-    section_header(&devices, "Devices", "");
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    header.set_valign(gtk::Align::Center);
+    let title = gtk::Label::new(Some("Devices"));
+    title.add_css_class("title-3");
+    title.set_xalign(0.0);
+    title.set_hexpand(true);
+    header.append(&title);
+    let add = gtk::Button::from_icon_name("list-add-symbolic");
+    add.set_tooltip_text(Some("Add device"));
+    {
+        let app = app.clone();
+        add.connect_clicked(move |_| set_page(&app, Page::Share));
+    }
+    header.append(&add);
+    devices.append(&header);
 
     let mut participants = network.participants.clone();
     participants.sort_by_key(|participant| {

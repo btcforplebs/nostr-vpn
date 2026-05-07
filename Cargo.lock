@@ -2842,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "nostr-vpn-app-core"
-version = "0.3.23"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2862,7 +2862,7 @@ dependencies = [
 
 [[package]]
 name = "nostr-vpn-cli"
-version = "0.3.23"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2890,7 +2890,7 @@ dependencies = [
 
 [[package]]
 name = "nostr-vpn-core"
-version = "0.3.23"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2918,7 +2918,7 @@ dependencies = [
 
 [[package]]
 name = "nostr-vpn-relay"
-version = "0.3.23"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2940,7 +2940,7 @@ dependencies = [
 
 [[package]]
 name = "nostr-vpn-web"
-version = "0.3.23"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2959,7 +2959,7 @@ dependencies = [
 
 [[package]]
 name = "nostr-vpn-wintun"
-version = "0.3.23"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "wintun",

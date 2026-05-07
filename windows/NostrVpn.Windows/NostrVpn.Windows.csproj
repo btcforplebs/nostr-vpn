@@ -10,7 +10,7 @@
     <AssemblyName>NostrVpn.Windows</AssemblyName>
     <RootNamespace>NostrVpn.Windows</RootNamespace>
     <ApplicationIcon>Assets\nostr-vpn.ico</ApplicationIcon>
-    <Version>0.3.23</Version>
+    <Version>4.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

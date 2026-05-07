@@ -15,6 +15,7 @@ struct AppState: Decodable {
     var relayConnected = false
     var ownNpub = ""
     var nodeName = ""
+    var selfMagicDnsName = ""
     var tunnelIp = ""
     var endpoint = ""
     var listenPort: Int = 0
@@ -43,7 +44,7 @@ struct AppState: Decodable {
     enum CodingKeys: String, CodingKey {
         case rev, error, appVersion, platform, mobile, vpnControlSupported
         case runtimeStatusDetail, vpnEnabled, vpnActive, vpnStatus, daemonRunning, relayConnected
-        case ownNpub, nodeName, tunnelIp, endpoint, listenPort, activeNetworkInvite
+        case ownNpub, nodeName, selfMagicDnsName, tunnelIp, endpoint, listenPort, activeNetworkInvite
         case connectedPeerCount, expectedPeerCount, meshReady, exitNode, advertiseExitNode
         case advertisedRoutes, magicDnsSuffix, magicDnsStatus, autoconnect
         case lanPairingActive, lanPairingRemainingSecs, configPath
@@ -68,6 +69,7 @@ struct AppState: Decodable {
         relayConnected = container.bool(.relayConnected)
         ownNpub = container.string(.ownNpub)
         nodeName = container.string(.nodeName)
+        selfMagicDnsName = container.string(.selfMagicDnsName)
         tunnelIp = container.string(.tunnelIp)
         endpoint = container.string(.endpoint)
         listenPort = container.int(.listenPort)

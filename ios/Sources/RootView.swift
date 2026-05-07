@@ -12,12 +12,6 @@ struct RootView: View {
             .tabItem { Label("Devices", systemImage: "circle.grid.2x2.fill") }
 
             NavigationStack {
-                SharePage(model: model)
-                    .navigationTitle("Share")
-            }
-            .tabItem { Label("Share", systemImage: "qrcode") }
-
-            NavigationStack {
                 ExitNodesPage(model: model)
                     .navigationTitle("Exit Nodes")
             }
@@ -35,6 +29,7 @@ struct RootView: View {
 
 private struct DevicesPage: View {
     @ObservedObject var model: AppModel
+    @State private var addDevicePresented = false
 
     var body: some View {
         ScrollView {
@@ -44,14 +39,8 @@ private struct DevicesPage: View {
                     NoticeCard(text: model.state.error.isEmpty ? model.statusMessage : model.state.error)
                 }
                 if let network = model.activeNetwork {
-                    ForEach(network.participants) { participant in
+                    ForEach(visibleParticipants(network)) { participant in
                         ParticipantRow(model: model, participant: participant)
-                    }
-                    AddDeviceCard(network: network) { npub, alias in
-                        model.dispatch(
-                            NativeActions.addParticipant(networkId: network.id, npub: npub, alias: alias),
-                            status: "Adding device"
-                        )
                     }
                     ForEach(network.inboundJoinRequests) { request in
                         JoinRequestRow(request: request) {
@@ -71,10 +60,40 @@ private struct DevicesPage: View {
             .padding()
         }
         .background(AppColors.background)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    addDevicePresented = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("Add device")
+            }
+        }
+        .sheet(isPresented: $addDevicePresented) {
+            NavigationStack {
+                AddDeviceSheet(model: model)
+                    .navigationTitle("Add Device")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") {
+                                addDevicePresented = false
+                            }
+                        }
+                    }
+            }
+        }
+    }
+
+    private func visibleParticipants(_ network: NetworkState) -> [ParticipantState] {
+        guard !model.state.ownNpub.isEmpty else {
+            return network.participants
+        }
+        return network.participants.filter { $0.npub != model.state.ownNpub }
     }
 }
 
-private struct SharePage: View {
+private struct AddDeviceSheet: View {
     @ObservedObject var model: AppModel
     @State private var inviteInput = ""
 
@@ -105,6 +124,15 @@ private struct SharePage: View {
                                 }
                             }
                         }
+                    }
+                }
+
+                if let network = model.activeNetwork, network.localIsAdmin {
+                    AddDeviceCard(network: network) { npub, alias in
+                        model.dispatch(
+                            NativeActions.addParticipant(networkId: network.id, npub: npub, alias: alias),
+                            status: "Adding device"
+                        )
                     }
                 }
 
@@ -186,9 +214,11 @@ private struct HeroCard: View {
                     .fill(model.state.vpnActive ? AppColors.ok : Color.gray.opacity(0.35))
                     .frame(width: 12, height: 12)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(model.activeNetwork?.displayName ?? "Nostr VPN")
-                        .font(.title.bold())
+                    Text(localDeviceTitle)
+                        .font(.title2.bold())
                         .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .layoutPriority(1)
                     Text(model.state.vpnStatus)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -197,10 +227,19 @@ private struct HeroCard: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(model.state.vpnEnabled ? "On" : "Off") {
-                    model.toggleVpn()
-                }
-                .buttonStyle(.borderedProminent)
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { model.state.vpnEnabled },
+                        set: { isEnabled in
+                            if isEnabled != model.state.vpnEnabled {
+                                model.toggleVpn()
+                            }
+                        }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
                 .disabled(model.actionInFlight || !model.state.vpnControlSupported)
             }
         }
@@ -211,6 +250,16 @@ private struct HeroCard: View {
             return "No peers yet"
         }
         return "\(model.state.connectedPeerCount) of \(model.state.expectedPeerCount) connected"
+    }
+
+    private var localDeviceTitle: String {
+        if !model.state.selfMagicDnsName.isEmpty {
+            return model.state.selfMagicDnsName
+        }
+        if !model.state.nodeName.isEmpty {
+            return model.state.nodeName
+        }
+        return "This device"
     }
 }
 
@@ -259,7 +308,7 @@ private struct AddDeviceCard: View {
 
     var body: some View {
         AppCard {
-            Text("Add Device")
+            Text("Manual")
                 .font(.headline)
             TextField("npub", text: $npub)
                 .textInputAutocapitalization(.never)

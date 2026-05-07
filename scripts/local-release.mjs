@@ -54,7 +54,7 @@ Options:
   --publish                 Publish the staged release tree with htree
   --dry-run                 Print the plan without running build or publish commands
   --skip-verify            Skip fmt/clippy/test verification
-  --tag <tag>              Release tag (defaults to workspace version, for example v0.3.23)
+  --tag <tag>              Release tag (defaults to workspace version, for example v4.0.0)
   --release-tree <name>    htree release tree name (default: releases/nostr-vpn)
   --stage-dir <path>       Directory used for staged release metadata
   --env-file <path>        Extra dotenv file to load (repeatable)

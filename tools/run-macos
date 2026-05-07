@@ -36,7 +36,7 @@ if [[ -z "${APP_PATH:-}" || ! -d "$APP_PATH" ]]; then
 fi
 
 if pgrep -x "Nostr VPN" >/dev/null 2>&1; then
-  osascript -e 'tell application id "to.iris.nvpn.macos" to quit' >/dev/null 2>&1 || true
+  pkill -TERM -x "Nostr VPN" >/dev/null 2>&1 || true
   for _ in {1..30}; do
     if ! pgrep -x "Nostr VPN" >/dev/null 2>&1; then
       break

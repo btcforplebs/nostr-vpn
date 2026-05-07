@@ -7,7 +7,7 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: 0.3.23
+    MARKETING_VERSION: 4.0.0
     CURRENT_PROJECT_VERSION: 1
     VERSIONING_SYSTEM: apple-generic
     CODE_SIGN_STYLE: Automatic

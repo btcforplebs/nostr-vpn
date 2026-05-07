@@ -18,12 +18,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,7 +49,7 @@ import org.nostrvpn.app.core.ParticipantState
 import org.nostrvpn.app.core.RelayState
 
 @Composable
-internal fun Hero(state: AppState, network: NetworkState?, dispatch: (JSONObject) -> Unit) {
+internal fun Hero(state: AppState, dispatch: (JSONObject) -> Unit) {
     AppCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -61,7 +61,7 @@ internal fun Hero(state: AppState, network: NetworkState?, dispatch: (JSONObject
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    network?.name?.ifBlank { "Private network" } ?: "Nostr VPN",
+                    localDeviceTitle(state),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -74,22 +74,27 @@ internal fun Hero(state: AppState, network: NetworkState?, dispatch: (JSONObject
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            Button(
-                colors = ButtonDefaults.buttonColors(containerColor = if (state.vpnEnabled) Ok else Accent),
+            Switch(
+                checked = state.vpnEnabled,
                 enabled = state.vpnControlSupported,
-                onClick = {
-                    if (state.vpnEnabled) {
-                        dispatch(NativeActions.disconnectVpn())
-                    } else {
-                        dispatch(NativeActions.connectVpn())
-                    }
+                onCheckedChange = { enabled ->
+                    dispatch(
+                        if (enabled) {
+                            NativeActions.connectVpn()
+                        } else {
+                            NativeActions.disconnectVpn()
+                        },
+                    )
                 },
-            ) {
-                Text(if (state.vpnEnabled) "On" else "Off")
-            }
+            )
         }
     }
 }
+
+private fun localDeviceTitle(state: AppState): String =
+    state.selfMagicDnsName
+        .ifBlank { state.nodeName }
+        .ifBlank { "This device" }
 
 private fun peerSummary(state: AppState): String {
     if (state.expectedPeerCount == 0L) {
@@ -125,10 +130,17 @@ internal fun ParticipantRow(participant: ParticipantState) {
 
 @Composable
 internal fun AddParticipantCard(network: NetworkState, dispatch: (JSONObject) -> Unit) {
-    var npub by remember { mutableStateOf("") }
-    var alias by remember { mutableStateOf("") }
     AppCard {
         Text("Add Device", style = MaterialTheme.typography.titleMedium)
+        AddParticipantForm(network, dispatch)
+    }
+}
+
+@Composable
+internal fun AddParticipantForm(network: NetworkState, dispatch: (JSONObject) -> Unit) {
+    var npub by remember { mutableStateOf("") }
+    var alias by remember { mutableStateOf("") }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
             value = npub,
             onValueChange = { npub = it },

@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.0 - 2026-05-07
+
+Changes since `0.3.23` on 2026-05-05.
+
+### Added
+
+- Native desktop/mobile shells now cover macOS, Linux, Windows, Android, and iOS through the shared app-core state/action contract, replacing the legacy Tauri frontend.
+- FIPS is now the default private mesh data plane, with open peer discovery, mobile peer discovery, local traversal candidates, verified adverts, transit UDP, and Docker e2e coverage.
+- Desktop updater e2e coverage now checks local release manifests and update asset preparation on macOS, Linux, and Windows.
+- Local workflow recipes now expose platform run/build commands and build output paths.
+
+### Changed
+
+- macOS now uses a Tailscale-style three-column desktop layout with a toolbar VPN switch, sidebar settings, device detail actions, and daemon-level desired VPN state.
+- Linux and Windows native shells were brought closer to macOS parity, including tray/deep-link/update/service behavior.
+- Mobile apps now use switches for VPN on/off, keep device sharing behind the Devices plus button, and represent the local device in the hero instead of duplicating it in the peer list.
+
+### Fixed
+
+- Native app peer counts now exclude self devices, FIPS mesh status is surfaced consistently, and self/non-admin peer actions are hidden where they are not valid.
+- macOS normal VPN on/off no longer requests administrator privileges; admin prompts are reserved for explicit background service management.
+- Release validation now guards against incomplete Linux desktop asset sets and keeps versionless CLI assets in local release notes.
+
 ## 0.3.23 - 2026-05-05
 
 Changes since `0.3.22` earlier on 2026-05-05.

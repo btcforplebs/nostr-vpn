@@ -123,7 +123,7 @@ case "\${1:-}" in
     "running": true,
     "state": {
       "updated_at": $now,
-      "binary_version": "0.3.23",
+      "binary_version": "4.0.0",
       "local_endpoint": "10.203.0.10:51820",
       "advertised_endpoint": "10.203.0.10:51820",
       "listen_port": 51820,
@@ -172,7 +172,7 @@ JSON
   "pid": 4242,
   "label": "to.nostrvpn.nvpn",
   "plist_path": "",
-  "binary_version": "0.3.23"
+  "binary_version": "4.0.0"
 }
 JSON
     else

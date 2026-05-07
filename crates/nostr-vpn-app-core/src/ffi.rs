@@ -372,15 +372,15 @@ impl NativeAppRuntime {
             NativeAppAction::ConnectVpn => self.connect_vpn(),
             NativeAppAction::DisconnectVpn => self.disconnect_vpn(),
             NativeAppAction::InstallCli => {
-                let output = self.run_nvpn_elevated(["install-cli", "--force"])?;
+                let output = self.run_nvpn(["install-cli", "--force"])?;
                 ensure_success("nvpn install-cli", &output)
             }
             NativeAppAction::UninstallCli => {
-                let output = self.run_nvpn_elevated(["uninstall-cli"])?;
+                let output = self.run_nvpn(["uninstall-cli"])?;
                 ensure_success("nvpn uninstall-cli", &output)
             }
             NativeAppAction::InstallSystemService => {
-                let output = self.run_nvpn_elevated([
+                let output = self.run_nvpn_service_action([
                     "service",
                     "install",
                     "--force",
@@ -392,7 +392,7 @@ impl NativeAppRuntime {
                 self.refresh_service_status()
             }
             NativeAppAction::UninstallSystemService => {
-                let output = self.run_nvpn_elevated([
+                let output = self.run_nvpn_service_action([
                     "service",
                     "uninstall",
                     "--config",
@@ -403,7 +403,7 @@ impl NativeAppRuntime {
                 self.refresh_service_status()
             }
             NativeAppAction::EnableSystemService => {
-                let output = self.run_nvpn_elevated([
+                let output = self.run_nvpn_service_action([
                     "service",
                     "enable",
                     "--config",
@@ -414,7 +414,7 @@ impl NativeAppRuntime {
                 self.refresh_service_status()
             }
             NativeAppAction::DisableSystemService => {
-                let output = self.run_nvpn_elevated([
+                let output = self.run_nvpn_service_action([
                     "service",
                     "disable",
                     "--config",
@@ -778,7 +778,7 @@ impl NativeAppRuntime {
             self.vpn_active = true;
             self.daemon_running = true;
             self.relay_connected = false;
-            self.vpn_status = "Mobile tunnel pending".to_string();
+            self.vpn_status = "VPN on".to_string();
             return self.refresh_mobile_status();
         }
         let _ = self.refresh_status();
@@ -787,7 +787,21 @@ impl NativeAppRuntime {
             ensure_success("nvpn resume", &output)?;
             return self.refresh_status();
         }
-        let output = self.run_nvpn_elevated([
+        #[cfg(target_os = "macos")]
+        {
+            self.refresh_service_status_if_due();
+            if !self.service_running {
+                self.vpn_enabled = false;
+                self.vpn_active = false;
+                self.vpn_status = if self.service_installed {
+                    "Start background service first".to_string()
+                } else {
+                    "Install background service first".to_string()
+                };
+                return Err(anyhow!(self.vpn_status.clone()));
+            }
+        }
+        let output = self.run_nvpn([
             "start",
             "--daemon",
             "--connect",
@@ -832,7 +846,7 @@ impl NativeAppRuntime {
                 || self.vpn_status == "CLI unavailable"
                 || self.vpn_status.starts_with("nvpn CLI binary not found")
             {
-                self.vpn_status = "Mobile tunnel pending".to_string();
+                self.vpn_status = "VPN on".to_string();
             }
         } else {
             self.daemon_running = false;
@@ -1331,10 +1345,10 @@ impl NativeAppRuntime {
             .with_context(|| format!("failed to execute {}", nvpn_bin.display()))
     }
 
-    fn run_nvpn_elevated<const N: usize>(&self, args: [&str; N]) -> Result<Output> {
+    fn run_nvpn_service_action<const N: usize>(&self, args: [&str; N]) -> Result<Output> {
         #[cfg(target_os = "macos")]
         {
-            self.run_nvpn_with_macos_admin(args)
+            self.run_nvpn_service_action_with_macos_admin(args)
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1343,13 +1357,16 @@ impl NativeAppRuntime {
     }
 
     #[cfg(target_os = "macos")]
-    fn run_nvpn_with_macos_admin<const N: usize>(&self, args: [&str; N]) -> Result<Output> {
+    fn run_nvpn_service_action_with_macos_admin<const N: usize>(
+        &self,
+        args: [&str; N],
+    ) -> Result<Output> {
         let Some(nvpn_bin) = &self.nvpn_bin else {
             return Err(anyhow!(
                 "nvpn CLI binary not found; set {NVPN_BIN_ENV} or install nvpn"
             ));
         };
-        let shell_command = macos_admin_shell_command(nvpn_bin, &args);
+        let shell_command = macos_service_action_shell_command(nvpn_bin, &args);
         let script = format!(
             "do shell script {} with administrator privileges",
             applescript_quote(&shell_command)
@@ -1694,7 +1711,7 @@ fn non_empty(value: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_admin_shell_command(nvpn_bin: &Path, args: &[&str]) -> String {
+fn macos_service_action_shell_command(nvpn_bin: &Path, args: &[&str]) -> String {
     std::iter::once(shell_quote(&nvpn_bin.display().to_string()))
         .chain(args.iter().map(|arg| shell_quote(arg)))
         .collect::<Vec<_>>()
@@ -1814,6 +1831,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mobile_connect_reports_vpn_on_without_pending_placeholder() {
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.mobile_runtime = true;
+
+        runtime.dispatch(NativeAppAction::ConnectVpn);
+        let state = runtime.state();
+
+        assert!(state.vpn_enabled);
+        assert!(state.vpn_active);
+        assert_eq!(state.vpn_status, "VPN on");
+    }
+
     #[cfg(unix)]
     #[test]
     fn connect_vpn_resumes_running_daemon_without_elevated_start() {
@@ -1882,8 +1914,74 @@ exit 0
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_admin_shell_command_quotes_bundled_cli_path() {
-        let command = macos_admin_shell_command(
+    fn macos_connect_without_service_does_not_start_or_prompt() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("nvpn-app-core-no-service-{nonce}"));
+        fs::create_dir_all(&dir).expect("create test dir");
+        let calls_path = dir.join("calls.txt");
+        let script_path = dir.join("nvpn");
+        let calls_literal = calls_path
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let script = format!(
+            r#"#!/bin/sh
+CALLS="{calls_literal}"
+printf '%s\n' "$*" >> "$CALLS"
+if [ "$1" = "service" ] && [ "$2" = "status" ]; then
+  cat <<'JSON'
+{{"supported":true,"installed":false,"disabled":false,"loaded":false,"running":false,"pid":null,"label":"to.iris.nvpn.test","binary_version":""}}
+JSON
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  cat <<'JSON'
+{{"daemon":{{"running":false,"state":null}}}}
+JSON
+  exit 0
+fi
+if [ "$1" = "start" ]; then
+  echo "unexpected start" >&2
+  exit 42
+fi
+exit 0
+"#
+        );
+        fs::write(&script_path, script).expect("write fake nvpn");
+        let mut permissions = fs::metadata(&script_path)
+            .expect("fake nvpn metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("make fake nvpn executable");
+
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.last_error.clear();
+        runtime.config_path = dir.join("config.toml");
+        runtime.nvpn_bin = Some(script_path);
+
+        runtime.dispatch(NativeAppAction::ConnectVpn);
+
+        let calls = fs::read_to_string(&calls_path).expect("read fake nvpn calls");
+        assert!(calls.contains("service status --json --config"));
+        assert!(calls.contains("status --json --discover-secs 0 --config"));
+        assert!(!calls.contains("start --daemon --connect"));
+        assert_eq!(runtime.last_error, "Install background service first");
+        assert!(!runtime.vpn_enabled);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_service_action_shell_command_quotes_bundled_cli_path() {
+        let command = macos_service_action_shell_command(
             Path::new("/Applications/Nostr VPN.app/Contents/Resources/nvpn"),
             &["service", "install", "--force"],
         );
