@@ -44,6 +44,9 @@ struct RootView: View {
             detailPane
         }
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                headerSessionControl
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     manager.refresh()
@@ -63,6 +66,34 @@ struct RootView: View {
                 showingQrScanner = false
             }
         }
+    }
+
+    private var headerSessionControl: some View {
+        HStack(spacing: 10) {
+            Toggle("", isOn: Binding(
+                get: { state.sessionActive },
+                set: { enabled in
+                    if enabled != state.sessionActive {
+                        manager.toggleSession()
+                    }
+                }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .controlSize(.small)
+            .disabled(manager.actionInFlight || !state.vpnSessionControlSupported)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(activeNetwork.map(displayName) ?? "Nostr VPN")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(headerSessionStatusText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .help(state.sessionActive ? "Disconnect VPN" : "Connect VPN")
     }
 
     private var sidebar: some View {
@@ -147,63 +178,6 @@ struct RootView: View {
             .font(.system(size: 24, weight: .semibold))
     }
 
-    private var networkHero: some View {
-        surface {
-            HStack(alignment: .center, spacing: 16) {
-                statusMark
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(activeNetwork.map(displayName) ?? "Nostr VPN")
-                        .font(.system(size: 30, weight: .semibold))
-                    Text(heroSubtext)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                Spacer()
-                Button {
-                    manager.toggleSession()
-                } label: {
-                    Label(
-                        state.sessionActive ? "Connected" : "Connect",
-                        systemImage: state.sessionActive ? "power.circle.fill" : "power.circle"
-                    )
-                }
-                .controlSize(.large)
-                .buttonStyle(.borderedProminent)
-                .disabled(manager.actionInFlight || !state.vpnSessionControlSupported)
-            }
-
-            if !statusMessage.isEmpty {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: statusIcon)
-                        .foregroundStyle(statusTint)
-                    Text(statusMessage)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                    Spacer()
-                    if manager.serviceRepairRecommended {
-                        Button("Repair") {
-                            manager.installService()
-                        }
-                        .disabled(manager.actionInFlight || manager.serviceSettling)
-                    }
-                }
-                .font(.subheadline)
-                .padding(.top, 4)
-            }
-        }
-    }
-
-    private var statusMark: some View {
-        ZStack {
-            Circle()
-                .fill(statusTint.opacity(0.14))
-                .frame(width: 48, height: 48)
-            Image(systemName: state.meshReady ? "checkmark" : state.sessionActive ? "arrow.triangle.2.circlepath" : "power")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(statusTint)
-        }
-    }
-
     private func devicesPane(_ network: NativeNetworkState) -> some View {
         HStack(spacing: 0) {
             deviceListColumn(network)
@@ -245,13 +219,6 @@ struct RootView: View {
                     }
                     .disabled(!network.localIsAdmin && network.inviteInviterNpub.isEmpty)
                     .help("Add device")
-                    Button {
-                        manager.toggleSession()
-                    } label: {
-                        Image(systemName: state.sessionActive ? "power.circle.fill" : "power.circle")
-                    }
-                    .disabled(manager.actionInFlight || !state.vpnSessionControlSupported)
-                    .help(state.sessionActive ? "Disconnect VPN" : "Connect VPN")
                 }
                 TextField("Search", text: $deviceSearch)
                     .textFieldStyle(.roundedBorder)
@@ -410,20 +377,6 @@ struct RootView: View {
 
     private func deviceActionButtons(_ participant: NativeParticipantState, network: NativeNetworkState) -> some View {
         HStack(spacing: 6) {
-            Button {
-                manager.copy(participant.npub, as: .peerNpub, peerNpub: participant.npub)
-            } label: {
-                Label("Copy key", systemImage: "key")
-            }
-            .help("Copy npub")
-            if !cleanIp(participant.tunnelIp).isEmpty {
-                Button {
-                    manager.copy(cleanIp(participant.tunnelIp), as: .peerNpub, peerNpub: participant.npub)
-                } label: {
-                    Label("Copy IP", systemImage: "network")
-                }
-                .help("Copy IP")
-            }
             Button {
                 manager.toggleAdmin(networkId: network.id, participant: participant)
             } label: {
@@ -1204,17 +1157,17 @@ struct RootView: View {
         network.name.isEmpty ? "Network" : network.name
     }
 
-    private var heroSubtext: String {
-        if state.meshReady {
-            return "VPN on · \(peerAvailabilityText)"
+    private var headerSessionStatusText: String {
+        if manager.actionInFlight, !manager.actionStatus.isEmpty {
+            return manager.actionStatus
         }
         if state.sessionActive {
-            return state.sessionStatus.isEmpty ? "Connecting" : state.sessionStatus
+            return state.sessionStatus.isEmpty ? "VPN on" : state.sessionStatus
         }
         if manager.serviceRepairRecommended {
-            return "Background service needs repair"
+            return "Service needs repair"
         }
-        return "Private network is off"
+        return "Off"
     }
 
     private var peerAvailabilityText: String {
@@ -1223,36 +1176,6 @@ struct RootView: View {
         }
         let deviceWord = state.expectedPeerCount == 1 ? "device" : "devices"
         return "\(state.connectedPeerCount) online · \(state.expectedPeerCount) \(deviceWord)"
-    }
-
-    private var statusMessage: String {
-        if !state.error.isEmpty {
-            return state.error
-        }
-        if !manager.actionStatus.isEmpty {
-            return manager.actionStatus
-        }
-        if manager.serviceRepairRecommended {
-            return "Background service version does not match the app."
-        }
-        return ""
-    }
-
-    private var statusIcon: String {
-        state.error.isEmpty ? "info.circle" : "exclamationmark.triangle.fill"
-    }
-
-    private var statusTint: Color {
-        if !state.error.isEmpty {
-            return .orange
-        }
-        if state.meshReady {
-            return .green
-        }
-        if state.sessionActive {
-            return .orange
-        }
-        return .secondary
     }
 
     private var serviceInstallButtonTitle: String {
