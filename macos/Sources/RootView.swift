@@ -341,7 +341,9 @@ struct RootView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            deviceActionButtons(participant, network: network)
+            if !isSelf(participant) {
+                deviceActionButtons(participant, network: network)
+            }
         }
     }
 
