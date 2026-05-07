@@ -409,13 +409,12 @@ struct RootView: View {
     }
 
     private func deviceActionButtons(_ participant: NativeParticipantState, network: NativeNetworkState) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], alignment: .leading, spacing: 8) {
+        HStack(spacing: 6) {
             Button {
                 manager.copy(participant.npub, as: .peerNpub, peerNpub: participant.npub)
             } label: {
                 Label("Copy key", systemImage: "key")
             }
-            .frame(maxWidth: .infinity)
             .help("Copy npub")
             if !cleanIp(participant.tunnelIp).isEmpty {
                 Button {
@@ -423,7 +422,6 @@ struct RootView: View {
                 } label: {
                     Label("Copy IP", systemImage: "network")
                 }
-                .frame(maxWidth: .infinity)
                 .help("Copy IP")
             }
             Button {
@@ -434,7 +432,6 @@ struct RootView: View {
                     systemImage: participant.isAdmin ? "star.slash" : "star"
                 )
             }
-            .frame(maxWidth: .infinity)
             .disabled(!network.localIsAdmin || manager.actionInFlight)
             .help(participant.isAdmin ? "Remove admin" : "Make admin")
             Button(role: .destructive) {
@@ -442,10 +439,10 @@ struct RootView: View {
             } label: {
                 Label("Remove", systemImage: "trash")
             }
-            .frame(maxWidth: .infinity)
             .disabled(!network.localIsAdmin || isSelf(participant) || manager.actionInFlight)
             .help("Remove device")
         }
+        .controlSize(.small)
     }
 
     private func detailValueRow(_ title: String, _ value: String) -> some View {
