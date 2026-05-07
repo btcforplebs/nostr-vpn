@@ -27,8 +27,8 @@
           <Button Style="{StaticResource NavButton}" Command="{Binding ShowShareCommand}">
             <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C8;" Width="24" /><TextBlock Text="Share" /></StackPanel>
           </Button>
-          <Button Style="{StaticResource NavButton}" Command="{Binding ShowRoutingCommand}">
-            <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B8;" Width="24" /><TextBlock Text="Routing" /></StackPanel>
+          <Button Style="{StaticResource NavButton}" Command="{Binding ShowExitNodesCommand}">
+            <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B8;" Width="24" /><TextBlock Text="Exit Nodes" /></StackPanel>
           </Button>
           <Button Style="{StaticResource NavButton}" Command="{Binding ShowSettingsCommand}">
             <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE713;" Width="24" /><TextBlock Text="Settings" /></StackPanel>
@@ -55,14 +55,11 @@
             <Ellipse Width="42" Height="42" Fill="{StaticResource AccentSoft}" />
             <StackPanel Margin="12,0,0,0">
               <TextBlock Text="{Binding ActiveNetworkName}" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" />
-              <TextBlock Text="{Binding SessionStatusText}" Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" />
+              <TextBlock Text="{Binding VpnStatusText}" Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" />
             </StackPanel>
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-            <Button Command="{Binding RefreshCommand}" Margin="0,0,8,0" ToolTip="Refresh">
-              <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" />
-            </Button>
-            <Button Style="{StaticResource PrimaryButton}" Command="{Binding ToggleSessionCommand}" Content="{Binding SessionButtonText}" />
+            <Button Style="{StaticResource PrimaryButton}" Command="{Binding ToggleVpnCommand}" Content="{Binding VpnButtonText}" />
           </StackPanel>
         </Grid>
       </Border>
@@ -221,7 +218,7 @@
             </Border>
           </StackPanel>
 
-          <StackPanel Visibility="{Binding Page, Converter={StaticResource PageVisibility}, ConverterParameter=Routing}">
+          <StackPanel Visibility="{Binding Page, Converter={StaticResource PageVisibility}, ConverterParameter=ExitNodes}">
             <Border Style="{StaticResource Card}">
               <StackPanel>
                 <TextBlock Text="Exit Node" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
@@ -244,14 +241,6 @@
             <Border Style="{StaticResource Card}">
               <StackPanel>
                 <CheckBox Content="Offer this device as an exit node" IsChecked="{Binding State.AdvertiseExitNode, Mode=OneWay}" Click="AdvertiseExit_Click" />
-                <Grid Margin="0,10,0,0">
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                  </Grid.ColumnDefinitions>
-                  <TextBox Text="{Binding AdvertisedRoutes, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
-                  <Button Grid.Column="1" Content="Save" Command="{Binding SaveRoutesCommand}" />
-                </Grid>
               </StackPanel>
             </Border>
           </StackPanel>

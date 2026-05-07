@@ -203,7 +203,43 @@ pub(crate) fn write_daemon_control_request(
         )
     })?;
     set_daemon_runtime_file_permissions(&control_file)?;
+    project_daemon_vpn_enabled_request(config_path, request);
     Ok(())
+}
+
+fn project_daemon_vpn_enabled_request(config_path: &Path, request: DaemonControlRequest) {
+    let Some(vpn_enabled) = (match request {
+        DaemonControlRequest::Pause => Some(false),
+        DaemonControlRequest::Resume => Some(true),
+        DaemonControlRequest::Reload | DaemonControlRequest::Stop => None,
+    }) else {
+        return;
+    };
+
+    let state_file = daemon_state_file_path(config_path);
+    let Ok(Some(mut state)) = read_daemon_state(&state_file) else {
+        return;
+    };
+
+    state.updated_at = unix_timestamp();
+    state.vpn_enabled = vpn_enabled;
+    state.vpn_status = match (vpn_enabled, state.vpn_active) {
+        (true, true) if state.vpn_status == "Turning VPN off" || state.vpn_status == "Paused" => {
+            "VPN on".to_string()
+        }
+        (true, true) => state.vpn_status,
+        (true, false) => "Turning VPN on".to_string(),
+        (false, true) => "Turning VPN off".to_string(),
+        (false, false) => "Paused".to_string(),
+    };
+
+    if let Err(error) = write_daemon_state(&state_file, &state) {
+        eprintln!(
+            "daemon: failed to project VPN control state {}: {}",
+            state_file.display(),
+            error
+        );
+    }
 }
 
 pub(crate) fn clear_daemon_control_result(config_path: &Path) {
@@ -368,29 +404,30 @@ pub(crate) fn wait_for_daemon_control_ack(config_path: &Path, timeout: Duration)
     ))
 }
 
-pub(crate) fn wait_for_daemon_session_active(
+#[cfg(test)]
+pub(crate) fn wait_for_daemon_vpn_enabled(
     config_path: &Path,
-    expected_active: bool,
+    expected_enabled: bool,
     timeout: Duration,
 ) -> Result<()> {
     let started = Instant::now();
     while started.elapsed() < timeout {
         if let Ok(status) = daemon_status(config_path) {
             let current_state = status.state.as_ref();
-            let current_active = current_state
-                .map(|state| state.session_active)
+            let current_enabled = current_state
+                .map(|state| state.vpn_enabled)
                 .unwrap_or(status.running);
-            let resumed_waiting_for_participants = expected_active
+            let resumed_waiting_for_participants = expected_enabled
                 && current_state
-                    .is_some_and(|state| state.session_status == WAITING_FOR_PARTICIPANTS_STATUS);
-            if current_active == expected_active || resumed_waiting_for_participants {
+                    .is_some_and(|state| state.vpn_status == WAITING_FOR_PARTICIPANTS_STATUS);
+            if current_enabled == expected_enabled || resumed_waiting_for_participants {
                 return Ok(());
             }
         }
         thread::sleep(Duration::from_millis(100));
     }
 
-    let verb = if expected_active { "resume" } else { "pause" };
+    let verb = if expected_enabled { "resume" } else { "pause" };
     Err(anyhow!(
         "daemon acknowledged control request but did not {verb} within {}s; background service may be busy or stuck. try again, or restart/reinstall the app/service if it keeps happening",
         timeout.as_secs()

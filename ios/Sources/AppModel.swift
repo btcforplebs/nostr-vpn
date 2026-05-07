@@ -64,24 +64,26 @@ final class AppModel: ObservableObject {
         statusMessage = state.error
     }
 
-    func toggleSession() {
+    func toggleVpn() {
         Task {
-            if state.sessionActive {
+            if state.vpnEnabled {
+                dispatch(NativeActions.disconnectVpn(), status: "Turning VPN off")
                 do {
                     try await vpnController.stop()
                 } catch {
                     statusMessage = error.localizedDescription
                 }
-                dispatch(NativeActions.disconnectSession(), status: "Disconnecting")
             } else {
+                let tunnelConfigJson = core.mobileTunnelConfigJson()
+                dispatch(NativeActions.connectVpn(), status: "Turning VPN on")
                 do {
                     try await vpnController.start(
                         state: state,
                         network: activeNetwork,
-                        tunnelConfigJson: core.mobileTunnelConfigJson()
+                        tunnelConfigJson: tunnelConfigJson
                     )
-                    dispatch(NativeActions.connectSession(), status: "Connecting")
                 } catch {
+                    dispatch(NativeActions.disconnectVpn(), status: "Turning VPN off")
                     statusMessage = error.localizedDescription
                 }
             }
@@ -120,10 +122,10 @@ final class AppModel: ObservableObject {
         launchAutomationHandled = true
 
         let arguments = Set(ProcessInfo.processInfo.arguments)
-        if arguments.contains("--nvpn-connect"), !state.sessionActive {
-            toggleSession()
-        } else if arguments.contains("--nvpn-disconnect"), state.sessionActive {
-            toggleSession()
+        if arguments.contains("--nvpn-connect"), !state.vpnEnabled {
+            toggleVpn()
+        } else if arguments.contains("--nvpn-disconnect"), state.vpnEnabled {
+            toggleVpn()
         }
     }
 

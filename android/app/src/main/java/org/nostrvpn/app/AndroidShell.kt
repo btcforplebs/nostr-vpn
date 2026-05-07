@@ -42,7 +42,7 @@ import org.nostrvpn.app.core.activeNetwork
 private enum class Page(val title: String) {
     Devices("Devices"),
     Share("Share"),
-    Routing("Routing"),
+    ExitNodes("Exit Nodes"),
     Settings("Settings"),
 }
 
@@ -100,7 +100,7 @@ internal fun NostrVpnApp(
             when (page) {
                 Page.Devices -> devicesPage(network, dispatch)
                 Page.Share -> sharePage(state, network, qrJson, dispatch)
-                Page.Routing -> routingPage(state, network, dispatch)
+                Page.ExitNodes -> exitNodesPage(state, network, dispatch)
                 Page.Settings -> settingsPage(state, network, dispatch)
             }
         }
@@ -187,7 +187,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sharePage(
     item { NearbyCard(state, dispatch) }
 }
 
-private fun androidx.compose.foundation.lazy.LazyListScope.routingPage(
+private fun androidx.compose.foundation.lazy.LazyListScope.exitNodesPage(
     state: AppState,
     network: NetworkState?,
     dispatch: (JSONObject) -> Unit,
@@ -210,9 +210,6 @@ private fun androidx.compose.foundation.lazy.LazyListScope.routingPage(
         }
     }
     item {
-        var routes by remember(state.advertisedRoutes) {
-            mutableStateOf(state.advertisedRoutes.joinToString(", "))
-        }
         AppCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(
@@ -222,16 +219,6 @@ private fun androidx.compose.foundation.lazy.LazyListScope.routingPage(
                     },
                 )
                 Text("Offer exit node")
-            }
-            OutlinedTextField(
-                value = routes,
-                onValueChange = { routes = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("Routes") },
-            )
-            Button(onClick = { dispatch(NativeActions.updateSettings("advertisedRoutes" to routes)) }) {
-                Text("Save")
             }
         }
     }

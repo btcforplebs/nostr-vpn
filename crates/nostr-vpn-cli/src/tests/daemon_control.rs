@@ -11,9 +11,10 @@ use nostr_vpn_core::presence::PeerPresenceBook;
 fn daemon_runtime_state_requires_advertised_routes() {
     let raw = r#"{
   "updated_at": 1773650797,
-  "session_active": true,
+  "vpn_enabled": true,
+  "vpn_active": true,
   "relay_connected": true,
-  "session_status": "Connected",
+  "vpn_status": "Connected",
   "expected_peer_count": 1,
   "connected_peer_count": 1,
   "mesh_ready": true,
@@ -48,9 +49,10 @@ fn read_daemon_state_trims_nul_padding() {
     let mut raw = br#"{
   "updated_at": 1,
   "binary_version": "test",
-  "session_active": true,
+  "vpn_enabled": true,
+  "vpn_active": true,
   "relay_connected": false,
-  "session_status": "Ready",
+  "vpn_status": "Ready",
   "expected_peer_count": 0,
   "connected_peer_count": 0,
   "mesh_ready": false
@@ -62,10 +64,53 @@ fn read_daemon_state_trims_nul_padding() {
     let state = read_daemon_state(&state_path)
         .expect("read daemon state")
         .expect("daemon state should exist");
-    assert_eq!(state.session_status, "Ready");
+    assert_eq!(state.vpn_status, "Ready");
 
     let rewritten = fs::read(&state_path).expect("read rewritten daemon state");
     assert!(!rewritten.contains(&0));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn daemon_control_request_projects_desired_vpn_state_immediately() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock is after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("nvpn-control-project-test-{nonce}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let config_path = dir.join("config.toml");
+    let state_path = daemon_state_file_path(&config_path);
+    let state = DaemonRuntimeState {
+        updated_at: 1,
+        vpn_enabled: true,
+        vpn_active: true,
+        relay_connected: true,
+        vpn_status: "VPN on".to_string(),
+        expected_peer_count: 1,
+        connected_peer_count: 1,
+        mesh_ready: true,
+        ..DaemonRuntimeState::default()
+    };
+    write_daemon_state(&state_path, &state).expect("write daemon state");
+
+    write_daemon_control_request(&config_path, DaemonControlRequest::Pause)
+        .expect("write pause control request");
+    let paused = read_daemon_state(&state_path)
+        .expect("read projected daemon state")
+        .expect("daemon state should exist");
+    assert!(!paused.vpn_enabled);
+    assert!(paused.vpn_active);
+    assert_eq!(paused.vpn_status, "Turning VPN off");
+
+    write_daemon_control_request(&config_path, DaemonControlRequest::Resume)
+        .expect("write resume control request");
+    let resumed = read_daemon_state(&state_path)
+        .expect("read projected daemon state")
+        .expect("daemon state should exist");
+    assert!(resumed.vpn_enabled);
+    assert_eq!(resumed.vpn_status, "VPN on");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -207,8 +252,8 @@ fn persist_daemon_runtime_state_marks_vpn_on_as_active() {
     let state = read_daemon_state(&state_path)
         .expect("read daemon state")
         .expect("daemon state should exist");
-    assert!(state.session_active);
-    assert_eq!(state.session_status, "VPN on");
+    assert!(state.vpn_active);
+    assert_eq!(state.vpn_status, "VPN on");
     assert!(!state.relay_connected);
 
     let _ = fs::remove_dir_all(&dir);
@@ -225,6 +270,7 @@ fn fips_runtime_state_is_ready_without_waiting_for_every_peer() {
     let state = crate::build_daemon_runtime_state(
         &config,
         true,
+        true,
         2,
         &presence,
         &tunnel_runtime,
@@ -237,12 +283,13 @@ fn fips_runtime_state_is_ready_without_waiting_for_every_peer() {
     );
 
     assert_eq!(state.connected_peer_count, 0);
+    assert!(state.vpn_enabled);
     assert!(state.mesh_ready);
-    assert_eq!(state.session_status, "VPN on");
+    assert_eq!(state.vpn_status, "VPN on");
 }
 
 #[test]
-fn daemon_runtime_state_marks_peers_unreachable_when_session_is_off() {
+fn daemon_runtime_state_marks_peers_unreachable_when_vpn_is_off() {
     let mut config = AppConfig::generated();
     config.private_data_plane = nostr_vpn_core::data_plane::PrivateDataPlane::Fips;
     let peer_pubkey = "11".repeat(32);
@@ -270,6 +317,7 @@ fn daemon_runtime_state_marks_peers_unreachable_when_session_is_off() {
     let state = crate::build_daemon_runtime_state(
         &config,
         false,
+        false,
         1,
         &presence,
         &tunnel_runtime,
@@ -281,7 +329,8 @@ fn daemon_runtime_state_marks_peers_unreachable_when_session_is_off() {
         &nostr_vpn_core::diagnostics::PortMappingStatus::default(),
     );
 
-    assert!(!state.session_active);
+    assert!(!state.vpn_active);
+    assert!(!state.vpn_enabled);
     assert_eq!(state.connected_peer_count, 0);
     assert!(!state.mesh_ready);
     assert_eq!(state.peers.len(), 1);
@@ -562,6 +611,7 @@ fn daemon_runtime_state_tracks_live_endpoint_and_listen_port() {
     let state = crate::build_daemon_runtime_state(
         &config,
         true,
+        true,
         0,
         &presence,
         &tunnel_runtime,
@@ -697,19 +747,19 @@ fn recent_windows_daemon_pid_candidate_uses_fresh_state_and_single_other_process
 #[test]
 fn visible_daemon_state_for_status_keeps_state_while_running() {
     let state = DaemonRuntimeState {
-        session_active: true,
+        vpn_active: true,
         ..Default::default()
     };
 
     let visible = crate::visible_daemon_state_for_status(true, Some(&state));
     assert!(visible.is_some());
-    assert!(visible.expect("visible state").session_active);
+    assert!(visible.expect("visible state").vpn_active);
 }
 
 #[test]
 fn visible_daemon_state_for_status_hides_state_when_stopped() {
     let state = DaemonRuntimeState {
-        session_active: true,
+        vpn_active: true,
         ..Default::default()
     };
 
@@ -991,16 +1041,15 @@ fn daemon_control_timeout_errors_use_generic_service_wording() {
     );
     assert!(!result_error.to_string().contains("newer nvpn binary"));
 
-    let session_error =
-        crate::wait_for_daemon_session_active(&config, true, Duration::from_millis(0))
-            .expect_err("session wait should time out");
+    let vpn_error = crate::wait_for_daemon_vpn_enabled(&config, true, Duration::from_millis(0))
+        .expect_err("vpn wait should time out");
     assert!(
-        session_error
+        vpn_error
             .to_string()
             .contains("background service may be busy or stuck")
     );
     assert!(
-        !session_error
+        !vpn_error
             .to_string()
             .contains("older nvpn daemon binary is still running")
     );
@@ -1015,7 +1064,7 @@ fn daemon_control_wait_timeouts_allow_longer_mac_recovery_windows() {
         Duration::from_secs(3)
     );
     assert_eq!(
-        crate::daemon_control_session_transition_timeout(crate::DaemonControlRequest::Reload),
+        crate::daemon_control_vpn_transition_timeout(crate::DaemonControlRequest::Reload),
         Duration::ZERO
     );
 
@@ -1025,7 +1074,7 @@ fn daemon_control_wait_timeouts_allow_longer_mac_recovery_windows() {
             Duration::from_secs(10)
         );
         assert_eq!(
-            crate::daemon_control_session_transition_timeout(crate::DaemonControlRequest::Resume),
+            crate::daemon_control_vpn_transition_timeout(crate::DaemonControlRequest::Resume),
             Duration::from_secs(30)
         );
     } else {
@@ -1034,7 +1083,7 @@ fn daemon_control_wait_timeouts_allow_longer_mac_recovery_windows() {
             Duration::from_secs(3)
         );
         assert_eq!(
-            crate::daemon_control_session_transition_timeout(crate::DaemonControlRequest::Resume),
+            crate::daemon_control_vpn_transition_timeout(crate::DaemonControlRequest::Resume),
             Duration::from_secs(2)
         );
     }

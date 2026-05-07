@@ -4,24 +4,24 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 #[test]
-fn daemon_session_requires_remote_participants_to_be_active() {
-    assert!(!daemon_session_active(true, 0));
-    assert!(daemon_session_active(true, 1));
-    assert!(!daemon_session_active(false, 1));
+fn daemon_vpn_requires_remote_participants_to_be_active() {
+    assert!(!daemon_vpn_active(true, 0));
+    assert!(daemon_vpn_active(true, 1));
+    assert!(!daemon_vpn_active(false, 1));
 }
 
 #[test]
-fn daemon_session_idle_status_distinguishes_waiting_from_paused() {
+fn daemon_vpn_idle_status_distinguishes_waiting_from_paused() {
     assert_eq!(
-        daemon_session_idle_status(true, 0, false),
+        daemon_vpn_idle_status(true, 0, false),
         crate::WAITING_FOR_PARTICIPANTS_STATUS
     );
     assert_eq!(
-        daemon_session_idle_status(false, 0, true),
+        daemon_vpn_idle_status(false, 0, true),
         "Listening for join requests"
     );
-    assert_eq!(daemon_session_idle_status(false, 0, false), "Paused");
-    assert_eq!(daemon_session_idle_status(true, 2, false), "Paused");
+    assert_eq!(daemon_vpn_idle_status(false, 0, false), "Paused");
+    assert_eq!(daemon_vpn_idle_status(true, 2, false), "Paused");
 }
 
 #[test]

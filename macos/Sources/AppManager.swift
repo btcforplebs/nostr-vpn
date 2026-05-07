@@ -68,6 +68,10 @@ final class AppManager: ObservableObject {
         Self.serviceRepairRecommended(in: state)
     }
 
+    var vpnSwitchEnabled: Bool {
+        state.vpnEnabled
+    }
+
     func start() {
         drainStartupUrls()
         if autoCheckUpdates && !startupUpdateCheckDone {
@@ -130,10 +134,11 @@ final class AppManager: ObservableObject {
         }
     }
 
-    func toggleSession() {
+    func toggleVpn() {
+        let enabled = !state.vpnEnabled
         dispatch(
-            state.sessionActive ? .disconnectSession : .connectSession,
-            status: state.sessionActive ? "Disconnecting VPN" : "Connecting VPN"
+            enabled ? .connectVpn : .disconnectVpn,
+            status: enabled ? "Turning VPN on" : "Turning VPN off"
         )
     }
 
@@ -264,7 +269,7 @@ final class AppManager: ObservableObject {
     }
 
     func setAutoconnect(_ enabled: Bool) {
-        dispatch(.updateSettings(patch: settingsPatch(autoconnect: enabled)), status: "Saving session option")
+        dispatch(.updateSettings(patch: settingsPatch(autoconnect: enabled)), status: "Saving VPN option")
     }
 
     func setLaunchOnStartup(_ enabled: Bool) {

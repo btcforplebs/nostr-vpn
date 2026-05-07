@@ -31,8 +31,8 @@ class AppCoreClient(private val dataDir: String, appVersion: String) : AutoClose
 }
 
 object NativeActions {
-    fun connectSession() = action("connect_session")
-    fun disconnectSession() = action("disconnect_session")
+    fun connectVpn() = action("connect_vpn")
+    fun disconnectVpn() = action("disconnect_vpn")
     fun importInvite(invite: String) = action("import_network_invite", "invite" to invite)
     fun startLanPairing() = action("start_lan_pairing")
     fun stopLanPairing() = action("stop_lan_pairing")

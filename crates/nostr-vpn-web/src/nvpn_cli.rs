@@ -64,7 +64,7 @@ pub(crate) fn fetch_cli_status(state: &ServerState) -> Result<CliStatusResponse>
         .context("failed to parse `nvpn status --json` output")
 }
 
-pub(crate) fn connect_session_inner(state: &ServerState) -> Result<()> {
+pub(crate) fn connect_vpn_inner(state: &ServerState) -> Result<()> {
     let config_path = config_path_arg(&state.config_path)?;
     let status = fetch_cli_status(state).ok();
     if status.as_ref().is_some_and(|value| value.daemon.running) {
@@ -112,7 +112,7 @@ pub(crate) fn connect_session_inner(state: &ServerState) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn disconnect_session_inner(state: &ServerState) -> Result<()> {
+pub(crate) fn disconnect_vpn_inner(state: &ServerState) -> Result<()> {
     let config_path = config_path_arg(&state.config_path)?;
     let status = fetch_cli_status(state).ok();
     if !status.as_ref().is_some_and(|value| value.daemon.running) {

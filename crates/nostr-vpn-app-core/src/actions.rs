@@ -11,8 +11,8 @@ use crate::state::SettingsPatch;
 pub enum NativeAppAction {
     GetState,
     Tick,
-    ConnectSession,
-    DisconnectSession,
+    ConnectVpn,
+    DisconnectVpn,
     InstallCli,
     UninstallCli,
     InstallSystemService,
@@ -90,7 +90,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn action_json_stays_stable_for_existing_automation_inputs() {
+    fn action_json_uses_current_names() {
+        assert_eq!(
+            serde_json::to_string(&NativeAppAction::ConnectVpn).expect("serialize action"),
+            r#"{"type":"connect_vpn"}"#
+        );
+
         let action = NativeAppAction::SetNetworkEnabled {
             network_id: "net-1".to_string(),
             enabled: true,

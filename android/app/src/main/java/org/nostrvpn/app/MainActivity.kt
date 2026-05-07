@@ -5,7 +5,9 @@ import android.os.Build
 import android.os.Bundle
 import android.net.VpnService
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,23 +32,50 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var state by remember { mutableStateOf(core.state()) }
+            var pendingVpnStart by remember { mutableStateOf(false) }
+            fun startVpnTunnel() {
+                startVpnService(
+                    Intent(this, NostrVpnService::class.java)
+                        .setAction(NostrVpnService.ACTION_CONNECT)
+                        .putExtra(
+                            NostrVpnService.EXTRA_CONFIG_JSON,
+                            core.mobileTunnelConfigJson(),
+                        ),
+                )
+            }
+            val vpnPermissionLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.StartActivityForResult(),
+            ) { result ->
+                if (result.resultCode == RESULT_OK && state.vpnEnabled) {
+                    startVpnTunnel()
+                } else if (pendingVpnStart && state.vpnEnabled) {
+                    state = try {
+                        core.dispatch(NativeActions.disconnectVpn())
+                    } catch (error: Exception) {
+                        state.copy(error = error.message ?: "Android action failed")
+                    }
+                }
+                pendingVpnStart = false
+            }
+            fun requestVpnTunnel() {
+                val intent = VpnService.prepare(this)
+                if (intent == null) {
+                    startVpnTunnel()
+                } else {
+                    pendingVpnStart = true
+                    vpnPermissionLauncher.launch(intent)
+                }
+            }
             val dispatch: (JSONObject) -> Unit = { action ->
-                val wasActive = state.sessionActive
+                val wasEnabled = state.vpnEnabled
                 state = try {
                     core.dispatch(action)
                 } catch (error: Exception) {
                     state.copy(error = error.message ?: "Android action failed")
                 }
-                if (!wasActive && state.sessionActive) {
-                    startVpnService(
-                        Intent(this, NostrVpnService::class.java)
-                            .setAction(NostrVpnService.ACTION_CONNECT)
-                            .putExtra(
-                                NostrVpnService.EXTRA_CONFIG_JSON,
-                                core.mobileTunnelConfigJson(),
-                            ),
-                    )
-                } else if (wasActive && !state.sessionActive) {
+                if (!wasEnabled && state.vpnEnabled) {
+                    requestVpnTunnel()
+                } else if (wasEnabled && !state.vpnEnabled) {
                     startVpnService(
                         Intent(this, NostrVpnService::class.java)
                             .setAction(NostrVpnService.ACTION_DISCONNECT),
@@ -76,18 +105,13 @@ class MainActivity : ComponentActivity() {
                 when (val action = debugAction) {
                     DEBUG_ACTION_CONNECT -> {
                         if (BuildConfig.DEBUG) {
-                            val prepareIntent = VpnService.prepare(this@MainActivity)
-                            if (prepareIntent == null) {
-                                dispatch(NativeActions.connectSession())
-                            } else {
-                                startActivity(prepareIntent)
-                            }
+                            dispatch(NativeActions.connectVpn())
                         }
                         debugAction = null
                     }
                     DEBUG_ACTION_DISCONNECT -> {
                         if (BuildConfig.DEBUG) {
-                            dispatch(NativeActions.disconnectSession())
+                            dispatch(NativeActions.disconnectVpn())
                         }
                         debugAction = null
                     }

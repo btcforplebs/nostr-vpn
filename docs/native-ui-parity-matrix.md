@@ -25,7 +25,7 @@ native shells while keeping product truth in Rust.
 | --- | --- | --- |
 | State projection | `UiState`, networks, participants, relays, diagnostics, service status, mobile capability flags | Render state with platform controls and local presentation state |
 | Actions | Existing product commands as typed Rust actions | Dispatch actions, disable conflicting controls while actions run |
-| Long-running runtime | Daemon/session lifecycle, config persistence, relay status, peer status, LAN pairing, join requests | Keep app alive enough for platform lifecycle and show system-level affordances |
+| Long-running runtime | Daemon/VPN lifecycle, config persistence, relay status, peer status, LAN pairing, join requests | Keep app alive enough for platform lifecycle and show system-level affordances |
 | Formatting | Shared user-facing derived labels that encode policy, like mesh readiness, join request status, exit-node availability, service repair recommendation | Platform typography, layout, control affordances |
 | Platform effects | Declare requested effect and update state after completion | Clipboard, startup registration, tray/status item, camera QR scan, update installer, mobile VPN permission prompts |
 | Errors | Stable action errors and recoverable service repair hints | Dialog/toast/sheet presentation |
@@ -45,9 +45,9 @@ Legend:
 | One snapshot app model | `UiState`, `get_state`, `tick` | `FfiApp.state()`, periodic or push updates, typed actions | Required | Required | Required | Required | Required | Keep a single state/action contract for all shells. |
 | Initial boot sequencing | `AppBootstrap.svelte` | Start core, load config, first tick, ready event for tests | Required | Required | Required | Required | Required | Native tests need a replacement for `nvpn:boot-ready`. |
 | Periodic refresh | `tick` every 1500ms | Prefer push updates; retain tick as fallback | Required | Required | Required | Required | Required | Mobile should avoid aggressive background polling. |
-| Action lock/error recovery | `runAction`, action flags | Action in-flight state or shell-side lock | Required | Required | Required | Required | Required | Prevent overlapping config/session mutations. |
+| Action lock/error recovery | `runAction`, action flags | Action in-flight state or shell-side lock | Required | Required | Required | Required | Required | Prevent overlapping config/VPN mutations. |
 | Main status hero | `HeroStatusPanel.svelte` | Hero badge/subtext/detail helpers, active network projection | Required | Required | Required | Required | Required | Includes active network title, admin badge, mesh readiness, daemon/VPN/FIPS badges. |
-| VPN on/off switch | `connect_session`, `disconnect_session` | Start/stop session action, service setup guidance | Required | Required | Required | Mobile | Mobile | Mobile uses platform VPN permission/control flow instead of desktop service. |
+| VPN on/off switch | `connect_vpn`, `disconnect_vpn` | Start/stop VPN action, service setup guidance | Required | Required | Required | Mobile | Mobile | Mobile uses platform VPN permission/control flow instead of desktop service. |
 | Privacy disclosure | `shouldShowVpnDataDisclosure` | Capability/state flag and disclosure text | Required | Required | Required | Required | Required | Current copy should become a shared string or policy doc reference. |
 | Own npub display/copy | `HeroStatusPanel.svelte` | `own_npub` in state | Required | Required | Required | Required | Required | Clipboard is native platform effect. |
 | Device name editing | `update_settings.nodeName` | Typed settings patch | Required | Required | Required | Required | Required | Debounced edit, DNS-safe preview. |
@@ -60,7 +60,7 @@ Legend:
 | Inbound join request list | `inboundJoinRequests` | Pending request state and accept action | Required | Required | Required | Required | Required | Accept action must remain admin-gated. |
 | Outbound join request status | `outboundJoinRequest` | Request state and requested-at text | Required | Required | Required | Required | Required | Includes imported-from inviter and connected state. |
 | Request join action | `request_network_join` | Action by network ID | Required | Required | Required | Required | Required | Deep links can also trigger this in test/debug flows. |
-| Accept join action | `accept_join_request` | Action by network ID + requester npub | Required | Required | Required | Required | Required | Must persist acceptance even if session start fails. |
+| Accept join action | `accept_join_request` | Action by network ID + requester npub | Required | Required | Required | Required | Required | Must persist acceptance even if VPN start fails. |
 | Invite generation | `activeNetworkInvite` | Core-generated invite string | Required | Required | Required | Required | Required | Include mesh ID, inviter npub, admins, participants, relays. |
 | Invite copy | `copyInvite` | Invite string in state | Required | Required | Required | Required | Required | Native share sheet can supplement copy on mobile. |
 | Invite QR generation | `qrcode` in `InviteShareSection` | Prefer core QR bitmap/SVG helper or native QR library | Required | Required | Required | Required | Required | Must match current invite payload exactly. |
@@ -68,7 +68,7 @@ Legend:
 | Invite QR live scan | `jsQR`, `getUserMedia` | Native camera scanner effect, core import action | Required | Required | Required | Required | Required | Desktop platforms can use webcam when available. |
 | Invite QR image scan | file input + `jsQR` | Native file/image picker + decoder | Required | Required | Required | Required | Required | Keep image fallback when camera is denied/unavailable. |
 | Invite import confirmation | `window.confirm` with target mode | Core should expose parsed invite + import target | Required | Required | Required | Required | Required | Native alert/sheet; Cancel fills field instead of importing. |
-| Auto-connect after invite import | `ensureSessionActiveAfterInviteImport` | Import action result plus session capability state | Required | Required | Required | Required | Required | On mobile this may require VPN permission prompt. |
+| Auto-connect after invite import | invite import flow | Import action result plus VPN control state | Required | Required | Required | Required | Required | On mobile this may require VPN permission prompt. |
 | Manual add participant | `add_participant` | Add participant with optional alias | Required | Required | Required | Required | Required | Admin-gated. |
 | Participant alias editing | `set_participant_alias` | Alias action and MagicDNS suffix | Required | Required | Required | Required | Required | Debounced, admin-gated. |
 | Participant npub copy | participant rows | Participant npub in state | Required | Required | Required | Required | Required | Present in active, saved, join request, LAN peer rows. |
@@ -82,13 +82,13 @@ Legend:
 | Join LAN peer | `onJoinLanPeer` | Import invite action | Required | Required | Required | Required | Required | Same auto-connect behavior as invite import. |
 | Saved networks list | `SavedNetworksPanel.svelte` | All networks with enabled flag | Required | Required | Required | Required | Required | Active network separate; inactive networks collapsible/listed. |
 | Add saved network | `add_network` | Add network action | Required | Required | Required | Required | Required | Optional name. |
-| Activate saved network | `set_network_enabled` | Set active network action | Required | Required | Required | Required | Required | Ensure daemon reload/session state is correct. |
+| Activate saved network | `set_network_enabled` | Set active network action | Required | Required | Required | Required | Required | Ensure daemon reload/VPN state is correct. |
 | Delete saved network | `remove_network` | Remove network action | Required | Required | Required | Required | Required | Current button is disabled when only one inactive network remains; revisit rule in core. |
 | Edit saved network profile | `SavedNetworkCard.svelte` | Same name/mesh/admin actions as active network | Required | Required | Required | Required | Required | Inactive networks still receive join requests. |
 | Saved network participants | `SavedNetworkParticipantRow.svelte` | Participant list and alias actions | Required | Required | Required | Required | Required | Minimal status for inactive profiles. |
-| Routing mode summary | `RoutingPanel.svelte` | Derived routing status text | Required | Required | Required | Required | Required | Direct mesh, remote exit, local exit, or both. |
+| Exit Nodes mode summary | `Exit NodesPanel.svelte` | Derived exit-node status text | Required | Required | Required | Required | Required | Direct mesh, remote exit, local exit, or both. |
 | Advertise private exit node | `advertiseExitNode` | Settings patch | Required | Required | Required | Required | Required | Affects default route advertisement. |
-| Advertised routes editing | `advertisedRoutes` | Settings patch + validation | Required | Required | Required | Required | Required | Debounced comma-separated input today; core should validate CIDRs. |
+| Advanced route advertisement | `advertisedRoutes` | Settings patch + validation | Deferred | Deferred | Deferred | Deferred | Deferred | Hidden from current native shells; core still normalizes config values. |
 | Exit node search/select | `exitNode` | Candidate projection and setting | Required | Required | Required | Required | Required | Search alias, npub, tunnel IP. Disable peers not offering exit. |
 | No exit node selection | `onSelectExitNode('')` | Clear exit-node setting | Required | Required | Required | Required | Required | Also exposed in desktop tray. |
 | Diagnostics panel | `AdvancedPanels.svelte` | Health issues, network summary, port mapping | Required | Required | Required | Required | Required | Auto-open when health count increases. |
@@ -142,12 +142,12 @@ Status legend:
 
 | Feature group | Legacy source | macOS status | Native macOS coverage | Remaining parity work |
 | --- | --- | --- | --- | --- |
-| Typed Rust core boundary | `nostr-vpn-app-core`, legacy commands | Ready | `FfiApp.state()`, `refresh()`, and typed `NativeAppAction` dispatch are used directly from Swift through UniFFI. Native state now projects service, diagnostics, routing, relays, MagicDNS, join requests, and participant details. | Keep action/state additions typed; avoid reintroducing JSON bridge helpers. |
+| Typed Rust core boundary | `nostr-vpn-app-core`, legacy commands | Ready | `FfiApp.state()`, `refresh()`, and typed `NativeAppAction` dispatch are used directly from Swift through UniFFI. Native state now projects service, diagnostics, exit-node, relays, MagicDNS, join requests, and participant details. | Keep action/state additions typed; avoid reintroducing JSON bridge helpers. |
 | Initial state load | `get_state`, `AppBootstrap.svelte` | Ready | `AppManager` constructs `FfiApp`, reads initial state synchronously, and starts the refresh loop on window appearance. | Add boot-ready automation event only if native e2e harness needs it. |
 | Periodic refresh | `tick` interval | Ready | `AppManager.start()` refreshes every 1500ms. | Later replace polling with a core update stream if added. |
 | Action lock/error recovery | `runAction`, action flags | Ready | `AppManager` serializes typed actions, shows in-flight status, and projects core errors into the shell. | Add per-control progress text if native e2e tests require it. |
 | Main status hero | `HeroStatusPanel.svelte` | Ready | Shows active network title, admin badge, mesh state, daemon/VPN/FIPS badges, peer/tunnel/exit metrics, disclosure, identity, and VPN toggle. | Tune copy if product policy text changes. |
-| VPN connect/disconnect | `connect_session`, `disconnect_session` | Ready | Connect/disconnect dispatches typed native actions; Rust runs elevated `nvpn` on macOS. | None. |
+| VPN connect/disconnect | `connect_vpn`, `disconnect_vpn` | Ready | Connect/disconnect dispatches typed native actions; Rust runs elevated `nvpn` on macOS. | None. |
 | Privacy disclosure | `shouldShowVpnDataDisclosure` | Ready | Native hero renders the VPN data disclosure when VPN control/mobile-like policy applies. | Move exact policy text into core if reused by more shells. |
 | Own npub display/copy | `HeroStatusPanel.svelte` | Ready | Native hero renders `ownNpub`, supports selection, and gives transient copy feedback. | None. |
 | Active network summary | `ActiveNetworkPanel.svelte` | Ready | Native active-network panel supports name edit, mesh ID edit/copy, admin summary, join-request toggle/list, invite, and admin-gated controls. | None. |
@@ -166,9 +166,9 @@ Status legend:
 | Saved networks list | `SavedNetworksPanel.svelte` | Ready | Sidebar and saved-networks disclosure support add, activate, rename, delete, mesh edit, participant preview, and participant removal. | Add inactive invite/import and join-request detail expansion if needed. |
 | Activate saved network | `set_network_enabled` | Ready | Inactive network rows dispatch typed activation and daemon reload handling from Rust. | None. |
 | Delete saved network | `remove_network` | Ready | Native saved-network delete dispatches typed core removal and core preserves the last-network rule. | Add confirmation if needed. |
-| Routing summary | `RoutingPanel.svelte` | Ready | Native routing section shows direct/exit mode, advertised route editing, offer-exit toggle, and exit candidates. | Add richer route helper text from core if desired. |
-| Advertise exit node | `advertiseExitNode` | Ready | Toggle dispatches typed settings patch from routing and menu bar surfaces. | None. |
-| Advertised routes editing | `advertisedRoutes` | Ready | CIDR string editor dispatches typed settings patch; Rust normalizes and validates routes. | Inline validation helper text can be added later. |
+| Exit Nodes summary | Exit-node page | Ready | Native exit-node section shows direct/exit mode, offer-exit toggle, and exit candidates. | Add richer route helper text from core if desired. |
+| Advertise exit node | `advertiseExitNode` | Ready | Toggle dispatches typed settings patch from exit-node and menu bar surfaces. | None. |
+| Advanced route advertisement | `advertisedRoutes` | Deferred | Native shells hide the CIDR string editor; Rust still normalizes and validates config values. | Reintroduce only behind an advanced affordance if needed. |
 | Exit node search/select | `exitNode` | Ready | Searchable native candidate list supports no-exit selection and offered-exit peers. | None. |
 | Diagnostics panel | `AdvancedPanels.svelte` | Ready | Native diagnostics disclosure renders health issues, interface/IP/gateway, captive portal, and port-mapping state; opens when health count increases. | None. |
 | Relay list/status | Relay panel | Ready | Shows relay URLs, status text, summary badges, add, remove, and disables removal of the last relay. | None. |
@@ -197,10 +197,10 @@ and Linux native shells.
 | Feature group | Windows status | Native Windows coverage | Remaining parity work |
 | --- | --- | --- | --- |
 | Rust core boundary | Ready | `windows/NostrVpn.Windows` uses the explicit C ABI in `nostr-vpn-app-core/src/c_abi.rs` for JSON state, JSON actions, QR matrix generation, and QR image decode. | Replace with generated C# UniFFI only if UniFFI gains supported C# bindings in the pinned toolchain. |
-| Main shell hierarchy | Ready | WPF two-pane shell renders Devices, Share, Routing, and Settings with the same high-level hierarchy as macOS/Linux. | Continue compact-width and accessibility polish. |
+| Main shell hierarchy | Ready | WPF two-pane shell renders Devices, Share, Exit Nodes, and Settings with the same high-level hierarchy as macOS/Linux. | Continue compact-width and accessibility polish. |
 | Device roster | Partial | Shows participant identity, tunnel IP, status, admin/exit badges, npub copy, and add-device form. | Add inline alias/admin/remove management parity. |
 | Invite share/import | Ready | Renders invite QR through the shared Rust QR matrix, copies invite text, imports pasted invites, decodes QR image files, and shows LAN pairing rows. | Add live camera scanning if a native Windows camera API is selected. |
-| Routing | Ready | Direct route, exit-node candidate selection, advertised route editing, and offer-exit toggle dispatch typed core actions. | Add search/filter polish like macOS. |
+| Exit Nodes | Ready | Direct route, exit-node candidate selection, exit-node offer toggle, and offer-exit toggle dispatch typed core actions. | Add search/filter polish like macOS. |
 | Settings/service/updater | Partial | Device settings, autoconnect/startup/tray toggles, service/CLI actions, relay editing, and hashtree update check are present. | Add richer service settlement/repair UX and auto-update preferences. |
 | Tray/status area | Ready | Uses native `System.Windows.Forms.NotifyIcon` with open, VPN toggle, exit toggle, this-device copy, network devices, exit-node selection, refresh, and quit. | Add single-instance tray activation routing for already-running deep links. |
 | Deep links/startup | Partial | Registers `nvpn://` under HKCU, handles startup invite URLs, and writes HKCU Run startup entries. | Route deep links into an already-running instance. |
@@ -215,13 +215,13 @@ current native shell contract.
 | --- | --- | --- | --- |
 | Rust core boundary | Ready | The Android app cross-compiles `nostr-vpn-app-core` to `arm64-v8a` and calls the shared JSON C ABI through JNI exports for state, refresh, action dispatch, invite QR generation, and QR image decode. | Add generated UniFFI Kotlin only if it becomes simpler than the explicit JNI bridge. |
 | Build/install harness | Ready | `just android-build` builds a debug APK and `just android-install` installs it on a connected device; verified on a physical Android device with an app screenshot. | Add release signing/AAB/Zapstore packaging. |
-| Main shell hierarchy | Partial | Compose renders Devices, Share, Routing, and Settings with the same simple top-level flow as the desktop native shells. | Add tablet/landscape layouts and compact accessibility passes. |
+| Main shell hierarchy | Partial | Compose renders Devices, Share, Exit Nodes, and Settings with the same simple top-level flow as the desktop native shells. | Add tablet/landscape layouts and compact accessibility passes. |
 | Mobile app-core startup | Ready | Android now uses mobile app-core status and no longer shells out to the desktop `nvpn` binary during startup or config-only refreshes. | Replace polling with a core/mobile runtime update stream later. |
 | Device roster | Partial | Shows local/peer identity, tunnel IP, reachability, admin/exit badges, npub copy, join requests, and manual add-device. | Add alias/admin/remove controls and richer traffic/path detail parity. |
 | Invite share/import | Partial | Renders invite QR through Rust, copies/imports invite text, handles `nvpn://` deep links, and exposes LAN pairing rows. | Add Android share sheet, camera live scan, and image picker QR import UI. |
-| Routing | Partial | Direct/exit-node selection, advertised routes, and offer-exit toggle dispatch core actions. | Add search/filter polish and mobile-specific route constraints. |
+| Exit Nodes | Partial | Direct/exit-node selection, offer-exit toggle dispatch core actions. | Add search/filter polish and mobile-specific route constraints. |
 | Settings/diagnostics/relays | Partial | Device settings, saved network activation, join-request toggle, relays, runtime detail, MagicDNS, app version, and health rows are visible. | Add destructive actions, richer diagnostics, and mobile storage/keystore policy. |
-| VPN runtime | Partial | Android `VpnService` permission surface and service declaration are present; app-core reports mobile session state without desktop CLI dependency. | Wire the packet tunnel data-plane loop to FIPS endpoint delivery before calling the mobile VPN path complete. |
+| VPN runtime | Partial | Android `VpnService` permission surface and service declaration are present; app-core reports mobile VPN state without desktop CLI dependency. | Wire the packet tunnel data-plane loop to FIPS endpoint delivery before calling the mobile VPN path complete. |
 
 ## iOS App Parity Status
 
@@ -232,13 +232,13 @@ native shell contract.
 | --- | --- | --- | --- |
 | Rust core boundary | Ready | The iOS app builds `nostr-vpn-app-core` for simulator and device targets, packages it as `NostrVpnAppCore.xcframework`, and calls the shared JSON C ABI for state, refresh, action dispatch, invite QR generation, and QR image decode. | Add generated UniFFI Swift only if it becomes cleaner than the explicit C bridge. |
 | Build/run harness | Ready | `just ios-build` builds Rust, generates the Xcode project, and builds the simulator app; `just ios-run` installs and launches it in the iPhone simulator. Verified with an iPhone simulator screenshot. | Add signed device/TestFlight packaging and release archive flow. |
-| Main shell hierarchy | Partial | SwiftUI renders Devices, Share, Routing, and Settings with the same simple top-level flow as Android and the desktop native shells. | Add iPad/landscape layouts and compact accessibility passes. |
+| Main shell hierarchy | Partial | SwiftUI renders Devices, Share, Exit Nodes, and Settings with the same simple top-level flow as Android and the desktop native shells. | Add iPad/landscape layouts and compact accessibility passes. |
 | Mobile app-core startup | Ready | iOS uses the mobile app-core status path and no longer shells out to the desktop `nvpn` binary during startup or config-only refreshes. | Replace polling with a core/mobile runtime update stream later. |
 | Device roster | Partial | Shows local/peer identity, tunnel IP, reachability, admin/exit badges, npub copy, join requests, and manual add-device. | Add alias/admin/remove controls and richer traffic/path detail parity. |
 | Invite share/import | Partial | Renders invite QR through Rust, supports invite copy/share, imports pasted/deep-linked invites, includes the shared QR image decode bridge, and exposes LAN pairing rows. | Add image picker, live camera QR scanning, and smoother import confirmation. |
-| Routing | Partial | Direct/exit-node selection, advertised routes, and offer-exit toggle dispatch core actions. | Add search/filter polish and mobile-specific route constraints. |
+| Exit Nodes | Partial | Direct/exit-node selection, offer-exit toggle dispatch core actions. | Add search/filter polish and mobile-specific route constraints. |
 | Settings/diagnostics/relays | Partial | Device settings, saved network activation, join-request toggle, relays, runtime detail, MagicDNS, app version, and health rows are visible. | Add destructive actions, richer diagnostics, and iOS storage/keychain policy. |
-| VPN runtime | Partial | A NetworkExtension Packet Tunnel target and manager wrapper are present; app-core reports mobile session state without desktop CLI dependency. | Wire the packet tunnel packet loop to FIPS endpoint delivery before calling the iOS VPN path complete. |
+| VPN runtime | Partial | A NetworkExtension Packet Tunnel target and manager wrapper are present; app-core reports mobile VPN state without desktop CLI dependency. | Wire the packet tunnel packet loop to FIPS endpoint delivery before calling the iOS VPN path complete. |
 
 ## Linux App Parity Status
 
@@ -250,13 +250,13 @@ flow like the Swift app rather than the removed Svelte UI.
 | --- | --- | --- | --- |
 | Typed Rust core boundary | Ready | `linux/src/main.rs` uses `FfiApp.state()`, `refresh()`, and typed `NativeAppAction` directly from Rust. | Keep additions typed and shared with macOS. |
 | Initial state and refresh | Ready | The GTK shell reads initial state synchronously and refreshes through `FfiApp.refresh()` on a two-second timer plus the toolbar refresh button. | Add a boot-ready automation hook if native e2e needs it. |
-| Main status hero | Ready | Matches the macOS hierarchy: active network title, admin badge, mesh/session/daemon/relay badges, identity copy, tunnel IP, exit indication, and connect/disconnect control. | Add richer service-repair prompt text if core exposes a shared helper. |
+| Main status hero | Ready | Matches the macOS hierarchy: active network title, admin badge, mesh/VPN/daemon/relay badges, identity copy, tunnel IP, exit indication, and connect/disconnect control. | Add richer service-repair prompt text if core exposes a shared helper. |
 | Device roster | Ready | Shows participant name, admin/exit badges, tunnel IP, npub copy, reachability, admin toggle, remove action, and a Manage Devices disclosure. | Add destructive confirmations if needed. |
 | Participant alias editing | Ready | Manage Devices includes per-participant alias save, admin toggle, and remove controls. | Add debounce if explicit save feels too heavy. |
 | Join requests | Ready | Inbound request rows show requester info, npub copy, and admin-gated accept action. | None. |
 | Invite share/import | Ready | Share page renders the core invite as a QR code, supports copy, paste/import, image QR import, optional `zbarcam` live QR scan, join request status, and LAN peer join. | Add share portal support only if desktop share-sheet behavior becomes important. |
 | LAN pairing | Ready | Start/stop pairing, countdown, nearby peer rows, and invite import are wired through app-core actions. | Mobile permission parity is out of scope for Linux. |
-| Routing | Ready | Direct route, searchable exit-node candidates, advertised route editing, and offer-exit toggle mirror the macOS Routing page. | Add richer route helper text from core if added. |
+| Exit Nodes | Ready | Direct route, searchable exit-node candidates, exit-node offer toggle, and offer-exit toggle mirror the macOS Exit Nodes page. | Add richer route helper text from core if added. |
 | Active network settings | Ready | Settings exposes active network name, editable/copyable network ID, and admin-gated join-request toggle. | Add blur/Enter commit polish. |
 | Saved networks | Ready | Saved Networks disclosure lists inactive networks with counts, activate action, and delete action guarded by the last-network rule. | Expand inactive profiles if Linux needs the full macOS saved-network detail surface. |
 | Device/system settings | Ready | Name, tunnel IP, endpoint, listen port, MagicDNS suffix, autoconnect, startup desktop-entry registration, and tray preferences dispatch typed settings patches. | None. |
@@ -273,8 +273,8 @@ flow like the Swift app rather than the removed Svelte UI.
 | Phase | Deliverable | Exit criteria |
 | --- | --- | --- |
 | 0. Contract extraction | Move backend state, settings patches, action handlers, derived labels, invite parsing, mesh ID validation, and tray projections into a native-ready Rust app core | `crates/nostr-vpn-app-core` exposes typed UniFFI state/actions and the macOS shell consumes `FfiApp` directly; remaining legacy behavior is tracked as explicit native parity work. |
-| 1. Desktop minimum | macOS, Windows, and Linux render the main status, active network, invite import/share, participant management, routing, diagnostics, relays, service panel, system settings, deep links, and tray/menu actions | Desktop smoke tests can import invites, request/accept join, toggle VPN, and exercise tray actions. macOS and Linux cover the native shell surface; Windows now has the WPF baseline and needs remaining parity hardening. |
-| 2. Mobile minimum | Android and iPhone render the same state/action surface with native VPN permission/session control, invite QR scan/share, LAN pairing, saved networks, routing, diagnostics, relays, and deep links | Android emulator/device and iPhone simulator/device smoke tests can import invites and start supported VPN flows |
+| 1. Desktop minimum | macOS, Windows, and Linux render the main status, active network, invite import/share, participant management, exit-node, diagnostics, relays, service panel, system settings, deep links, and tray/menu actions | Desktop smoke tests can import invites, request/accept join, toggle VPN, and exercise tray actions. macOS and Linux cover the native shell surface; Windows now has the WPF baseline and needs remaining parity hardening. |
+| 2. Mobile minimum | Android and iPhone render the same state/action surface with native VPN permission/control, invite QR scan/share, LAN pairing, saved networks, exit-node, diagnostics, relays, and deep links | Android emulator/device and iPhone simulator/device smoke tests can import invites and start supported VPN flows |
 | 3. Desktop niceties | Hashtree updater, CLI install/uninstall, startup registration, close-to-tray, service repair prompts, single-instance conflict handling | Legacy desktop e2e scenarios have native replacements |
 | 4. Polish/parity hardening | Platform screenshots, accessibility pass, empty/error states, fixture preview coverage | All rows above are either implemented or explicitly marked removed/deferred in this file |
 

@@ -980,7 +980,7 @@ async fn run_command(command: Command) -> Result<()> {
             control_daemon(args, DaemonControlRequest::Resume)?;
         }
         Command::Connect(args) => {
-            connect_session(args).await?;
+            connect_vpn(args).await?;
         }
         Command::Down(args) => {
             let config_path = args.config.unwrap_or_else(default_config_path);
@@ -1141,7 +1141,7 @@ async fn run_command(command: Command) -> Result<()> {
                 if daemon.running {
                     println!("daemon: running (pid {})", daemon.pid.unwrap_or_default());
                     if let Some(state) = daemon.state.as_ref() {
-                        println!("session_status: {}", state.session_status);
+                        println!("vpn_status: {}", state.vpn_status);
                     }
                 } else {
                     println!("daemon: stopped");
@@ -1590,7 +1590,7 @@ async fn run_command(command: Command) -> Result<()> {
 
             print!("{}", render_wireguard_config(&interface, &parsed_peers));
         }
-        Command::Daemon(args) => daemon_session(args).await?,
+        Command::Daemon(args) => daemon_vpn(args).await?,
         Command::TunnelUp(args) => tunnel_up(&args)?,
     }
 
@@ -1740,9 +1740,10 @@ struct DaemonRuntimeState {
     advertised_endpoint: String,
     #[serde(default)]
     listen_port: u16,
-    session_active: bool,
+    vpn_enabled: bool,
+    vpn_active: bool,
     relay_connected: bool,
-    session_status: String,
+    vpn_status: String,
     expected_peer_count: usize,
     connected_peer_count: usize,
     mesh_ready: bool,
@@ -4262,25 +4263,17 @@ fn relay_connection_action(relay_connected: bool) -> RelayConnectionAction {
     }
 }
 
-fn daemon_session_active(session_enabled: bool, expected_peers: usize) -> bool {
-    session_enabled && expected_peers > 0
+fn daemon_vpn_active(vpn_enabled: bool, expected_peers: usize) -> bool {
+    vpn_enabled && expected_peers > 0
 }
 
-fn relay_session_active(
-    session_enabled: bool,
-    expected_peers: usize,
-    join_requests_active: bool,
-) -> bool {
-    daemon_session_active(session_enabled, expected_peers) || join_requests_active
+fn relay_vpn_active(vpn_enabled: bool, expected_peers: usize, join_requests_active: bool) -> bool {
+    daemon_vpn_active(vpn_enabled, expected_peers) || join_requests_active
 }
 
-fn fips_private_runtime_active(
-    app: &AppConfig,
-    session_enabled: bool,
-    expected_peers: usize,
-) -> bool {
+fn fips_private_runtime_active(app: &AppConfig, vpn_enabled: bool, expected_peers: usize) -> bool {
     app.private_mesh_uses_fips()
-        && (daemon_session_active(session_enabled, expected_peers)
+        && (daemon_vpn_active(vpn_enabled, expected_peers)
             || app.join_requests_enabled()
             || app
                 .active_network()
@@ -4290,12 +4283,12 @@ fn fips_private_runtime_active(
             || app.has_fips_static_peer_endpoints())
 }
 
-fn daemon_session_idle_status(
-    session_enabled: bool,
+fn daemon_vpn_idle_status(
+    vpn_enabled: bool,
     expected_peers: usize,
     join_requests_active: bool,
 ) -> &'static str {
-    if session_enabled && expected_peers == 0 {
+    if vpn_enabled && expected_peers == 0 {
         WAITING_FOR_PARTICIPANTS_STATUS
     } else if join_requests_active {
         LISTENING_FOR_JOIN_REQUESTS_STATUS
@@ -4366,7 +4359,7 @@ fn persist_inbound_join_request(
     requested_at: u64,
     network_id: &str,
     requester_node_name: &str,
-    session_status: &mut String,
+    vpn_status: &mut String,
 ) {
     match app.record_inbound_join_request(
         network_id,
@@ -4376,9 +4369,9 @@ fn persist_inbound_join_request(
     ) {
         Ok(Some(network_name)) => {
             if let Err(error) = app.save(config_path) {
-                *session_status = format!("Failed to persist join request: {error}");
+                *vpn_status = format!("Failed to persist join request: {error}");
             } else {
-                *session_status = format!("Join request received for {network_name}.");
+                *vpn_status = format!("Join request received for {network_name}.");
             }
         }
         Ok(None) => {}
@@ -4394,7 +4387,7 @@ fn persist_shared_network_roster(
     sender_pubkey: &str,
     network_id: &str,
     roster: &NetworkRoster,
-    session_status: &mut String,
+    vpn_status: &mut String,
 ) -> Result<Option<String>> {
     let changed = app.apply_admin_signed_shared_roster(
         network_id,
@@ -4420,7 +4413,7 @@ fn persist_shared_network_roster(
         })
         .map(|network| network.name.clone())
         .unwrap_or_else(|| network_id.to_string());
-    *session_status = format!("Roster updated for {network_name}.");
+    *vpn_status = format!("Roster updated for {network_name}.");
     Ok(Some(network_name))
 }
 
@@ -4429,7 +4422,7 @@ fn drain_fips_mesh_events(
     runtime: &mut crate::fips_private_mesh::FipsPrivateTunnelRuntime,
     app: &mut AppConfig,
     config_path: &Path,
-    session_status: &mut String,
+    vpn_status: &mut String,
 ) -> Result<bool> {
     let mut roster_changed = false;
     for event in runtime.drain_events() {
@@ -4455,7 +4448,7 @@ fn drain_fips_mesh_events(
                     requested_at,
                     &request.network_id,
                     &request.requester_node_name,
-                    session_status,
+                    vpn_status,
                 );
             }
             crate::fips_private_mesh::FipsPrivateMeshEvent::Roster {
@@ -4468,7 +4461,7 @@ fn drain_fips_mesh_events(
                 &sender_pubkey,
                 &network_id,
                 &roster,
-                session_status,
+                vpn_status,
             ) {
                 Ok(Some(_)) => roster_changed = true,
                 Ok(None) => {}
@@ -4488,6 +4481,7 @@ async fn refresh_fips_tunnel_config(
     network_id: &str,
     relays: &[String],
     own_pubkey: Option<&str>,
+    endpoint_cache: Option<&crate::fips_private_mesh::FipsEndpointCacheState>,
     public_signal_endpoint: Option<&DiscoveredPublicSignalEndpoint>,
 ) -> Result<()> {
     let config = fips_tunnel_config_from_app(
@@ -4496,6 +4490,7 @@ async fn refresh_fips_tunnel_config(
         runtime.iface().to_string(),
         relays,
         own_pubkey,
+        endpoint_cache,
         public_signal_endpoint,
     )?;
     runtime.apply_config(config).await
@@ -4508,11 +4503,25 @@ fn fips_tunnel_config_from_app(
     iface: impl Into<String>,
     relays: &[String],
     own_pubkey: Option<&str>,
+    endpoint_cache: Option<&crate::fips_private_mesh::FipsEndpointCacheState>,
     public_signal_endpoint: Option<&DiscoveredPublicSignalEndpoint>,
 ) -> Result<crate::fips_private_mesh::FipsPrivateTunnelConfig> {
-    let mut config = crate::fips_private_mesh::FipsPrivateTunnelConfig::from_app(
-        app, network_id, iface, relays, own_pubkey,
-    )?;
+    let cached_peer_endpoints = crate::fips_private_mesh::cached_fips_peer_endpoints(
+        endpoint_cache,
+        app,
+        network_id,
+        own_pubkey,
+        unix_timestamp(),
+    );
+    let mut config =
+        crate::fips_private_mesh::FipsPrivateTunnelConfig::from_app_with_cached_peer_endpoints(
+            app,
+            network_id,
+            iface,
+            relays,
+            own_pubkey,
+            cached_peer_endpoints,
+        )?;
     config.advertised_endpoint =
         fips_advertised_endpoint(app, public_signal_endpoint, config.listen_port);
     Ok(config)
@@ -4541,11 +4550,12 @@ async fn sync_fips_private_runtime(
     iface: &str,
     relays: &[String],
     own_pubkey: Option<&str>,
+    endpoint_cache: Option<&crate::fips_private_mesh::FipsEndpointCacheState>,
     public_signal_endpoint: Option<&DiscoveredPublicSignalEndpoint>,
-    session_enabled: bool,
+    vpn_enabled: bool,
     expected_peers: usize,
 ) -> Result<()> {
-    if !fips_private_runtime_active(app, session_enabled, expected_peers) {
+    if !fips_private_runtime_active(app, vpn_enabled, expected_peers) {
         if let Some(runtime) = runtime.take() {
             runtime.stop().await?;
         }
@@ -4562,6 +4572,7 @@ async fn sync_fips_private_runtime(
         config_iface,
         relays,
         own_pubkey,
+        endpoint_cache,
         public_signal_endpoint,
     )?;
 
@@ -5895,7 +5906,7 @@ async fn start_session(args: StartArgs) -> Result<()> {
         return Ok(());
     }
 
-    connect_session(connect_args).await
+    connect_vpn(connect_args).await
 }
 
 fn stop_daemon(args: StopArgs) -> Result<()> {
@@ -6099,7 +6110,8 @@ pub(crate) fn daemon_control_ack_timeout(request: DaemonControlRequest) -> Durat
     Duration::from_secs(3)
 }
 
-pub(crate) fn daemon_control_session_transition_timeout(request: DaemonControlRequest) -> Duration {
+#[cfg(test)]
+pub(crate) fn daemon_control_vpn_transition_timeout(request: DaemonControlRequest) -> Duration {
     if matches!(
         request,
         DaemonControlRequest::Pause | DaemonControlRequest::Resume
@@ -6127,34 +6139,10 @@ fn control_daemon(args: ControlArgs, request: DaemonControlRequest) -> Result<()
     }
 
     write_daemon_control_request(&config_path, request)?;
-    let ack_result = wait_for_daemon_control_ack(&config_path, daemon_control_ack_timeout(request));
     match request {
-        DaemonControlRequest::Pause => {
-            let session_result = wait_for_daemon_session_active(
-                &config_path,
-                false,
-                daemon_control_session_transition_timeout(request),
-            );
-            match (ack_result, session_result) {
-                (Ok(()), Ok(())) | (Err(_), Ok(())) => {}
-                (Ok(()), Err(error)) => return Err(error),
-                (Err(error), Err(_)) => return Err(error),
-            }
-        }
-        DaemonControlRequest::Resume => {
-            let session_result = wait_for_daemon_session_active(
-                &config_path,
-                true,
-                daemon_control_session_transition_timeout(request),
-            );
-            match (ack_result, session_result) {
-                (Ok(()), Ok(())) | (Err(_), Ok(())) => {}
-                (Ok(()), Err(error)) => return Err(error),
-                (Err(error), Err(_)) => return Err(error),
-            }
-        }
+        DaemonControlRequest::Pause | DaemonControlRequest::Resume => {}
         DaemonControlRequest::Reload | DaemonControlRequest::Stop => {
-            ack_result?;
+            wait_for_daemon_control_ack(&config_path, daemon_control_ack_timeout(request))?;
         }
     }
 
@@ -6300,7 +6288,7 @@ async fn run_doctor(args: DoctorArgs) -> Result<()> {
             if state.health.is_empty() {
                 build_health_issues(
                     &app,
-                    state.session_active,
+                    state.vpn_active,
                     state.relay_connected,
                     state.mesh_ready,
                     &network,
@@ -6361,7 +6349,7 @@ async fn run_doctor(args: DoctorArgs) -> Result<()> {
         println!("daemon: stopped");
     }
     if let Some(state) = daemon.state.as_ref() {
-        println!("session: {}", state.session_status);
+        println!("vpn: {}", state.vpn_status);
     }
     println!(
         "netcheck: udp={} ipv4={} ipv6={} captive_portal={}",

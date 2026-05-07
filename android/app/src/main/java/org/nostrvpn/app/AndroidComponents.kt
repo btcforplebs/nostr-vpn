@@ -1,11 +1,7 @@
 package org.nostrvpn.app
 
-import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.net.VpnService
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -54,19 +50,13 @@ import org.nostrvpn.app.core.RelayState
 
 @Composable
 internal fun Hero(state: AppState, network: NetworkState?, dispatch: (JSONObject) -> Unit) {
-    val context = LocalContext.current
-    val vpnLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            dispatch(NativeActions.connectSession())
-        }
-    }
     AppCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
-                    .size(52.dp)
+                    .size(10.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFFEDE9FE)),
+                    .background(if (state.vpnActive) Ok else Color(0xFF9CA3AF)),
             )
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
@@ -77,7 +67,7 @@ internal fun Hero(state: AppState, network: NetworkState?, dispatch: (JSONObject
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(state.sessionStatus, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(state.vpnStatus, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     peerSummary(state),
                     color = Muted,
@@ -85,22 +75,17 @@ internal fun Hero(state: AppState, network: NetworkState?, dispatch: (JSONObject
                 )
             }
             Button(
-                colors = ButtonDefaults.buttonColors(containerColor = if (state.sessionActive) Ok else Accent),
-                enabled = state.vpnSessionControlSupported,
+                colors = ButtonDefaults.buttonColors(containerColor = if (state.vpnEnabled) Ok else Accent),
+                enabled = state.vpnControlSupported,
                 onClick = {
-                    if (state.sessionActive) {
-                        dispatch(NativeActions.disconnectSession())
+                    if (state.vpnEnabled) {
+                        dispatch(NativeActions.disconnectVpn())
                     } else {
-                        val intent = VpnService.prepare(context)
-                        if (intent == null) {
-                            dispatch(NativeActions.connectSession())
-                        } else {
-                            vpnLauncher.launch(intent)
-                        }
+                        dispatch(NativeActions.connectVpn())
                     }
                 },
             ) {
-                Text(if (state.sessionActive) "Connected" else "Connect")
+                Text(if (state.vpnEnabled) "On" else "Off")
             }
         }
     }

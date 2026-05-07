@@ -28,7 +28,7 @@ use crate::invite::{
     preferred_join_request_recipient,
 };
 use crate::nvpn_cli::{
-    connect_session_inner, default_config_path, disconnect_session_inner, discover_static_dir,
+    connect_vpn_inner, default_config_path, disconnect_vpn_inner, discover_static_dir,
     ensure_config_exists, fetch_cli_status, load_config, resolve_nvpn_cli_path,
 };
 use crate::ui_models::{
@@ -143,8 +143,8 @@ async fn main() -> Result<()> {
     let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/tick", post(tick))
-        .route("/api/connect_session", post(connect_session))
-        .route("/api/disconnect_session", post(disconnect_session))
+        .route("/api/connect_vpn", post(connect_vpn))
+        .route("/api/disconnect_vpn", post(disconnect_vpn))
         .route("/api/add_network", post(add_network))
         .route("/api/rename_network", post(rename_network))
         .route("/api/set_network_mesh_id", post(set_network_mesh_id))
@@ -199,14 +199,14 @@ async fn tick(State(state): State<ServerState>) -> ApiResult<Json<UiState>> {
     Ok(Json(build_ui_state(&state).map_err(internal_error)?))
 }
 
-async fn connect_session(State(state): State<ServerState>) -> ApiResult<Json<UiState>> {
-    connect_session_inner(&state).map_err(bad_request)?;
+async fn connect_vpn(State(state): State<ServerState>) -> ApiResult<Json<UiState>> {
+    connect_vpn_inner(&state).map_err(bad_request)?;
     set_action_status(&state, "Daemon running");
     Ok(Json(build_ui_state(&state).map_err(internal_error)?))
 }
 
-async fn disconnect_session(State(state): State<ServerState>) -> ApiResult<Json<UiState>> {
-    disconnect_session_inner(&state).map_err(bad_request)?;
+async fn disconnect_vpn(State(state): State<ServerState>) -> ApiResult<Json<UiState>> {
+    disconnect_vpn_inner(&state).map_err(bad_request)?;
     set_action_status(&state, "Paused");
     Ok(Json(build_ui_state(&state).map_err(internal_error)?))
 }
@@ -275,7 +275,7 @@ async fn set_network_join_requests_enabled(
         .map_err(bad_request)?;
     finalize_config_change(&state, &mut config).map_err(bad_request)?;
     if local_join_request_listener_enabled(&config) {
-        connect_session_inner(&state).map_err(bad_request)?;
+        connect_vpn_inner(&state).map_err(bad_request)?;
     }
     set_action_status(
         &state,
@@ -327,7 +327,7 @@ async fn request_network_join(
     finalize_config_change(&state, &mut config).map_err(bad_request)?;
     let status = fetch_cli_status(&state).ok();
     if status.as_ref().is_none_or(|value| !value.daemon.running) {
-        connect_session_inner(&state).map_err(bad_request)?;
+        connect_vpn_inner(&state).map_err(bad_request)?;
         set_action_status(&state, "Join request queued and FIPS mesh started.");
     } else {
         set_action_status(&state, "Join request queued for FIPS delivery.");
@@ -458,7 +458,7 @@ async fn accept_join_request(
     finalize_config_change(&state, &mut config).map_err(bad_request)?;
     let status = fetch_cli_status(&state).ok();
     if status.as_ref().is_none_or(|value| !value.daemon.running) {
-        connect_session_inner(&state).map_err(bad_request)?;
+        connect_vpn_inner(&state).map_err(bad_request)?;
         set_action_status(&state, "Join request accepted and VPN started.");
     } else {
         set_action_status(&state, "Join request accepted.");

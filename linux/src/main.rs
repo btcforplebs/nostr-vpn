@@ -32,7 +32,7 @@ struct AppRuntime {
 enum Page {
     Devices,
     Share,
-    Routing,
+    ExitNodes,
     Settings,
 }
 
@@ -305,14 +305,14 @@ fn drain_tray_commands(app: &AppRef) {
     for command in commands {
         match command {
             tray::TrayCommand::ShowWindow => show_window(app),
-            tray::TrayCommand::ToggleSession => {
-                let active = app.borrow().state.session_active;
+            tray::TrayCommand::ToggleVpn => {
+                let enabled = app.borrow().state.vpn_enabled;
                 dispatch(
                     app,
-                    if active {
-                        NativeAppAction::DisconnectSession
+                    if enabled {
+                        NativeAppAction::DisconnectVpn
                     } else {
-                        NativeAppAction::ConnectSession
+                        NativeAppAction::ConnectVpn
                     },
                 );
             }
@@ -607,7 +607,7 @@ fn render(app: &AppRef) {
     match page {
         Page::Devices => build_devices_page(app, &page_box, &state),
         Page::Share => build_share_page(app, &page_box, &state),
-        Page::Routing => build_routing_page(app, &page_box, &state),
+        Page::ExitNodes => build_exit_nodes_page(app, &page_box, &state),
         Page::Settings => build_settings_page(app, &page_box, &state),
     }
 
@@ -627,7 +627,7 @@ fn build_sidebar(app: &AppRef, sidebar: &gtk::Box, state: &NativeAppState, page:
     for (target, title, icon) in [
         (Page::Devices, "Devices", ""),
         (Page::Share, "Share", "emblem-shared-symbolic"),
-        (Page::Routing, "Routing", ""),
+        (Page::ExitNodes, "Exit Nodes", ""),
         (Page::Settings, "Settings", "emblem-system-symbolic"),
     ] {
         let button = nav_button(title, icon, page == target);
@@ -664,7 +664,7 @@ fn build_sidebar(app: &AppRef, sidebar: &gtk::Box, state: &NativeAppState, page:
     spacer.set_vexpand(true);
     sidebar.append(&spacer);
 
-    let status = gtk::Label::new(Some(&state.session_status));
+    let status = gtk::Label::new(Some(&state.vpn_status));
     status.add_css_class("caption");
     status.add_css_class("dim-label");
     status.set_xalign(0.0);
@@ -929,7 +929,7 @@ fn build_network_hero(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     let status = gtk::Box::new(gtk::Orientation::Vertical, 0);
     status.add_css_class(if state.mesh_ready {
         "nvpn-status-ready"
-    } else if state.session_active {
+    } else if state.vpn_active {
         "nvpn-status-active"
     } else {
         "nvpn-status-off"
@@ -962,12 +962,12 @@ fn build_network_hero(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
 
     let badges = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     badges.append(&badge(
-        if state.session_active {
+        if state.vpn_active {
             "VPN on"
         } else {
             "VPN off"
         },
-        if state.session_active { "ok" } else { "muted" },
+        if state.vpn_active { "ok" } else { "muted" },
     ));
     badges.append(&badge(
         if state.daemon_running {
@@ -1000,29 +1000,29 @@ fn build_network_hero(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     top.append(&text);
 
     let connect = icon_text_button(
-        if state.session_active {
-            "Connected"
+        if state.vpn_enabled {
+            "On"
         } else {
-            "Connect"
+            "Off"
         },
-        if state.session_active {
+        if state.vpn_enabled {
             "media-playback-stop-symbolic"
         } else {
             "media-playback-start-symbolic"
         },
     );
     connect.add_css_class("suggested-action");
-    connect.set_sensitive(state.vpn_session_control_supported);
+    connect.set_sensitive(state.vpn_control_supported);
     {
         let app = app.clone();
-        let active = state.session_active;
+        let enabled = state.vpn_enabled;
         connect.connect_clicked(move |_| {
             dispatch(
                 &app,
-                if active {
-                    NativeAppAction::DisconnectSession
+                if enabled {
+                    NativeAppAction::DisconnectVpn
                 } else {
-                    NativeAppAction::ConnectSession
+                    NativeAppAction::ConnectVpn
                 },
             );
         });
@@ -1273,8 +1273,8 @@ fn scan_invite_qr(app: &AppRef, button: &gtk::Button) {
     );
 }
 
-fn build_routing_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
-    page_title(page, "Routing", "");
+fn build_exit_nodes_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
+    page_title(page, "Exit Nodes", "");
 
     let Some(network) = active_network(state).cloned() else {
         return;
@@ -1330,11 +1330,10 @@ fn build_routing_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     }
     page.append(&exit);
 
-    let subnet = card();
-    section_header(&subnet, "Subnet Routes", "");
+    let offer = card();
     switch_row(
         app,
-        &subnet,
+        &offer,
         "Offer this device as an exit node",
         state.advertise_exit_node,
         |enabled| NativeAppAction::UpdateSettings {
@@ -1344,35 +1343,7 @@ fn build_routing_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
             },
         },
     );
-
-    let routes = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let entry = entry("Advertised routes", &app.borrow().drafts.advertised_routes);
-    {
-        let app = app.clone();
-        entry.connect_changed(move |entry| {
-            app.borrow_mut().drafts.advertised_routes = entry.text().to_string();
-        });
-    }
-    let save = gtk::Button::with_label("Save");
-    {
-        let app = app.clone();
-        save.connect_clicked(move |_| {
-            let advertised_routes = app.borrow().drafts.advertised_routes.clone();
-            dispatch(
-                &app,
-                NativeAppAction::UpdateSettings {
-                    patch: SettingsPatch {
-                        advertised_routes: Some(advertised_routes),
-                        ..SettingsPatch::default()
-                    },
-                },
-            );
-        });
-    }
-    routes.append(&entry);
-    routes.append(&save);
-    subnet.append(&routes);
-    page.append(&subnet);
+    page.append(&offer);
 }
 
 fn route_choice(
@@ -2499,17 +2470,17 @@ fn is_self(participant: &NativeParticipantState, state: &NativeAppState) -> bool
 }
 
 fn hero_subtitle(state: &NativeAppState) -> String {
-    if state.session_active {
+    if state.vpn_active {
         format!(
             "{} of {} devices connected",
             state.connected_peer_count, state.expected_peer_count
         )
-    } else if state.vpn_session_control_supported {
+    } else if state.vpn_control_supported {
         "Ready to connect this device to your private network".to_string()
     } else {
         non_empty_or(
             &state.runtime_status_detail,
-            "Session control is unavailable",
+            "VPN control is unavailable",
         )
     }
 }

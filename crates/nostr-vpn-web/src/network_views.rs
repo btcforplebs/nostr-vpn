@@ -61,10 +61,10 @@ pub(crate) struct NetworkRuntimeViews {
 pub(crate) fn build_network_views(
     config: &AppConfig,
     daemon_state: Option<&DaemonRuntimeState>,
-    session_active: bool,
+    vpn_active: bool,
 ) -> NetworkRuntimeViews {
-    let peer_snapshots = peer_snapshots(config, daemon_state, session_active);
-    let networks = network_rows(config, &peer_snapshots, session_active);
+    let peer_snapshots = peer_snapshots(config, daemon_state, vpn_active);
+    let networks = network_rows(config, &peer_snapshots, vpn_active);
     let expected_peer_count = expected_peer_count(config);
     let connected_peer_count = connected_configured_peer_count(config, &peer_snapshots);
 
@@ -82,7 +82,7 @@ pub(crate) fn is_mesh_complete(connected: usize, expected: usize) -> bool {
 fn peer_snapshots(
     config: &AppConfig,
     daemon_state: Option<&DaemonRuntimeState>,
-    session_active: bool,
+    vpn_active: bool,
 ) -> HashMap<String, PeerSnapshot> {
     let daemon_peers = daemon_state
         .map(|state| {
@@ -98,7 +98,7 @@ fn peer_snapshots(
         .all_participant_pubkeys_hex()
         .into_iter()
         .map(|participant| {
-            let snapshot = if !session_active {
+            let snapshot = if !vpn_active {
                 PeerSnapshot {
                     error: Some("vpn off".to_string()),
                     ..PeerSnapshot::default()
@@ -150,7 +150,7 @@ fn peer_snapshots(
 fn network_rows(
     config: &AppConfig,
     snapshots: &HashMap<String, PeerSnapshot>,
-    session_active: bool,
+    vpn_active: bool,
 ) -> Vec<NetworkView> {
     let own_pubkey_hex = config.own_nostr_pubkey_hex().ok();
     let mut rows = Vec::with_capacity(config.networks.len());
@@ -232,7 +232,7 @@ fn network_rows(
             online_count: network_online_device_count(
                 remote_online_count,
                 network.enabled,
-                session_active,
+                vpn_active,
             ),
             expected_count: network_device_count(remote_expected_count, network.enabled),
             participants: participant_rows,
@@ -600,10 +600,10 @@ fn network_device_count(remote_device_count: usize, enabled: bool) -> usize {
 fn network_online_device_count(
     remote_online_count: usize,
     enabled: bool,
-    session_active: bool,
+    vpn_active: bool,
 ) -> usize {
     if enabled {
-        remote_online_count.saturating_add(usize::from(session_active))
+        remote_online_count.saturating_add(usize::from(vpn_active))
     } else {
         0
     }

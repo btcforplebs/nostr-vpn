@@ -665,7 +665,7 @@ public struct NativeAppState {
     public var rev: UInt64
     public var platform: String
     public var mobile: Bool
-    public var vpnSessionControlSupported: Bool
+    public var vpnControlSupported: Bool
     public var cliInstallSupported: Bool
     public var startupSettingsSupported: Bool
     public var trayBehaviorSupported: Bool
@@ -681,9 +681,10 @@ public struct NativeAppState {
     public var serviceRunning: Bool
     public var serviceStatusDetail: String
     public var daemonRunning: Bool
-    public var sessionActive: Bool
+    public var vpnEnabled: Bool
+    public var vpnActive: Bool
     public var relayConnected: Bool
-    public var sessionStatus: String
+    public var vpnStatus: String
     public var daemonBinaryVersion: String
     public var serviceBinaryVersion: String
     public var ownNpub: String
@@ -720,11 +721,11 @@ public struct NativeAppState {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(rev: UInt64, platform: String, mobile: Bool, vpnSessionControlSupported: Bool, cliInstallSupported: Bool, startupSettingsSupported: Bool, trayBehaviorSupported: Bool, runtimeStatusDetail: String, appVersion: String, configPath: String, error: String, cliInstalled: Bool, serviceSupported: Bool, serviceEnablementSupported: Bool, serviceInstalled: Bool, serviceDisabled: Bool, serviceRunning: Bool, serviceStatusDetail: String, daemonRunning: Bool, sessionActive: Bool, relayConnected: Bool, sessionStatus: String, daemonBinaryVersion: String, serviceBinaryVersion: String, ownNpub: String, ownPubkeyHex: String, nodeId: String, nodeName: String, selfMagicDnsName: String, endpoint: String, tunnelIp: String, listenPort: UInt32, networkId: String, activeNetworkInvite: String, exitNode: String, advertiseExitNode: Bool, advertisedRoutes: [String], effectiveAdvertisedRoutes: [String], magicDnsSuffix: String, magicDnsStatus: String, autoconnect: Bool, lanPairingActive: Bool, lanPairingRemainingSecs: UInt64, launchOnStartup: Bool, closeToTrayOnClose: Bool, connectedPeerCount: UInt64, expectedPeerCount: UInt64, meshReady: Bool, health: [NativeHealthIssue], network: NativeNetworkSummary, portMapping: NativePortMappingStatus, networks: [NativeNetworkState], relays: [NativeRelayState], relaySummary: NativeRelaySummary, lanPeers: [NativeLanPeerState]) {
+    public init(rev: UInt64, platform: String, mobile: Bool, vpnControlSupported: Bool, cliInstallSupported: Bool, startupSettingsSupported: Bool, trayBehaviorSupported: Bool, runtimeStatusDetail: String, appVersion: String, configPath: String, error: String, cliInstalled: Bool, serviceSupported: Bool, serviceEnablementSupported: Bool, serviceInstalled: Bool, serviceDisabled: Bool, serviceRunning: Bool, serviceStatusDetail: String, daemonRunning: Bool, vpnEnabled: Bool, vpnActive: Bool, relayConnected: Bool, vpnStatus: String, daemonBinaryVersion: String, serviceBinaryVersion: String, ownNpub: String, ownPubkeyHex: String, nodeId: String, nodeName: String, selfMagicDnsName: String, endpoint: String, tunnelIp: String, listenPort: UInt32, networkId: String, activeNetworkInvite: String, exitNode: String, advertiseExitNode: Bool, advertisedRoutes: [String], effectiveAdvertisedRoutes: [String], magicDnsSuffix: String, magicDnsStatus: String, autoconnect: Bool, lanPairingActive: Bool, lanPairingRemainingSecs: UInt64, launchOnStartup: Bool, closeToTrayOnClose: Bool, connectedPeerCount: UInt64, expectedPeerCount: UInt64, meshReady: Bool, health: [NativeHealthIssue], network: NativeNetworkSummary, portMapping: NativePortMappingStatus, networks: [NativeNetworkState], relays: [NativeRelayState], relaySummary: NativeRelaySummary, lanPeers: [NativeLanPeerState]) {
         self.rev = rev
         self.platform = platform
         self.mobile = mobile
-        self.vpnSessionControlSupported = vpnSessionControlSupported
+        self.vpnControlSupported = vpnControlSupported
         self.cliInstallSupported = cliInstallSupported
         self.startupSettingsSupported = startupSettingsSupported
         self.trayBehaviorSupported = trayBehaviorSupported
@@ -740,9 +741,10 @@ public struct NativeAppState {
         self.serviceRunning = serviceRunning
         self.serviceStatusDetail = serviceStatusDetail
         self.daemonRunning = daemonRunning
-        self.sessionActive = sessionActive
+        self.vpnEnabled = vpnEnabled
+        self.vpnActive = vpnActive
         self.relayConnected = relayConnected
-        self.sessionStatus = sessionStatus
+        self.vpnStatus = vpnStatus
         self.daemonBinaryVersion = daemonBinaryVersion
         self.serviceBinaryVersion = serviceBinaryVersion
         self.ownNpub = ownNpub
@@ -795,7 +797,7 @@ extension NativeAppState: Equatable, Hashable {
         if lhs.mobile != rhs.mobile {
             return false
         }
-        if lhs.vpnSessionControlSupported != rhs.vpnSessionControlSupported {
+        if lhs.vpnControlSupported != rhs.vpnControlSupported {
             return false
         }
         if lhs.cliInstallSupported != rhs.cliInstallSupported {
@@ -843,13 +845,16 @@ extension NativeAppState: Equatable, Hashable {
         if lhs.daemonRunning != rhs.daemonRunning {
             return false
         }
-        if lhs.sessionActive != rhs.sessionActive {
+        if lhs.vpnEnabled != rhs.vpnEnabled {
+            return false
+        }
+        if lhs.vpnActive != rhs.vpnActive {
             return false
         }
         if lhs.relayConnected != rhs.relayConnected {
             return false
         }
-        if lhs.sessionStatus != rhs.sessionStatus {
+        if lhs.vpnStatus != rhs.vpnStatus {
             return false
         }
         if lhs.daemonBinaryVersion != rhs.daemonBinaryVersion {
@@ -958,7 +963,7 @@ extension NativeAppState: Equatable, Hashable {
         hasher.combine(rev)
         hasher.combine(platform)
         hasher.combine(mobile)
-        hasher.combine(vpnSessionControlSupported)
+        hasher.combine(vpnControlSupported)
         hasher.combine(cliInstallSupported)
         hasher.combine(startupSettingsSupported)
         hasher.combine(trayBehaviorSupported)
@@ -974,9 +979,10 @@ extension NativeAppState: Equatable, Hashable {
         hasher.combine(serviceRunning)
         hasher.combine(serviceStatusDetail)
         hasher.combine(daemonRunning)
-        hasher.combine(sessionActive)
+        hasher.combine(vpnEnabled)
+        hasher.combine(vpnActive)
         hasher.combine(relayConnected)
-        hasher.combine(sessionStatus)
+        hasher.combine(vpnStatus)
         hasher.combine(daemonBinaryVersion)
         hasher.combine(serviceBinaryVersion)
         hasher.combine(ownNpub)
@@ -1025,7 +1031,7 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
                 rev: FfiConverterUInt64.read(from: &buf),
                 platform: FfiConverterString.read(from: &buf),
                 mobile: FfiConverterBool.read(from: &buf),
-                vpnSessionControlSupported: FfiConverterBool.read(from: &buf),
+                vpnControlSupported: FfiConverterBool.read(from: &buf),
                 cliInstallSupported: FfiConverterBool.read(from: &buf),
                 startupSettingsSupported: FfiConverterBool.read(from: &buf),
                 trayBehaviorSupported: FfiConverterBool.read(from: &buf),
@@ -1041,9 +1047,10 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
                 serviceRunning: FfiConverterBool.read(from: &buf),
                 serviceStatusDetail: FfiConverterString.read(from: &buf),
                 daemonRunning: FfiConverterBool.read(from: &buf),
-                sessionActive: FfiConverterBool.read(from: &buf),
+                vpnEnabled: FfiConverterBool.read(from: &buf),
+                vpnActive: FfiConverterBool.read(from: &buf),
                 relayConnected: FfiConverterBool.read(from: &buf),
-                sessionStatus: FfiConverterString.read(from: &buf),
+                vpnStatus: FfiConverterString.read(from: &buf),
                 daemonBinaryVersion: FfiConverterString.read(from: &buf),
                 serviceBinaryVersion: FfiConverterString.read(from: &buf),
                 ownNpub: FfiConverterString.read(from: &buf),
@@ -1084,7 +1091,7 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.rev, into: &buf)
         FfiConverterString.write(value.platform, into: &buf)
         FfiConverterBool.write(value.mobile, into: &buf)
-        FfiConverterBool.write(value.vpnSessionControlSupported, into: &buf)
+        FfiConverterBool.write(value.vpnControlSupported, into: &buf)
         FfiConverterBool.write(value.cliInstallSupported, into: &buf)
         FfiConverterBool.write(value.startupSettingsSupported, into: &buf)
         FfiConverterBool.write(value.trayBehaviorSupported, into: &buf)
@@ -1100,9 +1107,10 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
         FfiConverterBool.write(value.serviceRunning, into: &buf)
         FfiConverterString.write(value.serviceStatusDetail, into: &buf)
         FfiConverterBool.write(value.daemonRunning, into: &buf)
-        FfiConverterBool.write(value.sessionActive, into: &buf)
+        FfiConverterBool.write(value.vpnEnabled, into: &buf)
+        FfiConverterBool.write(value.vpnActive, into: &buf)
         FfiConverterBool.write(value.relayConnected, into: &buf)
-        FfiConverterString.write(value.sessionStatus, into: &buf)
+        FfiConverterString.write(value.vpnStatus, into: &buf)
         FfiConverterString.write(value.daemonBinaryVersion, into: &buf)
         FfiConverterString.write(value.serviceBinaryVersion, into: &buf)
         FfiConverterString.write(value.ownNpub, into: &buf)
@@ -2384,7 +2392,7 @@ public func FfiConverterTypeNativeRelaySummary_lower(_ value: NativeRelaySummary
 public struct NativeRuntimeCapabilities {
     public var platform: String
     public var mobile: Bool
-    public var vpnSessionControlSupported: Bool
+    public var vpnControlSupported: Bool
     public var cliInstallSupported: Bool
     public var startupSettingsSupported: Bool
     public var trayBehaviorSupported: Bool
@@ -2392,10 +2400,10 @@ public struct NativeRuntimeCapabilities {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(platform: String, mobile: Bool, vpnSessionControlSupported: Bool, cliInstallSupported: Bool, startupSettingsSupported: Bool, trayBehaviorSupported: Bool, runtimeStatusDetail: String) {
+    public init(platform: String, mobile: Bool, vpnControlSupported: Bool, cliInstallSupported: Bool, startupSettingsSupported: Bool, trayBehaviorSupported: Bool, runtimeStatusDetail: String) {
         self.platform = platform
         self.mobile = mobile
-        self.vpnSessionControlSupported = vpnSessionControlSupported
+        self.vpnControlSupported = vpnControlSupported
         self.cliInstallSupported = cliInstallSupported
         self.startupSettingsSupported = startupSettingsSupported
         self.trayBehaviorSupported = trayBehaviorSupported
@@ -2416,7 +2424,7 @@ extension NativeRuntimeCapabilities: Equatable, Hashable {
         if lhs.mobile != rhs.mobile {
             return false
         }
-        if lhs.vpnSessionControlSupported != rhs.vpnSessionControlSupported {
+        if lhs.vpnControlSupported != rhs.vpnControlSupported {
             return false
         }
         if lhs.cliInstallSupported != rhs.cliInstallSupported {
@@ -2437,7 +2445,7 @@ extension NativeRuntimeCapabilities: Equatable, Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(platform)
         hasher.combine(mobile)
-        hasher.combine(vpnSessionControlSupported)
+        hasher.combine(vpnControlSupported)
         hasher.combine(cliInstallSupported)
         hasher.combine(startupSettingsSupported)
         hasher.combine(trayBehaviorSupported)
@@ -2456,7 +2464,7 @@ public struct FfiConverterTypeNativeRuntimeCapabilities: FfiConverterRustBuffer 
             try NativeRuntimeCapabilities(
                 platform: FfiConverterString.read(from: &buf),
                 mobile: FfiConverterBool.read(from: &buf),
-                vpnSessionControlSupported: FfiConverterBool.read(from: &buf),
+                vpnControlSupported: FfiConverterBool.read(from: &buf),
                 cliInstallSupported: FfiConverterBool.read(from: &buf),
                 startupSettingsSupported: FfiConverterBool.read(from: &buf),
                 trayBehaviorSupported: FfiConverterBool.read(from: &buf),
@@ -2467,7 +2475,7 @@ public struct FfiConverterTypeNativeRuntimeCapabilities: FfiConverterRustBuffer 
     public static func write(_ value: NativeRuntimeCapabilities, into buf: inout [UInt8]) {
         FfiConverterString.write(value.platform, into: &buf)
         FfiConverterBool.write(value.mobile, into: &buf)
-        FfiConverterBool.write(value.vpnSessionControlSupported, into: &buf)
+        FfiConverterBool.write(value.vpnControlSupported, into: &buf)
         FfiConverterBool.write(value.cliInstallSupported, into: &buf)
         FfiConverterBool.write(value.startupSettingsSupported, into: &buf)
         FfiConverterBool.write(value.trayBehaviorSupported, into: &buf)
@@ -2639,8 +2647,8 @@ public enum NativeAppAction {
 
     case getState
     case tick
-    case connectSession
-    case disconnectSession
+    case connectVpn
+    case disconnectVpn
     case installCli
     case uninstallCli
     case installSystemService
@@ -2704,9 +2712,9 @@ public struct FfiConverterTypeNativeAppAction: FfiConverterRustBuffer {
 
         case 2: return .tick
 
-        case 3: return .connectSession
+        case 3: return .connectVpn
 
-        case 4: return .disconnectSession
+        case 4: return .disconnectVpn
 
         case 5: return .installCli
 
@@ -2791,11 +2799,11 @@ public struct FfiConverterTypeNativeAppAction: FfiConverterRustBuffer {
             writeInt(&buf, Int32(2))
 
 
-        case .connectSession:
+        case .connectVpn:
             writeInt(&buf, Int32(3))
 
 
-        case .disconnectSession:
+        case .disconnectVpn:
             writeInt(&buf, Int32(4))
 
 

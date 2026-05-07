@@ -5,7 +5,7 @@ public sealed class NativeAppState
     public ulong Rev { get; set; }
     public string Platform { get; set; } = "";
     public bool Mobile { get; set; }
-    public bool VpnSessionControlSupported { get; set; }
+    public bool VpnControlSupported { get; set; }
     public bool CliInstallSupported { get; set; }
     public bool StartupSettingsSupported { get; set; }
     public bool TrayBehaviorSupported { get; set; }
@@ -21,9 +21,10 @@ public sealed class NativeAppState
     public bool ServiceRunning { get; set; }
     public string ServiceStatusDetail { get; set; } = "";
     public bool DaemonRunning { get; set; }
-    public bool SessionActive { get; set; }
+    public bool VpnEnabled { get; set; }
+    public bool VpnActive { get; set; }
     public bool RelayConnected { get; set; }
-    public string SessionStatus { get; set; } = "";
+    public string VpnStatus { get; set; } = "";
     public string DaemonBinaryVersion { get; set; } = "";
     public string ServiceBinaryVersion { get; set; } = "";
     public string OwnNpub { get; set; } = "";

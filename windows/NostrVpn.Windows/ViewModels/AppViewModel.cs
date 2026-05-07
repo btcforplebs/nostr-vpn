@@ -16,7 +16,7 @@ public enum AppPage
 {
     Devices,
     Share,
-    Routing,
+    ExitNodes,
     Settings,
 }
 
@@ -59,10 +59,10 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
 
         ShowDevicesCommand = new RelayCommand(_ => Page = AppPage.Devices);
         ShowShareCommand = new RelayCommand(_ => Page = AppPage.Share);
-        ShowRoutingCommand = new RelayCommand(_ => Page = AppPage.Routing);
+        ShowExitNodesCommand = new RelayCommand(_ => Page = AppPage.ExitNodes);
         ShowSettingsCommand = new RelayCommand(_ => Page = AppPage.Settings);
         RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !ActionInFlight);
-        ToggleSessionCommand = new AsyncRelayCommand(_ => ToggleSessionAsync(), _ => !ActionInFlight && State.VpnSessionControlSupported);
+        ToggleVpnCommand = new AsyncRelayCommand(_ => ToggleVpnAsync(), _ => !ActionInFlight && State.VpnControlSupported);
         CopyInviteCommand = new RelayCommand(_ => CopyText(State.ActiveNetworkInvite));
         CopyThisDeviceCommand = new RelayCommand(_ => CopyText(ThisDeviceCopyValue), _ => !string.IsNullOrWhiteSpace(ThisDeviceCopyValue));
         CopyPeerCommand = new RelayCommand(parameter => CopyText(parameter as string ?? ""));
@@ -71,7 +71,6 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         ToggleLanPairingCommand = new AsyncRelayCommand(_ => DispatchAsync(State.LanPairingActive ? NativeActions.StopLanPairing() : NativeActions.StartLanPairing(), "Pairing"));
         AddParticipantCommand = new AsyncRelayCommand(_ => AddParticipantAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(ParticipantInput));
         SaveNodeCommand = new AsyncRelayCommand(_ => SaveNodeAsync(), _ => !ActionInFlight);
-        SaveRoutesCommand = new AsyncRelayCommand(_ => DispatchAsync(NativeActions.UpdateSettings(new SettingsPatch { AdvertisedRoutes = AdvertisedRoutes }), "Saving routes"));
         AddNetworkCommand = new AsyncRelayCommand(_ => AddNetworkAsync(), _ => !ActionInFlight && !string.IsNullOrWhiteSpace(NetworkNameInput));
         SaveNetworkNameCommand = new AsyncRelayCommand(_ => RenameActiveNetworkAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(NetworkNameDraft));
         SaveNetworkMeshIdCommand = new AsyncRelayCommand(_ => SaveActiveNetworkMeshIdAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(NetworkMeshIdDraft));
@@ -207,8 +206,8 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public IEnumerable<NativeNetworkState> InactiveNetworks => State.Networks.Where(network => !network.Enabled);
     public string ActiveNetworkName => DisplayNetworkName(ActiveNetwork);
     public string HeroSubtitle => $"{State.ConnectedPeerCount} of {State.ExpectedPeerCount} connected";
-    public string SessionButtonText => State.SessionActive ? "Connected" : "Connect";
-    public string SessionStatusText => string.IsNullOrWhiteSpace(State.Error) ? State.SessionStatus : State.Error;
+    public string VpnButtonText => State.VpnEnabled ? "On" : "Off";
+    public string VpnStatusText => string.IsNullOrWhiteSpace(State.Error) ? State.VpnStatus : State.Error;
     public string ThisDeviceCopyValue => !string.IsNullOrWhiteSpace(State.OwnNpub) ? State.OwnNpub : State.TunnelIp;
     public string LanPairingText => State.LanPairingActive ? $"{State.LanPairingRemainingSecs}s" : "Pair nearby";
     public string ServiceSummary => State.ServiceInstalled ? "Service installed" : "Service missing";
@@ -235,10 +234,10 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
 
     public ICommand ShowDevicesCommand { get; }
     public ICommand ShowShareCommand { get; }
-    public ICommand ShowRoutingCommand { get; }
+    public ICommand ShowExitNodesCommand { get; }
     public ICommand ShowSettingsCommand { get; }
     public ICommand RefreshCommand { get; }
-    public ICommand ToggleSessionCommand { get; }
+    public ICommand ToggleVpnCommand { get; }
     public ICommand CopyInviteCommand { get; }
     public ICommand CopyThisDeviceCommand { get; }
     public ICommand CopyPeerCommand { get; }
@@ -247,7 +246,6 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public ICommand ToggleLanPairingCommand { get; }
     public ICommand AddParticipantCommand { get; }
     public ICommand SaveNodeCommand { get; }
-    public ICommand SaveRoutesCommand { get; }
     public ICommand AddNetworkCommand { get; }
     public ICommand SaveNetworkNameCommand { get; }
     public ICommand SaveNetworkMeshIdCommand { get; }
@@ -277,11 +275,11 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    public Task ToggleSessionAsync()
+    public Task ToggleVpnAsync()
     {
         return DispatchAsync(
-            State.SessionActive ? NativeActions.DisconnectSession() : NativeActions.ConnectSession(),
-            State.SessionActive ? "Disconnecting" : "Connecting");
+            State.VpnEnabled ? NativeActions.DisconnectVpn() : NativeActions.ConnectVpn(),
+            State.VpnEnabled ? "Turning VPN off" : "Turning VPN on");
     }
 
     public Task SetAdvertiseExitNodeAsync(bool enabled)
@@ -325,7 +323,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     {
         return DispatchAsync(
             NativeActions.UpdateSettings(new SettingsPatch { Autoconnect = enabled }),
-            "Saving session option");
+            "Saving VPN option");
     }
 
     public Task RemoveParticipantAsync(NativeParticipantState participant)
@@ -564,7 +562,6 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         TunnelIp = state.TunnelIp;
         ListenPort = state.ListenPort.ToString();
         MagicDnsSuffix = state.MagicDnsSuffix;
-        AdvertisedRoutes = string.Join(", ", state.AdvertisedRoutes);
         NetworkNameDraft = active?.Name ?? "";
         NetworkMeshIdDraft = active?.NetworkId ?? "";
     }
@@ -584,8 +581,8 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(InactiveNetworks));
         OnPropertyChanged(nameof(ActiveNetworkName));
         OnPropertyChanged(nameof(HeroSubtitle));
-        OnPropertyChanged(nameof(SessionButtonText));
-        OnPropertyChanged(nameof(SessionStatusText));
+        OnPropertyChanged(nameof(VpnButtonText));
+        OnPropertyChanged(nameof(VpnStatusText));
         OnPropertyChanged(nameof(ThisDeviceCopyValue));
         OnPropertyChanged(nameof(LanPairingText));
         OnPropertyChanged(nameof(ServiceSummary));

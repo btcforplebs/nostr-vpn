@@ -222,7 +222,7 @@ pub(crate) async fn run_netcheck_report(
 
 pub(crate) fn build_health_issues(
     app: &AppConfig,
-    session_active: bool,
+    vpn_active: bool,
     relay_connected: bool,
     _mesh_ready: bool,
     network: &NetworkSummary,
@@ -231,7 +231,7 @@ pub(crate) fn build_health_issues(
 ) -> Vec<HealthIssue> {
     let mut issues = Vec::new();
 
-    if session_active && !relay_connected {
+    if vpn_active && !relay_connected {
         issues.push(HealthIssue::new(
             "relay.disconnected",
             HealthSeverity::Warning,
@@ -240,7 +240,7 @@ pub(crate) fn build_health_issues(
         ));
     }
 
-    if session_active && network.captive_portal == Some(true) {
+    if vpn_active && network.captive_portal == Some(true) {
         issues.push(HealthIssue::new(
             "network.captive_portal",
             HealthSeverity::Critical,
@@ -249,7 +249,7 @@ pub(crate) fn build_health_issues(
         ));
     }
 
-    if session_active
+    if vpn_active
         && port_mapping.active_protocol.is_none()
         && network.primary_ipv4.is_none()
         && network.primary_ipv6.is_none()
@@ -262,7 +262,7 @@ pub(crate) fn build_health_issues(
         ));
     }
 
-    if session_active
+    if vpn_active
         && port_mapping.active_protocol.is_none()
         && app.nat.enabled
         && network.primary_ipv4.is_some()
@@ -275,7 +275,7 @@ pub(crate) fn build_health_issues(
         ));
     }
 
-    if session_active && !app.exit_node.is_empty() {
+    if vpn_active && !app.exit_node.is_empty() {
         let selected_peer = peers
             .iter()
             .find(|peer| peer.participant_pubkey == app.exit_node);
@@ -309,7 +309,7 @@ pub(crate) fn build_health_issues(
         }
     }
 
-    if session_active
+    if vpn_active
         && peers
             .iter()
             .any(|peer| peer.error.as_deref() == Some("signal stale"))
@@ -676,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn health_issues_skip_exit_node_warning_when_session_is_inactive() {
+    fn health_issues_skip_exit_node_warning_when_vpn_is_inactive() {
         let app = AppConfig {
             exit_node: "peer-a".to_string(),
             ..AppConfig::default()

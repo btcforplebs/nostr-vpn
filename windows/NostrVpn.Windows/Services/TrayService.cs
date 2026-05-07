@@ -55,7 +55,7 @@ public sealed class TrayService : IDisposable
         var menu = new ContextMenuStrip();
         menu.Items.Add(Item("Open Nostr VPN", (_, _) => _showWindow?.Invoke()));
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(Item(viewModel.State.SessionActive ? "Disconnect VPN" : "Connect VPN", async (_, _) => await viewModel.ToggleSessionAsync(), viewModel.State.VpnSessionControlSupported));
+        menu.Items.Add(Item(viewModel.State.VpnEnabled ? "Turn VPN Off" : "Turn VPN On", async (_, _) => await viewModel.ToggleVpnAsync(), viewModel.State.VpnControlSupported));
         menu.Items.Add(Item(viewModel.State.AdvertiseExitNode ? "Stop Offering Exit" : "Offer Private Exit", async (_, _) => await viewModel.SetAdvertiseExitNodeAsync(!viewModel.State.AdvertiseExitNode)));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(Item("Copy This Device", (_, _) => viewModel.CopyText(viewModel.ThisDeviceCopyValue), !string.IsNullOrWhiteSpace(viewModel.ThisDeviceCopyValue)));
@@ -110,7 +110,7 @@ public sealed class TrayService : IDisposable
 
     private static string TrayText(AppViewModel viewModel)
     {
-        var status = viewModel.State.SessionActive ? "Connected" : "Disconnected";
+        var status = viewModel.State.VpnStatus;
         return $"Nostr VPN - {status}";
     }
 

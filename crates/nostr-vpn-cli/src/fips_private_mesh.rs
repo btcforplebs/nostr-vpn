@@ -16,10 +16,13 @@ use nostr_vpn_core::fips_control::{
 use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
 use nostr_vpn_core::join_requests::MeshJoinRequest;
 use nostr_vpn_core::signaling::NetworkRoster;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::fs;
 #[cfg(target_os = "linux")]
 use std::net::Ipv4Addr;
 use std::net::{SocketAddr, SocketAddrV4};
+use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -33,6 +36,8 @@ use tokio::sync::mpsc;
 
 const FIPS_PEER_ONLINE_GRACE_SECS: u64 = 45;
 const FIPS_NOSTR_DISCOVERY_APP: &str = "fips-overlay-v1";
+const FIPS_ENDPOINT_CACHE_VERSION: u8 = 1;
+const FIPS_ENDPOINT_CACHE_MAX_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use boringtun::device::{Error as TunError, tun::TunSocket};
@@ -58,6 +63,315 @@ struct FipsPeerPresence {
     tx_bytes: u64,
     rx_bytes: u64,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct FipsEndpointCacheState {
+    pub(crate) version: u8,
+    pub(crate) network_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) own_pubkey: Option<String>,
+    pub(crate) updated_at: u64,
+    #[serde(default)]
+    pub(crate) peers: Vec<FipsEndpointCacheEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct FipsEndpointCacheEntry {
+    pub(crate) participant_pubkey: String,
+    pub(crate) endpoint_npub: String,
+    pub(crate) transport_addr: String,
+    pub(crate) transport_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) srtt_ms: Option<u64>,
+    #[serde(default)]
+    pub(crate) packets_sent: u64,
+    #[serde(default)]
+    pub(crate) packets_recv: u64,
+    #[serde(default)]
+    pub(crate) bytes_sent: u64,
+    #[serde(default)]
+    pub(crate) bytes_recv: u64,
+    pub(crate) last_seen_at: u64,
+}
+
+pub(crate) fn fips_endpoint_cache_file_path(config_path: &Path) -> PathBuf {
+    let parent = config_path
+        .parent()
+        .map_or_else(|| Path::new(".").to_path_buf(), PathBuf::from);
+    parent.join("daemon.fips-cache.json")
+}
+
+pub(crate) fn read_fips_endpoint_cache(path: &Path) -> Result<Option<FipsEndpointCacheState>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read FIPS endpoint cache {}", path.display()))?;
+    let parsed = serde_json::from_str::<FipsEndpointCacheState>(&raw)
+        .with_context(|| format!("failed to parse FIPS endpoint cache {}", path.display()))?;
+    Ok(Some(parsed))
+}
+
+pub(crate) fn write_fips_endpoint_cache(path: &Path, state: &FipsEndpointCacheState) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let raw = serde_json::to_string_pretty(state)?;
+    fs::write(path, raw)
+        .with_context(|| format!("failed to write FIPS endpoint cache {}", path.display()))?;
+    crate::set_private_cache_file_permissions(path)?;
+    Ok(())
+}
+
+pub(crate) fn write_fips_endpoint_cache_if_changed(
+    path: &Path,
+    state: &FipsEndpointCacheState,
+    last_written_cache: &mut Option<String>,
+) -> Result<bool> {
+    let raw = serde_json::to_string(state)?;
+    if last_written_cache.as_deref() == Some(raw.as_str()) {
+        return Ok(false);
+    }
+
+    write_fips_endpoint_cache(path, state)?;
+    *last_written_cache = Some(raw);
+    Ok(true)
+}
+
+pub(crate) fn cached_fips_peer_endpoints(
+    cache: Option<&FipsEndpointCacheState>,
+    app: &AppConfig,
+    network_id: &str,
+    own_pubkey: Option<&str>,
+    now: u64,
+) -> Vec<(String, Vec<String>)> {
+    let Some(cache) = cache else {
+        return Vec::new();
+    };
+    if !fips_endpoint_cache_matches_runtime(cache, network_id, own_pubkey) {
+        return Vec::new();
+    }
+
+    let participants = fips_endpoint_cache_participants(app);
+    let mut endpoints = HashMap::<String, Vec<String>>::new();
+    for entry in &cache.peers {
+        let Some(entry) = normalized_fips_endpoint_cache_entry(entry, &participants, own_pubkey)
+        else {
+            continue;
+        };
+        if now.saturating_sub(entry.last_seen_at) > FIPS_ENDPOINT_CACHE_MAX_AGE_SECS {
+            continue;
+        }
+        endpoints
+            .entry(entry.endpoint_npub)
+            .or_default()
+            .push(entry.transport_addr);
+    }
+
+    let mut endpoints = endpoints.into_iter().collect::<Vec<_>>();
+    for (_, addresses) in &mut endpoints {
+        addresses.sort();
+        addresses.dedup();
+    }
+    endpoints.sort_by(|left, right| left.0.cmp(&right.0));
+    endpoints
+}
+
+pub(crate) fn updated_fips_endpoint_cache_state(
+    existing: Option<&FipsEndpointCacheState>,
+    app: &AppConfig,
+    network_id: &str,
+    own_pubkey: Option<&str>,
+    peer_statuses: &[MeshPeerStatus],
+    now: u64,
+) -> Option<FipsEndpointCacheState> {
+    let participants = fips_endpoint_cache_participants(app);
+    let mut entries = HashMap::<FipsEndpointCacheEntryKey, FipsEndpointCacheEntry>::new();
+    let previous_updated_at = existing
+        .filter(|cache| fips_endpoint_cache_matches_runtime(cache, network_id, own_pubkey))
+        .map(|cache| cache.updated_at);
+    let mut observed_endpoint = false;
+
+    if let Some(existing) = existing
+        && fips_endpoint_cache_matches_runtime(existing, network_id, own_pubkey)
+    {
+        for entry in &existing.peers {
+            let Some(entry) =
+                normalized_fips_endpoint_cache_entry(entry, &participants, own_pubkey)
+            else {
+                continue;
+            };
+            if now.saturating_sub(entry.last_seen_at) <= FIPS_ENDPOINT_CACHE_MAX_AGE_SECS {
+                entries.insert(FipsEndpointCacheEntryKey::from(&entry), entry);
+            }
+        }
+    }
+
+    for status in peer_statuses {
+        let Some(entry) =
+            fips_endpoint_cache_entry_from_status(status, &participants, own_pubkey, now)
+        else {
+            continue;
+        };
+        observed_endpoint = true;
+        entries.insert(FipsEndpointCacheEntryKey::from(&entry), entry);
+    }
+
+    let mut peers = entries.into_values().collect::<Vec<_>>();
+    peers.sort_by(|left, right| {
+        left.participant_pubkey
+            .cmp(&right.participant_pubkey)
+            .then_with(|| left.endpoint_npub.cmp(&right.endpoint_npub))
+            .then_with(|| left.transport_type.cmp(&right.transport_type))
+            .then_with(|| left.transport_addr.cmp(&right.transport_addr))
+    });
+    if peers.is_empty() {
+        return None;
+    }
+
+    Some(FipsEndpointCacheState {
+        version: FIPS_ENDPOINT_CACHE_VERSION,
+        network_id: network_id.trim().to_string(),
+        own_pubkey: own_pubkey.map(str::to_string),
+        updated_at: if observed_endpoint {
+            now
+        } else {
+            previous_updated_at.unwrap_or(now)
+        },
+        peers,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FipsEndpointCacheEntryKey {
+    participant_pubkey: String,
+    endpoint_npub: String,
+    transport_type: String,
+    transport_addr: String,
+}
+
+impl From<&FipsEndpointCacheEntry> for FipsEndpointCacheEntryKey {
+    fn from(entry: &FipsEndpointCacheEntry) -> Self {
+        Self {
+            participant_pubkey: entry.participant_pubkey.clone(),
+            endpoint_npub: entry.endpoint_npub.clone(),
+            transport_type: entry.transport_type.clone(),
+            transport_addr: entry.transport_addr.clone(),
+        }
+    }
+}
+
+fn fips_endpoint_cache_participants(app: &AppConfig) -> HashSet<String> {
+    app.participant_pubkeys_hex().into_iter().collect()
+}
+
+fn fips_endpoint_cache_matches_runtime(
+    cache: &FipsEndpointCacheState,
+    network_id: &str,
+    own_pubkey: Option<&str>,
+) -> bool {
+    cache.version == FIPS_ENDPOINT_CACHE_VERSION
+        && cache.network_id == network_id.trim()
+        && match (&cache.own_pubkey, own_pubkey) {
+            (Some(cached), Some(current)) => cached == current,
+            (Some(_), None) => false,
+            (None, _) => true,
+        }
+}
+
+fn normalized_fips_endpoint_cache_entry(
+    entry: &FipsEndpointCacheEntry,
+    participants: &HashSet<String>,
+    own_pubkey: Option<&str>,
+) -> Option<FipsEndpointCacheEntry> {
+    let participant_pubkey = normalize_nostr_pubkey(&entry.participant_pubkey).ok()?;
+    if Some(participant_pubkey.as_str()) == own_pubkey
+        || !participants.contains(&participant_pubkey)
+    {
+        return None;
+    }
+
+    let endpoint_npub = normalize_fips_endpoint_npub(&entry.endpoint_npub);
+    if endpoint_npub.trim().is_empty() {
+        return None;
+    }
+
+    let transport_type = entry.transport_type.trim().to_ascii_lowercase();
+    if transport_type != "udp" {
+        return None;
+    }
+
+    let transport_addr = entry.transport_addr.trim().to_string();
+    if transport_addr.is_empty() {
+        return None;
+    }
+
+    Some(FipsEndpointCacheEntry {
+        participant_pubkey,
+        endpoint_npub,
+        transport_addr,
+        transport_type,
+        srtt_ms: entry.srtt_ms,
+        packets_sent: entry.packets_sent,
+        packets_recv: entry.packets_recv,
+        bytes_sent: entry.bytes_sent,
+        bytes_recv: entry.bytes_recv,
+        last_seen_at: entry.last_seen_at,
+    })
+}
+
+fn fips_endpoint_cache_entry_from_status(
+    status: &MeshPeerStatus,
+    participants: &HashSet<String>,
+    own_pubkey: Option<&str>,
+    now: u64,
+) -> Option<FipsEndpointCacheEntry> {
+    if !status.connected {
+        return None;
+    }
+
+    let participant_pubkey = normalize_nostr_pubkey(&status.pubkey).ok()?;
+    if Some(participant_pubkey.as_str()) == own_pubkey
+        || !participants.contains(&participant_pubkey)
+    {
+        return None;
+    }
+
+    let endpoint_npub = normalize_fips_endpoint_npub(&status.endpoint_npub);
+    if endpoint_npub.trim().is_empty() {
+        return None;
+    }
+
+    let transport_type = status
+        .transport_type
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if transport_type != "udp" {
+        return None;
+    }
+
+    let transport_addr = status.transport_addr.as_deref()?.trim().to_string();
+    if transport_addr.is_empty() {
+        return None;
+    }
+
+    Some(FipsEndpointCacheEntry {
+        participant_pubkey,
+        endpoint_npub,
+        transport_addr,
+        transport_type,
+        srtt_ms: status.srtt_ms,
+        packets_sent: status.link_packets_sent,
+        packets_recv: status.link_packets_recv,
+        bytes_sent: status.link_bytes_sent,
+        bytes_recv: status.link_bytes_recv,
+        last_seen_at: now,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -641,6 +955,24 @@ impl FipsPrivateTunnelConfig {
         relays: &[String],
         own_pubkey: Option<&str>,
     ) -> Result<Self> {
+        Self::from_app_with_cached_peer_endpoints(
+            app,
+            network_id,
+            iface,
+            relays,
+            own_pubkey,
+            Vec::new(),
+        )
+    }
+
+    pub(crate) fn from_app_with_cached_peer_endpoints(
+        app: &AppConfig,
+        network_id: &str,
+        iface: impl Into<String>,
+        relays: &[String],
+        own_pubkey: Option<&str>,
+        cached_peer_endpoints: Vec<(String, Vec<String>)>,
+    ) -> Result<Self> {
         let mut peers = Vec::new();
         let mut route_targets = Vec::new();
         let participants = app.participant_pubkeys_hex();
@@ -685,8 +1017,9 @@ impl FipsPrivateTunnelConfig {
         }
         peers.sort_by(|left, right| left.participant_pubkey.cmp(&right.participant_pubkey));
         peers.dedup_by(|left, right| left.participant_pubkey == right.participant_pubkey);
-        let endpoint_peers =
-            fips_endpoint_peers_from_mesh(relays, &peers, app.fips_static_peer_endpoints());
+        let mut static_peer_endpoints = app.fips_static_peer_endpoints();
+        static_peer_endpoints.extend(cached_peer_endpoints);
+        let endpoint_peers = fips_endpoint_peers_from_mesh(relays, &peers, static_peer_endpoints);
         route_targets.sort();
         route_targets.dedup();
 
@@ -1822,15 +2155,17 @@ fn unix_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        FIPS_NOSTR_DISCOVERY_APP, FipsEndpointTransportConfig, FipsPrivateMeshRuntime,
-        FipsPrivateTunnelConfig, control_frame_source_pubkey, fips_endpoint_config,
-        fips_endpoint_peers_from_mesh,
+        FIPS_ENDPOINT_CACHE_MAX_AGE_SECS, FIPS_NOSTR_DISCOVERY_APP, FipsEndpointTransportConfig,
+        FipsPrivateMeshRuntime, FipsPrivateTunnelConfig, cached_fips_peer_endpoints,
+        control_frame_source_pubkey, fips_endpoint_config, fips_endpoint_peers_from_mesh,
+        updated_fips_endpoint_cache_state,
     };
     use fips_endpoint::{
         Config, ConnectPolicy, PeerConfig as FipsPeerConfig, TransportInstances, UdpConfig,
     };
     use nostr_sdk::prelude::{Keys, ToBech32};
     use nostr_vpn_core::config::{AppConfig, derive_mesh_tunnel_ip};
+    use nostr_vpn_core::data_plane::{MeshPeerStatus, PrivateDataPlane};
     use nostr_vpn_core::fips_control::FipsControlFrame;
     use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
     use nostr_vpn_core::join_requests::MeshJoinRequest;
@@ -1851,6 +2186,33 @@ mod tests {
         packet[16..20].copy_from_slice(&destination.octets());
         packet[20..].copy_from_slice(&payload);
         packet
+    }
+
+    fn mesh_peer_status(
+        pubkey: impl AsRef<str>,
+        endpoint_npub: impl AsRef<str>,
+        transport_addr: Option<&str>,
+        transport_type: Option<&str>,
+        connected: bool,
+        last_seen_at: Option<u64>,
+    ) -> MeshPeerStatus {
+        MeshPeerStatus {
+            pubkey: pubkey.as_ref().to_string(),
+            connected,
+            data_plane: PrivateDataPlane::Fips,
+            endpoint_npub: endpoint_npub.as_ref().to_string(),
+            transport_addr: transport_addr.map(str::to_string),
+            transport_type: transport_type.map(str::to_string),
+            srtt_ms: Some(18),
+            link_packets_sent: 7,
+            link_packets_recv: 8,
+            link_bytes_sent: 900,
+            link_bytes_recv: 1200,
+            last_seen_at,
+            tx_bytes: 0,
+            rx_bytes: 0,
+            error: None,
+        }
     }
 
     #[test]
@@ -1908,6 +2270,139 @@ mod tests {
             control_frame_source_pubkey(&mesh, Some(&unknown_npub), &join_request),
             Some(unknown_pubkey)
         );
+    }
+
+    #[test]
+    fn fips_endpoint_cache_keeps_current_udp_network_members() {
+        let own_keys = Keys::generate();
+        let peer_keys = Keys::generate();
+        let stranger_keys = Keys::generate();
+        let own_pubkey = own_keys.public_key().to_hex();
+        let peer_pubkey = peer_keys.public_key().to_hex();
+        let peer_npub = peer_keys.public_key().to_bech32().expect("peer npub");
+        let stranger_pubkey = stranger_keys.public_key().to_hex();
+        let stranger_npub = stranger_keys
+            .public_key()
+            .to_bech32()
+            .expect("stranger npub");
+        let mut app = AppConfig::default();
+        app.networks[0].participants = vec![own_pubkey.clone(), peer_pubkey.clone()];
+        let now = 10_000;
+
+        let statuses = vec![
+            mesh_peer_status(
+                &peer_pubkey,
+                &peer_npub,
+                Some(" 198.51.100.9:51820 "),
+                Some("UDP"),
+                true,
+                Some(now - 5),
+            ),
+            mesh_peer_status(
+                &stranger_pubkey,
+                &stranger_npub,
+                Some("198.51.100.10:51820"),
+                Some("udp"),
+                true,
+                Some(now),
+            ),
+            mesh_peer_status(
+                &peer_pubkey,
+                &peer_npub,
+                Some("198.51.100.11:51820"),
+                Some("tcp"),
+                true,
+                Some(now),
+            ),
+            mesh_peer_status(
+                &peer_pubkey,
+                &peer_npub,
+                Some("198.51.100.12:51820"),
+                Some("udp"),
+                false,
+                Some(now),
+            ),
+            mesh_peer_status(
+                &own_pubkey,
+                &peer_npub,
+                Some("198.51.100.13:51820"),
+                Some("udp"),
+                true,
+                Some(now),
+            ),
+        ];
+
+        let cache = updated_fips_endpoint_cache_state(
+            None,
+            &app,
+            "test-network",
+            Some(&own_pubkey),
+            &statuses,
+            now,
+        )
+        .expect("cache should include observed peer endpoint");
+
+        assert_eq!(cache.peers.len(), 1);
+        assert_eq!(cache.peers[0].participant_pubkey, peer_pubkey);
+        assert_eq!(cache.peers[0].endpoint_npub.as_str(), peer_npub);
+        assert_eq!(cache.peers[0].transport_addr, "198.51.100.9:51820");
+        assert_eq!(cache.peers[0].transport_type, "udp");
+        assert_eq!(cache.peers[0].last_seen_at, now);
+        assert_eq!(cache.peers[0].packets_sent, 7);
+
+        assert_eq!(
+            cached_fips_peer_endpoints(Some(&cache), &app, "test-network", Some(&own_pubkey), now),
+            vec![(peer_npub.clone(), vec!["198.51.100.9:51820".to_string()])]
+        );
+        assert!(
+            cached_fips_peer_endpoints(Some(&cache), &app, "other-network", Some(&own_pubkey), now)
+                .is_empty()
+        );
+        assert!(
+            cached_fips_peer_endpoints(
+                Some(&cache),
+                &app,
+                "test-network",
+                Some(&own_pubkey),
+                now + FIPS_ENDPOINT_CACHE_MAX_AGE_SECS + 1
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn fips_tunnel_config_adds_cached_peer_endpoints_to_mesh_peers() {
+        let own_keys = Keys::generate();
+        let peer_keys = Keys::generate();
+        let own_pubkey = own_keys.public_key().to_hex();
+        let peer_pubkey = peer_keys.public_key().to_hex();
+        let peer_npub = peer_keys.public_key().to_bech32().expect("peer npub");
+        let mut app = AppConfig::default();
+        app.networks[0].participants = vec![own_pubkey.clone(), peer_pubkey];
+
+        let config = FipsPrivateTunnelConfig::from_app_with_cached_peer_endpoints(
+            &app,
+            "test-network",
+            "nvpn0",
+            &[],
+            Some(&own_pubkey),
+            vec![(
+                peer_npub.clone(),
+                vec![
+                    "198.51.100.9:51820".to_string(),
+                    "198.51.100.9:51820".to_string(),
+                ],
+            )],
+        )
+        .expect("FIPS tunnel config");
+
+        let peer = config
+            .endpoint_peers
+            .iter()
+            .find(|peer| peer.npub == peer_npub)
+            .expect("cached endpoint peer");
+        assert_eq!(peer.addresses, vec!["198.51.100.9:51820".to_string()]);
+        assert!(!peer.via_nostr);
     }
 
     #[tokio::test]

@@ -105,12 +105,12 @@ final class NativeCoreClient {
 }
 
 enum NativeActions {
-    static func connectSession() -> [String: Any] {
-        ["type": "connect_session"]
+    static func connectVpn() -> [String: Any] {
+        ["type": "connect_vpn"]
     }
 
-    static func disconnectSession() -> [String: Any] {
-        ["type": "disconnect_session"]
+    static func disconnectVpn() -> [String: Any] {
+        ["type": "disconnect_vpn"]
     }
 
     static func importInvite(_ invite: String) -> [String: Any] {

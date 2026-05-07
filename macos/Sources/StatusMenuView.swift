@@ -16,10 +16,10 @@ struct StatusMenuView: View {
     var body: some View {
         Button("Open Nostr VPN", action: openMainWindow)
         Divider()
-        Button(state.sessionActive ? "Disconnect VPN" : "Connect VPN") {
-            manager.toggleSession()
+        Button(state.vpnEnabled ? "Turn VPN Off" : "Turn VPN On") {
+            manager.toggleVpn()
         }
-        .disabled(manager.actionInFlight || !state.vpnSessionControlSupported)
+        .disabled(manager.actionInFlight || !state.vpnControlSupported)
         Button(state.advertiseExitNode ? "Stop Offering Exit" : "Offer Private Exit") {
             manager.setAdvertiseExitNode(!state.advertiseExitNode)
         }

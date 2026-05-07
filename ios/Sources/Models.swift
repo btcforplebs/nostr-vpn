@@ -6,10 +6,11 @@ struct AppState: Decodable {
     var appVersion = ""
     var platform = ""
     var mobile = true
-    var vpnSessionControlSupported = false
+    var vpnControlSupported = false
     var runtimeStatusDetail = ""
-    var sessionActive = false
-    var sessionStatus = "Disconnected"
+    var vpnEnabled = false
+    var vpnActive = false
+    var vpnStatus = "Disconnected"
     var daemonRunning = false
     var relayConnected = false
     var ownNpub = ""
@@ -40,8 +41,8 @@ struct AppState: Decodable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case rev, error, appVersion, platform, mobile, vpnSessionControlSupported
-        case runtimeStatusDetail, sessionActive, sessionStatus, daemonRunning, relayConnected
+        case rev, error, appVersion, platform, mobile, vpnControlSupported
+        case runtimeStatusDetail, vpnEnabled, vpnActive, vpnStatus, daemonRunning, relayConnected
         case ownNpub, nodeName, tunnelIp, endpoint, listenPort, activeNetworkInvite
         case connectedPeerCount, expectedPeerCount, meshReady, exitNode, advertiseExitNode
         case advertisedRoutes, magicDnsSuffix, magicDnsStatus, autoconnect
@@ -58,10 +59,11 @@ struct AppState: Decodable {
         appVersion = container.string(.appVersion)
         platform = container.string(.platform)
         mobile = container.bool(.mobile, default: true)
-        vpnSessionControlSupported = container.bool(.vpnSessionControlSupported)
+        vpnControlSupported = container.bool(.vpnControlSupported)
         runtimeStatusDetail = container.string(.runtimeStatusDetail)
-        sessionActive = container.bool(.sessionActive)
-        sessionStatus = container.string(.sessionStatus, default: "Disconnected")
+        vpnEnabled = container.bool(.vpnEnabled)
+        vpnActive = container.bool(.vpnActive)
+        vpnStatus = container.string(.vpnStatus, default: "Disconnected")
         daemonRunning = container.bool(.daemonRunning)
         relayConnected = container.bool(.relayConnected)
         ownNpub = container.string(.ownNpub)

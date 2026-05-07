@@ -63,7 +63,7 @@ struct RootView: View {
         HStack(spacing: 18) {
             headerIdentity
             Spacer(minLength: 0)
-            headerSessionControl
+            headerVpnControl
         }
         .padding(.leading, 104)
         .padding(.trailing, 18)
@@ -79,27 +79,27 @@ struct RootView: View {
             .frame(width: 180, alignment: .leading)
     }
 
-    private var headerSessionControl: some View {
+    private var headerVpnControl: some View {
         HStack(spacing: 10) {
-            Text(headerSessionStatusText)
+            Text(headerVpnStatusText)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(width: 96, alignment: .trailing)
-            headerSessionSwitch
+            headerVpnSwitch
         }
-        .help(state.sessionActive ? "Disconnect VPN" : "Connect VPN")
+        .help(manager.vpnSwitchEnabled ? "Turn VPN off" : "Turn VPN on")
     }
 
-    private var headerSessionSwitch: some View {
-        let disabled = manager.actionInFlight || !state.vpnSessionControlSupported
+    private var headerVpnSwitch: some View {
+        let disabled = manager.actionInFlight || !state.vpnControlSupported
         return Button {
-            manager.toggleSession()
+            manager.toggleVpn()
         } label: {
-            ZStack(alignment: state.sessionActive ? .trailing : .leading) {
+            ZStack(alignment: manager.vpnSwitchEnabled ? .trailing : .leading) {
                 Capsule()
-                    .fill(state.sessionActive ? Color.accentColor : Color(nsColor: .tertiaryLabelColor).opacity(0.45))
+                    .fill(manager.vpnSwitchEnabled ? Color.accentColor : Color(nsColor: .tertiaryLabelColor).opacity(0.45))
                     .frame(width: 52, height: 26)
                 Circle()
                     .fill(Color.white)
@@ -112,8 +112,8 @@ struct RootView: View {
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-        .accessibilityLabel(state.sessionActive ? "Disconnect VPN" : "Connect VPN")
-        .accessibilityValue(state.sessionActive ? "On" : "Off")
+        .accessibilityLabel(manager.vpnSwitchEnabled ? "Turn VPN off" : "Turn VPN on")
+        .accessibilityValue(manager.vpnSwitchEnabled ? "On" : "Off")
     }
 
     private var sidebar: some View {
@@ -1161,12 +1161,15 @@ struct RootView: View {
         network.name.isEmpty ? "Network" : network.name
     }
 
-    private var headerSessionStatusText: String {
+    private var headerVpnStatusText: String {
         if manager.actionInFlight, !manager.actionStatus.isEmpty {
             return manager.actionStatus
         }
-        if state.sessionActive {
-            return state.sessionStatus.isEmpty ? "VPN on" : state.sessionStatus
+        if state.vpnActive {
+            return state.vpnStatus.isEmpty ? "VPN on" : state.vpnStatus
+        }
+        if state.vpnEnabled {
+            return state.vpnStatus.isEmpty ? "Turning on" : state.vpnStatus
         }
         if manager.serviceRepairRecommended {
             return "Service needs repair"

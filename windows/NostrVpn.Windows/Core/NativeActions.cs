@@ -3,8 +3,8 @@ namespace NostrVpn.Windows.Core;
 public static class NativeActions
 {
     public static string Tick() => AppCoreClient.Action(new { type = "tick" });
-    public static string ConnectSession() => AppCoreClient.Action(new { type = "connect_session" });
-    public static string DisconnectSession() => AppCoreClient.Action(new { type = "disconnect_session" });
+    public static string ConnectVpn() => AppCoreClient.Action(new { type = "connect_vpn" });
+    public static string DisconnectVpn() => AppCoreClient.Action(new { type = "disconnect_vpn" });
     public static string InstallCli() => AppCoreClient.Action(new { type = "install_cli" });
     public static string InstallSystemService() => AppCoreClient.Action(new { type = "install_system_service" });
     public static string EnableSystemService() => AppCoreClient.Action(new { type = "enable_system_service" });

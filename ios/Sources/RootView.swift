@@ -9,7 +9,7 @@ struct RootView: View {
                 DevicesPage(model: model)
                     .navigationTitle("Devices")
             }
-            .tabItem { Label("Devices", systemImage: "desktopcomputer") }
+            .tabItem { Label("Devices", systemImage: "circle.grid.2x2.fill") }
 
             NavigationStack {
                 SharePage(model: model)
@@ -18,10 +18,10 @@ struct RootView: View {
             .tabItem { Label("Share", systemImage: "qrcode") }
 
             NavigationStack {
-                RoutingPage(model: model)
-                    .navigationTitle("Routing")
+                ExitNodesPage(model: model)
+                    .navigationTitle("Exit Nodes")
             }
-            .tabItem { Label("Routing", systemImage: "arrow.triangle.branch") }
+            .tabItem { Label("Exit Nodes", systemImage: "arrow.triangle.branch") }
 
             NavigationStack {
                 SettingsPage(model: model)
@@ -116,9 +116,8 @@ private struct SharePage: View {
     }
 }
 
-private struct RoutingPage: View {
+private struct ExitNodesPage: View {
     @ObservedObject var model: AppModel
-    @State private var routes = ""
 
     var body: some View {
         ScrollView {
@@ -152,20 +151,6 @@ private struct RoutingPage: View {
                             )
                         }
                     ))
-                    TextField("Routes", text: $routes)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .textFieldStyle(.roundedBorder)
-                        .onAppear {
-                            routes = model.state.advertisedRoutes.joined(separator: ", ")
-                        }
-                    Button("Save") {
-                        model.dispatch(
-                            NativeActions.updateSettings(["advertisedRoutes": routes]),
-                            status: "Saving routes"
-                        )
-                    }
-                    .buttonStyle(.bordered)
                 }
             }
             .padding()
@@ -198,18 +183,13 @@ private struct HeroCard: View {
         AppCard {
             HStack(spacing: 14) {
                 Circle()
-                    .fill(AppColors.accent.opacity(0.12))
-                    .frame(width: 58, height: 58)
-                    .overlay(
-                        Image(systemName: model.state.meshReady ? "checkmark" : "power")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(model.state.sessionActive ? AppColors.ok : AppColors.accent)
-                    )
+                    .fill(model.state.vpnActive ? AppColors.ok : Color.gray.opacity(0.35))
+                    .frame(width: 12, height: 12)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.activeNetwork?.displayName ?? "Nostr VPN")
                         .font(.title.bold())
                         .lineLimit(1)
-                    Text(model.state.sessionStatus)
+                    Text(model.state.vpnStatus)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Text(peerSummary)
@@ -217,11 +197,11 @@ private struct HeroCard: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(model.state.sessionActive ? "Connected" : "Connect") {
-                    model.toggleSession()
+                Button(model.state.vpnEnabled ? "On" : "Off") {
+                    model.toggleVpn()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.actionInFlight || !model.state.vpnSessionControlSupported)
+                .disabled(model.actionInFlight || !model.state.vpnControlSupported)
             }
         }
     }

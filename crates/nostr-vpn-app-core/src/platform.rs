@@ -14,7 +14,7 @@ pub enum RuntimePlatform {
 pub struct NativeRuntimeCapabilities {
     pub platform: String,
     pub mobile: bool,
-    pub vpn_session_control_supported: bool,
+    pub vpn_control_supported: bool,
     pub cli_install_supported: bool,
     pub startup_settings_supported: bool,
     pub tray_behavior_supported: bool,
@@ -49,7 +49,7 @@ pub fn runtime_capabilities_for(
         RuntimePlatform::Desktop => NativeRuntimeCapabilities {
             platform: "desktop".to_string(),
             mobile: false,
-            vpn_session_control_supported: true,
+            vpn_control_supported: true,
             cli_install_supported: true,
             startup_settings_supported: true,
             tray_behavior_supported: true,
@@ -58,7 +58,7 @@ pub fn runtime_capabilities_for(
         RuntimePlatform::Android => NativeRuntimeCapabilities {
             platform: "android".to_string(),
             mobile: true,
-            vpn_session_control_supported: true,
+            vpn_control_supported: true,
             cli_install_supported: false,
             startup_settings_supported: false,
             tray_behavior_supported: false,
@@ -67,7 +67,7 @@ pub fn runtime_capabilities_for(
         RuntimePlatform::Ios => NativeRuntimeCapabilities {
             platform: "ios".to_string(),
             mobile: true,
-            vpn_session_control_supported: !ios_simulator,
+            vpn_control_supported: !ios_simulator,
             cli_install_supported: false,
             startup_settings_supported: false,
             tray_behavior_supported: false,
@@ -96,11 +96,11 @@ mod tests {
     }
 
     #[test]
-    fn ios_simulator_disables_vpn_session_control() {
+    fn ios_simulator_disables_vpn_control() {
         let capabilities = runtime_capabilities_for(RuntimePlatform::Ios, true);
 
         assert!(capabilities.mobile);
-        assert!(!capabilities.vpn_session_control_supported);
+        assert!(!capabilities.vpn_control_supported);
         assert!(capabilities.runtime_status_detail.contains("iOS Simulator"));
     }
 }

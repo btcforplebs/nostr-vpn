@@ -104,9 +104,10 @@ struct NativeAppRuntime {
     startup_error: Option<String>,
     last_error: String,
     daemon_running: bool,
-    session_active: bool,
+    vpn_enabled: bool,
+    vpn_active: bool,
     relay_connected: bool,
-    session_status: String,
+    vpn_status: String,
     daemon_state: Option<DaemonRuntimeState>,
     service_supported: bool,
     service_enablement_supported: bool,
@@ -181,9 +182,10 @@ impl NativeAppRuntime {
             startup_error: None,
             last_error: String::new(),
             daemon_running: false,
-            session_active: false,
+            vpn_enabled: false,
+            vpn_active: false,
             relay_connected: false,
-            session_status: "Disconnected".to_string(),
+            vpn_status: "Disconnected".to_string(),
             daemon_state: None,
             service_supported: !capabilities.mobile && desktop_service_supported(),
             service_enablement_supported: !capabilities.mobile && desktop_service_supported(),
@@ -217,9 +219,10 @@ impl NativeAppRuntime {
             startup_error: Some(error.clone()),
             last_error: error,
             daemon_running: false,
-            session_active: false,
+            vpn_enabled: false,
+            vpn_active: false,
             relay_connected: false,
-            session_status: "Startup failed".to_string(),
+            vpn_status: "Startup failed".to_string(),
             daemon_state: None,
             service_supported: desktop_service_supported(),
             service_enablement_supported: desktop_service_supported(),
@@ -240,15 +243,19 @@ impl NativeAppRuntime {
         let own_pubkey_hex = self.config.own_nostr_pubkey_hex().unwrap_or_default();
         let active_network = self.config.active_network();
         let daemon_state = self.daemon_state.as_ref();
-        let session_runtime_active = self
+        let vpn_enabled = self
             .daemon_state
             .as_ref()
-            .map_or(self.session_active, |state| state.session_active);
+            .map_or(self.vpn_enabled, |state| state.vpn_enabled);
+        let vpn_active = self
+            .daemon_state
+            .as_ref()
+            .map_or(self.vpn_active, |state| state.vpn_active);
         let expected_peer_count = daemon_state.map_or_else(
             || remote_network_participant_count(active_network, &own_pubkey_hex),
             |state| state.expected_peer_count,
         );
-        let connected_peer_count = if session_runtime_active {
+        let connected_peer_count = if vpn_active {
             daemon_state.map_or(0, |state| state.connected_peer_count)
         } else {
             0
@@ -273,7 +280,7 @@ impl NativeAppRuntime {
             rev: self.rev,
             platform: capabilities.platform,
             mobile: capabilities.mobile,
-            vpn_session_control_supported: capabilities.vpn_session_control_supported,
+            vpn_control_supported: capabilities.vpn_control_supported,
             cli_install_supported: capabilities.cli_install_supported,
             startup_settings_supported: capabilities.startup_settings_supported,
             tray_behavior_supported: capabilities.tray_behavior_supported,
@@ -297,9 +304,10 @@ impl NativeAppRuntime {
             service_running: self.service_running,
             service_status_detail: self.service_status_detail.clone(),
             daemon_running: self.daemon_running,
-            session_active: self.session_active,
+            vpn_enabled,
+            vpn_active,
             relay_connected: self.relay_connected,
-            session_status: self.session_status.clone(),
+            vpn_status: self.vpn_status.clone(),
             daemon_binary_version: daemon_state
                 .map(|state| state.binary_version.clone())
                 .unwrap_or_default(),
@@ -331,12 +339,11 @@ impl NativeAppRuntime {
             close_to_tray_on_close: self.config.close_to_tray_on_close,
             connected_peer_count: connected_peer_count as u64,
             expected_peer_count: expected_peer_count as u64,
-            mesh_ready: session_runtime_active
-                && daemon_state.is_some_and(|state| state.mesh_ready),
+            mesh_ready: vpn_active && daemon_state.is_some_and(|state| state.mesh_ready),
             health,
             network,
             port_mapping,
-            networks: self.network_states(&own_pubkey_hex, session_runtime_active),
+            networks: self.network_states(&own_pubkey_hex, vpn_active),
             relays: self.relay_states(),
             relay_summary: self.relay_summary(),
             lan_peers: self.lan_peer_states(),
@@ -362,8 +369,8 @@ impl NativeAppRuntime {
                     self.refresh_status()
                 }
             }
-            NativeAppAction::ConnectSession => self.connect_session(),
-            NativeAppAction::DisconnectSession => self.disconnect_session(),
+            NativeAppAction::ConnectVpn => self.connect_vpn(),
+            NativeAppAction::DisconnectVpn => self.disconnect_vpn(),
             NativeAppAction::InstallCli => {
                 let output = self.run_nvpn_elevated(["install-cli", "--force"])?;
                 ensure_success("nvpn install-cli", &output)
@@ -480,8 +487,8 @@ impl NativeAppRuntime {
             }
             NativeAppAction::ImportNetworkInvite { invite } => {
                 self.import_network_invite(&invite)?;
-                if !self.session_active {
-                    self.connect_session()?;
+                if !self.vpn_enabled {
+                    self.connect_vpn()?;
                 }
                 Ok(())
             }
@@ -563,8 +570,8 @@ impl NativeAppRuntime {
             requested_at: unix_timestamp(),
         });
         self.save_reload_and_refresh()?;
-        if !self.daemon_running {
-            self.connect_session()?;
+        if !self.vpn_enabled {
+            self.connect_vpn()?;
         }
         Ok(())
     }
@@ -594,8 +601,8 @@ impl NativeAppRuntime {
                 .retain(|pending| pending.requester != requester);
         }
         self.save_reload_and_refresh()?;
-        if !self.daemon_running {
-            self.connect_session()?;
+        if !self.vpn_enabled {
+            self.connect_vpn()?;
         }
         Ok(())
     }
@@ -764,13 +771,14 @@ impl NativeAppRuntime {
         Ok(())
     }
 
-    fn connect_session(&mut self) -> Result<()> {
-        self.save_config()?;
+    fn connect_vpn(&mut self) -> Result<()> {
+        self.vpn_enabled = true;
         if self.mobile_runtime {
-            self.session_active = true;
+            self.vpn_enabled = true;
+            self.vpn_active = true;
             self.daemon_running = true;
             self.relay_connected = false;
-            self.session_status = "Mobile tunnel pending".to_string();
+            self.vpn_status = "Mobile tunnel pending".to_string();
             return self.refresh_mobile_status();
         }
         let _ = self.refresh_status();
@@ -790,12 +798,14 @@ impl NativeAppRuntime {
         self.refresh_status()
     }
 
-    fn disconnect_session(&mut self) -> Result<()> {
+    fn disconnect_vpn(&mut self) -> Result<()> {
+        self.vpn_enabled = false;
         if self.mobile_runtime {
-            self.session_active = false;
+            self.vpn_enabled = false;
+            self.vpn_active = false;
             self.daemon_running = false;
             self.relay_connected = false;
-            self.session_status = "Disconnected".to_string();
+            self.vpn_status = "Disconnected".to_string();
             return self.refresh_mobile_status();
         }
         let output = self.run_nvpn(["pause", "--config", self.config_path_str()?])?;
@@ -815,17 +825,19 @@ impl NativeAppRuntime {
         self.service_running = false;
         self.service_binary_version.clear();
         self.service_status_detail = "Background service unsupported on mobile".to_string();
-        if self.session_active {
+        if self.vpn_enabled {
             self.daemon_running = true;
-            if self.session_status.trim().is_empty()
-                || self.session_status == "CLI unavailable"
-                || self.session_status.starts_with("nvpn CLI binary not found")
+            self.vpn_active = true;
+            if self.vpn_status.trim().is_empty()
+                || self.vpn_status == "CLI unavailable"
+                || self.vpn_status.starts_with("nvpn CLI binary not found")
             {
-                self.session_status = "Mobile tunnel pending".to_string();
+                self.vpn_status = "Mobile tunnel pending".to_string();
             }
         } else {
             self.daemon_running = false;
-            self.session_status = "Disconnected".to_string();
+            self.vpn_active = false;
+            self.vpn_status = "Disconnected".to_string();
         }
         Ok(())
     }
@@ -851,15 +863,19 @@ impl NativeAppRuntime {
                     .context("failed to parse `nvpn status --json` output")?;
                 self.daemon_state = parsed.daemon.state;
                 self.daemon_running = parsed.daemon.running;
-                self.session_active = self
+                self.vpn_enabled = self
                     .daemon_state
                     .as_ref()
-                    .map_or(parsed.daemon.running, |state| state.session_active);
+                    .map_or(parsed.daemon.running, |state| state.vpn_enabled);
+                self.vpn_active = self
+                    .daemon_state
+                    .as_ref()
+                    .map_or(parsed.daemon.running, |state| state.vpn_active);
                 self.relay_connected = self
                     .daemon_state
                     .as_ref()
                     .is_some_and(|state| state.relay_connected);
-                self.session_status = self.daemon_state.as_ref().map_or_else(
+                self.vpn_status = self.daemon_state.as_ref().map_or_else(
                     || {
                         if parsed.daemon.running {
                             "Daemon running".to_string()
@@ -867,24 +883,26 @@ impl NativeAppRuntime {
                             "Disconnected".to_string()
                         }
                     },
-                    |state| state.session_status.clone(),
+                    |state| state.vpn_status.clone(),
                 );
                 Ok(())
             }
             Ok(output) => {
                 self.daemon_state = None;
                 self.daemon_running = false;
-                self.session_active = false;
+                self.vpn_enabled = false;
+                self.vpn_active = false;
                 self.relay_connected = false;
-                self.session_status = "Daemon status unavailable".to_string();
+                self.vpn_status = "Daemon status unavailable".to_string();
                 Err(command_failure("nvpn status", &output))
             }
             Err(error) => {
                 self.daemon_state = None;
                 self.daemon_running = false;
-                self.session_active = false;
+                self.vpn_enabled = false;
+                self.vpn_active = false;
                 self.relay_connected = false;
-                self.session_status = "CLI unavailable".to_string();
+                self.vpn_status = "CLI unavailable".to_string();
                 Err(error)
             }
         }
@@ -917,15 +935,11 @@ impl NativeAppRuntime {
         Ok(())
     }
 
-    fn network_states(
-        &self,
-        own_pubkey_hex: &str,
-        session_runtime_active: bool,
-    ) -> Vec<NativeNetworkState> {
+    fn network_states(&self, own_pubkey_hex: &str, vpn_active: bool) -> Vec<NativeNetworkState> {
         self.config
             .networks
             .iter()
-            .map(|network| self.network_state(network, own_pubkey_hex, session_runtime_active))
+            .map(|network| self.network_state(network, own_pubkey_hex, vpn_active))
             .collect()
     }
 
@@ -933,7 +947,7 @@ impl NativeAppRuntime {
         &self,
         network: &NetworkConfig,
         own_pubkey_hex: &str,
-        session_runtime_active: bool,
+        vpn_active: bool,
     ) -> NativeNetworkState {
         let mut admins = network
             .admins
@@ -954,7 +968,7 @@ impl NativeAppRuntime {
         let participants = participant_keys
             .iter()
             .map(|participant| {
-                self.participant_state(participant, network, own_pubkey_hex, session_runtime_active)
+                self.participant_state(participant, network, own_pubkey_hex, vpn_active)
             })
             .collect::<Vec<_>>();
         let online_count = participants
@@ -1000,9 +1014,9 @@ impl NativeAppRuntime {
         participant: &str,
         network: &NetworkConfig,
         own_pubkey_hex: &str,
-        session_runtime_active: bool,
+        vpn_active: bool,
     ) -> NativeParticipantState {
-        let daemon_peer = session_runtime_active.then(|| ()).and_then(|()| {
+        let daemon_peer = vpn_active.then(|| ()).and_then(|()| {
             self.daemon_state.as_ref().and_then(|state| {
                 state
                     .peers
@@ -1011,8 +1025,7 @@ impl NativeAppRuntime {
             })
         });
         let is_local = participant == own_pubkey_hex;
-        let reachable =
-            session_runtime_active && (is_local || daemon_peer.is_some_and(|peer| peer.reachable));
+        let reachable = vpn_active && (is_local || daemon_peer.is_some_and(|peer| peer.reachable));
         let magic_dns_alias = if is_local {
             self.config.self_magic_dns_label().unwrap_or_default()
         } else {
@@ -1045,10 +1058,8 @@ impl NativeAppRuntime {
         } else {
             peer_offers_exit_node(&advertised_routes)
         };
-        let peer_state =
-            self.peer_state_label(participant, daemon_peer, is_local, session_runtime_active);
-        let presence_state =
-            Self::peer_presence_label(daemon_peer, is_local, session_runtime_active);
+        let peer_state = self.peer_state_label(participant, daemon_peer, is_local, vpn_active);
+        let presence_state = Self::peer_presence_label(daemon_peer, is_local, vpn_active);
 
         NativeParticipantState {
             npub: to_npub(participant),
@@ -1091,16 +1102,16 @@ impl NativeAppRuntime {
             .iter()
             .map(|relay| NativeRelayState {
                 url: relay.clone(),
-                state: if self.session_active && self.relay_connected {
+                state: if self.vpn_active && self.relay_connected {
                     "up".to_string()
-                } else if self.session_active {
+                } else if self.vpn_active {
                     "down".to_string()
                 } else {
                     "unknown".to_string()
                 },
-                status_text: if self.session_active && self.relay_connected {
+                status_text: if self.vpn_active && self.relay_connected {
                     "connected".to_string()
-                } else if self.session_active {
+                } else if self.vpn_active {
                     "disconnected".to_string()
                 } else {
                     "not checked".to_string()
@@ -1190,7 +1201,7 @@ impl NativeAppRuntime {
         if self.config.magic_dns_suffix.trim().is_empty() {
             return "DNS disabled".to_string();
         }
-        if self.session_active {
+        if self.vpn_active {
             format!("Serving .{} names", self.config.magic_dns_suffix)
         } else {
             "DNS disabled (VPN off)".to_string()
@@ -1202,9 +1213,9 @@ impl NativeAppRuntime {
         participant: &str,
         peer: Option<&DaemonPeerState>,
         is_local: bool,
-        session_runtime_active: bool,
+        vpn_active: bool,
     ) -> String {
-        if !session_runtime_active {
+        if !vpn_active {
             return "off".to_string();
         }
         if is_local {
@@ -1236,9 +1247,9 @@ impl NativeAppRuntime {
     fn peer_presence_label(
         peer: Option<&DaemonPeerState>,
         is_local: bool,
-        session_runtime_active: bool,
+        vpn_active: bool,
     ) -> String {
-        if !session_runtime_active {
+        if !vpn_active {
             return "off".to_string();
         }
         if is_local {
@@ -1354,7 +1365,7 @@ impl NativeAppRuntime {
         let error = error.into();
         self.last_error.clone_from(&error);
         if !error.trim().is_empty() {
-            self.session_status = error;
+            self.vpn_status = error;
         }
     }
 }
@@ -1762,7 +1773,7 @@ mod tests {
     }
 
     #[test]
-    fn native_state_hides_reachable_peers_when_session_is_paused() {
+    fn native_state_hides_reachable_peers_when_vpn_is_paused() {
         let error = anyhow!("boom");
         let mut runtime = NativeAppRuntime::from_startup_error(&error);
         let own_pubkey = runtime
@@ -1773,9 +1784,11 @@ mod tests {
         runtime.config.networks[0].admins = vec![own_pubkey.clone()];
         runtime.config.networks[0].participants = vec![peer_pubkey.to_string()];
         runtime.daemon_running = true;
-        runtime.session_active = false;
+        runtime.vpn_enabled = false;
+        runtime.vpn_active = false;
         runtime.daemon_state = Some(DaemonRuntimeState {
-            session_active: false,
+            vpn_enabled: false,
+            vpn_active: false,
             expected_peer_count: 1,
             connected_peer_count: 1,
             peers: vec![DaemonPeerState {
@@ -1790,7 +1803,7 @@ mod tests {
         let state = runtime.state();
         let network = &state.networks[0];
 
-        assert!(!state.session_active);
+        assert!(!state.vpn_active);
         assert_eq!(state.connected_peer_count, 0);
         assert_eq!(network.online_count, 0);
         assert!(
@@ -1803,7 +1816,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn connect_session_resumes_running_daemon_without_elevated_start() {
+    fn connect_vpn_resumes_running_daemon_without_elevated_start() {
         use std::os::unix::fs::PermissionsExt;
 
         let nonce = SystemTime::now()
@@ -1830,7 +1843,7 @@ JSON
 fi
 if [ "$1" = "status" ]; then
   cat <<'JSON'
-{{"daemon":{{"running":true,"state":{{"updated_at":1,"binary_version":"test","local_endpoint":"","advertised_endpoint":"","listen_port":0,"session_active":false,"relay_connected":false,"session_status":"Paused","expected_peer_count":0,"connected_peer_count":0,"mesh_ready":false,"peers":[]}}}}}}
+{{"daemon":{{"running":true,"state":{{"updated_at":1,"binary_version":"test","local_endpoint":"","advertised_endpoint":"","listen_port":0,"vpn_enabled":false,"vpn_active":false,"relay_connected":false,"vpn_status":"Paused","expected_peer_count":0,"connected_peer_count":0,"mesh_ready":false,"peers":[]}}}}}}
 JSON
   exit 0
 fi
@@ -1858,7 +1871,7 @@ exit 0
         runtime.config_path = dir.join("config.toml");
         runtime.nvpn_bin = Some(script_path);
 
-        runtime.dispatch(NativeAppAction::ConnectSession);
+        runtime.dispatch(NativeAppAction::ConnectVpn);
 
         let calls = fs::read_to_string(&calls_path).expect("read fake nvpn calls");
         assert!(calls.contains("resume --config"));

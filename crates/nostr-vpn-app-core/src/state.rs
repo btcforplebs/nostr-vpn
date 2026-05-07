@@ -25,12 +25,14 @@ pub struct DaemonRuntimeState {
     pub advertised_endpoint: String,
     #[serde(default, alias = "listen_port")]
     pub listen_port: u16,
-    #[serde(alias = "session_active")]
-    pub session_active: bool,
+    #[serde(alias = "vpn_enabled")]
+    pub vpn_enabled: bool,
+    #[serde(alias = "vpn_active")]
+    pub vpn_active: bool,
     #[serde(alias = "relay_connected")]
     pub relay_connected: bool,
-    #[serde(alias = "session_status")]
-    pub session_status: String,
+    #[serde(alias = "vpn_status")]
+    pub vpn_status: String,
     #[serde(alias = "expected_peer_count")]
     pub expected_peer_count: usize,
     #[serde(alias = "connected_peer_count")]
@@ -181,13 +183,14 @@ pub struct LanPeerView {
 pub struct UiState {
     pub platform: String,
     pub mobile: bool,
-    pub vpn_session_control_supported: bool,
+    pub vpn_control_supported: bool,
     pub cli_install_supported: bool,
     pub startup_settings_supported: bool,
     pub tray_behavior_supported: bool,
     pub runtime_status_detail: String,
     pub daemon_running: bool,
-    pub session_active: bool,
+    pub vpn_enabled: bool,
+    pub vpn_active: bool,
     pub relay_connected: bool,
     pub cli_installed: bool,
     pub service_supported: bool,
@@ -196,7 +199,7 @@ pub struct UiState {
     pub service_disabled: bool,
     pub service_running: bool,
     pub service_status_detail: String,
-    pub session_status: String,
+    pub vpn_status: String,
     pub app_version: String,
     pub daemon_binary_version: String,
     pub service_binary_version: String,
@@ -292,7 +295,8 @@ pub enum TrayMenuItemSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrayRuntimeState {
-    pub session_active: bool,
+    pub vpn_enabled: bool,
+    pub vpn_active: bool,
     pub service_setup_required: bool,
     pub service_enable_required: bool,
     pub status_text: String,
@@ -306,7 +310,8 @@ pub struct TrayRuntimeState {
 impl Default for TrayRuntimeState {
     fn default() -> Self {
         Self {
-            session_active: false,
+            vpn_active: false,
+            vpn_enabled: false,
             service_setup_required: false,
             service_enable_required: false,
             status_text: "Disconnected".to_string(),
@@ -326,7 +331,7 @@ mod tests {
     #[test]
     fn ui_state_serializes_current_frontend_field_names() {
         let state = UiState {
-            vpn_session_control_supported: true,
+            vpn_control_supported: true,
             own_npub: "npub1example".to_string(),
             relay_summary: RelaySummary {
                 unknown: 3,
@@ -336,7 +341,7 @@ mod tests {
         };
 
         let value = serde_json::to_value(state).expect("serialize state");
-        assert_eq!(value["vpnSessionControlSupported"], true);
+        assert_eq!(value["vpnControlSupported"], true);
         assert_eq!(value["ownNpub"], "npub1example");
         assert_eq!(value["relaySummary"]["unknown"], 3);
     }
@@ -361,9 +366,10 @@ mod tests {
             "local_endpoint": "89.27.103.157:51820",
             "advertised_endpoint": "89.27.103.157:51820",
             "listen_port": 51820,
-            "session_active": true,
+            "vpn_enabled": true,
+            "vpn_active": true,
             "relay_connected": true,
-            "session_status": "Running",
+            "vpn_status": "Running",
             "expected_peer_count": 1,
             "connected_peer_count": 1,
             "mesh_ready": true,
@@ -392,6 +398,7 @@ mod tests {
 
         let state = serde_json::from_str::<DaemonRuntimeState>(json).expect("parse daemon state");
 
+        assert!(state.vpn_enabled);
         assert_eq!(state.connected_peer_count, 1);
         assert_eq!(state.port_mapping.active_protocol, None);
         assert_eq!(state.peers[0].runtime_endpoint.as_deref(), Some("fips"));

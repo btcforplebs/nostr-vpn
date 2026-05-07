@@ -104,7 +104,7 @@ const MENU_XML: &str = r#"
 #[derive(Debug, Clone)]
 pub enum TrayCommand {
     ShowWindow,
-    ToggleSession,
+    ToggleVpn,
     ToggleExitOffer,
     CopyThisDevice,
     CopyPeer(String),
@@ -303,7 +303,7 @@ fn register_sni_object(
                         let _ = sender.send(TrayCommand::ShowWindow);
                     }
                     "SecondaryActivate" => {
-                        let _ = sender.send(TrayCommand::ToggleSession);
+                        let _ = sender.send(TrayCommand::ToggleVpn);
                     }
                     _ => {}
                 }
@@ -424,13 +424,13 @@ fn build_menu(state: &NativeAppState) -> MenuNode {
         separator(2),
         item(
             3,
-            if state.session_active {
-                "Disconnect VPN"
+            if state.vpn_enabled {
+                "Turn VPN Off"
             } else {
-                "Connect VPN"
+                "Turn VPN On"
             },
-            state.vpn_session_control_supported,
-            TrayCommand::ToggleSession,
+            state.vpn_control_supported,
+            TrayCommand::ToggleVpn,
         ),
         item(
             4,
@@ -637,20 +637,20 @@ fn participant_menu_title(participant: &NativeParticipantState) -> String {
 }
 
 fn tray_status(state: &NativeAppState) -> String {
-    if state.session_active {
+    if state.vpn_active {
         format!(
             "{} of {} devices connected",
             state.connected_peer_count, state.expected_peer_count
         )
-    } else if !state.session_status.trim().is_empty() {
-        state.session_status.clone()
+    } else if !state.vpn_status.trim().is_empty() {
+        state.vpn_status.clone()
     } else {
         "Disconnected".to_string()
     }
 }
 
 fn sni_status(state: &NativeAppState) -> &'static str {
-    if state.session_active {
+    if state.vpn_enabled {
         "Active"
     } else {
         "Passive"

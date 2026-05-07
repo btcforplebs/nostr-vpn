@@ -44,13 +44,14 @@ pub(crate) fn build_ui_state(state: &ServerState) -> Result<UiState> {
     let daemon_state = daemon
         .as_ref()
         .and_then(|status| status.daemon.state.as_ref());
-    let session_active = daemon_state.is_some_and(|value| value.session_active);
+    let vpn_active = daemon_state.is_some_and(|value| value.vpn_active);
+    let vpn_enabled = daemon_state.is_some_and(|value| value.vpn_enabled);
     let relay_connected = daemon_state.is_some_and(|value| value.relay_connected);
     let own_pubkey_hex = config.own_nostr_pubkey_hex().unwrap_or_default();
     let own_npub = to_npub(&own_pubkey_hex);
-    let network_runtime_views = build_network_views(&config, daemon_state, session_active);
+    let network_runtime_views = build_network_views(&config, daemon_state, vpn_active);
     let networks = network_runtime_views.networks;
-    let relays = relay_views(&config, session_active, relay_connected);
+    let relays = relay_views(&config, vpn_active, relay_connected);
     let relay_summary = relay_summary(&relays);
     let fallback_expected_peer_count = network_runtime_views.expected_peer_count;
     let fallback_connected_peer_count = network_runtime_views.connected_peer_count;
@@ -75,8 +76,8 @@ pub(crate) fn build_ui_state(state: &ServerState) -> Result<UiState> {
     let daemon_binary_version = daemon_state
         .map(|value| value.binary_version.clone())
         .unwrap_or_default();
-    let session_status = if let Some(runtime) = daemon_state {
-        runtime.session_status.clone()
+    let vpn_status = if let Some(runtime) = daemon_state {
+        runtime.vpn_status.clone()
     } else {
         let fallback = current_action_status(state);
         if fallback.trim().is_empty() {
@@ -91,7 +92,7 @@ pub(crate) fn build_ui_state(state: &ServerState) -> Result<UiState> {
             .trim()
             .trim_matches('.')
             .to_ascii_lowercase();
-        if !session_active {
+        if !vpn_active {
             "DNS disabled (VPN off)".to_string()
         } else if suffix.is_empty() {
             "MagicDNS suffix disabled".to_string()
@@ -105,13 +106,14 @@ pub(crate) fn build_ui_state(state: &ServerState) -> Result<UiState> {
     Ok(UiState {
         platform: "umbrel".to_string(),
         mobile: false,
-        vpn_session_control_supported: true,
+        vpn_control_supported: true,
         cli_install_supported: false,
         startup_settings_supported: false,
         tray_behavior_supported: false,
         runtime_status_detail: String::new(),
         daemon_running,
-        session_active,
+        vpn_enabled,
+        vpn_active,
         relay_connected,
         cli_installed: false,
         service_supported: false,
@@ -120,7 +122,7 @@ pub(crate) fn build_ui_state(state: &ServerState) -> Result<UiState> {
         service_disabled: false,
         service_running: false,
         service_status_detail: "Managed directly by the Umbrel app".to_string(),
-        session_status,
+        vpn_status,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         daemon_binary_version,
         config_path: state.config_path.display().to_string(),
@@ -158,13 +160,13 @@ pub(crate) fn build_ui_state(state: &ServerState) -> Result<UiState> {
     })
 }
 
-fn relay_views(config: &AppConfig, session_active: bool, relay_connected: bool) -> Vec<RelayView> {
+fn relay_views(config: &AppConfig, vpn_active: bool, relay_connected: bool) -> Vec<RelayView> {
     config
         .nostr
         .relays
         .iter()
         .map(|relay| {
-            let (state, status_text) = if !session_active {
+            let (state, status_text) = if !vpn_active {
                 ("unknown", "not checked")
             } else if relay_connected {
                 ("up", "connected")
@@ -201,7 +203,7 @@ fn clear_connected_join_requests(
     let Some(daemon_state) = daemon_status.and_then(|status| status.daemon.state.as_ref()) else {
         return Ok(());
     };
-    if !daemon_state.session_active {
+    if !daemon_state.vpn_active {
         return Ok(());
     }
 
