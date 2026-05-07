@@ -96,8 +96,16 @@ public sealed class TrayService : IDisposable
 
     private static Icon LoadIcon()
     {
-        var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "nostr-vpn.ico");
-        return File.Exists(iconPath) ? new Icon(iconPath) : SystemIcons.Application;
+        foreach (var filename in new[] { "nostr-vpn-tray.ico", "nostr-vpn.ico" })
+        {
+            var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", filename);
+            if (File.Exists(iconPath))
+            {
+                return new Icon(iconPath);
+            }
+        }
+
+        return SystemIcons.Application;
     }
 
     private static string TrayText(AppViewModel viewModel)

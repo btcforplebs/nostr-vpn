@@ -28,7 +28,7 @@ struct NostrVpnMacApp: App {
         .defaultSize(width: 1100, height: 760)
         .windowResizability(.automatic)
 
-        MenuBarExtra("Nostr VPN", systemImage: manager.state.sessionActive ? "network" : "network.slash") {
+        MenuBarExtra("Nostr VPN", image: "TrayIcon") {
             StatusMenuView(manager: manager) {
                 openWindow(id: "main")
                 appDelegate.showMainWindow()

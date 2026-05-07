@@ -658,8 +658,19 @@ fn sni_status(state: &NativeAppState) -> &'static str {
 }
 
 fn tray_icon() -> glib::Variant {
+    let icon_type = glib::VariantTy::new("(iiay)").expect("icon pixmap type");
+    glib::Variant::array_from_iter_with_type(
+        icon_type,
+        [
+            tray_icon_pixmap(include_bytes!("../resources/nostr-vpn-tray-24.png")),
+            tray_icon_pixmap(include_bytes!("../resources/nostr-vpn-tray-48.png")),
+        ],
+    )
+}
+
+fn tray_icon_pixmap(bytes: &[u8]) -> glib::Variant {
     let image = image::load_from_memory_with_format(
-        include_bytes!("../resources/nostr-vpn-64.png"),
+        bytes,
         image::ImageFormat::Png,
     )
     .expect("bundled tray icon is a valid PNG");
@@ -673,8 +684,7 @@ fn tray_icon() -> glib::Variant {
         (height as i32).to_variant(),
         data.to_variant(),
     ]);
-    let icon_type = glib::VariantTy::new("(iiay)").expect("icon pixmap type");
-    glib::Variant::array_from_iter_with_type(icon_type, [icon])
+    icon
 }
 
 #[cfg(test)]

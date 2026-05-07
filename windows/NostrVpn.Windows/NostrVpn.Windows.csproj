@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <Content Include="Assets\nostr-vpn.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\nostr-vpn-tray.ico" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\target\$(Configuration)\nostr_vpn_app_core.dll" Condition="Exists('..\..\target\$(Configuration)\nostr_vpn_app_core.dll')" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\target\$(Configuration)\nvpn.exe" Condition="Exists('..\..\target\$(Configuration)\nvpn.exe')" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
