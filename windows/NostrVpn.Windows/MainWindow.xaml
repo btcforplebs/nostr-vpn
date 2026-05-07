@@ -112,7 +112,7 @@
               </ItemsControl.ItemTemplate>
             </ItemsControl>
 
-            <Expander Header="Manage Devices" Margin="0,4,0,14">
+            <Expander Header="Manage Devices" Margin="0,4,0,14" Visibility="{Binding ActiveNetwork.LocalIsAdmin, Converter={StaticResource BoolToVisibility}}">
               <Border Style="{StaticResource Card}" Margin="0,8,0,0">
                 <StackPanel>
                   <Grid>

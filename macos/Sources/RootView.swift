@@ -379,7 +379,7 @@ struct RootView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if !isSelf(participant) {
+            if network.localIsAdmin && !isSelf(participant) {
                 deviceActionButtons(participant, network: network)
             }
         }
@@ -425,14 +425,14 @@ struct RootView: View {
                     systemImage: participant.isAdmin ? "star.slash" : "star"
                 )
             }
-            .disabled(!network.localIsAdmin || manager.actionInFlight)
+            .disabled(manager.actionInFlight)
             .help(participant.isAdmin ? "Remove admin" : "Make admin")
             Button(role: .destructive) {
                 manager.removeParticipant(networkId: network.id, npub: participant.npub)
             } label: {
                 Label("Remove", systemImage: "trash")
             }
-            .disabled(!network.localIsAdmin || isSelf(participant) || manager.actionInFlight)
+            .disabled(isSelf(participant) || manager.actionInFlight)
             .help("Remove device")
         }
         .controlSize(.small)

@@ -69,7 +69,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         ImportInviteCommand = new AsyncRelayCommand(_ => ImportInviteAsync(InviteInput), _ => !ActionInFlight && !string.IsNullOrWhiteSpace(InviteInput));
         ImportQrImageCommand = new AsyncRelayCommand(_ => ImportQrImageAsync(), _ => !ActionInFlight);
         ToggleLanPairingCommand = new AsyncRelayCommand(_ => DispatchAsync(State.LanPairingActive ? NativeActions.StopLanPairing() : NativeActions.StartLanPairing(), "Pairing"));
-        AddParticipantCommand = new AsyncRelayCommand(_ => AddParticipantAsync(), _ => !ActionInFlight && ActiveNetwork is not null && !string.IsNullOrWhiteSpace(ParticipantInput));
+        AddParticipantCommand = new AsyncRelayCommand(_ => AddParticipantAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(ParticipantInput));
         SaveNodeCommand = new AsyncRelayCommand(_ => SaveNodeAsync(), _ => !ActionInFlight);
         SaveRoutesCommand = new AsyncRelayCommand(_ => DispatchAsync(NativeActions.UpdateSettings(new SettingsPatch { AdvertisedRoutes = AdvertisedRoutes }), "Saving routes"));
         AddNetworkCommand = new AsyncRelayCommand(_ => AddNetworkAsync(), _ => !ActionInFlight && !string.IsNullOrWhiteSpace(NetworkNameInput));
@@ -331,13 +331,15 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public Task RemoveParticipantAsync(NativeParticipantState participant)
     {
         var network = ActiveNetwork;
-        return network is null ? Task.CompletedTask : DispatchAsync(NativeActions.RemoveParticipant(network.Id, participant.Npub), "Removing device");
+        return network?.LocalIsAdmin == true
+            ? DispatchAsync(NativeActions.RemoveParticipant(network.Id, participant.Npub), "Removing device")
+            : Task.CompletedTask;
     }
 
     public Task ToggleAdminAsync(NativeParticipantState participant)
     {
         var network = ActiveNetwork;
-        if (network is null)
+        if (network?.LocalIsAdmin != true)
         {
             return Task.CompletedTask;
         }
@@ -395,12 +397,16 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public Task AcceptJoinRequestAsync(NativeInboundJoinRequestState request)
     {
         var network = ActiveNetwork;
-        return network is null ? Task.CompletedTask : DispatchAsync(NativeActions.AcceptJoinRequest(network.Id, request.RequesterNpub), "Accepting join request");
+        return network?.LocalIsAdmin == true
+            ? DispatchAsync(NativeActions.AcceptJoinRequest(network.Id, request.RequesterNpub), "Accepting join request")
+            : Task.CompletedTask;
     }
 
     public Task SetParticipantAliasAsync(NativeParticipantState participant, string alias)
     {
-        return DispatchAsync(NativeActions.SetParticipantAlias(participant.Npub, alias.Trim()), "Saving alias");
+        return ActiveNetwork?.LocalIsAdmin == true
+            ? DispatchAsync(NativeActions.SetParticipantAlias(participant.Npub, alias.Trim()), "Saving alias")
+            : Task.CompletedTask;
     }
 
     public void CopyText(string value)
@@ -507,7 +513,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     private Task AddParticipantAsync()
     {
         var network = ActiveNetwork;
-        if (network is null)
+        if (network?.LocalIsAdmin != true)
         {
             return Task.CompletedTask;
         }
