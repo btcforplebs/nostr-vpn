@@ -46,6 +46,7 @@ info:
     @echo "  just e2e-connect"
     @echo "  just e2e-active-network"
     @echo "  just e2e-exit-node"
+    @echo "  just e2e-fips-routed-udp"
     @echo "  just e2e-nat"
     @echo "  just e2e-roster-admin"
 
@@ -82,6 +83,9 @@ build:
 
 linux-build:
     ./tools/run-linux cargo build
+
+linux-e2e-gui:
+    ./tools/run-linux ./scripts/e2e-smoke.sh
 
 windows-build:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-build.ps1
@@ -136,6 +140,9 @@ e2e-divergent-roster:
 
 e2e-exit-node:
     ./scripts/e2e-exit-node-docker.sh
+
+e2e-fips-routed-udp:
+    ./scripts/e2e-fips-routed-udp-docker.sh
 
 e2e-nat:
     ./scripts/e2e-nat-docker.sh

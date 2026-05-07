@@ -8,6 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
     pkg-config \
+    clang \
+    libclang-dev \
+    libdbus-1-dev \
     libssl-dev \
     libgtk-4-dev \
     libadwaita-1-dev \

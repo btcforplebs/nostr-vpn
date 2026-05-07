@@ -656,6 +656,8 @@ struct SetArgs {
     autoconnect: Option<bool>,
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     fips_advertise_endpoint: Option<bool>,
+    #[arg(long = "fips-peer-endpoint")]
+    fips_peer_endpoints: Vec<String>,
     #[arg(long)]
     json: bool,
 }
@@ -1177,6 +1179,9 @@ async fn run_command(command: Command) -> Result<()> {
             }
             if let Some(value) = args.fips_advertise_endpoint {
                 app.fips_advertise_endpoint = value;
+            }
+            if !args.fips_peer_endpoints.is_empty() {
+                app.fips_peer_endpoints = parse_fips_peer_endpoint_args(&args.fips_peer_endpoints)?;
             }
             if !args.relays.is_empty() {
                 app.nostr.relays = args.relays;
@@ -4234,7 +4239,8 @@ fn fips_private_runtime_active(
                 .active_network()
                 .outbound_join_request
                 .as_ref()
-                .is_some())
+                .is_some()
+            || app.has_fips_static_peer_endpoints())
 }
 
 fn daemon_session_idle_status(
@@ -6530,6 +6536,52 @@ fn parse_advertised_routes_arg(value: &str) -> Result<Vec<String>> {
     }
 
     Ok(routes)
+}
+
+fn parse_fips_peer_endpoint_args(values: &[String]) -> Result<HashMap<String, Vec<String>>> {
+    let mut peers = HashMap::<String, Vec<String>>::new();
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let (peer, endpoint) = value
+            .split_once('=')
+            .ok_or_else(|| anyhow!("expected --fips-peer-endpoint npub=host:port"))?;
+        let peer = normalize_nostr_pubkey(peer.trim())?;
+        let endpoint = normalize_fips_peer_endpoint(endpoint.trim())?;
+        peers.entry(peer).or_default().push(endpoint);
+    }
+
+    for endpoints in peers.values_mut() {
+        endpoints.sort();
+        endpoints.dedup();
+    }
+    Ok(peers)
+}
+
+fn normalize_fips_peer_endpoint(value: &str) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(anyhow!("empty FIPS peer endpoint"));
+    }
+    if value.parse::<SocketAddr>().is_ok() {
+        return Ok(value.to_string());
+    }
+    let (host, port) = value
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow!("FIPS peer endpoint must be host:port"))?;
+    if host.trim().is_empty() {
+        return Err(anyhow!("FIPS peer endpoint host is empty"));
+    }
+    let port = port
+        .trim()
+        .parse::<u16>()
+        .with_context(|| format!("invalid FIPS peer endpoint port in '{value}'"))?;
+    if port == 0 {
+        return Err(anyhow!("FIPS peer endpoint port must be nonzero"));
+    }
+    Ok(value.to_string())
 }
 
 #[cfg(unix)]

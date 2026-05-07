@@ -93,6 +93,8 @@ pub struct AppConfig {
     pub private_data_plane: PrivateDataPlane,
     #[serde(default)]
     pub exit_data_plane: ExitDataPlane,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub fips_peer_endpoints: HashMap<String, Vec<String>>,
     #[serde(
         default = "default_fips_advertise_endpoint",
         skip_serializing_if = "is_true"
@@ -219,6 +221,7 @@ impl Default for AppConfig {
             autoconnect: default_autoconnect(),
             private_data_plane: PrivateDataPlane::default(),
             exit_data_plane: ExitDataPlane::default(),
+            fips_peer_endpoints: HashMap::new(),
             fips_advertise_endpoint: default_fips_advertise_endpoint(),
             exit_node: String::new(),
             close_to_tray_on_close: default_close_to_tray_on_close(),
@@ -455,12 +458,14 @@ impl AppConfig {
         self.ensure_single_active_network();
         self.derive_default_network_ids();
         self.normalize_selected_exit_node();
+        self.normalize_fips_peer_endpoints();
         self.normalize_peer_aliases();
     }
 
     fn canonicalize_user_facing_pubkeys(&mut self) {
         self.nostr.public_key = canonical_npub_key(&self.nostr.public_key).unwrap_or_default();
         self.exit_node = canonical_npub_key(&self.exit_node).unwrap_or_default();
+        self.normalize_fips_peer_endpoints();
 
         for network in &mut self.networks {
             network.participants = network
@@ -1100,6 +1105,22 @@ impl AppConfig {
         members
     }
 
+    pub fn fips_static_peer_endpoints(&self) -> Vec<(String, Vec<String>)> {
+        let mut peers = self
+            .fips_peer_endpoints
+            .iter()
+            .map(|(npub, endpoints)| (npub.clone(), endpoints.clone()))
+            .collect::<Vec<_>>();
+        peers.sort_by(|left, right| left.0.cmp(&right.0));
+        peers
+    }
+
+    pub fn has_fips_static_peer_endpoints(&self) -> bool {
+        self.fips_peer_endpoints
+            .values()
+            .any(|endpoints| endpoints.iter().any(|endpoint| !endpoint.trim().is_empty()))
+    }
+
     fn ensure_single_active_network(&mut self) {
         let mut first_active_index = None;
         for (index, network) in self.networks.iter_mut().enumerate() {
@@ -1119,6 +1140,39 @@ impl AppConfig {
         {
             first_network.enabled = true;
         }
+    }
+
+    fn normalize_fips_peer_endpoints(&mut self) {
+        let own_pubkey = self.own_nostr_pubkey_hex().ok();
+        let mut normalized = HashMap::new();
+        for (peer, endpoints) in std::mem::take(&mut self.fips_peer_endpoints) {
+            let Ok(peer_pubkey) = normalize_nostr_pubkey(&peer) else {
+                continue;
+            };
+            if own_pubkey.as_deref() == Some(peer_pubkey.as_str()) {
+                continue;
+            }
+            let mut endpoints = endpoints
+                .into_iter()
+                .map(|endpoint| endpoint.trim().to_string())
+                .filter(|endpoint| !endpoint.is_empty())
+                .collect::<Vec<_>>();
+            endpoints.sort();
+            endpoints.dedup();
+            if endpoints.is_empty() {
+                continue;
+            }
+            normalized
+                .entry(npub_for_pubkey_hex(&peer_pubkey))
+                .or_insert_with(Vec::new)
+                .extend(endpoints);
+        }
+
+        for endpoints in normalized.values_mut() {
+            endpoints.sort();
+            endpoints.dedup();
+        }
+        self.fips_peer_endpoints = normalized;
     }
 
     fn derive_default_network_ids(&mut self) {
@@ -1435,5 +1489,34 @@ exit_data_plane = "wireguard"
 
         assert_eq!(config.private_data_plane, PrivateDataPlane::Fips);
         assert_eq!(config.exit_data_plane, ExitDataPlane::WireGuard);
+    }
+
+    #[test]
+    fn fips_peer_endpoints_normalize_and_exclude_self() {
+        let (_, own_public_key) = generate_nostr_identity();
+        let (_, peer_public_key) = generate_nostr_identity();
+        let peer_public_key_hex =
+            normalize_nostr_pubkey(&peer_public_key).expect("valid peer public key");
+        let mut config = AppConfig::default();
+        config.nostr.secret_key = "not-a-secret-key".to_string();
+        config.nostr.public_key = own_public_key.clone();
+        config.fips_peer_endpoints.insert(
+            peer_public_key_hex,
+            vec![
+                " 10.203.0.12:51820 ".to_string(),
+                "10.203.0.12:51820".to_string(),
+            ],
+        );
+        config
+            .fips_peer_endpoints
+            .insert(own_public_key, vec!["10.203.0.10:51820".to_string()]);
+
+        config.ensure_defaults();
+
+        assert_eq!(
+            config.fips_static_peer_endpoints(),
+            vec![(peer_public_key, vec!["10.203.0.12:51820".to_string()])]
+        );
+        assert!(config.has_fips_static_peer_endpoints());
     }
 }
