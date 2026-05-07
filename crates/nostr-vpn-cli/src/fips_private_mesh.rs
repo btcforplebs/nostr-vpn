@@ -445,6 +445,7 @@ fn fips_endpoint_config(
     } else {
         NostrDiscoveryPolicy::Open
     };
+    config.node.discovery.nostr.share_local_candidates = true;
     config.node.discovery.nostr.app = FIPS_NOSTR_DISCOVERY_APP.to_string();
     if !relays.is_empty() {
         config.node.discovery.nostr.advert_relays = relays.to_vec();
@@ -1763,6 +1764,7 @@ mod tests {
             config.node.discovery.nostr.policy,
             fips_endpoint::NostrDiscoveryPolicy::Open
         );
+        assert!(config.node.discovery.nostr.share_local_candidates);
         assert_eq!(config.node.discovery.nostr.app, FIPS_NOSTR_DISCOVERY_APP);
         let udp = match config.transports.udp {
             fips_endpoint::TransportInstances::Single(udp) => udp,
@@ -1802,6 +1804,7 @@ mod tests {
             config.node.discovery.nostr.policy,
             fips_endpoint::NostrDiscoveryPolicy::Open
         );
+        assert!(config.node.discovery.nostr.share_local_candidates);
         assert_eq!(config.node.discovery.nostr.app, FIPS_NOSTR_DISCOVERY_APP);
         assert_eq!(
             config.node.discovery.nostr.stun_servers,
