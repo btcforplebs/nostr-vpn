@@ -244,8 +244,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
     }
 
     let config_path = args.config.clone().unwrap_or_else(default_config_path);
-    #[cfg(target_os = "macos")]
-    if let Err(error) = redirect_stdio_to_daemon_log(&config_path) {
+    if args.service && let Err(error) = redirect_stdio_to_daemon_log(&config_path) {
         eprintln!("daemon: failed to redirect service log: {error}");
     }
     if let Err(error) = compact_daemon_log_if_needed(&config_path) {

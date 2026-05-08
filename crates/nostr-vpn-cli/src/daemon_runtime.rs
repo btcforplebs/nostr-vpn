@@ -25,7 +25,6 @@ pub(crate) fn daemon_log_file_path(config_path: &Path) -> PathBuf {
     parent.join("daemon.log")
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn redirect_stdio_to_daemon_log(config_path: &Path) -> Result<()> {
     let log_path = daemon_log_file_path(config_path);
     if let Some(parent) = log_path.parent() {
@@ -38,17 +37,54 @@ pub(crate) fn redirect_stdio_to_daemon_log(config_path: &Path) -> Result<()> {
         .open(&log_path)
         .with_context(|| format!("failed to open {}", log_path.display()))?;
     let _ = set_daemon_runtime_file_permissions(&log_path);
-    let fd = log_file.as_raw_fd();
-    unsafe {
-        if libc::dup2(fd, libc::STDOUT_FILENO) < 0 {
-            return Err(std::io::Error::last_os_error())
-                .context("failed to redirect stdout to daemon log");
-        }
-        if libc::dup2(fd, libc::STDERR_FILENO) < 0 {
-            return Err(std::io::Error::last_os_error())
-                .context("failed to redirect stderr to daemon log");
+
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let fd = log_file.as_raw_fd();
+        unsafe {
+            if libc::dup2(fd, libc::STDOUT_FILENO) < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("failed to redirect stdout to daemon log");
+            }
+            if libc::dup2(fd, libc::STDERR_FILENO) < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("failed to redirect stderr to daemon log");
+            }
         }
     }
+
+    #[cfg(windows)]
+    {
+        // Windows Service Manager doesn't allocate a console for services, so
+        // stdout/stderr go nowhere by default. Point both at the daemon log
+        // via SetStdHandle. Anything tracing-subscriber and eprintln! emit
+        // ends up in the same file as macOS/Linux daemons.
+        use std::os::windows::io::AsRawHandle;
+        let handle = log_file.as_raw_handle();
+        unsafe {
+            // STD_OUTPUT_HANDLE = -11, STD_ERROR_HANDLE = -12
+            // SetStdHandle from kernel32; signature: BOOL SetStdHandle(DWORD nStdHandle, HANDLE hHandle)
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn SetStdHandle(nStdHandle: u32, hHandle: *mut std::ffi::c_void) -> i32;
+            }
+            const STD_OUTPUT_HANDLE: u32 = (-11i32) as u32;
+            const STD_ERROR_HANDLE: u32 = (-12i32) as u32;
+            if SetStdHandle(STD_OUTPUT_HANDLE, handle as *mut _) == 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("failed to redirect stdout to daemon log");
+            }
+            if SetStdHandle(STD_ERROR_HANDLE, handle as *mut _) == 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("failed to redirect stderr to daemon log");
+            }
+        }
+        // Keep the file alive for the lifetime of the daemon process — the
+        // OS holds the handle, but dropping our File would close it.
+        std::mem::forget(log_file);
+    }
+
     Ok(())
 }
 

@@ -24,8 +24,6 @@ use std::fs::OpenOptions;
 #[cfg(any(target_os = "macos", test))]
 use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-#[cfg(target_os = "macos")]
-use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
