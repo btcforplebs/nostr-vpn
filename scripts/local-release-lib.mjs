@@ -80,8 +80,23 @@ export function shouldBlockLocalLinuxAmd64Qemu({ platform, hostPlatform, hostArc
 
 export function validateReleaseAssetSet(assetNames, { allowLinuxArm64DesktopOnly = false } = {}) {
   const names = [...assetNames]
+  const hasMacosZip = names.some((name) => /^nostr-vpn-.*-macos-arm64\.zip$/.test(name))
+  const hasMacosDmg = names.some((name) => /^nostr-vpn-.*-macos-arm64\.dmg$/.test(name))
+  const hasMacosUpdater = names.some((name) => /^nostr-vpn-.*-macos-arm64\.app\.tar\.gz$/.test(name))
   const hasLinuxX64Desktop = names.some((name) => /^nostr-vpn-.*-linux-x64\.(AppImage|deb)$/.test(name))
   const hasLinuxArm64Desktop = names.some((name) => /^nostr-vpn-.*-linux-arm64\.(AppImage|deb)$/.test(name))
+
+  if (hasMacosZip) {
+    throw new Error(
+      'Release includes a macOS .zip app archive. Ship a signed/notarized .dmg for users and a signed/notarized .app.tar.gz for the updater instead.',
+    )
+  }
+
+  if (hasMacosDmg && !hasMacosUpdater) {
+    throw new Error(
+      'Release includes a macOS .dmg but no macOS .app.tar.gz updater archive.',
+    )
+  }
 
   if (hasLinuxArm64Desktop && !hasLinuxX64Desktop && !allowLinuxArm64DesktopOnly) {
     throw new Error(
@@ -154,7 +169,7 @@ export function autoDetectWindowsVmName(prlctlListOutput) {
 
 export function describeAsset(name) {
   if (/^nostr-vpn-.*-macos-arm64\.zip$/.test(name)) {
-    return 'macOS Apple Silicon app archive'
+    return 'macOS Apple Silicon legacy app archive'
   }
   if (/^nostr-vpn-.*-macos-arm64\.dmg$/.test(name)) {
     return 'macOS Apple Silicon disk image'
@@ -249,7 +264,6 @@ function pushDownloadSections(lines, assetNames, assetBaseUrl = '') {
 
   pushAssetLine(lines, usedAssets, sortedNames, 'Nostr VPN for macOS (Apple Silicon)', [
     /^nostr-vpn-.*-macos-arm64\.dmg$/,
-    /^nostr-vpn-.*-macos-arm64\.zip$/,
   ], assetBaseUrl)
   pushAssetLine(lines, usedAssets, sortedNames, 'Nostr VPN for Linux (AppImage)', [
     /^nostr-vpn-.*-linux-x64\.AppImage$/,

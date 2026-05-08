@@ -25,7 +25,6 @@ import {
   normalizeTag,
   parseEnvFile,
   readWorkspaceVersionTag,
-  renderReleaseNotes,
   splitCsv,
   validateReleaseAssetSet,
 } from './local-release-lib.mjs'
@@ -428,8 +427,14 @@ function buildMacosArtifacts({ tag, dryRun, builtLines }) {
     NVPN_MACOS_RUST_PROFILE: 'release',
     NVPN_MACOS_XCODE_CONFIGURATION: 'Release',
     NVPN_MACOS_RUST_TARGETS: 'aarch64-apple-darwin',
+    NVPN_RELEASE_TAG: tag,
+    NVPN_MACOS_REQUIRE_SIGNING: '1',
+    NVPN_MACOS_REQUIRE_NOTARIZATION: '1',
   }
-  run('bash', [join(repoRoot, 'scripts', 'macos-build'), 'macos-build'], { env, dryRun })
+  if (!dryRun) {
+    rmSync(join(distDir, `nostr-vpn-${tag}-macos-arm64.zip`), { force: true })
+  }
+  run('bash', [join(repoRoot, 'scripts', 'macos-build'), 'macos-release-artifacts'], { env, dryRun })
 
   packageUnixCliTarball({
     binaryPath: join(cargoTargetDir(env), 'aarch64-apple-darwin', 'release', 'nvpn'),
@@ -438,23 +443,7 @@ function buildMacosArtifacts({ tag, dryRun, builtLines }) {
     dryRun,
   })
   builtLines.push('Built Apple Silicon CLI locally.')
-
-  const productsDir = join(repoRoot, 'macos', '.build', 'DerivedData', 'Build', 'Products', 'Release')
-  const appPath = existsSync(productsDir)
-    ? readdirSync(productsDir)
-        .map((entry) => join(productsDir, entry))
-        .find((entry) => entry.endsWith('.app'))
-    : null
-  if (!dryRun && !appPath) {
-    throw new Error(`No native macOS app bundle found under ${productsDir}.`)
-  }
-
-  if (appPath) {
-    const zipPath = join(distDir, `nostr-vpn-${tag}-macos-arm64.zip`)
-    rmSync(zipPath, { force: true })
-    run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath], { dryRun })
-  }
-  builtLines.push('Built native Apple Silicon macOS app locally.')
+  builtLines.push('Built signed and notarized Apple Silicon macOS DMG and updater archive locally.')
 }
 
 function runVerify({ dryRun, builtLines }) {
@@ -485,6 +474,9 @@ function collectReleaseAssetPaths(tag) {
   const paths = []
 
   for (const entry of readdirSync(distDir).sort()) {
+    if (entry === `nostr-vpn-${tag}-macos-arm64.zip`) {
+      continue
+    }
     const fullPath = join(distDir, entry)
     if (!statSync(fullPath).isFile()) {
       continue
@@ -500,6 +492,31 @@ function collectReleaseAssetPaths(tag) {
   }
 
   return paths
+}
+
+function writeReleaseNotes({ tag, commit, stageDir, builtLines, skippedLines, dryRun }) {
+  const args = [
+    join(repoRoot, 'scripts', 'render-release-notes.mjs'),
+    '--tag',
+    tag,
+    '--commit',
+    commit,
+    '--asset-dir',
+    join(stageDir, 'assets'),
+    '--changelog',
+    changelogPath,
+    '--out',
+    join(stageDir, 'notes.md'),
+  ]
+
+  for (const line of builtLines) {
+    args.push('--built-line', line)
+  }
+  for (const line of skippedLines) {
+    args.push('--skipped-line', line)
+  }
+
+  run('node', args, { dryRun })
 }
 
 function stageRelease({ tag, commit, stageDir, builtLines, skippedLines, dryRun }) {
@@ -537,17 +554,7 @@ function stageRelease({ tag, commit, stageDir, builtLines, skippedLines, dryRun 
   for (const [fileName, text] of buildReleaseManifestFiles(manifest)) {
     writeFileSync(join(stageDir, fileName), text)
   }
-  writeFileSync(
-    join(stageDir, 'notes.md'),
-    renderReleaseNotes({
-      tag,
-      commit,
-      assetNames: stagedAssetPaths.map((assetPath) => basename(assetPath)),
-      builtLines,
-      skippedLines,
-      changelogText: existsSync(changelogPath) ? readFileSync(changelogPath, 'utf8') : '',
-    }),
-  )
+  writeReleaseNotes({ tag, commit, stageDir, builtLines, skippedLines, dryRun })
 
   return { assetPaths, stageDir }
 }

@@ -673,8 +673,8 @@ struct ReleaseManifest: Decodable {
 
     func preferredMacAsset() -> ReleaseAsset? {
         assets.first { $0.name.hasSuffix("-macos-arm64.app.tar.gz") }
-            ?? assets.first { $0.name.hasSuffix("-macos-arm64.zip") }
             ?? assets.first { $0.name.hasSuffix("-macos-arm64.dmg") }
+            ?? assets.first { $0.name.hasSuffix("-macos-arm64.zip") }
     }
 }
 

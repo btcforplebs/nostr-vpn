@@ -183,37 +183,81 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Build native macOS app
+      - name: Import macOS signing certificate
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MACOS_CERTIFICATE_P12_BASE64:-}" ]; then
+            echo "No MACOS_CERTIFICATE_P12_BASE64 secret configured; macOS release build requires a Developer ID identity."
+            exit 0
+          fi
+
+          cert_path="${RUNNER_TEMP}/macos-developer-id.p12"
+          keychain_path="${RUNNER_TEMP}/release-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+
+          printf '%s' "${MACOS_CERTIFICATE_P12_BASE64}" | base64 -D > "${cert_path}"
+          security create-keychain -p "${keychain_password}" "${keychain_path}"
+          security set-keychain-settings -lut 21600 "${keychain_path}"
+          security unlock-keychain -p "${keychain_password}" "${keychain_path}"
+          security import "${cert_path}" -P "${MACOS_CERTIFICATE_PASSWORD:-}" -A -t cert -f pkcs12 -k "${keychain_path}"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${keychain_password}" "${keychain_path}"
+          security list-keychains -d user -s "${keychain_path}" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "${keychain_path}"
+          security find-identity -v -p codesigning
+
+      - name: Prepare macOS notarization key
+        shell: bash
+        env:
+          ASC_AUTH_KEY_BASE64: ${{ secrets.ASC_AUTH_KEY_BASE64 }}
+          ASC_AUTH_KEY_ID: ${{ secrets.ASC_AUTH_KEY_ID }}
+          ASC_AUTH_KEY_ISSUER_ID: ${{ secrets.ASC_AUTH_KEY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ASC_AUTH_KEY_BASE64:-}" ]; then
+            echo "No ASC_AUTH_KEY_BASE64 secret configured; macOS release build requires notarization credentials."
+            exit 0
+          fi
+          if [ -z "${ASC_AUTH_KEY_ID:-}" ] || [ -z "${ASC_AUTH_KEY_ISSUER_ID:-}" ]; then
+            echo "ASC_AUTH_KEY_ID and ASC_AUTH_KEY_ISSUER_ID must be set with ASC_AUTH_KEY_BASE64."
+            exit 1
+          fi
+
+          key_path="${RUNNER_TEMP}/AuthKey_${ASC_AUTH_KEY_ID}.p8"
+          printf '%s' "${ASC_AUTH_KEY_BASE64}" | base64 -D > "${key_path}"
+          {
+            echo "NVPN_ASC_AUTH_KEY_PATH=${key_path}"
+            echo "NVPN_ASC_AUTH_KEY_ID=${ASC_AUTH_KEY_ID}"
+            echo "NVPN_ASC_AUTH_KEY_ISSUER_ID=${ASC_AUTH_KEY_ISSUER_ID}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Build native macOS app artifacts
         env:
           NVPN_MACOS_RUST_PROFILE: release
           NVPN_MACOS_XCODE_CONFIGURATION: Release
           NVPN_MACOS_RUST_TARGETS: aarch64-apple-darwin
-        run: ./scripts/macos-build macos-build
-
-      - name: Package native macOS app
-        shell: bash
-        run: |
-          set -euo pipefail
-          RELEASE_VERSION="${{ github.event.inputs.tag || github.ref_name }}"
-          PRODUCTS_DIR="macos/.build/DerivedData/Build/Products/Release"
-          APP_PATH="$(find "${PRODUCTS_DIR}" -maxdepth 2 -name 'Nostr VPN.app' -print -quit)"
-          if [ -z "${APP_PATH}" ]; then
-            echo "No native macOS app bundle found under ${PRODUCTS_DIR}"
-            exit 1
-          fi
-          mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "dist/nostr-vpn-${RELEASE_VERSION}-macos-arm64.zip"
+          NVPN_RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          NVPN_MACOS_REQUIRE_SIGNING: '1'
+          NVPN_MACOS_REQUIRE_NOTARIZATION: '1'
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_NOTARY_PROFILE: ${{ secrets.MACOS_NOTARY_PROFILE }}
+        run: ./scripts/macos-build macos-release-artifacts
 
       - name: Upload native macOS app
         uses: actions/upload-artifact@v4
         with:
           name: macos-arm64
-          path: dist/nostr-vpn-${{ github.event.inputs.tag || github.ref_name }}-macos-arm64.zip
+          path: |
+            dist/nostr-vpn-${{ github.event.inputs.tag || github.ref_name }}-macos-arm64.dmg
+            dist/nostr-vpn-${{ github.event.inputs.tag || github.ref_name }}-macos-arm64.app.tar.gz
           retention-days: 7
 
   release:
     name: Create GitHub release
-    if: ${{ always() && needs.verify.result == 'success' && needs.build-cli.result == 'success' }}
+    if: ${{ always() && needs.verify.result == 'success' && needs.build-cli.result == 'success' && needs.build-macos-app.result == 'success' }}
     needs:
       - verify
       - build-cli
@@ -238,21 +282,15 @@ jobs:
         env:
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-          MACOS_APP_RELEASED: ${{ needs.build-macos-app.result }}
         run: |
-          skipped_args=()
-          if [ "${MACOS_APP_RELEASED}" != "success" ]; then
-            skipped_args+=(--skipped-line "macOS native app: build did not complete.")
-          fi
-
           node scripts/render-release-notes.mjs \
             --tag "${RELEASE_TAG}" \
             --commit "${GITHUB_SHA}" \
             --asset-dir artifacts \
             --asset-base-url "https://github.com/${RELEASE_REPOSITORY}/releases/download/${RELEASE_TAG}" \
             --changelog CHANGELOG.md \
-            --out release-notes.md \
-            "${skipped_args[@]}"
+            --built-line "Built signed and notarized Apple Silicon macOS DMG and updater archive." \
+            --out release-notes.md
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2

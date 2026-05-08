@@ -125,6 +125,23 @@ test('validateReleaseAssetSet rejects ARM64-only Linux desktop releases', () => 
   )
 })
 
+test('validateReleaseAssetSet rejects macOS app zip releases', () => {
+  assert.throws(
+    () => validateReleaseAssetSet(['nostr-vpn-v4.0.1-macos-arm64.zip']),
+    /macOS \.zip app archive/,
+  )
+  assert.throws(
+    () => validateReleaseAssetSet(['nostr-vpn-v4.0.1-macos-arm64.dmg']),
+    /no macOS \.app\.tar\.gz updater archive/,
+  )
+  assert.doesNotThrow(() =>
+    validateReleaseAssetSet([
+      'nostr-vpn-v4.0.1-macos-arm64.app.tar.gz',
+      'nostr-vpn-v4.0.1-macos-arm64.dmg',
+    ]),
+  )
+})
+
 test('autoDetectWindowsVmName returns the only running Windows VM', () => {
   const name = autoDetectWindowsVmName(`
 UUID                                    STATUS       IP_ADDR         NAME
@@ -239,7 +256,8 @@ test('renderReleaseNotes includes changelog, built, and skipped sections', () =>
     tag: 'v0.2.27',
     commit: 'abc123',
     assetNames: [
-      'nostr-vpn-v0.2.27-macos-arm64.zip',
+      'nostr-vpn-v0.2.27-macos-arm64.app.tar.gz',
+      'nostr-vpn-v0.2.27-macos-arm64.dmg',
       'nvpn-v0.2.27-x86_64-pc-windows-msvc.zip',
     ],
     changelogText: `
@@ -271,7 +289,10 @@ test('renderReleaseNotes omits CLI skip boilerplate and can link assets', () => 
   const notes = renderReleaseNotes({
     tag: 'v0.3.0',
     commit: 'abc123',
-    assetNames: ['nostr-vpn-v0.3.0-macos-arm64.zip'],
+    assetNames: [
+      'nostr-vpn-v0.3.0-macos-arm64.app.tar.gz',
+      'nostr-vpn-v0.3.0-macos-arm64.dmg',
+    ],
     assetBaseUrl: 'https://github.com/mmalmi/nostr-vpn/releases/download/v0.3.0',
     skippedLines: [
       'verify skipped by CLI options.',
@@ -281,7 +302,7 @@ test('renderReleaseNotes omits CLI skip boilerplate and can link assets', () => 
 
   assert.match(
     notes,
-    /\[nostr-vpn-v0\.3\.0-macos-arm64\.zip\]\(https:\/\/github\.com\/mmalmi\/nostr-vpn\/releases\/download\/v0\.3\.0\/nostr-vpn-v0\.3\.0-macos-arm64\.zip\)/,
+    /\[nostr-vpn-v0\.3\.0-macos-arm64\.dmg\]\(https:\/\/github\.com\/mmalmi\/nostr-vpn\/releases\/download\/v0\.3\.0\/nostr-vpn-v0\.3\.0-macos-arm64\.dmg\)/,
   )
   assert.doesNotMatch(notes, /verify skipped by CLI options/)
   assert.doesNotMatch(notes, /windows skipped by CLI options/)
