@@ -139,19 +139,11 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
     let iface = args.iface.clone();
     let network_snapshot = capture_network_snapshot();
     let mut port_mapping_runtime = PortMappingRuntime::default();
-    let mut public_signal_endpoint = restored_public_signal_endpoint_from_state(
-        read_daemon_state(&daemon_state_file_path(&config_path))
-            .ok()
-            .flatten()
-            .as_ref(),
-        app.node.listen_port,
-    );
-    refresh_public_signal_endpoint_with_port_mapping(
+    refresh_port_mapping(
         &app,
         &network_snapshot,
         app.node.listen_port,
         &mut port_mapping_runtime,
-        &mut public_signal_endpoint,
     )
     .await;
     #[cfg(feature = "embedded-fips")]
@@ -174,7 +166,6 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
             iface.clone(),
             own_pubkey.as_deref(),
             fips_endpoint_cache.as_ref(),
-            public_signal_endpoint.as_ref(),
         )?;
         let runtime = crate::fips_private_mesh::FipsPrivateTunnelRuntime::start(config).await?;
         println!("connect: FIPS private mesh on {}", runtime.iface());
@@ -302,17 +293,12 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
     let timeout = network_probe_timeout(&app);
     let mut captive_portal = detect_captive_portal(timeout).await;
     let mut port_mapping_runtime = PortMappingRuntime::default();
-    let mut public_signal_endpoint = restored_public_signal_endpoint_from_state(
-        read_daemon_state(&state_file).ok().flatten().as_ref(),
-        app.node.listen_port,
-    );
     if daemon_vpn_active(true, expected_peers) {
-        refresh_public_signal_endpoint_with_port_mapping(
+        refresh_port_mapping(
             &app,
             &network_snapshot,
             app.node.listen_port,
             &mut port_mapping_runtime,
-            &mut public_signal_endpoint,
         )
         .await;
     }
@@ -333,7 +319,6 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
             iface.clone(),
             own_pubkey.as_deref(),
             fips_endpoint_cache.as_ref(),
-            public_signal_endpoint.as_ref(),
         )?;
         let runtime = crate::fips_private_mesh::FipsPrivateTunnelRuntime::start(config).await?;
         eprintln!("daemon: FIPS private mesh on {}", runtime.iface());
@@ -396,7 +381,6 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
             &tunnel_runtime,
             &fips_peer_statuses,
             &fips_advertised_routes,
-            public_signal_endpoint.as_ref(),
             &vpn_status,
             &network_snapshot.summary(network_changed_at, captive_portal),
             &port_mapping_runtime.status(),
@@ -521,41 +505,31 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                     network_changed_at = Some(unix_timestamp());
                     captive_portal = detect_captive_portal(timeout).await;
                     if vpn_active {
-                        // A moved network invalidates the previous public endpoint; keep
-                        // probing for a fresh one instead of reusing the stale address.
-                        public_signal_endpoint = None;
-                        refresh_public_signal_endpoint_with_port_mapping(
+                        refresh_port_mapping(
                             &app,
                             &network_snapshot,
                             runtime_listen_port,
                             &mut port_mapping_runtime,
-                            &mut public_signal_endpoint,
                         )
                         .await;
                         true
                     } else {
                         port_mapping_runtime.stop().await;
-                        public_signal_endpoint = None;
                         false
                     }
                 } else if resumed_after_sleep {
                     network_changed_at = Some(now);
                     if vpn_active {
-                        public_signal_endpoint = None;
-                        refresh_public_signal_endpoint_with_port_mapping(
+                        refresh_port_mapping(
                             &app,
                             &network_snapshot,
                             runtime_listen_port,
                             &mut port_mapping_runtime,
-                            &mut public_signal_endpoint,
                         )
                         .await;
-                        public_signal_endpoint
-                            .as_ref()
-                            .is_some_and(|endpoint| endpoint.listen_port == runtime_listen_port)
+                        true
                     } else {
                         port_mapping_runtime.stop().await;
-                        public_signal_endpoint = None;
                         false
                     }
                 } else if vpn_active {
@@ -563,17 +537,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         .renew_if_due(&network_snapshot, runtime_listen_port, timeout)
                         .await
                     {
-                        Ok(changed) => {
-                            if changed {
-                                sync_public_signal_endpoint_from_mapping_or_stun(
-                                    &app,
-                                    runtime_listen_port,
-                                    &port_mapping_runtime,
-                                    &mut public_signal_endpoint,
-                                );
-                            }
-                            changed
-                        }
+                        Ok(changed) => changed,
                         Err(error) => {
                             eprintln!("daemon: port mapping renew failed: {error}");
                             false
@@ -611,7 +575,6 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                             &network_id,
                             own_pubkey.as_deref(),
                             fips_endpoint_cache.as_ref(),
-                            public_signal_endpoint.as_ref(),
                         )
                         .await
                     {
@@ -661,7 +624,6 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                                 &network_id,
                                 own_pubkey.as_deref(),
                                 fips_endpoint_cache.as_ref(),
-                                public_signal_endpoint.as_ref(),
                             )
                             .await
                             {
@@ -688,7 +650,6 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                             vpn_enabled = false;
                             let join_requests_active = app.join_requests_enabled();
                             port_mapping_runtime.stop().await;
-                            public_signal_endpoint = None;
                             vpn_status = daemon_vpn_idle_status(
                                 vpn_enabled,
                                 expected_peers,
@@ -704,18 +665,16 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                                     let runtime_listen_port = tunnel_runtime
                                         .active_listen_port
                                         .unwrap_or(app.node.listen_port);
-                                    refresh_public_signal_endpoint_with_port_mapping(
+                                    refresh_port_mapping(
                                         &app,
                                         &network_snapshot,
                                         runtime_listen_port,
                                         &mut port_mapping_runtime,
-                                        &mut public_signal_endpoint,
                                     )
                                     .await;
                                     vpn_status = "VPN on".to_string();
                                 } else {
                                     port_mapping_runtime.stop().await;
-                                    public_signal_endpoint = None;
                                     vpn_status = daemon_vpn_idle_status(
                                         vpn_enabled,
                                         expected_peers,
@@ -764,12 +723,11 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                                                 let runtime_listen_port = tunnel_runtime
                                                     .active_listen_port
                                                     .unwrap_or(app.node.listen_port);
-                                                refresh_public_signal_endpoint_with_port_mapping(
+                                                refresh_port_mapping(
                                                     &app,
                                                     &network_snapshot,
                                                     runtime_listen_port,
                                                     &mut port_mapping_runtime,
-                                                    &mut public_signal_endpoint,
                                                 )
                                                 .await;
                                             }
@@ -824,7 +782,6 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         &iface,
                         own_pubkey.as_deref(),
                         fips_endpoint_cache.as_ref(),
-                        public_signal_endpoint.as_ref(),
                         vpn_enabled,
                         expected_peers,
                     )
@@ -856,7 +813,6 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         &tunnel_runtime,
                         &current_fips_peer_statuses!(fips_tunnel_runtime),
                         &current_fips_advertised_routes!(fips_tunnel_runtime, &app),
-                        public_signal_endpoint.as_ref(),
                         &vpn_status,
                         &network_snapshot.summary(network_changed_at, captive_portal),
                         &port_mapping_runtime.status(),
@@ -920,7 +876,6 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                     &tunnel_runtime,
                     &fips_peer_statuses,
                     &fips_advertised_routes,
-                    public_signal_endpoint.as_ref(),
                     &vpn_status,
                     &network_snapshot.summary(network_changed_at, captive_portal),
                     &port_mapping_runtime.status(),
@@ -1071,7 +1026,6 @@ pub(crate) fn build_daemon_runtime_state(
     tunnel_runtime: &CliTunnelRuntime,
     fips_peer_statuses: &[MeshPeerStatus],
     advertised_routes_by_participant: &HashMap<String, Vec<String>>,
-    public_signal_endpoint: Option<&DiscoveredPublicSignalEndpoint>,
     vpn_status: &str,
     network: &NetworkSummary,
     port_mapping: &PortMappingStatus,
@@ -1080,8 +1034,11 @@ pub(crate) fn build_daemon_runtime_state(
     let now = unix_timestamp();
     let listen_port = tunnel_runtime.listen_port(app.node.listen_port);
     let local_endpoint = local_signal_endpoint(app, listen_port);
-    let advertised_endpoint = public_endpoint_for_listen_port(public_signal_endpoint, listen_port)
-        .unwrap_or_else(|| local_endpoint.clone());
+    // Daemon no longer pre-discovers a public endpoint; fips-core advertises
+    // its own (and falls back to udp:nat traversal when behind NAT). The
+    // advertised_endpoint we surface in state.json is the local-network
+    // endpoint, used by other peers on the same LAN.
+    let advertised_endpoint = local_endpoint.clone();
     let mut peers = Vec::new();
 
     let fips_status_by_pubkey = fips_peer_statuses
@@ -1187,7 +1144,6 @@ pub(crate) fn persist_daemon_runtime_state(
     tunnel_runtime: &CliTunnelRuntime,
     fips_peer_statuses: &[MeshPeerStatus],
     advertised_routes_by_participant: &HashMap<String, Vec<String>>,
-    public_signal_endpoint: Option<&DiscoveredPublicSignalEndpoint>,
     vpn_status: &str,
     network: &NetworkSummary,
     port_mapping: &PortMappingStatus,
@@ -1202,7 +1158,6 @@ pub(crate) fn persist_daemon_runtime_state(
             tunnel_runtime,
             fips_peer_statuses,
             advertised_routes_by_participant,
-            public_signal_endpoint,
             vpn_status,
             network,
             port_mapping,

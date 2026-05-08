@@ -8,7 +8,6 @@ pub mod fips_control;
 pub mod fips_mesh;
 pub mod join_requests;
 pub mod magic_dns;
-pub mod nat;
 mod network_roster;
 mod network_routes;
 pub mod paths;

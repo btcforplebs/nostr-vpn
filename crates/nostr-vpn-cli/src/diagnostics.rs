@@ -2,7 +2,7 @@ mod port_mapping;
 mod probes;
 
 use std::fs;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ use crate::macos_network::{
     macos_default_routes, macos_ipconfig_ipv4_for_interface, macos_ipconfig_router_for_interface,
     macos_underlay_default_route_from_routes, macos_underlay_default_route_from_system,
 };
-use crate::{DaemonPeerState, DaemonStatus, discover_public_udp_endpoint_via_stun, unix_timestamp};
+use crate::{DaemonPeerState, DaemonStatus, unix_timestamp};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct NetworkSnapshot {
@@ -175,19 +175,10 @@ fn capture_macos_network_snapshot() -> NetworkSnapshot {
 pub(crate) async fn run_netcheck_report(app: &AppConfig, timeout_secs: u64) -> NetcheckReport {
     let timeout = Duration::from_secs(timeout_secs.max(1));
 
-    let mut public_v4_endpoints = Vec::new();
-    for server in &app.nat.stun_servers {
-        if let Ok(endpoint) = discover_public_udp_endpoint_via_stun(server, 0, timeout)
-            && endpoint
-                .parse::<SocketAddr>()
-                .is_ok_and(|value| value.is_ipv4())
-        {
-            public_v4_endpoints.push(endpoint);
-        }
-    }
-
-    public_v4_endpoints.sort();
-    public_v4_endpoints.dedup();
+    // Public endpoint discovery moved to fips-core's overlay-advert path; the
+    // netcheck report no longer pre-runs STUN itself.
+    let public_v4_endpoints: Vec<String> = Vec::new();
+    let _ = (app, timeout);
 
     let snapshot = capture_network_snapshot();
     let port_mapping = probe_port_mapping_services(&snapshot, timeout).await;

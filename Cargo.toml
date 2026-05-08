@@ -6,7 +6,6 @@ members = [
   "crates/nostr-vpn-cli",
   "crates/nostr-vpn-web",
   "crates/nostr-vpn-wintun",
-  "crates/nostr-vpn-reflector",
 ]
 exclude = ["linux"]
 resolver = "2"
@@ -44,7 +43,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uniffi = "0.29"
 uuid = { version = "1", features = ["v4", "serde"] }
 nostr-sdk = { version = "0.35", default-features = false, features = ["nip44"] }
-webrtc-stun = "0.1"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

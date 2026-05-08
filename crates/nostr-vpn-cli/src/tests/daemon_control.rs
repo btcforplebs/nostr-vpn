@@ -235,7 +235,6 @@ fn persist_daemon_runtime_state_marks_vpn_on_as_active() {
         &tunnel_runtime,
         &[],
         &std::collections::HashMap::new(),
-        None,
         "VPN on",
         &nostr_vpn_core::diagnostics::NetworkSummary::default(),
         &nostr_vpn_core::diagnostics::PortMappingStatus::default(),
@@ -265,7 +264,6 @@ fn fips_runtime_state_is_ready_without_waiting_for_every_peer() {
         &tunnel_runtime,
         &[],
         &std::collections::HashMap::new(),
-        None,
         "VPN on",
         &nostr_vpn_core::diagnostics::NetworkSummary::default(),
         &nostr_vpn_core::diagnostics::PortMappingStatus::default(),
@@ -308,7 +306,6 @@ fn daemon_runtime_state_marks_peers_unreachable_when_vpn_is_off() {
         &tunnel_runtime,
         &[peer_status],
         &std::collections::HashMap::new(),
-        None,
         "Paused",
         &nostr_vpn_core::diagnostics::NetworkSummary::default(),
         &nostr_vpn_core::diagnostics::PortMappingStatus::default(),
@@ -505,10 +502,6 @@ fn daemon_runtime_state_tracks_live_endpoint_and_listen_port() {
     let config = AppConfig::generated();
     let mut tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
     tunnel_runtime.active_listen_port = Some(53083);
-    let public_endpoint = crate::DiscoveredPublicSignalEndpoint {
-        listen_port: 53083,
-        endpoint: "203.0.113.8:53083".to_string(),
-    };
     let state = crate::build_daemon_runtime_state(
         &config,
         true,
@@ -517,7 +510,6 @@ fn daemon_runtime_state_tracks_live_endpoint_and_listen_port() {
         &tunnel_runtime,
         &[],
         &std::collections::HashMap::new(),
-        Some(&public_endpoint),
         "Connected",
         &nostr_vpn_core::diagnostics::NetworkSummary::default(),
         &nostr_vpn_core::diagnostics::PortMappingStatus::default(),
@@ -532,14 +524,14 @@ fn daemon_runtime_state_tracks_live_endpoint_and_listen_port() {
     };
 
     assert_eq!(state.listen_port, 53083);
-    assert_eq!(
-        state.local_endpoint,
-        crate::local_signal_endpoint(&config, 53083)
-    );
-    assert_eq!(state.advertised_endpoint, "203.0.113.8:53083");
+    let expected_endpoint = crate::local_signal_endpoint(&config, 53083);
+    assert_eq!(state.local_endpoint, expected_endpoint);
+    // advertised_endpoint now mirrors local_endpoint — fips-core owns
+    // public-endpoint discovery and advertising.
+    assert_eq!(state.advertised_endpoint, expected_endpoint);
     assert_eq!(
         crate::status_endpoint(&config, &daemon),
-        "203.0.113.8:53083"
+        expected_endpoint
     );
     assert_eq!(crate::status_listen_port(&config, &daemon), 53083);
 }

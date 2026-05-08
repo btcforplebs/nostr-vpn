@@ -25,8 +25,6 @@ fn clap_includes_tailscale_style_commands() {
         "doctor",
         "ip",
         "whois",
-        "nat-discover",
-        "hole-punch",
         "install-cli",
         "uninstall-cli",
         "service",

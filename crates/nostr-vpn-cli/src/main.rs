@@ -55,9 +55,6 @@ use nostr_vpn_core::magic_dns::{
     MagicDnsResolverConfig, MagicDnsServer, build_magic_dns_records, install_system_resolver,
     uninstall_system_resolver,
 };
-use nostr_vpn_core::nat::{
-    discover_public_udp_endpoint, discover_public_udp_endpoint_via_stun, hole_punch_udp,
-};
 #[cfg(target_os = "windows")]
 use nostr_vpn_core::platform_paths::{
     legacy_config_path_from_dirs_config_dir, windows_default_config_path_for_state,
@@ -250,10 +247,6 @@ enum Command {
     /// Internal daemon-backed config import helper for GUI writes.
     #[command(hide = true)]
     ApplyConfigDaemon(ApplyConfigArgs),
-    /// Discover your public UDP endpoint through a reflector.
-    NatDiscover(NatDiscoverArgs),
-    /// Send UDP punch packets to a peer endpoint to open NAT mappings.
-    HolePunch(HolePunchArgs),
     /// Internal daemon entrypoint. Use `nvpn start --daemon`.
     #[command(hide = true)]
     Daemon(DaemonArgs),
@@ -591,35 +584,6 @@ struct ApplyConfigArgs {
     source: PathBuf,
     #[arg(long)]
     config: Option<PathBuf>,
-}
-
-#[derive(Debug, Args)]
-struct NatDiscoverArgs {
-    /// Reflector UDP endpoint (e.g. 198.51.100.1:3478).
-    #[arg(long)]
-    reflector: String,
-    #[arg(long, default_value_t = 51820)]
-    listen_port: u16,
-    #[arg(long, default_value_t = 2)]
-    timeout_secs: u64,
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Debug, Args)]
-struct HolePunchArgs {
-    #[arg(long)]
-    peer_endpoint: String,
-    #[arg(long, default_value_t = 51820)]
-    listen_port: u16,
-    #[arg(long, default_value_t = 40)]
-    attempts: u32,
-    #[arg(long, default_value_t = 120)]
-    interval_ms: u64,
-    #[arg(long, default_value_t = 120)]
-    recv_timeout_ms: u64,
-    #[arg(long)]
-    json: bool,
 }
 
 fn main() -> Result<()> {
@@ -1122,60 +1086,6 @@ async fn run_command(command: Command) -> Result<()> {
         Command::ApplyConfigDaemon(args) => {
             let config_path = args.config.unwrap_or_else(default_config_path);
             apply_config_via_running_daemon(&args.source, &config_path)?;
-        }
-        Command::NatDiscover(args) => {
-            let reflector: SocketAddr = args
-                .reflector
-                .parse()
-                .with_context(|| format!("invalid --reflector {}", args.reflector))?;
-            let timeout = Duration::from_secs(args.timeout_secs.max(1));
-            let public_endpoint =
-                discover_public_udp_endpoint(reflector, args.listen_port, timeout)
-                    .context("nat endpoint discovery failed")?;
-
-            if args.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json!({
-                        "reflector": reflector.to_string(),
-                        "listen_port": args.listen_port,
-                        "public_endpoint": public_endpoint,
-                    }))?
-                );
-            } else {
-                println!("{public_endpoint}");
-            }
-        }
-        Command::HolePunch(args) => {
-            let peer_endpoint: SocketAddr = args
-                .peer_endpoint
-                .parse()
-                .with_context(|| format!("invalid --peer-endpoint {}", args.peer_endpoint))?;
-            let report = hole_punch_udp(
-                args.listen_port,
-                peer_endpoint,
-                args.attempts.max(1),
-                Duration::from_millis(args.interval_ms.max(1)),
-                Duration::from_millis(args.recv_timeout_ms.max(1)),
-            )
-            .context("udp hole-punch failed")?;
-
-            if args.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json!({
-                        "listen_addr": report.local_addr.to_string(),
-                        "peer_endpoint": peer_endpoint.to_string(),
-                        "packets_sent": report.packets_sent,
-                        "packet_received": report.packet_received,
-                    }))?
-                );
-            } else {
-                println!(
-                    "hole-punch: sent {} packets from {} to {}, received_response={}",
-                    report.packets_sent, report.local_addr, peer_endpoint, report.packet_received
-                );
-            }
         }
         Command::Daemon(args) => daemon_vpn(args).await?,
     }
@@ -1712,207 +1622,14 @@ fn local_signal_endpoint(app: &AppConfig, listen_port: u16) -> String {
     )
 }
 
-fn discover_public_signal_endpoint(
-    app: &AppConfig,
-    listen_port: u16,
-    existing_endpoint: Option<&DiscoveredPublicSignalEndpoint>,
-) -> Option<String> {
-    if !app.nat.enabled {
-        return None;
-    }
-
-    let timeout = Duration::from_secs(app.nat.discovery_timeout_secs.max(1));
-    let mut saw_invalid_reflector_response = false;
-
-    for reflector in &app.nat.reflectors {
-        let Ok(reflector_addr) = reflector.parse::<SocketAddr>() else {
-            eprintln!("nat: ignoring invalid reflector address '{reflector}'");
-            continue;
-        };
-
-        match discover_public_endpoint_with_bind_fallback(listen_port, |port| {
-            discover_public_udp_endpoint(reflector_addr, port, timeout)
-        }) {
-            Ok(endpoint) => {
-                eprintln!("nat: discovered public endpoint via reflector {reflector}: {endpoint}");
-                return Some(endpoint);
-            }
-            Err(error) => {
-                if existing_endpoint.is_some()
-                    && error.to_string().starts_with("invalid discovery response:")
-                {
-                    saw_invalid_reflector_response = true;
-                }
-                eprintln!("nat: reflector discovery failed via {reflector}: {error}");
-            }
-        }
-    }
-
-    if existing_endpoint.is_some() && saw_invalid_reflector_response {
-        return None;
-    }
-
-    for server in &app.nat.stun_servers {
-        match discover_public_endpoint_with_bind_fallback(listen_port, |port| {
-            discover_public_udp_endpoint_via_stun(server, port, timeout)
-        }) {
-            Ok(endpoint) => {
-                eprintln!("nat: discovered public endpoint via STUN {server}: {endpoint}");
-                return Some(endpoint);
-            }
-            Err(error) => {
-                eprintln!("nat: stun discovery failed via {server}: {error}");
-            }
-        }
-    }
-
-    None
-}
-
-fn discover_public_endpoint_with_bind_fallback<F>(
-    listen_port: u16,
-    mut discover: F,
-) -> Result<String>
-where
-    F: FnMut(u16) -> Result<String>,
-{
-    match discover(listen_port) {
-        Ok(endpoint) => Ok(endpoint),
-        Err(error) => {
-            let error_text = error.to_string();
-            if listen_port == 0 || !public_endpoint_discovery_bind_conflict(&error_text) {
-                return Err(error);
-            }
-
-            let endpoint = discover(0)?;
-            Ok(endpoint_with_listen_port(&endpoint, listen_port))
-        }
-    }
-}
-
-fn public_endpoint_discovery_bind_conflict(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    is_resource_busy_message(message)
-        || lower.contains("failed to bind udp stun socket")
-        || lower.contains("failed to bind udp discovery socket")
-}
-
-fn is_resource_busy_message(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("resource busy") || lower.contains("address already in use")
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DiscoveredPublicSignalEndpoint {
-    listen_port: u16,
-    endpoint: String,
-}
-
-fn refresh_public_signal_endpoint(
-    app: &AppConfig,
-    listen_port: u16,
-    public_signal_endpoint: &mut Option<DiscoveredPublicSignalEndpoint>,
-) {
-    let previous = public_signal_endpoint.clone();
-    *public_signal_endpoint = discover_public_signal_endpoint(app, listen_port, previous.as_ref())
-        .map(|endpoint| DiscoveredPublicSignalEndpoint {
-            listen_port,
-            endpoint,
-        })
-        .or_else(|| fallback_public_signal_endpoint(previous.as_ref(), listen_port));
-}
-
-fn fallback_public_signal_endpoint(
-    previous: Option<&DiscoveredPublicSignalEndpoint>,
-    listen_port: u16,
-) -> Option<DiscoveredPublicSignalEndpoint> {
-    let previous = previous?.clone();
-    if previous.listen_port != listen_port {
-        return None;
-    }
-
-    // If fresh discovery fails after a restart, prefer the same public host on the
-    // current listen port instead of indefinitely re-announcing a stale external port.
-    let endpoint = endpoint_with_listen_port(&previous.endpoint, listen_port);
-    Some(DiscoveredPublicSignalEndpoint {
-        listen_port,
-        endpoint,
-    })
-}
-
-fn restored_public_signal_endpoint_from_state(
-    state: Option<&DaemonRuntimeState>,
-    listen_port: u16,
-) -> Option<DiscoveredPublicSignalEndpoint> {
-    let state = state?;
-    let endpoint = state.advertised_endpoint.trim();
-    if endpoint.is_empty() || endpoint_is_local_only(endpoint) {
-        return None;
-    }
-
-    let stored_listen_port = if state.listen_port == 0 {
-        listen_port
-    } else {
-        state.listen_port
-    };
-    let previous = DiscoveredPublicSignalEndpoint {
-        listen_port: stored_listen_port,
-        endpoint: endpoint.to_string(),
-    };
-
-    if stored_listen_port == listen_port {
-        Some(previous)
-    } else {
-        fallback_public_signal_endpoint(Some(&previous), listen_port)
-    }
-}
-
-fn sync_public_signal_endpoint_from_mapping_or_stun(
-    app: &AppConfig,
-    listen_port: u16,
-    port_mapping_runtime: &PortMappingRuntime,
-    public_signal_endpoint: &mut Option<DiscoveredPublicSignalEndpoint>,
-) {
-    if !app.nat.enabled {
-        *public_signal_endpoint = None;
-        return;
-    }
-
-    if let Some(endpoint) = port_mapping_runtime
-        .advertised_endpoint()
-        .and_then(|endpoint| public_signal_endpoint_from_mapping(listen_port, endpoint))
-    {
-        *public_signal_endpoint = Some(endpoint);
-        return;
-    }
-
-    refresh_public_signal_endpoint(app, listen_port, public_signal_endpoint);
-}
-
-fn public_signal_endpoint_from_mapping(
-    listen_port: u16,
-    endpoint: String,
-) -> Option<DiscoveredPublicSignalEndpoint> {
-    if endpoint_is_local_only(&endpoint) {
-        return None;
-    }
-
-    Some(DiscoveredPublicSignalEndpoint {
-        listen_port,
-        endpoint,
-    })
-}
-
-async fn refresh_public_signal_endpoint_with_port_mapping(
+async fn refresh_port_mapping(
     app: &AppConfig,
     network_snapshot: &diagnostics::NetworkSnapshot,
     listen_port: u16,
     port_mapping_runtime: &mut PortMappingRuntime,
-    public_signal_endpoint: &mut Option<DiscoveredPublicSignalEndpoint>,
 ) {
     if !app.nat.enabled {
         port_mapping_runtime.stop().await;
-        *public_signal_endpoint = None;
         return;
     }
 
@@ -1923,13 +1640,6 @@ async fn refresh_public_signal_endpoint_with_port_mapping(
     {
         eprintln!("nat: port mapping refresh failed: {error}");
     }
-
-    sync_public_signal_endpoint_from_mapping_or_stun(
-        app,
-        listen_port,
-        port_mapping_runtime,
-        public_signal_endpoint,
-    );
 }
 
 fn network_probe_timeout(app: &AppConfig) -> Duration {
@@ -1976,15 +1686,6 @@ fn route_targets_require_endpoint_bypass(route_targets: &[String]) -> bool {
     route_targets
         .iter()
         .any(|route| !route_is_host_route(route))
-}
-
-fn public_endpoint_for_listen_port(
-    public_signal_endpoint: Option<&DiscoveredPublicSignalEndpoint>,
-    actual_listen_port: u16,
-) -> Option<String> {
-    public_signal_endpoint
-        .filter(|endpoint| endpoint.listen_port == actual_listen_port)
-        .map(|endpoint| endpoint.endpoint.clone())
 }
 
 fn daemon_vpn_active(vpn_enabled: bool, expected_peers: usize) -> bool {
@@ -2207,7 +1908,6 @@ async fn refresh_fips_tunnel_config(
     network_id: &str,
     own_pubkey: Option<&str>,
     endpoint_cache: Option<&crate::fips_private_mesh::FipsEndpointCacheState>,
-    public_signal_endpoint: Option<&DiscoveredPublicSignalEndpoint>,
 ) -> Result<()> {
     let config = fips_tunnel_config_from_app(
         app,
@@ -2215,7 +1915,6 @@ async fn refresh_fips_tunnel_config(
         runtime.iface().to_string(),
         own_pubkey,
         endpoint_cache,
-        public_signal_endpoint,
     )?;
     runtime.apply_config(config).await
 }
@@ -2227,7 +1926,6 @@ fn fips_tunnel_config_from_app(
     iface: impl Into<String>,
     own_pubkey: Option<&str>,
     endpoint_cache: Option<&crate::fips_private_mesh::FipsEndpointCacheState>,
-    public_signal_endpoint: Option<&DiscoveredPublicSignalEndpoint>,
 ) -> Result<crate::fips_private_mesh::FipsPrivateTunnelConfig> {
     let cached_peer_endpoints = crate::fips_private_mesh::cached_fips_peer_endpoints(
         endpoint_cache,
@@ -2244,27 +1942,21 @@ fn fips_tunnel_config_from_app(
             own_pubkey,
             cached_peer_endpoints,
         )?;
-    config.advertised_endpoint =
-        fips_advertised_endpoint(app, public_signal_endpoint, config.listen_port);
+    // Daemon no longer pre-discovers a public endpoint. fips-core's
+    // build_overlay_advert performs its own STUN observation and advertises
+    // <reflexive_ip>:<listen_port> directly; if that's wrong (e.g. symmetric
+    // NAT), peers fall back to udp:nat traversal via Nostr signaling. Use
+    // any operator-configured endpoint as a hint when set.
+    let configured = endpoint_with_listen_port(&app.node.endpoint, config.listen_port);
+    config.advertised_endpoint = if endpoint_is_local_only(&configured) {
+        String::new()
+    } else {
+        configured
+    };
     Ok(config)
 }
 
 #[cfg(feature = "embedded-fips")]
-fn fips_advertised_endpoint(
-    app: &AppConfig,
-    public_signal_endpoint: Option<&DiscoveredPublicSignalEndpoint>,
-    listen_port: u16,
-) -> String {
-    public_endpoint_for_listen_port(public_signal_endpoint, listen_port)
-        .or_else(|| {
-            let configured = endpoint_with_listen_port(&app.node.endpoint, listen_port);
-            (!endpoint_is_local_only(&configured)).then_some(configured)
-        })
-        .unwrap_or_default()
-}
-
-#[cfg(feature = "embedded-fips")]
-#[allow(clippy::too_many_arguments)]
 async fn sync_fips_private_runtime(
     runtime: &mut Option<crate::fips_private_mesh::FipsPrivateTunnelRuntime>,
     app: &AppConfig,
@@ -2272,7 +1964,6 @@ async fn sync_fips_private_runtime(
     iface: &str,
     own_pubkey: Option<&str>,
     endpoint_cache: Option<&crate::fips_private_mesh::FipsEndpointCacheState>,
-    public_signal_endpoint: Option<&DiscoveredPublicSignalEndpoint>,
     vpn_enabled: bool,
     expected_peers: usize,
 ) -> Result<()> {
@@ -2293,7 +1984,6 @@ async fn sync_fips_private_runtime(
         config_iface,
         own_pubkey,
         endpoint_cache,
-        public_signal_endpoint,
     )?;
 
     let restart = runtime
