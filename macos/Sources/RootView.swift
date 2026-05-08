@@ -332,7 +332,7 @@ struct RootView: View {
                         badge("Exit", style: selected ? .selected : .warn)
                     }
                     if isFipsRouted(participant) {
-                        badge("Routed", style: selected ? .selected : .muted)
+                        badge("via mesh", style: selected ? .selected : .muted)
                     }
                 }
                 HStack(spacing: 6) {
@@ -408,9 +408,9 @@ struct RootView: View {
                                 badge("Exit", style: .warn)
                             }
                             if isDirectFipsPeer(participant) {
-                                badge("Direct FIPS", style: .ok)
+                                badge("direct connection", style: .ok)
                             } else if isFipsRouted(participant) {
-                                badge("FIPS routed", style: .muted)
+                                badge("via mesh", style: .muted)
                             }
                         }
                     }
@@ -1338,14 +1338,14 @@ struct RootView: View {
             return "This device"
         }
         if isDirectFipsPeer(participant) {
-            let transport = participant.fipsTransportType.isEmpty ? "FIPS" : participant.fipsTransportType.uppercased()
+            let transport = participant.fipsTransportType.isEmpty ? "" : " (\(participant.fipsTransportType.uppercased()))"
             if participant.fipsSrttMs > 0 {
-                return "Direct \(transport), \(participant.fipsSrttMs) ms"
+                return "Direct connection\(transport), \(participant.fipsSrttMs) ms"
             }
-            return "Direct \(transport)"
+            return "Direct connection\(transport)"
         }
         if participant.reachable {
-            return "Routed through FIPS mesh"
+            return "Via mesh"
         }
         if participant.state == "pending" {
             return "Connecting"
