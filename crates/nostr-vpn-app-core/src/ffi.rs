@@ -2035,6 +2035,26 @@ mod tests {
     }
 
     #[test]
+    fn lan_pairing_runs_for_fifteen_minutes_until_cancelled() {
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+
+        runtime.dispatch(NativeAppAction::StartLanPairing);
+        assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
+
+        let state = runtime.state();
+        assert!(state.lan_pairing_active);
+        assert!(state.lan_pairing_remaining_secs <= LAN_PAIRING_DURATION.as_secs());
+        assert!(state.lan_pairing_remaining_secs > LAN_PAIRING_DURATION.as_secs() - 10);
+
+        runtime.dispatch(NativeAppAction::StopLanPairing);
+        let state = runtime.state();
+        assert!(!state.lan_pairing_active);
+        assert_eq!(state.lan_pairing_remaining_secs, 0);
+        assert!(state.lan_peers.is_empty());
+    }
+
+    #[test]
     fn accepting_join_request_uses_requester_node_name_as_alias() {
         use nostr_sdk::prelude::{Keys, ToBech32};
 

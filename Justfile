@@ -47,6 +47,7 @@ info:
     @echo "  just e2e-active-network"
     @echo "  just e2e-exit-node"
     @echo "  just e2e-fips-routed-udp"
+    @echo "  just e2e-lan-pairing"
     @echo "  just e2e-nat"
     @echo "  just e2e-roster-admin"
 
@@ -144,6 +145,9 @@ e2e-exit-node:
 
 e2e-fips-routed-udp:
     ./scripts/e2e-fips-routed-udp-docker.sh
+
+e2e-lan-pairing:
+    ./scripts/e2e-lan-pairing-docker.sh
 
 e2e-nat:
     ./scripts/e2e-nat-docker.sh

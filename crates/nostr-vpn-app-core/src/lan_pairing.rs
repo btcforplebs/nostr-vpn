@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use nostr_vpn_core::config::normalize_nostr_pubkey;
 use serde::{Deserialize, Serialize};
+use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::invite::{parse_network_invite, to_npub};
 
@@ -90,17 +91,7 @@ pub(crate) fn spawn_lan_pairing_worker(
     announcement: LanPairingAnnouncement,
     expires_at: SystemTime,
 ) -> Result<LanPairingWorker> {
-    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, LAN_PAIRING_PORT))
-        .context("failed to bind LAN pairing UDP socket")?;
-    socket
-        .join_multicast_v4(&LAN_PAIRING_ADDR, &Ipv4Addr::UNSPECIFIED)
-        .context("failed to join LAN pairing multicast group")?;
-    socket
-        .set_read_timeout(Some(LAN_PAIRING_READ_TIMEOUT))
-        .context("failed to configure LAN pairing socket timeout")?;
-    socket
-        .set_multicast_loop_v4(true)
-        .context("failed to configure LAN pairing multicast loopback")?;
+    let socket = bind_lan_pairing_socket()?;
 
     let (sender, receiver) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
@@ -122,6 +113,41 @@ pub(crate) fn spawn_lan_pairing_worker(
         stop,
         handle: Some(handle),
     })
+}
+
+fn bind_lan_pairing_socket() -> Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+        .context("failed to create LAN pairing UDP socket")?;
+    socket
+        .set_reuse_address(true)
+        .context("failed to configure LAN pairing socket reuse")?;
+    #[cfg(all(
+        unix,
+        not(target_os = "solaris"),
+        not(target_os = "illumos"),
+        not(target_os = "cygwin")
+    ))]
+    socket
+        .set_reuse_port(true)
+        .context("failed to configure LAN pairing port reuse")?;
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, LAN_PAIRING_PORT).into())
+        .context("failed to bind LAN pairing UDP socket")?;
+
+    let socket: UdpSocket = socket.into();
+    socket
+        .join_multicast_v4(&LAN_PAIRING_ADDR, &Ipv4Addr::UNSPECIFIED)
+        .context("failed to join LAN pairing multicast group")?;
+    socket
+        .set_read_timeout(Some(LAN_PAIRING_READ_TIMEOUT))
+        .context("failed to configure LAN pairing socket timeout")?;
+    socket
+        .set_multicast_loop_v4(true)
+        .context("failed to configure LAN pairing multicast loopback")?;
+    socket
+        .set_multicast_ttl_v4(1)
+        .context("failed to configure LAN pairing multicast TTL")?;
+    Ok(socket)
 }
 
 pub(crate) fn decode_lan_pairing_payload(
@@ -226,6 +252,7 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use nostr_sdk::prelude::ToBech32;
     use serde_json::json;
+    use std::time::Instant;
 
     use super::*;
 
@@ -258,6 +285,67 @@ mod tests {
         assert_eq!(signal.endpoint, "192.0.2.10:51820");
         assert_eq!(signal.network_name, "Office mesh");
         assert_eq!(signal.network_id, "office-mesh");
+    }
+
+    #[test]
+    fn lan_pairing_workers_exchange_invites_over_looped_multicast() {
+        let alice_npub = nostr_sdk::Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("alice npub");
+        let bob_npub = nostr_sdk::Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("bob npub");
+        let alice_invite = invite_for(&alice_npub, "Alice mesh", "alice-mesh");
+        let bob_invite = invite_for(&bob_npub, "Bob mesh", "bob-mesh");
+        let expires_at = SystemTime::now()
+            .checked_add(Duration::from_secs(7))
+            .expect("expiry");
+
+        let mut alice = spawn_lan_pairing_worker(
+            LanPairingAnnouncement {
+                npub: alice_npub.clone(),
+                node_name: "Alice".to_string(),
+                endpoint: "192.0.2.10:51820".to_string(),
+                invite: alice_invite,
+            },
+            expires_at,
+        )
+        .expect("start alice LAN pairing");
+        let mut bob = spawn_lan_pairing_worker(
+            LanPairingAnnouncement {
+                npub: bob_npub.clone(),
+                node_name: "Bob".to_string(),
+                endpoint: "192.0.2.11:51820".to_string(),
+                invite: bob_invite,
+            },
+            expires_at,
+        )
+        .expect("start bob LAN pairing");
+
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut alice_saw_bob = false;
+        let mut bob_saw_alice = false;
+        while Instant::now() < deadline && !(alice_saw_bob && bob_saw_alice) {
+            alice_saw_bob |= alice.drain().into_iter().any(|signal| {
+                signal.npub == bob_npub
+                    && signal.node_name == "Bob"
+                    && signal.network_id == "bob-mesh"
+            });
+            bob_saw_alice |= bob.drain().into_iter().any(|signal| {
+                signal.npub == alice_npub
+                    && signal.node_name == "Alice"
+                    && signal.network_id == "alice-mesh"
+            });
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        alice.stop();
+        bob.stop();
+
+        assert!(alice_saw_bob, "alice did not receive bob's LAN invite");
+        assert!(bob_saw_alice, "bob did not receive alice's LAN invite");
     }
 
     fn invite_for(admin_npub: &str, network_name: &str, network_id: &str) -> String {
