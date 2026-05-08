@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func showMainWindow() {
         NSApp.unhide(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         observeWindows()
         if let window = NSApp.windows.first(where: { $0.title == "Nostr VPN" }) ?? NSApp.windows.first {
             window.makeKeyAndOrderFront(nil)
@@ -115,44 +115,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
 final class SingleInstanceCoordinator: NSObject {
     private let notificationName = Notification.Name("to.iris.nvpn.macos.open")
-    private var lockFd: Int32 = -1
+    private var lockFds: [Int32] = []
     var onOpen: (([URL]) -> Void)?
 
     func claimOrNotifyCurrentLaunch() -> Bool {
-        let lockPath = lockFilePath()
-        let fd = open(lockPath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
-        guard fd >= 0 else {
-            return true
-        }
-        if flock(fd, LOCK_EX | LOCK_NB) == 0 {
-            lockFd = fd
-            DistributedNotificationCenter.default().addObserver(
-                self,
-                selector: #selector(receiveOpenNotification(_:)),
-                name: notificationName,
-                object: nil
-            )
-            return true
+        var acquiredFds: [Int32] = []
+        for lockPath in Self.lockFilePaths() {
+            let fd = open(lockPath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            guard fd >= 0 else {
+                continue
+            }
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                acquiredFds.append(fd)
+                continue
+            }
+
+            close(fd)
+            Self.release(fds: acquiredFds)
+            notifyCurrentLaunch()
+            return false
         }
 
-        close(fd)
-        let urls = Self.startupUrls().map(\.absoluteString)
-        DistributedNotificationCenter.default().postNotificationName(
-            notificationName,
-            object: nil,
-            userInfo: ["urls": urls],
-            deliverImmediately: true
+        if acquiredFds.isEmpty {
+            if Self.activateRunningCopy() {
+                notifyCurrentLaunch()
+                return false
+            }
+        }
+
+        lockFds = acquiredFds
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(receiveOpenNotification(_:)),
+            name: notificationName,
+            object: nil
         )
-        return false
+        return true
     }
 
     func release() {
         DistributedNotificationCenter.default().removeObserver(self)
-        if lockFd >= 0 {
-            flock(lockFd, LOCK_UN)
-            close(lockFd)
-            lockFd = -1
-        }
+        Self.release(fds: lockFds)
+        lockFds = []
     }
 
     @objc private func receiveOpenNotification(_ notification: Notification) {
@@ -161,14 +165,45 @@ final class SingleInstanceCoordinator: NSObject {
         onOpen?(urls)
     }
 
-    private func lockFilePath() -> String {
-        let dir = FileManager.default
+    private func notifyCurrentLaunch() {
+        DistributedNotificationCenter.default().postNotificationName(
+            notificationName,
+            object: nil,
+            userInfo: ["urls": Self.startupUrls().map(\.absoluteString)],
+            deliverImmediately: true
+        )
+    }
+
+    private static func lockFilePaths() -> [String] {
+        var paths = ["/tmp/to.iris.nvpn.macos.gui.\(getuid()).lock"]
+        if let dir = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first?
-            .appendingPathComponent("nvpn", isDirectory: true)
-            ?? FileManager.default.temporaryDirectory.appendingPathComponent("nvpn", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("NostrVpnMac.lock").path
+            .appendingPathComponent("nvpn", isDirectory: true) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            paths.append(dir.appendingPathComponent("NostrVpnMac.lock").path)
+        }
+        return paths
+    }
+
+    private static func release(fds: [Int32]) {
+        for fd in fds {
+            flock(fd, LOCK_UN)
+            close(fd)
+        }
+    }
+
+    private static func activateRunningCopy() -> Bool {
+        let currentPid = getpid()
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { app in
+            app.processIdentifier != currentPid
+                && app.activationPolicy == .regular
+                && app.bundleIdentifier == "to.iris.nvpn.macos"
+        }) else {
+            return false
+        }
+        app.activate(options: [.activateAllWindows])
+        return true
     }
 
     private static func startupUrls() -> [URL] {
