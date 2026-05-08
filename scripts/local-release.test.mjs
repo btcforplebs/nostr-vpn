@@ -142,6 +142,35 @@ test('validateReleaseAssetSet rejects macOS app zip releases', () => {
   )
 })
 
+test('validateReleaseAssetSet rejects unsigned Android artifacts', () => {
+  assert.throws(
+    () => validateReleaseAssetSet(['nostr-vpn-v4.0.1-android-arm64-unsigned.apk']),
+    /unsigned Android artifacts/,
+  )
+})
+
+test('validateReleaseAssetSet can require complete app release artifacts', () => {
+  assert.throws(
+    () =>
+      validateReleaseAssetSet([
+        'nostr-vpn-v4.0.1-macos-arm64.app.tar.gz',
+        'nostr-vpn-v4.0.1-macos-arm64.dmg',
+      ], { requireCompleteAppRelease: true }),
+    /Linux x64 desktop package, Windows x64 installer, signed Android APK/,
+  )
+
+  assert.doesNotThrow(() =>
+    validateReleaseAssetSet([
+      'nostr-vpn-v4.0.1-android-arm64.aab',
+      'nostr-vpn-v4.0.1-android-arm64.apk',
+      'nostr-vpn-v4.0.1-linux-x64.deb',
+      'nostr-vpn-v4.0.1-macos-arm64.app.tar.gz',
+      'nostr-vpn-v4.0.1-macos-arm64.dmg',
+      'nostr-vpn-v4.0.1-windows-x64-setup.exe',
+    ], { requireCompleteAppRelease: true }),
+  )
+})
+
 test('autoDetectWindowsVmName returns the only running Windows VM', () => {
   const name = autoDetectWindowsVmName(`
 UUID                                    STATUS       IP_ADDR         NAME

@@ -78,13 +78,19 @@ export function shouldBlockLocalLinuxAmd64Qemu({ platform, hostPlatform, hostArc
   return platform === 'linux/amd64' && hostPlatform === 'darwin' && hostArch === 'arm64'
 }
 
-export function validateReleaseAssetSet(assetNames, { allowLinuxArm64DesktopOnly = false } = {}) {
+export function validateReleaseAssetSet(
+  assetNames,
+  { allowLinuxArm64DesktopOnly = false, requireCompleteAppRelease = false } = {},
+) {
   const names = [...assetNames]
   const hasMacosZip = names.some((name) => /^nostr-vpn-.*-macos-arm64\.zip$/.test(name))
   const hasMacosDmg = names.some((name) => /^nostr-vpn-.*-macos-arm64\.dmg$/.test(name))
   const hasMacosUpdater = names.some((name) => /^nostr-vpn-.*-macos-arm64\.app\.tar\.gz$/.test(name))
   const hasLinuxX64Desktop = names.some((name) => /^nostr-vpn-.*-linux-x64\.(AppImage|deb)$/.test(name))
   const hasLinuxArm64Desktop = names.some((name) => /^nostr-vpn-.*-linux-arm64\.(AppImage|deb)$/.test(name))
+  const hasWindowsX64Setup = names.some((name) => /^nostr-vpn-.*-windows-x64-setup\.exe$/.test(name))
+  const hasSignedAndroidApk = names.some((name) => /^nostr-vpn-.*-android-arm64\.apk$/.test(name))
+  const hasUnsignedAndroid = names.some((name) => /^nostr-vpn-.*-android-arm64-unsigned\.(apk|aab)$/.test(name))
 
   if (hasMacosZip) {
     throw new Error(
@@ -102,6 +108,34 @@ export function validateReleaseAssetSet(assetNames, { allowLinuxArm64DesktopOnly
     throw new Error(
       'Release has Linux ARM64 desktop artifacts but no Linux x64 desktop artifacts. Build Linux x64 on a native amd64 builder, remove the ARM64 desktop artifacts, or set NVPN_ALLOW_LINUX_ARM64_DESKTOP_ONLY=1.',
     )
+  }
+
+  if (hasUnsignedAndroid) {
+    throw new Error(
+      'Release includes unsigned Android artifacts. Configure Android signing for public releases.',
+    )
+  }
+
+  if (requireCompleteAppRelease) {
+    const missing = []
+    if (!hasMacosDmg) {
+      missing.push('macOS DMG')
+    }
+    if (!hasMacosUpdater) {
+      missing.push('macOS updater archive')
+    }
+    if (!hasLinuxX64Desktop) {
+      missing.push('Linux x64 desktop package')
+    }
+    if (!hasWindowsX64Setup) {
+      missing.push('Windows x64 installer')
+    }
+    if (!hasSignedAndroidApk) {
+      missing.push('signed Android APK')
+    }
+    if (missing.length > 0) {
+      throw new Error(`Release is missing required app artifact(s): ${missing.join(', ')}.`)
+    }
   }
 }
 

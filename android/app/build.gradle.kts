@@ -8,6 +8,15 @@ import org.gradle.api.tasks.Exec
 
 val repoRoot = layout.projectDirectory.dir("../..")
 val rustOutputDir = layout.projectDirectory.dir("src/main/jniLibs")
+val releaseStoreFile = providers.environmentVariable("ANDROID_KEYSTORE_PATH")
+val releaseStorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS")
+val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD")
+val hasReleaseSigning =
+    releaseStoreFile.isPresent &&
+        releaseStorePassword.isPresent &&
+        releaseKeyAlias.isPresent &&
+        releaseKeyPassword.isPresent
 
 android {
     namespace = "org.nostrvpn.app"
@@ -28,6 +37,14 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.create("release") {
+                    storeFile = file(releaseStoreFile.get())
+                    storePassword = releaseStorePassword.get()
+                    keyAlias = releaseKeyAlias.get()
+                    keyPassword = releaseKeyPassword.get()
+                }
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

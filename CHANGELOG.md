@@ -18,6 +18,7 @@ All notable changes to this project are documented in this file.
 ### Fixed
 
 - macOS release artifacts are signed/notarized `.dmg` downloads plus signed/notarized `.app.tar.gz` updater archives again; local and GitHub release paths now fail before publishing if signing or notarization is missing.
+- Linux, Windows, and Android GUI release artifacts are first-class release outputs again, and public release staging now fails if the app artifacts are incomplete or Android artifacts are unsigned.
 - Desktop update stripes now restore the auto-install checkbox.
 - Android and iOS now show the active network name outside the device rows, keep VPN on/off in the top bar, and list this device as a normal participant row instead of treating the first peer as a hero.
 - WireGuard-backed exit-node providers now route their own default internet traffic through the WireGuard upstream too, while preserving the WireGuard peer endpoint on the underlay route.

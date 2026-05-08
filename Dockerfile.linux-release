@@ -7,12 +7,21 @@ RUN apt-get update \
       ca-certificates \
       curl \
       file \
+      dpkg-dev \
+      fakeroot \
       libclang-dev \
+      libadwaita-1-dev \
+      libdbus-1-dev \
+      libgtk-4-dev \
       libssl-dev \
+      librsvg2-bin \
       musl-tools \
       pkg-config \
       rsync \
+      zbar-tools \
     && rm -rf /var/lib/apt/lists/*
+
+RUN cargo install cargo-deb --locked
 
 RUN mkdir -p /build
 

@@ -18,6 +18,7 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 import {
+  androidReleaseAssetName,
   autoDetectWindowsVmName,
   buildReleaseManifest,
   buildReleaseManifestFiles,
@@ -34,7 +35,7 @@ const repoRoot = resolve(__dirname, '..')
 const rootCargoToml = join(repoRoot, 'Cargo.toml')
 const changelogPath = join(repoRoot, 'CHANGELOG.md')
 const distDir = join(repoRoot, 'dist')
-const defaultEnvFiles = [join(repoRoot, '.env.release.local')]
+const defaultEnvFiles = [join(repoRoot, '.env.release.local'), join(repoRoot, '.env.zapstore.local')]
 const versionlessCliAssets = new Map([
   ['nvpn-aarch64-apple-darwin.tar.gz', 'nvpn-{tag}-aarch64-apple-darwin.tar.gz'],
   ['nvpn-x86_64-unknown-linux-musl.tar.gz', 'nvpn-{tag}-x86_64-unknown-linux-musl.tar.gz'],
@@ -57,13 +58,13 @@ Options:
   --release-tree <name>    htree release tree name (default: releases/nostr-vpn)
   --stage-dir <path>       Directory used for staged release metadata
   --env-file <path>        Extra dotenv file to load (repeatable)
-  --only <csv>             Limit steps to verify,macos,linux,windows
+  --only <csv>             Limit steps to verify,macos,linux,windows,android
   --skip <csv>             Skip steps by name
   --allow-partial          Stage/publish even if a selected platform build fails
   --help                   Show this help
 
-The script auto-loads .env.release.local when present. Shell environment
-variables override values from that file.`)
+The script auto-loads .env.release.local and .env.zapstore.local when present.
+Shell environment variables override values from those files.`)
 }
 
 function parseArgs(argv) {
@@ -166,6 +167,16 @@ function cargoTargetDir(env = process.env) {
     return join(repoRoot, 'target')
   }
   return resolve(repoRoot, configured)
+}
+
+function findFirstFile(root, matcher) {
+  if (!existsSync(root)) {
+    return null
+  }
+
+  const entries = readdirSync(root).sort()
+  const match = entries.find((entry) => matcher(entry))
+  return match ? join(root, match) : null
 }
 
 function run(command, args, { cwd = repoRoot, env = process.env, capture = false, dryRun = false } = {}) {
@@ -302,7 +313,7 @@ $sharedRepo = ${psQuote(sharedRepoPath)}
 $guestRepo = Join-Path $env:USERPROFILE 'src\\nostr-vpn'
 $guestRoot = Split-Path $guestRepo
 New-Item -ItemType Directory -Force -Path $guestRoot | Out-Null
-robocopy $sharedRepo $guestRepo /MIR /XD target dist .git artifacts /XF .env.release.local | Out-Null
+robocopy $sharedRepo $guestRepo /MIR /XD target dist .git artifacts /XF .env.release.local .env.zapstore.local | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
 exit 0
 `,
@@ -315,24 +326,35 @@ function buildWindowsArtifacts({ env, tag, dryRun, builtLines }) {
     throw new SkipStepError('Windows VM builds are only wired up for the macOS + Parallels workflow.')
   }
   if (!commandExists('prlctl')) {
-    throw new SkipStepError('Skipping Windows CLI artifacts because prlctl is unavailable.')
+    throw new SkipStepError('Skipping Windows artifacts because prlctl is unavailable.')
   }
 
   const sharedRepoPath = env.NVPN_WINDOWS_SHARED_REPO_PATH || defaultSharedWindowsRepoPath()
   if (!sharedRepoPath) {
-    throw new SkipStepError('Skipping Windows CLI artifacts because the shared repo path could not be derived; set NVPN_WINDOWS_SHARED_REPO_PATH.')
+    throw new SkipStepError('Skipping Windows artifacts because the shared repo path could not be derived; set NVPN_WINDOWS_SHARED_REPO_PATH.')
   }
 
   const vmName =
     env.NVPN_WINDOWS_VM_NAME ||
     autoDetectWindowsVmName(run('prlctl', ['list', '-a'], { capture: true, dryRun }))
   if (!vmName) {
-    throw new SkipStepError('Skipping Windows CLI artifacts because no unique running Windows VM was detected; set NVPN_WINDOWS_VM_NAME.')
+    throw new SkipStepError('Skipping Windows artifacts because no unique running Windows VM was detected; set NVPN_WINDOWS_VM_NAME.')
   }
 
   syncRepoToWindowsVm({ vmName, sharedRepoPath, dryRun })
 
   const llvmBin = env.NVPN_WINDOWS_LLVM_BIN || 'C:\\Program Files\\LLVM\\bin'
+  const vmArchitecture = runWindowsPowerShell(
+    vmName,
+    '[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()',
+    { capture: true, dryRun },
+  ).trim()
+  if (!dryRun && vmArchitecture.toLowerCase() !== 'x64') {
+    throw new SkipStepError(
+      `Skipping Windows artifacts because VM ${vmName} is ${vmArchitecture}; Windows x64 release artifacts must be built on an x64 Windows runner.`,
+    )
+  }
+
   const targets = splitCsv(
     env.NVPN_WINDOWS_CLI_TARGETS || 'x86_64-pc-windows-msvc,aarch64-pc-windows-msvc',
   )
@@ -361,16 +383,39 @@ Remove-Item -Recurse -Force $tempDir
     )
     builtLines.push(`Built Windows ${windowsArtifactArch(target)} CLI inside Parallels VM ${vmName}.`)
   }
+
+  const guiTargets = splitCsv(env.NVPN_WINDOWS_GUI_TARGETS || 'x86_64-pc-windows-msvc')
+  for (const target of guiTargets) {
+    const arch = windowsArtifactArch(target)
+    if (arch !== 'x64') {
+      throw new Error(`Windows desktop installer currently supports x64 only, got ${target}.`)
+    }
+
+    const installerName = `nostr-vpn-${tag}-windows-${arch}-setup.exe`
+    runWindowsPowerShell(
+      vmName,
+      `
+${pathSetup}
+Set-Location ${guestRepo}
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\windows-build.ps1 -Configuration Release -Publish -Installer -Tag ${psQuote(tag)} -OutputDir ${psQuote(distPath)}
+$installer = ${psQuote(`${distPath}\\${installerName}`)}
+if (!(Test-Path $installer)) { throw "Missing Windows installer: $installer" }
+`,
+      { dryRun },
+    )
+    builtLines.push(`Built Windows ${arch} desktop installer inside Parallels VM ${vmName}.`)
+  }
 }
 
 function buildLinuxArtifacts({ env, tag, dryRun, builtLines }) {
   if (!commandExists('docker')) {
-    throw new SkipStepError('Skipping Linux CLI artifacts because docker is not on PATH.')
+    throw new SkipStepError('Skipping Linux artifacts because docker is not on PATH.')
   }
 
   const platform = env.NVPN_LINUX_DOCKER_PLATFORM || 'linux/amd64'
   const { linuxArchSuffix, muslTriple } = linuxReleaseTargetsForDockerPlatform(platform)
   const imageName = 'nostr-vpn-linux-release'
+  const linuxDebName = `nostr-vpn-${tag}-linux-${linuxArchSuffix}.deb`
   run('docker', ['build', '--platform', platform, '-f', 'Dockerfile.linux-release', '-t', imageName, '.'], {
     dryRun,
   })
@@ -383,6 +428,11 @@ function buildLinuxArtifacts({ env, tag, dryRun, builtLines }) {
     'set -euo pipefail',
     `rustup target add ${muslTriple}`,
     'rsync -a --exclude target --exclude dist --exclude .git /work/ /build/',
+    'cd /build',
+    'cargo build --release --locked --manifest-path linux/Cargo.toml',
+    'cd /build/linux',
+    'cargo deb --no-build',
+    `cp "$(ls -1t target/debian/*.deb | head -1)" "/work/dist/${linuxDebName}"`,
     'cd /build',
     `cargo build --release --target ${muslTriple} -p nostr-vpn-cli`,
     'rm -rf /work/dist/nvpn',
@@ -414,7 +464,144 @@ function buildLinuxArtifacts({ env, tag, dryRun, builtLines }) {
     { dryRun },
   )
 
+  builtLines.push(`Built Linux ${linuxArchSuffix} desktop Debian package in Docker (${platform}).`)
   builtLines.push(`Built Linux ${linuxArchSuffix} musl CLI in Docker (${platform}).`)
+}
+
+function ensureAndroidSdkEnv(env) {
+  const updated = { ...env }
+  if (!updated.ANDROID_SDK_ROOT) {
+    const candidate = join(os.homedir(), 'Library', 'Android', 'sdk')
+    if (existsSync(candidate)) {
+      updated.ANDROID_SDK_ROOT = candidate
+    }
+  }
+  if (!updated.ANDROID_HOME && updated.ANDROID_SDK_ROOT) {
+    updated.ANDROID_HOME = updated.ANDROID_SDK_ROOT
+  }
+  if (!updated.ANDROID_NDK_HOME && updated.ANDROID_HOME) {
+    const ndkRoot = join(updated.ANDROID_HOME, 'ndk')
+    if (existsSync(ndkRoot)) {
+      const versions = readdirSync(ndkRoot).sort((left, right) =>
+        left.localeCompare(right, undefined, { numeric: true }),
+      )
+      const latest = versions.at(-1)
+      if (latest) {
+        updated.ANDROID_NDK_HOME = join(ndkRoot, latest)
+      }
+    }
+  }
+  if (!updated.NDK_HOME && updated.ANDROID_NDK_HOME) {
+    updated.NDK_HOME = updated.ANDROID_NDK_HOME
+  }
+  return updated
+}
+
+function findAndroidBuildTool(env, toolName) {
+  const sdkRoot = env.ANDROID_SDK_ROOT || env.ANDROID_HOME
+  if (!sdkRoot) {
+    return null
+  }
+  const buildToolsRoot = join(sdkRoot, 'build-tools')
+  if (!existsSync(buildToolsRoot)) {
+    return null
+  }
+  const versions = readdirSync(buildToolsRoot).sort((left, right) =>
+    left.localeCompare(right, undefined, { numeric: true }),
+  )
+  for (const version of versions.reverse()) {
+    const candidate = join(buildToolsRoot, version, toolName)
+    if (existsSync(candidate)) {
+      return candidate
+    }
+  }
+  return null
+}
+
+function androidSigningIsComplete(env) {
+  return Boolean(
+    env.ANDROID_KEYSTORE_PATH &&
+      env.ANDROID_KEYSTORE_PASSWORD &&
+      env.ANDROID_KEY_ALIAS &&
+      env.ANDROID_KEY_PASSWORD,
+  )
+}
+
+function buildAndroidArtifacts({ env, tag, dryRun, builtLines }) {
+  const androidEnv = ensureAndroidSdkEnv(env)
+  const sdkRoot = androidEnv.ANDROID_SDK_ROOT || androidEnv.ANDROID_HOME
+  if (!sdkRoot) {
+    throw new SkipStepError('Skipping Android artifacts because ANDROID_SDK_ROOT/ANDROID_HOME is not configured.')
+  }
+  if (!commandExists('cargo-ndk')) {
+    throw new SkipStepError('Skipping Android artifacts because cargo-ndk is not on PATH.')
+  }
+
+  const installedTargets = run('rustup', ['target', 'list', '--installed'], {
+    capture: true,
+    dryRun,
+  })
+  if (!installedTargets.includes('aarch64-linux-android')) {
+    run('rustup', ['target', 'add', 'aarch64-linux-android'], { dryRun })
+  }
+
+  const tempRoot = dryRun ? null : mkdtempSync(join(os.tmpdir(), 'nvpn-android-release-'))
+  let wroteTempKeystore = false
+  try {
+    if (!androidEnv.ANDROID_KEYSTORE_PATH && androidEnv.ANDROID_KEYSTORE_B64 && tempRoot) {
+      androidEnv.ANDROID_KEYSTORE_PATH = join(tempRoot, 'upload-keystore.jks')
+      writeFileSync(androidEnv.ANDROID_KEYSTORE_PATH, Buffer.from(androidEnv.ANDROID_KEYSTORE_B64, 'base64'))
+      wroteTempKeystore = true
+    }
+
+    const signed = androidSigningIsComplete(androidEnv)
+    if (!signed && !envFlagEnabled(androidEnv.NVPN_ALLOW_UNSIGNED_ANDROID)) {
+      throw new Error(
+        'Android release signing is not configured. Set ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD, or set NVPN_ALLOW_UNSIGNED_ANDROID=1 for an explicitly unsigned dev artifact.',
+      )
+    }
+
+    run('bash', [join(repoRoot, 'tools', 'run-android'), ':app:assembleRelease', ':app:bundleRelease'], {
+      env: androidEnv,
+      dryRun,
+    })
+
+    const apkPath = findFirstFile(
+      join(repoRoot, 'android', 'app', 'build', 'outputs', 'apk', 'release'),
+      (entry) => entry.endsWith('.apk'),
+    )
+    const aabPath = findFirstFile(
+      join(repoRoot, 'android', 'app', 'build', 'outputs', 'bundle', 'release'),
+      (entry) => entry.endsWith('.aab'),
+    )
+    if (!dryRun && (!apkPath || !aabPath)) {
+      throw new Error('Expected Android APK/AAB outputs were not produced.')
+    }
+
+    const apkDest = join(distDir, androidReleaseAssetName(tag, { extension: 'apk', signed }))
+    const aabDest = join(distDir, androidReleaseAssetName(tag, { extension: 'aab', signed }))
+    if (!dryRun) {
+      mkdirSync(distDir, { recursive: true })
+      copyFileSync(apkPath, apkDest)
+      copyFileSync(aabPath, aabDest)
+    }
+
+    if (signed) {
+      const apksigner = findAndroidBuildTool(androidEnv, 'apksigner')
+      if (apksigner) {
+        run(apksigner, ['verify', '--verbose', apkDest], { dryRun })
+      }
+    }
+
+    builtLines.push(signed ? 'Built signed Android arm64 APK/AAB.' : 'Built unsigned Android arm64 APK/AAB.')
+  } finally {
+    if (wroteTempKeystore && androidEnv.ANDROID_KEYSTORE_PATH) {
+      rmSync(androidEnv.ANDROID_KEYSTORE_PATH, { force: true })
+    }
+    if (tempRoot) {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  }
 }
 
 function buildMacosArtifacts({ tag, dryRun, builtLines }) {
@@ -519,10 +706,18 @@ function writeReleaseNotes({ tag, commit, stageDir, builtLines, skippedLines, dr
   run('node', args, { dryRun })
 }
 
-function stageRelease({ tag, commit, stageDir, builtLines, skippedLines, dryRun }) {
+function stageRelease({
+  tag,
+  commit,
+  stageDir,
+  builtLines,
+  skippedLines,
+  dryRun,
+  requireCompleteAppRelease,
+}) {
   const assetPaths = collectReleaseAssetPaths(tag)
   const assetNames = assetPaths.map((assetPath) => basename(assetPath))
-  validateReleaseAssetSet(assetNames)
+  validateReleaseAssetSet(assetNames, { requireCompleteAppRelease })
 
   if (dryRun) {
     console.log(`Would stage ${assetPaths.length} currently visible asset(s) into ${stageDir}`)
@@ -622,6 +817,7 @@ function main() {
   const steps = [
     ['verify', () => runVerify({ dryRun: options.dryRun, builtLines })],
     ['macos', () => buildMacosArtifacts({ tag, dryRun: options.dryRun, builtLines })],
+    ['android', () => buildAndroidArtifacts({ env, tag, dryRun: options.dryRun, builtLines })],
     ['linux', () => buildLinuxArtifacts({ env, tag, dryRun: options.dryRun, builtLines })],
     ['windows', () => buildWindowsArtifacts({ env, tag, dryRun: options.dryRun, builtLines })],
   ]
@@ -658,6 +854,7 @@ function main() {
     builtLines,
     skippedLines,
     dryRun: options.dryRun,
+    requireCompleteAppRelease: !allowPartial && !options.dryRun,
   })
 
   if (options.publish) {
