@@ -1,13 +1,13 @@
-#[cfg(not(any(target_os = "android", target_os = "ios", target_os = "windows")))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::net::ToSocketAddrs;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
-#[cfg(not(any(target_os = "android", target_os = "ios", target_os = "windows")))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use webrtc_stun::message::{BINDING_REQUEST, Getter, Message};
-#[cfg(not(any(target_os = "android", target_os = "ios", target_os = "windows")))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use webrtc_stun::xoraddr::XORMappedAddress;
 
 pub const DISCOVER_REQUEST_PREFIX: &str = "NVPN_DISCOVER";
@@ -62,7 +62,7 @@ pub fn discover_public_udp_endpoint_via_stun(
     listen_port: u16,
     timeout: Duration,
 ) -> Result<String> {
-    #[cfg(any(target_os = "android", target_os = "ios", target_os = "windows"))]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         let _ = (server, listen_port, timeout);
         return Err(anyhow!(
@@ -70,7 +70,7 @@ pub fn discover_public_udp_endpoint_via_stun(
         ));
     }
 
-    #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "windows")))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         let server_addr = resolve_stun_server_addr(server)?;
         let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, listen_port));
@@ -192,7 +192,7 @@ fn parse_public_endpoint_response(payload: &str) -> Result<String> {
     Ok(parsed.to_string())
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios", target_os = "windows")))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn resolve_stun_server_addr(server: &str) -> Result<SocketAddr> {
     let raw = server.trim();
     if raw.is_empty() {
@@ -214,7 +214,7 @@ fn resolve_stun_server_addr(server: &str) -> Result<SocketAddr> {
 
 #[cfg(any(
     test,
-    not(any(target_os = "android", target_os = "ios", target_os = "windows"))
+    not(any(target_os = "android", target_os = "ios"))
 ))]
 fn select_ipv4_socket_addr(addrs: impl IntoIterator<Item = SocketAddr>) -> Option<SocketAddr> {
     addrs.into_iter().find(SocketAddr::is_ipv4)
