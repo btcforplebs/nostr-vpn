@@ -61,14 +61,26 @@ public sealed class TrayService : IDisposable
 
     private ContextMenuStrip BuildMenu(AppViewModel viewModel)
     {
+        // 1. VPN toggle (first), 2. device-name section, 3. network/exit
+        // submenus, 4. open/quit. See macOS TrayController.swift for the
+        // canonical layout shared across platforms.
         var menu = new ContextMenuStrip();
-        menu.Items.Add(Item("Open Nostr VPN", (_, _) => _showWindow?.Invoke()));
+
+        var vpnToggle = Item("VPN", async (_, _) => await viewModel.ToggleVpnAsync(),
+            viewModel.State.VpnControlSupported && !viewModel.ActionInFlight);
+        vpnToggle.Checked = viewModel.State.VpnEnabled;
+        menu.Items.Add(vpnToggle);
+
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(Item(TrayText(viewModel), (_, _) => { }, false));
-        menu.Items.Add(Item(viewModel.State.VpnEnabled ? "Turn VPN Off" : "Turn VPN On", async (_, _) => await viewModel.ToggleVpnAsync(), viewModel.State.VpnControlSupported));
-        menu.Items.Add(Item(viewModel.State.AdvertiseExitNode ? "Stop Offering Exit" : "Offer Private Exit", async (_, _) => await viewModel.SetAdvertiseExitNodeAsync(!viewModel.State.AdvertiseExitNode)));
+
+        // Device-name section header + Copy Device ID.
+        menu.Items.Add(Item(DeviceDisplayName(viewModel), (_, _) => { }, false));
+        var copyDeviceId = Item("Copy Device ID",
+            (_, _) => viewModel.CopyText(viewModel.State.OwnNpub),
+            !string.IsNullOrWhiteSpace(viewModel.State.OwnNpub));
+        menu.Items.Add(copyDeviceId);
+
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(Item("Copy This Device", (_, _) => viewModel.CopyText(viewModel.ThisDeviceCopyValue), !string.IsNullOrWhiteSpace(viewModel.ThisDeviceCopyValue)));
 
         var network = viewModel.ActiveNetwork;
         if (network is not null)
@@ -81,7 +93,18 @@ public sealed class TrayService : IDisposable
             menu.Items.Add(devices);
 
             var exitNodes = new ToolStripMenuItem("Exit Node");
-            exitNodes.DropDownItems.Add(Item("No exit node", async (_, _) => await viewModel.SetExitNodeAsync("")));
+            if (!string.IsNullOrWhiteSpace(viewModel.State.ExitNodeStatusText))
+            {
+                exitNodes.DropDownItems.Add(Item(viewModel.State.ExitNodeStatusText, (_, _) => { }, false));
+            }
+            var offerExit = Item("Offer This Device",
+                async (_, _) => await viewModel.SetAdvertiseExitNodeAsync(!viewModel.State.AdvertiseExitNode));
+            offerExit.Checked = viewModel.State.AdvertiseExitNode;
+            exitNodes.DropDownItems.Add(offerExit);
+            exitNodes.DropDownItems.Add(new ToolStripSeparator());
+            var noExit = Item("No exit node", async (_, _) => await viewModel.SetExitNodeAsync(""));
+            noExit.Checked = string.IsNullOrWhiteSpace(viewModel.State.ExitNode);
+            exitNodes.DropDownItems.Add(noExit);
             foreach (var participant in network.Participants.Where(participant => participant.OffersExitNode))
             {
                 var item = Item(DeviceName(participant), async (_, _) => await viewModel.SetExitNodeAsync(participant.Npub));
@@ -92,9 +115,28 @@ public sealed class TrayService : IDisposable
         }
 
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(Item("Refresh", async (_, _) => await viewModel.RefreshAsync()));
+        menu.Items.Add(Item("Open Nostr VPN", (_, _) => _showWindow?.Invoke()));
         menu.Items.Add(Item("Quit", (_, _) => _quit?.Invoke()));
         return menu;
+    }
+
+    private static string DeviceDisplayName(AppViewModel viewModel)
+    {
+        var state = viewModel.State;
+        if (!string.IsNullOrWhiteSpace(state.SelfMagicDnsName))
+        {
+            return state.SelfMagicDnsName;
+        }
+        if (!string.IsNullOrWhiteSpace(state.NodeName))
+        {
+            return state.NodeName;
+        }
+        var tunnelIp = state.TunnelIp?.Trim();
+        if (!string.IsNullOrEmpty(tunnelIp) && tunnelIp != "-")
+        {
+            return tunnelIp;
+        }
+        return "This Device";
     }
 
     private static ToolStripMenuItem Item(string text, EventHandler onClick, bool enabled = true)

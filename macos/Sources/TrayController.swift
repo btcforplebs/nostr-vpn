@@ -4,12 +4,29 @@ import SwiftUI
 
 /// AppKit-backed tray menu.
 ///
-/// SwiftUI's `MenuBarExtra` tears down and rebuilds the `Menu` content tree
-/// every time the observed `AppManager` republishes its state (the refresh
-/// task fires every ~1.5s). That rebuild dismisses any submenu the user has
-/// open, so submenus appear to "close themselves" within ~1s. NSMenuItems
-/// are persistent AppKit objects: mutating their titles in place leaves an
-/// open submenu undisturbed.
+/// SwiftUI's `MenuBarExtra` rebuilt the menu hierarchy on every AppManager
+/// state publish (~1.5s tick), which dismissed any submenu the user had
+/// open. NSMenuItems are persistent AppKit objects: mutating their titles
+/// in place leaves an open submenu undisturbed.
+///
+/// Menu layout:
+///
+///     ☐ VPN                       ← toggle, first item
+///     ─────────────
+///     <device-name>               ← disabled section header
+///     Copy Device ID
+///     ─────────────
+///     <network-name> ▶            ← list of network peers (copy npub)
+///     Exit Node ▶                 ← offer toggle + selection
+///       <exit status, if any>
+///       ☐ Offer This Device
+///       ─────────
+///       ☑ No exit node
+///       Device 1
+///       Device 2
+///     ─────────────
+///     Open Nostr VPN
+///     Quit
 @MainActor
 final class TrayController: NSObject {
     private let manager: AppManager
@@ -18,24 +35,25 @@ final class TrayController: NSObject {
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
 
-    // Static items
-    private let openItem = NSMenuItem()
-    private let exitNodeStatusItem = NSMenuItem()
+    // Stable items
     private let vpnToggleItem = NSMenuItem()
-    private let advertiseExitItem = NSMenuItem()
-    private let copyDeviceItem = NSMenuItem()
+    private let deviceNameItem = NSMenuItem()
+    private let copyDeviceIdItem = NSMenuItem()
     private let networkSubmenuItem = NSMenuItem()
     private let exitNodeSubmenuItem = NSMenuItem()
-    private let refreshItem = NSMenuItem()
+    private let openItem = NSMenuItem()
     private let quitItem = NSMenuItem()
 
     private let networkSubmenu = NSMenu()
     private let exitNodeSubmenu = NSMenu()
 
-    private var cancellables = Set<AnyCancellable>()
+    // Stable items inside Exit Node submenu
+    private let exitNodeStatusItem = NSMenuItem()
+    private let offerExitItem = NSMenuItem()
+    private let exitNodeSelectionSeparator = NSMenuItem.separator()
+    private let noExitNodeItem = NSMenuItem()
 
-    /// Last rendered menu inputs, so we can short-circuit when nothing visible
-    /// changed (avoids needless menu mutation while submenus are open).
+    private var cancellables = Set<AnyCancellable>()
     private var lastSnapshot: MenuSnapshot?
 
     init(manager: AppManager, openMainWindow: @escaping () -> Void) {
@@ -48,15 +66,10 @@ final class TrayController: NSObject {
         buildMenuSkeleton()
         statusItem.menu = menu
 
-        // Initial render and subscription. We observe the AppManager rather
-        // than every @Published property; an AppManager publish triggers
-        // refreshFromState(), which de-dupes against `lastSnapshot`.
         refreshFromState()
         manager.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                // objectWillChange fires *before* the new value is assigned;
-                // hop another main-actor tick so we read the post-assignment state.
                 Task { @MainActor [weak self] in
                     self?.refreshFromState()
                 }
@@ -76,51 +89,58 @@ final class TrayController: NSObject {
     }
 
     private func buildMenuSkeleton() {
-        openItem.title = "Open Nostr VPN"
-        openItem.target = self
-        openItem.action = #selector(handleOpenMain)
-
-        exitNodeStatusItem.isEnabled = false
-        exitNodeStatusItem.isHidden = true
-
+        vpnToggleItem.title = "VPN"
         vpnToggleItem.target = self
         vpnToggleItem.action = #selector(handleToggleVpn)
 
-        advertiseExitItem.target = self
-        advertiseExitItem.action = #selector(handleToggleAdvertiseExit)
+        deviceNameItem.isEnabled = false
 
-        copyDeviceItem.title = "Copy This Device"
-        copyDeviceItem.target = self
-        copyDeviceItem.action = #selector(handleCopyDevice)
+        copyDeviceIdItem.title = "Copy Device ID"
+        copyDeviceIdItem.target = self
+        copyDeviceIdItem.action = #selector(handleCopyDeviceId)
 
-        networkSubmenuItem.title = "Network Devices"
         networkSubmenuItem.submenu = networkSubmenu
         networkSubmenuItem.isHidden = true
 
         exitNodeSubmenuItem.title = "Exit Node"
         exitNodeSubmenuItem.submenu = exitNodeSubmenu
-        exitNodeSubmenuItem.isHidden = true
 
-        refreshItem.title = "Refresh"
-        refreshItem.target = self
-        refreshItem.action = #selector(handleRefresh)
+        // Exit Node submenu skeleton.
+        exitNodeStatusItem.isEnabled = false
+        exitNodeStatusItem.isHidden = true
+
+        offerExitItem.title = "Offer This Device"
+        offerExitItem.target = self
+        offerExitItem.action = #selector(handleToggleOfferExit)
+
+        noExitNodeItem.title = "No exit node"
+        noExitNodeItem.target = self
+        noExitNodeItem.action = #selector(handleSelectNoExit)
+
+        exitNodeSubmenu.addItem(exitNodeStatusItem)
+        exitNodeSubmenu.addItem(offerExitItem)
+        exitNodeSubmenu.addItem(exitNodeSelectionSeparator)
+        exitNodeSubmenu.addItem(noExitNodeItem)
+        // Peer items appended in updateExitNodeSubmenu().
+
+        openItem.title = "Open Nostr VPN"
+        openItem.target = self
+        openItem.action = #selector(handleOpenMain)
 
         quitItem.title = "Quit"
         quitItem.target = self
         quitItem.action = #selector(handleQuit)
         quitItem.keyEquivalent = "q"
 
-        menu.addItem(openItem)
-        menu.addItem(.separator())
-        menu.addItem(exitNodeStatusItem)
         menu.addItem(vpnToggleItem)
-        menu.addItem(advertiseExitItem)
         menu.addItem(.separator())
-        menu.addItem(copyDeviceItem)
+        menu.addItem(deviceNameItem)
+        menu.addItem(copyDeviceIdItem)
+        menu.addItem(.separator())
         menu.addItem(networkSubmenuItem)
         menu.addItem(exitNodeSubmenuItem)
         menu.addItem(.separator())
-        menu.addItem(refreshItem)
+        menu.addItem(openItem)
         menu.addItem(quitItem)
     }
 
@@ -133,42 +153,38 @@ final class TrayController: NSObject {
         }
         lastSnapshot = snapshot
 
-        exitNodeStatusItem.title = snapshot.exitNodeStatusText
-        exitNodeStatusItem.isHidden = snapshot.exitNodeStatusText.isEmpty
-
-        vpnToggleItem.title = snapshot.vpnEnabled ? "Turn VPN Off" : "Turn VPN On"
+        // VPN toggle
+        vpnToggleItem.state = snapshot.vpnEnabled ? .on : .off
         vpnToggleItem.isEnabled = snapshot.vpnTogglable
 
-        advertiseExitItem.title =
-            snapshot.advertiseExitNode ? "Stop Offering Exit" : "Offer Private Exit"
+        // Device name + copy
+        deviceNameItem.title = snapshot.deviceName
+        copyDeviceIdItem.isEnabled = !snapshot.deviceIdValue.isEmpty
 
-        copyDeviceItem.isEnabled = !snapshot.copyDeviceValue.isEmpty
-
+        // Network submenu
         networkSubmenuItem.title = snapshot.networkTitle ?? "Network Devices"
         networkSubmenuItem.isHidden = snapshot.networkTitle == nil
         rebuildSubmenu(networkSubmenu, items: snapshot.networkItems) { [weak self] item in
             self?.manager.copy(item.npub, as: .peerNpub, peerNpub: item.npub)
         }
 
-        exitNodeSubmenuItem.isHidden = snapshot.networkTitle == nil
-        rebuildSubmenu(exitNodeSubmenu, items: snapshot.exitNodeItems) { [weak self] item in
-            self?.manager.setExitNode(item.npub)
-        }
+        // Exit Node submenu
+        exitNodeStatusItem.title = snapshot.exitNodeStatusText
+        exitNodeStatusItem.isHidden = snapshot.exitNodeStatusText.isEmpty
+        offerExitItem.state = snapshot.advertiseExitNode ? .on : .off
+        noExitNodeItem.state = snapshot.exitNodeNpub.isEmpty ? .on : .off
+        rebuildExitNodePeers(items: snapshot.exitNodeItems, selectedNpub: snapshot.exitNodeNpub)
 
         statusItem.button?.toolTip = snapshot.tooltip
     }
 
-    /// Replaces a submenu's items only when the *visible* content changed.
-    /// Each callback is wired to a fresh closure target so the captured npub
-    /// matches the row's current label.
     private func rebuildSubmenu<T: Equatable>(
         _ submenu: NSMenu,
         items: [SubmenuItem<T>],
         action: @escaping (SubmenuItem<T>) -> Void
     ) {
-        // Compare currently-installed items vs target.
         let current: [SubmenuItem<T>] = submenu.items.compactMap { item in
-            (item.representedObject as? SubmenuItem<T>)
+            (item.representedObject as? SubmenuClickPayload<T>)?.item
         }
         if current == items {
             return
@@ -183,25 +199,41 @@ final class TrayController: NSObject {
         }
     }
 
-    // MARK: - Action handlers
-
-    @objc private func handleOpenMain() {
-        openMainWindow()
+    /// The Exit Node submenu has stable header items (status, offer, separator,
+    /// "No exit node") followed by a dynamic list of peers offering exit. Keep
+    /// the header items in place and rebuild the trailing peer list.
+    private func rebuildExitNodePeers(items: [SubmenuItem<ExitNodeRow>], selectedNpub: String) {
+        // Drop everything past the "No exit node" item.
+        let keepCount = exitNodeSubmenu.items.firstIndex(of: noExitNodeItem).map { $0 + 1 } ?? 0
+        while exitNodeSubmenu.items.count > keepCount {
+            exitNodeSubmenu.removeItem(at: exitNodeSubmenu.items.count - 1)
+        }
+        for item in items {
+            let menuItem = NSMenuItem(
+                title: item.title,
+                action: #selector(handleSelectExitNode(_:)),
+                keyEquivalent: "")
+            menuItem.target = self
+            menuItem.representedObject = item.npub
+            menuItem.state = item.npub == selectedNpub ? .on : .off
+            exitNodeSubmenu.addItem(menuItem)
+        }
     }
+
+    // MARK: - Action handlers
 
     @objc private func handleToggleVpn() {
         manager.toggleVpn()
     }
 
-    @objc private func handleToggleAdvertiseExit() {
+    @objc private func handleToggleOfferExit() {
         manager.setAdvertiseExitNode(!manager.state.advertiseExitNode)
     }
 
-    @objc private func handleCopyDevice() {
-        let value = manager.state.ownNpub.isEmpty ? manager.state.tunnelIp : manager.state.ownNpub
-        if !value.isEmpty {
-            manager.copy(value, as: .pubkey)
-        }
+    @objc private func handleCopyDeviceId() {
+        let value = manager.state.ownNpub
+        guard !value.isEmpty else { return }
+        manager.copy(value, as: .pubkey)
     }
 
     @objc private func handleSubmenuClick(_ sender: NSMenuItem) {
@@ -209,8 +241,17 @@ final class TrayController: NSObject {
         payload.invoke()
     }
 
-    @objc private func handleRefresh() {
-        manager.refresh()
+    @objc private func handleSelectNoExit() {
+        manager.setExitNode("")
+    }
+
+    @objc private func handleSelectExitNode(_ sender: NSMenuItem) {
+        guard let npub = sender.representedObject as? String else { return }
+        manager.setExitNode(npub)
+    }
+
+    @objc private func handleOpenMain() {
+        openMainWindow()
     }
 
     @objc private func handleQuit() {
@@ -220,18 +261,16 @@ final class TrayController: NSObject {
 
 // MARK: - Menu snapshot
 
-/// Visible-state snapshot used to decide whether the menu actually needs to
-/// be touched on a given refresh tick. Counters that don't show up in the
-/// menu (srtt, byte counts, etc.) are intentionally absent so they don't
-/// trigger a no-op rebuild.
 private struct MenuSnapshot: Equatable {
-    let exitNodeStatusText: String
     let vpnEnabled: Bool
     let vpnTogglable: Bool
-    let advertiseExitNode: Bool
-    let copyDeviceValue: String
+    let deviceName: String
+    let deviceIdValue: String
     let networkTitle: String?
     let networkItems: [SubmenuItem<NetworkRow>]
+    let exitNodeStatusText: String
+    let advertiseExitNode: Bool
+    let exitNodeNpub: String
     let exitNodeItems: [SubmenuItem<ExitNodeRow>]
     let tooltip: String
 
@@ -253,22 +292,15 @@ private struct MenuSnapshot: Equatable {
                     payload: NetworkRow(pubkeyHex: p.pubkeyHex)
                 )
             }
-            exitNodeItems = [
-                SubmenuItem<ExitNodeRow>(
-                    title: "No exit node", npub: "", payload: ExitNodeRow(pubkeyHex: ""))
-            ]
-            exitNodeItems.append(
-                contentsOf: activeNetwork.participants.filter { $0.offersExitNode }
-                    .map { p in
-                        SubmenuItem<ExitNodeRow>(
-                            title: p.magicDnsName.isEmpty ? p.alias : p.magicDnsName,
-                            npub: p.npub,
-                            payload: ExitNodeRow(pubkeyHex: p.pubkeyHex)
-                        )
-                    })
+            exitNodeItems = activeNetwork.participants.filter { $0.offersExitNode }
+                .map { p in
+                    SubmenuItem<ExitNodeRow>(
+                        title: p.magicDnsName.isEmpty ? p.alias : p.magicDnsName,
+                        npub: p.npub,
+                        payload: ExitNodeRow(pubkeyHex: p.pubkeyHex)
+                    )
+                }
         }
-
-        let copyValue = state.ownNpub.isEmpty ? state.tunnelIp : state.ownNpub
 
         let tooltip: String = {
             if !state.exitNodeStatusText.isEmpty { return state.exitNodeStatusText }
@@ -277,17 +309,32 @@ private struct MenuSnapshot: Equatable {
         }()
 
         return MenuSnapshot(
-            exitNodeStatusText: state.exitNodeStatusText,
             vpnEnabled: state.vpnEnabled,
             vpnTogglable: !manager.actionInFlight && state.vpnControlSupported,
-            advertiseExitNode: state.advertiseExitNode,
-            copyDeviceValue: copyValue,
+            deviceName: resolveDeviceName(from: state),
+            deviceIdValue: state.ownNpub,
             networkTitle: networkTitle,
             networkItems: networkItems,
+            exitNodeStatusText: state.exitNodeStatusText,
+            advertiseExitNode: state.advertiseExitNode,
+            exitNodeNpub: state.exitNode,
             exitNodeItems: exitNodeItems,
             tooltip: tooltip
         )
     }
+}
+
+private func resolveDeviceName(from state: NativeAppState) -> String {
+    if !state.selfMagicDnsName.isEmpty {
+        return state.selfMagicDnsName
+    }
+    if !state.nodeName.isEmpty {
+        return state.nodeName
+    }
+    if !state.tunnelIp.isEmpty, state.tunnelIp != "-" {
+        return state.tunnelIp
+    }
+    return "This Device"
 }
 
 private func participantMenuTitle(_ participant: NativeParticipantState) -> String {
@@ -307,8 +354,6 @@ private struct SubmenuItem<Payload: Equatable>: Equatable {
     let payload: Payload
 }
 
-/// Type-erased click handler so we can stash any SubmenuItem<T> in an
-/// NSMenuItem.representedObject and dispatch it from one Obj-C selector.
 private protocol AnySubmenuClickPayload {
     func invoke()
 }

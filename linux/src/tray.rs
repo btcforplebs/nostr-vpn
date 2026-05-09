@@ -106,10 +106,9 @@ pub enum TrayCommand {
     ShowWindow,
     ToggleVpn,
     ToggleExitOffer,
-    CopyThisDevice,
+    CopyDeviceId,
     CopyPeer(String),
     SetExitNode(String),
-    Refresh,
     Quit,
 }
 
@@ -412,42 +411,33 @@ struct MenuNode {
     label: String,
     enabled: bool,
     separator: bool,
+    /// Display as a checkmark toggle (None = no toggle indicator).
+    /// Renders via dbusmenu `toggle-type=checkmark` + `toggle-state`.
+    toggle: Option<bool>,
     command: Option<TrayCommand>,
     children: Vec<MenuNode>,
 }
 
 fn build_menu(state: &NativeAppState) -> MenuNode {
+    // 1. VPN toggle (first), 2. device-name section, 3. network/exit submenus,
+    // 4. open/quit. See macOS TrayController.swift for the canonical layout.
     let mut children = vec![
-        item(1, "Open Nostr VPN", true, TrayCommand::ShowWindow),
-        separator(2),
-        label_node(10, &tray_status(state), false),
-        item(
-            3,
-            if state.vpn_enabled {
-                "Turn VPN Off"
-            } else {
-                "Turn VPN On"
-            },
+        toggle_item(
+            1,
+            "VPN",
             state.vpn_control_supported,
+            state.vpn_enabled,
             TrayCommand::ToggleVpn,
         ),
+        separator(2),
+        label_node(3, &device_display_name(state), false),
         item(
             4,
-            if state.advertise_exit_node {
-                "Stop Offering Exit"
-            } else {
-                "Offer Private Exit"
-            },
-            true,
-            TrayCommand::ToggleExitOffer,
+            "Copy Device ID",
+            !state.own_npub.is_empty(),
+            TrayCommand::CopyDeviceId,
         ),
         separator(5),
-        item(
-            6,
-            "Copy This Device",
-            !this_device_copy_value(state).is_empty(),
-            TrayCommand::CopyThisDevice,
-        ),
     ];
 
     if let Some(network) = active_network(state) {
@@ -456,6 +446,7 @@ fn build_menu(state: &NativeAppState) -> MenuNode {
             label: display_network_name(network),
             enabled: true,
             separator: false,
+            toggle: None,
             command: None,
             children: network
                 .participants
@@ -472,12 +463,25 @@ fn build_menu(state: &NativeAppState) -> MenuNode {
                 .collect(),
         });
 
-        let mut exit_children = vec![item(
+        let mut exit_children: Vec<MenuNode> = Vec::new();
+        let status = tray_status(state);
+        if !status.is_empty() {
+            exit_children.push(label_node(29, &status, false));
+        }
+        exit_children.push(toggle_item(
             30,
-            "No exit node",
+            "Offer This Device",
             true,
+            state.advertise_exit_node,
+            TrayCommand::ToggleExitOffer,
+        ));
+        exit_children.push(separator(31));
+        exit_children.push(radio_item(
+            32,
+            "No exit node",
+            state.exit_node.is_empty(),
             TrayCommand::SetExitNode(String::new()),
-        )];
+        ));
         exit_children.extend(
             network
                 .participants
@@ -485,28 +489,29 @@ fn build_menu(state: &NativeAppState) -> MenuNode {
                 .filter(|participant| participant.offers_exit_node)
                 .enumerate()
                 .map(|(index, participant)| {
-                    item(
+                    radio_item(
                         200 + index as i32,
-                        &participant_menu_title(participant),
-                        !participant.npub.is_empty(),
+                        &exit_node_label(participant),
+                        state.exit_node == participant.npub,
                         TrayCommand::SetExitNode(participant.npub.clone()),
                     )
                 }),
         );
         children.push(MenuNode {
-            id: 31,
+            id: 33,
             label: "Exit Node".to_string(),
             enabled: true,
             separator: false,
+            toggle: None,
             command: None,
             children: exit_children,
         });
     }
 
     children.extend([
-        separator(7),
-        item(8, "Refresh", true, TrayCommand::Refresh),
-        item(9, "Quit", true, TrayCommand::Quit),
+        separator(8),
+        item(9, "Open Nostr VPN", true, TrayCommand::ShowWindow),
+        item(10, "Quit", true, TrayCommand::Quit),
     ]);
 
     MenuNode {
@@ -514,6 +519,7 @@ fn build_menu(state: &NativeAppState) -> MenuNode {
         label: String::new(),
         enabled: true,
         separator: false,
+        toggle: None,
         command: None,
         children,
     }
@@ -525,9 +531,35 @@ fn item(id: i32, label: &str, enabled: bool, command: TrayCommand) -> MenuNode {
         label: label.to_string(),
         enabled,
         separator: false,
+        toggle: None,
         command: Some(command),
         children: Vec::new(),
     }
+}
+
+fn toggle_item(
+    id: i32,
+    label: &str,
+    enabled: bool,
+    on: bool,
+    command: TrayCommand,
+) -> MenuNode {
+    MenuNode {
+        id,
+        label: label.to_string(),
+        enabled,
+        separator: false,
+        toggle: Some(on),
+        command: Some(command),
+        children: Vec::new(),
+    }
+}
+
+fn radio_item(id: i32, label: &str, on: bool, command: TrayCommand) -> MenuNode {
+    // Reuse checkmark rendering for the exit-node selection list — most
+    // dbusmenu hosts render `toggle-type=radio` identically, but checkmarks
+    // are universally supported.
+    toggle_item(id, label, true, on, command)
 }
 
 fn separator(id: i32) -> MenuNode {
@@ -536,6 +568,7 @@ fn separator(id: i32) -> MenuNode {
         label: String::new(),
         enabled: false,
         separator: true,
+        toggle: None,
         command: None,
         children: Vec::new(),
     }
@@ -547,6 +580,7 @@ fn label_node(id: i32, label: &str, enabled: bool) -> MenuNode {
         label: label.to_string(),
         enabled,
         separator: false,
+        toggle: None,
         command: None,
         children: Vec::new(),
     }
@@ -590,6 +624,10 @@ fn menu_properties(node: &MenuNode) -> HashMap<String, glib::Variant> {
     } else {
         properties.insert("label".to_string(), node.label.to_variant());
     }
+    if let Some(on) = node.toggle {
+        properties.insert("toggle-type".to_string(), "checkmark".to_variant());
+        properties.insert("toggle-state".to_string(), (if on { 1i32 } else { 0i32 }).to_variant());
+    }
     if !node.children.is_empty() {
         properties.insert("children-display".to_string(), "submenu".to_variant());
     }
@@ -605,11 +643,31 @@ fn find_menu_node(node: &MenuNode, id: i32) -> Option<&MenuNode> {
         .find_map(|child| find_menu_node(child, id))
 }
 
-pub fn this_device_copy_value(state: &NativeAppState) -> String {
-    if !state.own_npub.trim().is_empty() {
-        return state.own_npub.clone();
+fn device_display_name(state: &NativeAppState) -> String {
+    if !state.self_magic_dns_name.trim().is_empty() {
+        return state.self_magic_dns_name.clone();
     }
-    state.tunnel_ip.clone()
+    if !state.node_name.trim().is_empty() {
+        return state.node_name.clone();
+    }
+    let tunnel_ip = state.tunnel_ip.trim();
+    if !tunnel_ip.is_empty() && tunnel_ip != "-" {
+        return tunnel_ip.to_string();
+    }
+    "This Device".to_string()
+}
+
+fn exit_node_label(participant: &NativeParticipantState) -> String {
+    if !participant.magic_dns_name.trim().is_empty() {
+        return participant.magic_dns_name.clone();
+    }
+    if !participant.alias.trim().is_empty() {
+        return participant.alias.clone();
+    }
+    if !participant.magic_dns_alias.trim().is_empty() {
+        return participant.magic_dns_alias.clone();
+    }
+    "Device".to_string()
 }
 
 fn active_network(state: &NativeAppState) -> Option<&NativeNetworkState> {

@@ -449,8 +449,8 @@ fn drain_tray_commands(app: &AppRef) {
                     },
                 );
             }
-            tray::TrayCommand::CopyThisDevice => {
-                let value = tray::this_device_copy_value(&app.borrow().state);
+            tray::TrayCommand::CopyDeviceId => {
+                let value = app.borrow().state.own_npub.clone();
                 if !value.trim().is_empty() {
                     copy_text(&value);
                 }
@@ -467,7 +467,6 @@ fn drain_tray_commands(app: &AppRef) {
                     },
                 );
             }
-            tray::TrayCommand::Refresh => refresh_now(app),
             tray::TrayCommand::Quit => quit_app(app),
         }
     }
