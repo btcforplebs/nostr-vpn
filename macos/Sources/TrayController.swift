@@ -72,11 +72,18 @@ final class TrayController: NSObject {
         statusItem.menu = menu
 
         refreshFromState()
+        // Use DispatchQueue.main rather than RunLoop.main so updates also
+        // fire while the NSMenu is open (the run loop is in eventTracking
+        // mode then, which RunLoop.main's default scheduling skips).
         manager.objectWillChange
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.refreshFromState()
+                // objectWillChange fires before the new value lands; hop a
+                // tick so we read post-assignment state.
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated {
+                        self?.refreshFromState()
+                    }
                 }
             }
             .store(in: &cancellables)
