@@ -410,11 +410,11 @@ export function renderReleaseNotes({
   const changelogSection = extractChangelogSection(changelogText, normalizedTag)
   const visibleSkippedLines = skippedLines.filter((line) => !line.endsWith('skipped by CLI options.'))
 
-  if (changelogSection) {
-    lines.push('## Changes', '', ...changelogSection.split('\n'), '')
-  }
-
   pushDownloadSections(lines, assetNames, assetBaseUrl)
+
+  if (changelogSection) {
+    lines.push('', '## Changes', '', ...changelogSection.split('\n'), '')
+  }
 
   if (commit || builtLines.length > 0) {
     lines.push('', '## Release Build', '')
