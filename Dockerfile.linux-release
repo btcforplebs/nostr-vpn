@@ -1,4 +1,4 @@
-FROM rust:1.93-bookworm
+FROM rust:1-trixie
 
 # musl-tools lets the CLI be built as a static musl tarball for the
 # container architecture.
