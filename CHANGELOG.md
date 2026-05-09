@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file.
 
 ## 4.0.4 - 2026-05-09
 
+### Changed
+
+- FIPS endpoint `run_rx_loop` drain cap raised from 64 to 256, keeping the worker on the hot path through ~400KB of contiguous traffic between scheduler hops. Bench: TCP single-stream 120 → 423 Mbps (+253%), UDP 200M offered 178 (11% loss) → 200 Mbps (0.0005% loss), ping under load 0.84 → 0.71 ms.
+
 ### Fixed
 
 - macOS tray submenus stay open across state refreshes. The previous SwiftUI `MenuBarExtra` rebuilt its menu hierarchy every time the daemon state was republished (~1.5s), dismissing any open submenu within ~1s. The tray is now an `NSStatusItem` with `NSMenu` items mutated in place.
