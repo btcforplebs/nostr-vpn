@@ -300,7 +300,7 @@ Changes since v0.2.26.
 
 - Release note formatting.
 `,
-    builtLines: ['Built Windows x64 CLI inside a local Parallels VM.'],
+    builtLines: ['Built Windows x64 CLI on win11-dev.'],
     skippedLines: ['Linux musl CLI skipped because cross was unavailable.'],
   })
 
@@ -310,7 +310,7 @@ Changes since v0.2.26.
   assert.match(notes, /### Most People Will Want/)
   assert.match(notes, /### Command Line/)
   assert.match(notes, /Windows x64 CLI/)
-  assert.match(notes, /Built Windows x64 CLI inside a local Parallels VM\./)
+  assert.match(notes, /Built Windows x64 CLI on win11-dev\./)
   assert.match(notes, /Linux musl CLI skipped because cross was unavailable\./)
 })
 

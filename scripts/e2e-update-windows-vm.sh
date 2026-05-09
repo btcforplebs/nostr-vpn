@@ -1,41 +1,40 @@
 #!/usr/bin/env bash
+# Run the Windows update-check E2E inside the win11-dev VM (reachable over
+# the Nostr VPN mesh — see CLAUDE.md). Replaces the previous Parallels
+# `prlctl exec` flow.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VM_NAME="${VM_NAME:-${1:-Windows 11}}"
-SHARED_REPO="${NVPN_WINDOWS_SHARED_REPO_PATH:-C:\\Mac\\Home\\src\\nostr-vpn}"
-GUEST_REPO="${GUEST_REPO:-C:\\Users\\sirius\\src\\nostr-vpn}"
-GUEST_ARTIFACT_ROOT="${GUEST_ARTIFACT_ROOT:-C:\\Mac\\Home\\src\\nostr-vpn\\artifacts}"
+SSH_HOST="${NVPN_WINDOWS_SSH_HOST:-${1:-win11-dev}}"
+GUEST_REPO="${NVPN_WINDOWS_GUEST_REPO_PATH:-C:\\src\\nostr-vpn}"
+GUEST_ARTIFACT_ROOT="${GUEST_ARTIFACT_ROOT:-C:\\src\\nostr-vpn\\artifacts}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-$ROOT/artifacts}"
 
-run_ps_user() {
+mkdir -p "$ARTIFACT_ROOT"
+
+run_ps() {
   local script="$1"
-  local ps_tmp_dir="$ROOT/target/windows-vm-ps"
-  mkdir -p "$ps_tmp_dir"
-  local host_script
-  host_script="$(mktemp "$ps_tmp_dir/prlctl.XXXXXX")"
-  mv "$host_script" "$host_script.ps1"
-  host_script="$host_script.ps1"
-  printf '%s\n' "$script" >"$host_script"
-
-  local rel_script="${host_script#"$ROOT"/}"
-  rel_script="${rel_script//\//\\}"
-  local guest_script="${SHARED_REPO}\\${rel_script}"
-
-  prlctl exec "$VM_NAME" --current-user powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$guest_script"
-  local status=$?
-  rm -f "$host_script"
-  return "$status"
+  local encoded
+  encoded="$(printf '%s' "$script" | iconv -t UTF-16LE | base64)"
+  ssh "$SSH_HOST" powershell.exe -NoProfile -EncodedCommand "$encoded"
 }
 
-run_ps_user "\$ErrorActionPreference = \"Stop\"
-\$sharedRepo = \"$SHARED_REPO\"
-\$guestRepo = \"$GUEST_REPO\"
-\$guestRoot = Split-Path \$guestRepo
-New-Item -ItemType Directory -Force -Path \$guestRoot | Out-Null
-robocopy \$sharedRepo \$guestRepo /MIR /XD target dist .git artifacts /XF .env.release.local | Out-Null
-if (\$LASTEXITCODE -ge 8) { throw \"robocopy failed with exit code \$LASTEXITCODE\" }
-exit 0"
+# Sync host -> remote with tar over SSH (matches scripts/local-release.mjs).
+run_ps "New-Item -ItemType Directory -Force -Path '$GUEST_REPO' | Out-Null"
+guest_repo_unix="${GUEST_REPO//\\//}"
+tar \
+  --exclude=./target \
+  --exclude=./dist \
+  --exclude=./.git \
+  --exclude=./artifacts \
+  --exclude=./node_modules \
+  --exclude=./.env.release.local \
+  --exclude=./.env.zapstore.local \
+  --exclude=./macos/.build \
+  --exclude=./linux/target \
+  -cf - -C "$ROOT" . \
+  | ssh "$SSH_HOST" tar -xf - -C "$guest_repo_unix"
 
-run_ps_user "Set-Location \"$GUEST_REPO\"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\e2e-update-windows.ps1 -ArtifactRoot \"$GUEST_ARTIFACT_ROOT\"
+run_ps "Set-Location '$GUEST_REPO'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\e2e-update-windows.ps1 -ArtifactRoot '$GUEST_ARTIFACT_ROOT'
 exit \$LASTEXITCODE"

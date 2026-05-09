@@ -19,7 +19,6 @@ import { fileURLToPath } from 'node:url'
 
 import {
   androidReleaseAssetName,
-  autoDetectWindowsVmName,
   buildReleaseManifest,
   buildReleaseManifestFiles,
   linuxReleaseTargetsForDockerPlatform,
@@ -264,20 +263,6 @@ function packageUnixCliTarball({ binaryPath, targetTriple, tag, dryRun }) {
   return [unversioned, versioned]
 }
 
-function defaultSharedWindowsRepoPath() {
-  if (process.platform !== 'darwin') {
-    return null
-  }
-
-  const homeDir = os.homedir()
-  if (!repoRoot.startsWith(`${homeDir}/`)) {
-    return null
-  }
-
-  const relative = repoRoot.slice(homeDir.length + 1).split('/').join('\\')
-  return `C:\\Mac\\Home\\${relative}`
-}
-
 function psQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`
 }
@@ -286,11 +271,13 @@ function encodePowerShellScript(script) {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
 
-function runWindowsPowerShell(vmName, script, { capture = false, dryRun = false } = {}) {
+/// Run a PowerShell snippet on the remote SSH host. We base64 the source so
+/// quoting and newlines survive the SSH/PowerShell round-trip cleanly.
+function runWindowsPowerShell(host, script, { capture = false, dryRun = false } = {}) {
   const encoded = encodePowerShellScript(script)
   return run(
-    'prlctl',
-    ['exec', vmName, '--current-user', 'powershell.exe', '-NoProfile', '-EncodedCommand', encoded],
+    'ssh',
+    [host, 'powershell.exe', '-NoProfile', '-EncodedCommand', encoded],
     { capture, dryRun },
   )
 }
@@ -305,83 +292,135 @@ function windowsArtifactArch(targetTriple) {
   return targetTriple
 }
 
-function syncRepoToWindowsVm({ vmName, sharedRepoPath, dryRun }) {
+/// Run a tar pipe through ssh in either direction. We rely on macOS `tar`
+/// and Windows 10+ `tar.exe` (bsdtar) sharing a wire format. The remote ssh
+/// shell on win11-dev defaults to cmd.exe, which gladly forwards `tar` to
+/// the Windows-side `tar.exe`. No extra tools are installed on the remote.
+function runShellPipe(cmd, { dryRun = false, errMsg = 'pipe' } = {}) {
+  if (dryRun) {
+    console.log(`[dry] ${cmd}`)
+    return
+  }
+  const result = spawnSync('bash', ['-c', cmd], { stdio: ['ignore', 'inherit', 'inherit'] })
+  if (result.status !== 0) {
+    throw new Error(`${errMsg} failed (exit ${result.status})`)
+  }
+}
+
+function syncRepoToWindowsHost({ host, guestRepo, dryRun }) {
+  // Translate the Windows path to a forward-slash form that tar accepts as
+  // -C without backslash escaping.
+  const guestRepoForward = guestRepo.replace(/\\/g, '/')
+  const tarExcludes = [
+    '--exclude=./target',
+    '--exclude=./dist',
+    '--exclude=./.git',
+    '--exclude=./artifacts',
+    '--exclude=./node_modules',
+    '--exclude=./.env.release.local',
+    '--exclude=./.env.zapstore.local',
+    '--exclude=./macos/.build',
+    '--exclude=./linux/target',
+  ].join(' ')
+
+  // Ensure the destination exists first.
   runWindowsPowerShell(
-    vmName,
-    `
-$sharedRepo = ${psQuote(sharedRepoPath)}
-$guestRepo = Join-Path $env:USERPROFILE 'src\\nostr-vpn'
-$guestRoot = Split-Path $guestRepo
-New-Item -ItemType Directory -Force -Path $guestRoot | Out-Null
-robocopy $sharedRepo $guestRepo /MIR /XD target dist .git artifacts /XF .env.release.local .env.zapstore.local | Out-Null
-if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
-exit 0
-`,
+    host,
+    `New-Item -ItemType Directory -Force -Path ${psQuote(guestRepo)} | Out-Null`,
     { dryRun },
+  )
+  runShellPipe(
+    `tar ${tarExcludes} -cf - -C ${quote(repoRoot)} . | ssh ${quote(host)} tar -xf - -C ${quote(guestRepoForward)}`,
+    { dryRun, errMsg: `tar|ssh sync to ${host}` },
+  )
+}
+
+function pullFileFromWindowsHost({ host, remotePath, localParent, name, dryRun }) {
+  // remotePath is the directory containing `name` (a single file). Pull just
+  // that file via tar so we don't need to know its size, etc.
+  const remotePathForward = remotePath.replace(/\\/g, '/')
+  runShellPipe(
+    `ssh ${quote(host)} tar -cf - -C ${quote(remotePathForward)} ${quote(name)} | tar -xf - -C ${quote(localParent)}`,
+    { dryRun, errMsg: `tar pull ${host}:${remotePath}/${name}` },
   )
 }
 
 function buildWindowsArtifacts({ env, tag, dryRun, builtLines }) {
-  if (process.platform !== 'darwin') {
-    throw new SkipStepError('Windows VM builds are only wired up for the macOS + Parallels workflow.')
-  }
-  if (!commandExists('prlctl')) {
-    throw new SkipStepError('Skipping Windows artifacts because prlctl is unavailable.')
+  // Windows builds run on win11-dev — an x86_64 Windows VM reachable over the
+  // Nostr VPN mesh (see CLAUDE.md). Set NVPN_WINDOWS_SSH_HOST to override.
+  const host = env.NVPN_WINDOWS_SSH_HOST || 'win11-dev'
+
+  // Probe SSH connectivity. Skip cleanly if the VM is unreachable rather
+  // than aborting the whole release.
+  if (!dryRun) {
+    const probe = spawnSync(
+      'ssh',
+      ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, 'whoami'],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+    if (probe.status !== 0) {
+      throw new SkipStepError(
+        `Skipping Windows artifacts because ssh ${host} is unreachable. ` +
+          'Bring up the VM (e.g. on vader) and ensure VPN is connected, or set NVPN_WINDOWS_SSH_HOST.',
+      )
+    }
   }
 
-  const sharedRepoPath = env.NVPN_WINDOWS_SHARED_REPO_PATH || defaultSharedWindowsRepoPath()
-  if (!sharedRepoPath) {
-    throw new SkipStepError('Skipping Windows artifacts because the shared repo path could not be derived; set NVPN_WINDOWS_SHARED_REPO_PATH.')
-  }
+  // Path to the working copy on the Windows host. Has to be a valid
+  // PowerShell-quoted absolute path; cargo-target chains can get long, so
+  // pick something short.
+  const guestRepo = env.NVPN_WINDOWS_GUEST_REPO_PATH || 'C:\\src\\nostr-vpn'
 
-  const vmName =
-    env.NVPN_WINDOWS_VM_NAME ||
-    autoDetectWindowsVmName(run('prlctl', ['list', '-a'], { capture: true, dryRun }))
-  if (!vmName) {
-    throw new SkipStepError('Skipping Windows artifacts because no unique running Windows VM was detected; set NVPN_WINDOWS_VM_NAME.')
-  }
+  syncRepoToWindowsHost({ host, guestRepo, dryRun })
 
-  syncRepoToWindowsVm({ vmName, sharedRepoPath, dryRun })
-
-  const llvmBin = env.NVPN_WINDOWS_LLVM_BIN || 'C:\\Program Files\\LLVM\\bin'
   const vmArchitecture = runWindowsPowerShell(
-    vmName,
+    host,
     '[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()',
     { capture: true, dryRun },
   ).trim()
   if (!dryRun && vmArchitecture.toLowerCase() !== 'x64') {
     throw new SkipStepError(
-      `Skipping Windows artifacts because VM ${vmName} is ${vmArchitecture}; Windows x64 release artifacts must be built on an x64 Windows runner.`,
+      `Skipping Windows artifacts because ${host} is ${vmArchitecture}; Windows x64 release artifacts must be built on an x64 Windows runner.`,
     )
   }
 
+  const llvmBin = env.NVPN_WINDOWS_LLVM_BIN || 'C:\\Program Files\\LLVM\\bin'
   const targets = splitCsv(
     env.NVPN_WINDOWS_CLI_TARGETS || 'x86_64-pc-windows-msvc,aarch64-pc-windows-msvc',
   )
-  const guestRepo = "(Join-Path $env:USERPROFILE 'src\\nostr-vpn')"
-  const distPath = `${sharedRepoPath}\\dist`
+  const guestDist = `${guestRepo}\\dist`
+  const guestRepoQuoted = psQuote(guestRepo)
+  const guestDistQuoted = psQuote(guestDist)
   const pathSetup = `$env:PATH = ${psQuote(llvmBin)} + ';' + $env:PATH`
+
+  // Make sure the guest's dist dir exists so we can write archives to it.
+  runWindowsPowerShell(
+    host,
+    `New-Item -ItemType Directory -Force -Path ${guestDistQuoted} | Out-Null`,
+    { dryRun },
+  )
 
   for (const target of targets) {
     const archiveName = `nvpn-${tag}-${target}.zip`
     runWindowsPowerShell(
-      vmName,
+      host,
       `
 ${pathSetup}
-Set-Location ${guestRepo}
+Set-Location ${guestRepoQuoted}
 cargo build --release --target ${psQuote(target)} -p nostr-vpn-cli
-$cli = Join-Path ${guestRepo} ${psQuote(`target\\${target}\\release\\nvpn.exe`)}
+$cli = Join-Path ${guestRepoQuoted} ${psQuote(`target\\${target}\\release\\nvpn.exe`)}
 if (!(Test-Path $cli)) { throw "Missing nvpn.exe for ${target}" }
 $tempDir = Join-Path $env:TEMP ${psQuote(`nvpn-${target}-zip`)}
 Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 Copy-Item $cli (Join-Path $tempDir 'nvpn.exe')
-Compress-Archive -Path (Join-Path $tempDir '*') -DestinationPath ${psQuote(`${distPath}\\${archiveName}`)} -Force
+Compress-Archive -Path (Join-Path $tempDir '*') -DestinationPath ${psQuote(`${guestDist}\\${archiveName}`)} -Force
 Remove-Item -Recurse -Force $tempDir
 `,
       { dryRun },
     )
-    builtLines.push(`Built Windows ${windowsArtifactArch(target)} CLI inside Parallels VM ${vmName}.`)
+    pullFileFromWindowsHost({ host, remotePath: guestDist, localParent: distDir, name: archiveName, dryRun })
+    builtLines.push(`Built Windows ${windowsArtifactArch(target)} CLI on ${host}.`)
   }
 
   const guiTargets = splitCsv(env.NVPN_WINDOWS_GUI_TARGETS || 'x86_64-pc-windows-msvc')
@@ -393,17 +432,18 @@ Remove-Item -Recurse -Force $tempDir
 
     const installerName = `nostr-vpn-${tag}-windows-${arch}-setup.exe`
     runWindowsPowerShell(
-      vmName,
+      host,
       `
 ${pathSetup}
-Set-Location ${guestRepo}
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\windows-build.ps1 -Configuration Release -Publish -Installer -Tag ${psQuote(tag)} -OutputDir ${psQuote(distPath)}
-$installer = ${psQuote(`${distPath}\\${installerName}`)}
+Set-Location ${guestRepoQuoted}
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\windows-build.ps1 -Configuration Release -Publish -Installer -Tag ${psQuote(tag)} -OutputDir ${guestDistQuoted}
+$installer = ${psQuote(`${guestDist}\\${installerName}`)}
 if (!(Test-Path $installer)) { throw "Missing Windows installer: $installer" }
 `,
       { dryRun },
     )
-    builtLines.push(`Built Windows ${arch} desktop installer inside Parallels VM ${vmName}.`)
+    pullFileFromWindowsHost({ host, remotePath: guestDist, localParent: distDir, name: installerName, dryRun })
+    builtLines.push(`Built Windows ${arch} desktop installer on ${host}.`)
   }
 }
 
