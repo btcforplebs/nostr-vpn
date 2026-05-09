@@ -2529,6 +2529,7 @@ dependencies = [
  "nostr-sdk 0.35.0",
  "nostr-vpn-core",
  "nostr-vpn-wintun",
+ "rand 0.9.4",
  "serde",
  "serde_json",
  "tokio",

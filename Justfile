@@ -50,6 +50,7 @@ info:
     @echo "  just e2e-lan-pairing"
     @echo "  just e2e-roster-admin"
     @echo "  just e2e-wireguard-exit"
+    @echo "  just e2e-wireguard-exit-userspace"
 
 run:
     @case "$(uname -s)" in \
@@ -154,3 +155,6 @@ e2e-roster-admin:
 
 e2e-wireguard-exit:
     ./scripts/e2e-wireguard-exit-docker.sh
+
+e2e-wireguard-exit-userspace:
+    ./scripts/e2e-wireguard-exit-userspace-docker.sh

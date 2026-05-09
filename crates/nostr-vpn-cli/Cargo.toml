@@ -47,3 +47,4 @@ path = "src/main.rs"
 
 [dev-dependencies]
 nostr-sdk.workspace = true
+rand.workspace = true

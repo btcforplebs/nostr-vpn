@@ -13,6 +13,8 @@ mod service_management;
 mod session_runtime;
 #[cfg(any(target_os = "windows", test))]
 mod windows_tunnel;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod wg_upstream_runtime;
 #[cfg(target_os = "linux")]
 mod wireguard_exit;
 
@@ -239,6 +241,15 @@ enum Command {
     Ip(IpArgs),
     /// Resolve a node/tunnel IP to peer metadata.
     Whois(WhoisArgs),
+    /// Probe a WireGuard upstream config (Mullvad/Proton-style) by running
+    /// the userspace WG state machine against it and reporting whether
+    /// the handshake completes. Does not create a tun device, does not
+    /// modify routes — safe to run on a host with live internet because
+    /// it can never blackhole anything. Useful as a first integration
+    /// test for the userspace WG path on platforms (like macOS) that
+    /// don't yet have a kernel WG implementation wired into the daemon.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    WgUpstreamTest(WgUpstreamTestArgs),
     /// Internal config import helper for elevated GUI writes.
     #[command(hide = true)]
     ApplyConfig(ApplyConfigArgs),
@@ -248,6 +259,18 @@ enum Command {
     /// Internal daemon entrypoint. Use `nvpn start --daemon`.
     #[command(hide = true)]
     Daemon(DaemonArgs),
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Debug, Args)]
+struct WgUpstreamTestArgs {
+    /// Path to a WireGuard config file (the same `[Interface]` /
+    /// `[Peer]` syntax wg-quick / Mullvad / Proton VPN export).
+    #[arg(long)]
+    config_file: PathBuf,
+    /// Maximum time to wait for the WG handshake to complete.
+    #[arg(long, default_value_t = 30)]
+    timeout_secs: u64,
 }
 
 #[derive(Debug, Args)]
@@ -1077,6 +1100,10 @@ async fn run_command(command: Command) -> Result<()> {
                 println!("timestamp={}", peer.timestamp);
             }
         }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        Command::WgUpstreamTest(args) => {
+            run_wg_upstream_test(args).await?;
+        }
         Command::ApplyConfig(args) => {
             let config_path = args.config.unwrap_or_else(default_config_path);
             apply_config_file(&args.source, &config_path)?;
@@ -1089,6 +1116,37 @@ async fn run_command(command: Command) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn run_wg_upstream_test(args: WgUpstreamTestArgs) -> Result<()> {
+    use crate::wg_upstream_runtime::WgUpstreamRuntime;
+    use std::time::Duration;
+
+    let raw = std::fs::read_to_string(&args.config_file)
+        .with_context(|| format!("read WG config file {}", args.config_file.display()))?;
+    let cfg = parse_wireguard_exit_config(&raw)
+        .with_context(|| format!("parse WG config file {}", args.config_file.display()))?;
+
+    let runtime = WgUpstreamRuntime::start_handshake_only(&cfg)
+        .await
+        .context("start userspace WG runtime")?;
+    let upstream = runtime.upstream();
+    println!("wg-upstream-test: probing handshake to {upstream}");
+
+    let timeout = Duration::from_secs(args.timeout_secs);
+    let ok = runtime.wait_for_handshake(timeout).await;
+    runtime.shutdown().await;
+
+    if ok {
+        println!("wg-upstream-test: handshake completed");
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "wg-upstream-test: no handshake from {upstream} within {}s",
+            args.timeout_secs
+        ))
+    }
 }
 
 fn runtime_effective_advertised_routes(app: &AppConfig) -> Vec<String> {
