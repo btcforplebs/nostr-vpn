@@ -11,13 +11,23 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY --from=fips . /app/fips
 
-RUN cargo build --release --features embedded-fips -p nostr-vpn-cli
+# BuildKit cache mounts: persist the cargo registry, git checkouts, and
+# target/ across builds. Without this, every source change re-downloads
+# every dep + recompiles the whole graph (~3 min). With it, an incremental
+# rebuild after editing one crate is ~30s. The target dir is mounted at
+# the workspace target/ path; the final binary is copied out at the end of
+# the RUN so it survives the cache-mount unmount.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/nostr-vpn/target \
+    cargo build --release --features embedded-fips -p nostr-vpn-cli \
+    && cp target/release/nvpn /tmp/nvpn
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates dnsutils iperf3 iproute2 iptables iputils-ping libdbus-1-3 netcat-openbsd procps wireguard-tools \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/nostr-vpn/target/release/nvpn /usr/local/bin/nvpn
+COPY --from=builder /tmp/nvpn /usr/local/bin/nvpn
 
 ENV RUST_LOG=info
