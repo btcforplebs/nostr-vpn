@@ -643,6 +643,10 @@ fn fips_endpoint_config(
         external_addr,
         outbound_only: Some(transport.is_none()),
         accept_connections: Some(transport.is_some()),
+        // Underlay MTU is the single-source constant in nostr-vpn-core. The
+        // tunnel-side MTU (MESH_TUNNEL_MTU) is sized so the encrypted wire
+        // image fits inside this budget; keep them paired.
+        mtu: Some(nostr_vpn_core::MESH_UNDERLAY_UDP_MTU),
         ..UdpConfig::default()
     });
     config.peers = peers
@@ -1090,7 +1094,7 @@ impl FipsPrivateTunnelRuntime {
                 &self.iface,
                 &config.local_address,
                 &config.route_targets,
-                crate::FIPS_TUNNEL_MTU,
+                nostr_vpn_core::MESH_TUNNEL_MTU,
             )
             .with_context(|| format!("failed to configure FIPS tunnel interface {}", self.iface))?;
         }
@@ -1160,7 +1164,7 @@ impl FipsPrivateTunnelRuntime {
             &self.iface,
             &config.local_address,
             &route_targets,
-            crate::FIPS_TUNNEL_MTU,
+            nostr_vpn_core::MESH_TUNNEL_MTU,
         )
         .with_context(|| format!("failed to configure FIPS tunnel interface {}", self.iface))?;
         if let Err(error) = crate::flush_linux_route_cache() {
@@ -1995,11 +1999,8 @@ fn start_windows_fips_wintun(
     let adapter = Adapter::open(&wintun, &config.iface)
         .or_else(|_| Adapter::create(&wintun, &config.iface, "NostrVPN", None))
         .with_context(|| format!("failed to open or create wintun adapter {}", config.iface))?;
-    let mtu = crate::platform_routing::FIPS_TUNNEL_MTU
-        .parse::<usize>()
-        .context("invalid FIPS tunnel MTU")?;
     adapter
-        .set_mtu(mtu)
+        .set_mtu(nostr_vpn_core::MESH_TUNNEL_MTU as usize)
         .with_context(|| format!("failed to set MTU on wintun adapter {}", config.iface))?;
     let parsed_address = crate::windows_tunnel::windows_interface_address(&config.local_address)?;
     adapter

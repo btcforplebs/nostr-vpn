@@ -51,8 +51,6 @@ pub(crate) struct LinuxDefaultRouteSpec {
     pub(crate) dev: String,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
-pub(crate) const FIPS_TUNNEL_MTU: &str = "1150";
 
 #[cfg(target_os = "linux")]
 pub(crate) fn linux_default_route_device_from_output(output: &str) -> Option<String> {
@@ -742,8 +740,10 @@ pub(crate) fn apply_local_interface_network_with_mtu(
     iface: &str,
     address: &str,
     route_targets: &[String],
-    mtu: &str,
+    mtu: u16,
 ) -> Result<()> {
+    let mtu = mtu.to_string();
+    let mtu = mtu.as_str();
     #[cfg(target_os = "linux")]
     {
         let ipv4_route_source = linux_ipv4_route_source(address);
