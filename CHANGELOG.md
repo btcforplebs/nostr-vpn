@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Bumped fips-endpoint to `1abda1c`. New commits since 4.0.9:
+  - `1abda1c` **encrypted: single-borrow refactor of handle_encrypted_frame fast path.** Mirrors the FSP refactor from 4.0.9 on the FMP layer. Per-thread CPU sampling on the v4.0.9 build identified one tokio worker pegged at 99.9% on a single core on both nodes during a TCP bench while 14 other workers idle, confirming the rx_loop pipeline as the single-thread bottleneck. The new shape compresses the per-packet work in `handle_encrypted_frame` from ~5 hashmap operations (sanity check + K-bit detection + decrypt + stats — three separate `peers.get(_mut)` calls) down to 2 (one immutable borrow for K-bit detection, one mutable borrow that runs decrypt + inner-header parse + MMP + link stats + touch in straight-line code), funneling the result through an `FmpFrameOutcome` enum so dispatch_link_message runs after the peer borrow is dropped. **TCP single-stream now averages ~1530 Mbps with peaks at 1552 Mbps**; multi-stream throughput moves up 2-9% (16-stream 1562 → 1575, 32-stream 1485 → 1622, 64-stream 1571 → 1623, 4-stream zerocopy 1487 → 1521 Mbps); UDP receiver ceiling rises from ~1278 to ~1306 Mbps at 1.5G load. UDP @1 Gbit stays lossless. All 1092 fips-core unit tests pass.
+
 ### Fixed
 
 - macOS Exit Nodes page: WireGuard upstream config textarea no longer wipes itself out every ~1s while typing. Each draft field (node name, endpoint, tunnel IP, listen port, MagicDNS suffix, WireGuard config) now syncs from upstream only when its own upstream value actually changes, instead of on every state-rev tick. Network-name and participant-alias drafts get the same treatment so in-flight edits survive periodic refreshes.
