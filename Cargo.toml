@@ -53,13 +53,3 @@ missing_panics_doc = "allow"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
-
-# TEMP: route fips-endpoint through the local ../fips checkout for the
-# process_packet cleanup pass. Local fips changes flow through to the
-# docker bench (which mounts ../fips at /app/fips) without push +
-# rev-bump cycles per iteration. REMOVE before committing perf changes
-# to nvpn master.
-[patch."https://github.com/mmalmi/fips.git"]
-fips-endpoint = { path = "../fips-rehandshake/crates/fips-endpoint" }
-fips-core = { path = "../fips-rehandshake/crates/fips-core" }
-fips-identity = { path = "../fips-rehandshake/crates/fips-identity" }
