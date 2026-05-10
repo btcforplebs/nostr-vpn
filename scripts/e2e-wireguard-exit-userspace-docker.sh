@@ -197,4 +197,49 @@ if [[ -n "$COUNT_DIRECT" && "$COUNT_DIRECT" != "0" ]]; then
   exit 1
 fi
 
-echo "wg-upstream userspace e2e passed: boringtun handshake + scoped-host data plane both work (${COUNT_VIA_WG} icmp pkts seen with WG-upstream source)"
+# Stage 3: --replace-default. Same boringtun runtime, but this time we
+# capture the original default route, install a /32 bypass for the WG
+# upstream's UDP endpoint, and swap the default route to dev <wg-tun>.
+# All outbound traffic (ICMP to a target on a separate subnet) should
+# round-trip through the WG tunnel; the watchdog should fire and
+# auto-revert if the handshake doesn't complete in time.
+echo "--- stage 3: --replace-default ---"
+
+# Reset counters.
+"${COMPOSE[@]}" exec -T internet-target sh -lc "
+iptables -Z nvpn-wg-userspace-counts
+" >/dev/null
+
+"${COMPOSE[@]}" exec -T node-a nvpn wg-upstream-test \
+  --config-file /tmp/wg-upstream.conf \
+  --timeout-secs 15 \
+  --replace-default \
+  --probe-target "${TARGET_IP}" \
+  --ping-count 5
+
+# Confirm the pings traversed the tunnel just like in stage 2.
+COUNT_VIA_WG_DEFAULT="$("${COMPOSE[@]}" exec -T internet-target sh -lc "iptables -L nvpn-wg-userspace-counts -v -n -x | awk -v ip='${WG_UPSTREAM_PUBLIC_IP}' '\$0 ~ ip { print \$1 }'" | tr -d '\r')"
+COUNT_DIRECT_DEFAULT="$("${COMPOSE[@]}" exec -T internet-target sh -lc "iptables -L nvpn-wg-userspace-counts -v -n -x | awk -v ip='${NODE_A_IP}' '\$0 ~ ip { print \$1 }'" | tr -d '\r')"
+
+echo "--- ICMP packet counts at internet-target (--replace-default) ---"
+"${COMPOSE[@]}" exec -T internet-target iptables -L nvpn-wg-userspace-counts -v -n -x | tr -d '\r'
+
+if [[ -z "$COUNT_VIA_WG_DEFAULT" || "$COUNT_VIA_WG_DEFAULT" == "0" ]]; then
+  echo "wg-upstream userspace e2e failed (replace-default): target saw 0 ICMP packets from the WG upstream's public IP" >&2
+  exit 1
+fi
+if [[ -n "$COUNT_DIRECT_DEFAULT" && "$COUNT_DIRECT_DEFAULT" != "0" ]]; then
+  echo "wg-upstream userspace e2e failed (replace-default): target saw ${COUNT_DIRECT_DEFAULT} ICMP packets directly from node-a's bridge IP" >&2
+  exit 1
+fi
+
+# Confirm node-a's default route is back to the docker bridge after the
+# command exited (proves the FullDefaultRoute Drop guard fired).
+DEFAULT_AFTER="$("${COMPOSE[@]}" exec -T node-a sh -lc 'ip -4 route show default' | tr -d '\r')"
+if grep -qE 'dev (utun|nvpn-wg|wg-)' <<<"$DEFAULT_AFTER"; then
+  echo "wg-upstream userspace e2e failed (replace-default): default route was NOT restored on cleanup; still: ${DEFAULT_AFTER}" >&2
+  exit 1
+fi
+echo "default route restored cleanly: ${DEFAULT_AFTER}"
+
+echo "wg-upstream userspace e2e passed: handshake + scoped-host (5 pkts) + replace-default (${COUNT_VIA_WG_DEFAULT} pkts) all worked, default route restored"

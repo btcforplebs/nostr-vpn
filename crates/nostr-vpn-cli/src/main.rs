@@ -277,15 +277,33 @@ struct WgUpstreamTestArgs {
     /// internet stays alive), wait for the WG handshake, ping the host
     /// through the tunnel, then tear everything back down. Requires
     /// root / sudo because it touches the tun and the routing table.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "replace_default")]
     scoped_host: Option<std::net::IpAddr>,
-    /// Number of pings to send to `--scoped-host` after the handshake.
-    /// Ignored when `--scoped-host` is not set.
+    /// **DANGEROUS:** route ALL outbound traffic through the WG tunnel
+    /// (Mullvad/Proton-style). Brings up the tun, runs the WG handshake
+    /// FIRST, and only swaps the default route once we've confirmed the
+    /// tunnel is live (so a misconfigured config can never take the
+    /// host offline). The original default route + the WG-endpoint
+    /// bypass are restored on Drop, even on panic / Ctrl-C. Requires
+    /// root / sudo.
+    #[arg(long, default_value_t = false)]
+    replace_default: bool,
+    /// Optional IP to ping through the tunnel for confidence after the
+    /// handshake completes. Used by both `--scoped-host` (where it
+    /// defaults to the scoped IP) and `--replace-default` (where it's
+    /// any externally-reachable host, e.g. 1.1.1.1). When empty in
+    /// `--replace-default` mode the command just holds the tunnel up
+    /// for `--hold-secs` and then tears it down.
+    #[arg(long)]
+    probe_target: Option<std::net::IpAddr>,
+    /// Number of pings to send to the probe target after the handshake.
+    /// Ignored when neither `--scoped-host` nor a `--probe-target` is
+    /// set.
     #[arg(long, default_value_t = 5)]
     ping_count: u8,
-    /// After pings complete, hold the tunnel up for this many seconds
-    /// before tearing it down (lets you inspect routes / tcpdump).
-    /// Ignored when `--scoped-host` is not set.
+    /// After the data plane test completes, hold the tunnel up for
+    /// this many seconds before tearing it down (lets you inspect
+    /// routes / tcpdump from another shell).
     #[arg(long, default_value_t = 0)]
     hold_secs: u64,
     /// Override the tun device name. macOS picks utunN automatically
@@ -1153,6 +1171,10 @@ async fn run_wg_upstream_test(args: WgUpstreamTestArgs) -> Result<()> {
 
     let timeout = Duration::from_secs(args.timeout_secs);
 
+    if args.replace_default {
+        return run_wg_upstream_replace_default(&cfg, &args, timeout).await;
+    }
+
     let Some(scoped_host) = args.scoped_host else {
         // Handshake-only mode: no tun, no route changes.
         let runtime = WgUpstreamRuntime::start_handshake_only(&cfg)
@@ -1270,6 +1292,136 @@ async fn run_wg_upstream_test(args: WgUpstreamTestArgs) -> Result<()> {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn run_wg_upstream_replace_default(
+    cfg: &nostr_vpn_core::config::WireGuardExitConfig,
+    args: &WgUpstreamTestArgs,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    use crate::wg_upstream_runtime::{WgUpstreamRuntime, apply_full_default_route};
+    use boringtun::device::tun::TunSocket;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // 1. Bring up the tun. No routing impact yet — the host is fine
+    // even if the WG handshake fails.
+    let tun_name = args
+        .tun_name
+        .clone()
+        .unwrap_or_else(default_wg_test_tun_name);
+    let tun = TunSocket::new(&tun_name)
+        .with_context(|| format!("create tun device {tun_name}"))?
+        .set_non_blocking()
+        .context("set tun non-blocking")?;
+    let actual_iface = tun
+        .name()
+        .context("read assigned tun interface name (probably needs root)")?;
+    let tun = Arc::new(tun);
+
+    // 2. Start the WG runtime against the upstream. The first packet
+    // from the runtime is the handshake init; until we wait for it
+    // there's no proof the upstream is reachable / our config is
+    // valid.
+    let runtime = WgUpstreamRuntime::start_with_tun(cfg, tun.clone())
+        .await
+        .context("start userspace WG runtime with tun")?;
+    let upstream = runtime.upstream();
+    println!("wg-upstream-test: probing handshake to {upstream}");
+
+    // 3. Watchdog. wait_for_handshake yields on a Notify; if no
+    // handshake by the deadline, we shut down without ever touching
+    // the routing table. The host's internet stays up.
+    let handshake_ok = runtime.wait_for_handshake(timeout).await;
+    if !handshake_ok {
+        runtime.shutdown().await;
+        return Err(anyhow!(
+            "wg-upstream-test: no handshake from {upstream} within {}s; \
+             routing table NOT modified",
+            args.timeout_secs
+        ));
+    }
+    println!("wg-upstream-test: handshake completed, swapping default route…");
+
+    // 4. Now and only now do we swap the default route. The returned
+    // guard restores the original default + deletes the bypass on
+    // Drop, so a panic / Ctrl-C from this point on still recovers.
+    let mtu = if cfg.mtu > 0 { cfg.mtu } else { 1420 };
+    let mut full_route = apply_full_default_route(&actual_iface, &cfg.address, upstream, mtu)
+        .with_context(|| {
+            format!(
+                "swap default route via {actual_iface} (probably needs root). \
+                 If you see 'Network is unreachable' below, the original default \
+                 was already restored — your internet should be back."
+            )
+        })?;
+    println!(
+        "wg-upstream-test: default route now via {actual_iface}, bypass for {} via captured underlay",
+        upstream.ip()
+    );
+
+    // 5. Optional probe — verify data plane round-trips through WG.
+    let probe_ok = if let Some(probe) = args.probe_target {
+        println!("wg-upstream-test: pinging {probe} through the WG tunnel…");
+        let mut ping = tokio::process::Command::new("ping");
+        ping.arg("-c").arg(args.ping_count.to_string());
+        #[cfg(target_os = "linux")]
+        ping.arg("-W").arg("2");
+        #[cfg(target_os = "macos")]
+        ping.arg("-W").arg("2000");
+        ping.arg(probe.to_string());
+        let status = ping.status().await.context("spawn ping")?;
+        status.success()
+    } else {
+        true
+    };
+
+    // 6. Hold the tunnel up so the user can curl ifconfig.me / inspect
+    // routes / look in tcpdump. Wrap the sleep in a select! with
+    // Ctrl-C so that interrupting the command still falls through to
+    // the route-revert path below (rather than aborting the runtime
+    // with the default route still pointed at the WG tun).
+    if args.hold_secs > 0 {
+        println!(
+            "wg-upstream-test: holding the tunnel up for {}s — Ctrl-C to revert sooner",
+            args.hold_secs
+        );
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(args.hold_secs)) => {}
+            _ = tokio::signal::ctrl_c() => {
+                println!("wg-upstream-test: Ctrl-C received, reverting now");
+            }
+        }
+    }
+
+    // 7. Cleanup. Order matters here:
+    //   a. Restore default route + delete bypass (FullDefaultRoute
+    //      Drop). Critical to do this BEFORE the runtime stops, so the
+    //      few seconds of "WG runtime stopping" don't have the kernel
+    //      trying to push outgoing packets through a torn-down WG tun.
+    //   b. Stop the runtime (closes UDP socket, the boringtun coordinator
+    //      task exits).
+    //   c. Drop the tun (utun auto-removes when its fd closes; Linux
+    //      tun lingers but its routes are already gone).
+    if let Err(error) = full_route.revert() {
+        eprintln!("wg-upstream-test: WARNING — route revert failed: {error}");
+    }
+    drop(full_route);
+    runtime.shutdown().await;
+    drop(tun);
+
+    if !probe_ok {
+        return Err(anyhow!(
+            "wg-upstream-test: probe ping failed (handshake completed and \
+             default route swapped, but no replies came back through the tunnel)"
+        ));
+    }
+    println!(
+        "wg-upstream-test: full default-route mode worked end-to-end. \
+         Default route restored."
+    );
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn default_wg_test_tun_name() -> String {
     "nvpn-wg-test".to_string()
@@ -1277,10 +1429,10 @@ fn default_wg_test_tun_name() -> String {
 
 #[cfg(target_os = "macos")]
 fn default_wg_test_tun_name() -> String {
-    // Empty string lets boringtun's TunSocket pick the next available
-    // utunN automatically. The actual name is read back via
-    // tun.name() after creation.
-    String::new()
+    // boringtun's macOS TunSocket::new requires the name to start with
+    // "utun". Plain "utun" tells the kernel to pick the next available
+    // index; the actual assigned name is read back via tun.name().
+    "utun".to_string()
 }
 
 fn runtime_effective_advertised_routes(app: &AppConfig) -> Vec<String> {
