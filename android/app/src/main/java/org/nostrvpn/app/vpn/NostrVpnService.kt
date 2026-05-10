@@ -116,11 +116,18 @@ class NostrVpnService : VpnService() {
     }
 
     private fun buildVpnInterface(config: JSONObject): ParcelFileDescriptor? {
+        // Note: we deliberately do NOT call `allowBypass()` here.
+        // Bypassable VPNs are also the only ones for which Android
+        // suppresses the persistent key icon in the status bar — so
+        // marking ours bypassable would silently hide the only signal
+        // users have that the VPN is actually running. We already
+        // protect the boringtun UDP socket via `protect(fd)` below,
+        // which is the only socket that actually needs to escape the
+        // tun, so allowBypass() doesn't buy us anything anyway.
         val builder = Builder()
             .setSession("Nostr VPN")
             .setMtu(config.optInt("mtu", 1280))
             .setBlocking(true)
-            .allowBypass()
 
         val underlyingNetworks = currentUnderlyingNetworks()
         if (underlyingNetworks.isNotEmpty()) {
