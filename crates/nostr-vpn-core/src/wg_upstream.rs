@@ -316,11 +316,14 @@ async fn run_pump(
             match udp_rx_socket.recv_from(&mut buf).await {
                 Ok((n, src)) => {
                     count = count.saturating_add(1);
-                    if count <= 3 || count % 50 == 0 {
-                        log_android_info(&format!(
-                            "wg-upstream: udp recv #{count} from {src} ({n} bytes)"
-                        ));
-                    }
+                    let msg_type = if n >= 4 {
+                        u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])
+                    } else {
+                        0
+                    };
+                    log_android_info(&format!(
+                        "wg-upstream: udp recv #{count} from {src} ({n}B type={msg_type})"
+                    ));
                     let event = PumpEvent::UdpDatagram {
                         source: src.ip(),
                         payload: buf[..n].to_vec(),
@@ -374,6 +377,18 @@ async fn run_pump(
             PumpEvent::UdpDatagram { source, payload } => {
                 let mut out = vec![0u8; MAX_WG_PACKET];
                 let result = tunn.decapsulate(Some(source), &payload, &mut out);
+                let kind = match &result {
+                    TunnResult::Done => "Done",
+                    TunnResult::Err(e) => {
+                        log_android_warn(&format!("wg-upstream: decap err {e:?}"));
+                        "Err"
+                    }
+                    TunnResult::WriteToNetwork(_) => "WriteToNetwork",
+                    TunnResult::WriteToTunnelV4(_, _) | TunnResult::WriteToTunnelV6(_, _) => {
+                        "WriteToTunnel"
+                    }
+                };
+                let _ = kind;
                 handle_tunn_result(&result, &udp, upstream, tun_out_tx.as_ref()).await;
                 drain_decapsulate(&mut tunn, &udp, upstream, tun_out_tx.as_ref()).await;
                 let (age, _, _, _, _) = tunn.stats();
@@ -381,12 +396,32 @@ async fn run_pump(
                 let prev = current.is_some();
                 *current = age;
                 if !prev && age.is_some() {
+                    log_android_info(&format!("wg-upstream: handshake completed, age={age:?}"));
                     handshake.completed.notify_waiters();
                 }
             }
             PumpEvent::TunPacket(packet) => {
+                let len = packet.len();
                 let mut out = vec![0u8; MAX_WG_PACKET];
                 let result = tunn.encapsulate(&packet, &mut out);
+                let kind = match &result {
+                    TunnResult::Done => "Done",
+                    TunnResult::Err(e) => {
+                        log_android_warn(&format!("wg-upstream: encap err {e:?}"));
+                        "Err"
+                    }
+                    TunnResult::WriteToNetwork(p) => {
+                        log_android_info(&format!(
+                            "wg-upstream: encap {len}B tun -> {}B net",
+                            p.len()
+                        ));
+                        "WriteToNetwork"
+                    }
+                    TunnResult::WriteToTunnelV4(_, _) | TunnResult::WriteToTunnelV6(_, _) => {
+                        "WriteToTunnel"
+                    }
+                };
+                let _ = kind;
                 handle_tunn_result(&result, &udp, upstream, tun_out_tx.as_ref()).await;
             }
             PumpEvent::TunReaderClosed => break,
@@ -511,16 +546,13 @@ fn raw_udp_socket_fd(_socket: &UdpSocket) -> c_int {
     -1
 }
 
-// Direct Android logcat bridge so the WG pump's diagnostic messages
-// actually surface during device testing — Rust stderr/stdout on
-// Android is redirected to /dev/null by default, and the existing
-// `tracing` macros silently no-op without a registered subscriber.
-// Cheap, self-contained, no extra dep. iOS doesn't get an equivalent
-// here: NSLog wants an NSString, `os_log` requires Apple-only
-// inline-helper plumbing, and shipping a binding for either crashed
-// the PacketTunnel extension during device testing. iOS verification
-// for the WG pump is done indirectly — same Rust code runs on Android
-// where logging works.
+// Direct OS-log bridges so the WG pump's diagnostic messages surface
+// during device testing — Rust stderr/stdout is redirected to
+// /dev/null on Android and inside an iOS app extension, and the
+// existing `tracing` macros silently no-op without a registered
+// subscriber. The Android side bridges to logcat; iOS appends to a
+// file inside the extension's sandboxed temp dir, which we can pull
+// back with `xcrun devicectl device copy from`.
 
 #[cfg(target_os = "android")]
 fn log_android(prio: i32, message: &str) {
@@ -543,10 +575,35 @@ fn log_android_warn(message: &str) {
     log_android(5 /* ANDROID_LOG_WARN */, message);
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "ios")]
+fn log_android_info(message: &str) {
+    log_ios_file(message);
+}
+
+#[cfg(target_os = "ios")]
+fn log_android_warn(message: &str) {
+    log_ios_file(message);
+}
+
+#[cfg(target_os = "ios")]
+fn log_ios_file(message: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let path = std::env::temp_dir().join("nvpn-wg.log");
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(file, "{secs:.3} {message}");
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn log_android_info(_message: &str) {}
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn log_android_warn(_message: &str) {}
 
 #[cfg(target_os = "android")]

@@ -12,27 +12,42 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         options: [String: NSObject]?,
         completionHandler: @escaping (Error?) -> Void
     ) {
+        NSLog("nvpn-pkt: startTunnel entered")
         let configuration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
         let configJson = configuration["mobileTunnelConfigJson"] as? String ?? ""
         let parsedConfig = MobileTunnelConfig(json: configJson)
         if let error = parsedConfig.errorText {
+            NSLog("nvpn-pkt: config parse failed: \(error)")
             completionHandler(error)
             return
         }
+        NSLog("nvpn-pkt: calling nostr_vpn_mobile_tunnel_new (configLen=\(configJson.count))")
         guard let handle = configJson.withCString({ nostr_vpn_mobile_tunnel_new($0) }) else {
+            NSLog("nvpn-pkt: nostr_vpn_mobile_tunnel_new returned NULL")
             completionHandler(PacketTunnelError.startFailed)
             return
         }
+        NSLog("nvpn-pkt: rust runtime up, handle=\(handle)")
         tunnelLock.lock()
         tunnelHandle = handle
         tunnelRunning = true
         tunnelLock.unlock()
 
-        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "192.0.2.1")
+        // tunnelRemoteAddress is what iOS shows in Settings → VPN
+        // and uses to decide "where the tunnel goes". wireguard-apple
+        // points it at the actual WG endpoint host, not TEST-NET. iOS
+        // will refuse to flip the status badge to "connected"+icon if
+        // it deems the remote address bogus.
+        let remoteAddress = parsedConfig.firstWireGuardEndpointHost ?? "10.0.0.1"
+        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: remoteAddress)
         settings.mtu = NSNumber(value: parsedConfig.mtu)
 
         if let parsed = parseIPv4CIDR(parsedConfig.localAddress) {
             let ipv4 = NEIPv4Settings(addresses: [parsed.address], subnetMasks: [parsed.mask])
+            // Use NEIPv4Route.default() for 0.0.0.0/0 — iOS recognizes
+            // it as the catch-all default route, vs an explicit
+            // (0.0.0.0, 0.0.0.0) which can be treated as a host route
+            // in some kernel paths.
             ipv4.includedRoutes = parsedConfig.routeTargets.compactMap(ipv4Route)
             // When WG upstream is on, the Rust runtime has expanded
             // `routeTargets` to include 0.0.0.0/0 so all outbound
@@ -43,15 +58,39 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 ipv4.excludedRoutes = parsedConfig.excludedRoutes.compactMap(ipv4Route)
             }
             settings.ipv4Settings = ipv4
+            NSLog(
+                "nvpn-pkt: ipv4 addr=\(parsed.address)/\(parsed.mask) "
+                    + "included=\(parsedConfig.routeTargets) "
+                    + "excluded=\(parsedConfig.excludedRoutes)"
+            )
         }
 
+        // DNS resolvers — Mullvad/Proton ship their own (e.g.
+        // 10.64.0.1) which lives behind the tunnel. Without
+        // `dnsSettings` here, iOS falls back to whatever the
+        // underlying Wi-Fi provided — which doesn't help once
+        // 0.0.0.0/0 is on the tun, because every DNS query goes into
+        // utun and toward Mullvad's WG endpoint, which doesn't run a
+        // resolver. The Rust side falls back to public resolvers when
+        // the user's config didn't include DNS.
+        if !parsedConfig.dnsServers.isEmpty {
+            let dns = NEDNSSettings(servers: parsedConfig.dnsServers)
+            dns.matchDomains = [""] // catch-all so VPN DNS handles every query
+            settings.dnsSettings = dns
+            NSLog("nvpn-pkt: dns servers=\(parsedConfig.dnsServers)")
+        }
+
+        NSLog("nvpn-pkt: calling setTunnelNetworkSettings")
         setTunnelNetworkSettings(settings) { [weak self] error in
             if let error {
+                NSLog("nvpn-pkt: setTunnelNetworkSettings failed: \(error)")
                 self?.stopRustTunnel()
                 completionHandler(error)
                 return
             }
+            NSLog("nvpn-pkt: setTunnelNetworkSettings succeeded — starting packet loops")
             self?.startPacketLoops()
+            NSLog("nvpn-pkt: completionHandler(nil) — VPN should transition to connected")
             completionHandler(nil)
         }
     }
@@ -167,6 +206,8 @@ private struct MobileTunnelConfig {
     let localAddress: String
     let routeTargets: [String]
     let excludedRoutes: [String]
+    let dnsServers: [String]
+    let firstWireGuardEndpointHost: String?
     let mtu: Int
     let errorText: Error?
 
@@ -177,6 +218,8 @@ private struct MobileTunnelConfig {
             localAddress = "10.44.0.1/32"
             routeTargets = []
             excludedRoutes = []
+            dnsServers = []
+            firstWireGuardEndpointHost = nil
             mtu = 1280
             errorText = PacketTunnelError.invalidConfig("Invalid tunnel configuration")
             return
@@ -185,6 +228,15 @@ private struct MobileTunnelConfig {
         localAddress = object["localAddress"] as? String ?? "10.44.0.1/32"
         routeTargets = object["routeTargets"] as? [String] ?? []
         excludedRoutes = object["excludedRoutes"] as? [String] ?? []
+        dnsServers = object["dnsServers"] as? [String] ?? []
+        if let wg = object["wireguardExit"] as? [String: Any],
+           let endpoint = wg["endpoint"] as? String
+        {
+            // Endpoint is host:port — strip the port for tunnelRemoteAddress.
+            firstWireGuardEndpointHost = endpoint.split(separator: ":", maxSplits: 1).first.map(String.init)
+        } else {
+            firstWireGuardEndpointHost = nil
+        }
         mtu = object["mtu"] as? Int ?? 1280
         errorText = error.isEmpty ? nil : PacketTunnelError.invalidConfig(error)
     }
@@ -205,6 +257,12 @@ private func parseIPv4CIDR(_ value: String) -> (address: String, mask: String)? 
 private func ipv4Route(_ value: String) -> NEIPv4Route? {
     guard let parsed = parseIPv4CIDR(value) else {
         return nil
+    }
+    if parsed.address == "0.0.0.0" && parsed.mask == "0.0.0.0" {
+        // iOS treats `NEIPv4Route.default()` and an explicit
+        // (0.0.0.0/0) differently in some kernel paths — the former
+        // is the documented default route. Always normalize.
+        return NEIPv4Route.default()
     }
     return NEIPv4Route(destinationAddress: parsed.address, subnetMask: parsed.mask)
 }

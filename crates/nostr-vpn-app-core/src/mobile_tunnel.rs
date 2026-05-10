@@ -53,6 +53,12 @@ pub(crate) struct MobileTunnelConfig {
     ///     instead, see `MobileTunnel::wg_upstream_socket_fd`).
     #[serde(default)]
     pub(crate) excluded_routes: Vec<String>,
+    /// DNS resolvers to install on the OS-side tunnel. Mullvad and
+    /// Proton ship configs with their own DNS (e.g. `10.64.0.1`); on
+    /// iOS this becomes `NEDNSSettings`. Without it, name resolution
+    /// silently fails even though TCP transits the tunnel.
+    #[serde(default)]
+    pub(crate) dns_servers: Vec<String>,
     /// The WG upstream config to drive boringtun against. None when
     /// the user hasn't enabled WG upstream — in which case the mobile
     /// tunnel runs in pure FIPS-mesh mode.
@@ -115,7 +121,7 @@ impl MobileTunnelConfig {
         // 0.0.0.0/0 (all outbound traffic should enter the tun) and
         // ask the host platform to keep the WG endpoint outside the
         // tunnel via `excluded_routes`.
-        let (wireguard_exit, excluded_routes) =
+        let (wireguard_exit, excluded_routes, dns_servers) =
             if app.wireguard_exit.enabled && app.wireguard_exit.configured() {
                 let mut excluded = Vec::new();
                 if let Some(ip) = wireguard_endpoint_host_ip(&app.wireguard_exit.endpoint) {
@@ -126,9 +132,27 @@ impl MobileTunnelConfig {
                 }
                 route_targets.sort();
                 route_targets.dedup();
-                (Some(app.wireguard_exit.clone()), excluded)
+                // Fall back to Cloudflare/Quad9 if the user's WG
+                // config didn't carry DNS — without dnsSettings on
+                // iOS the resolver dies silently.
+                let dns = if app.wireguard_exit.dns.is_empty() {
+                    vec!["1.1.1.1".to_string(), "9.9.9.9".to_string()]
+                } else {
+                    app.wireguard_exit.dns.clone()
+                };
+                // Force a 25s persistent keepalive on mobile so
+                // boringtun keeps its session fresh against Mullvad's
+                // server-side timeouts even when the device is idle.
+                // Without this, the session goes stale, Mullvad
+                // rotates indices on its side, and decap starts
+                // returning WrongIndex.
+                let mut wg = app.wireguard_exit.clone();
+                if wg.persistent_keepalive_secs == 0 {
+                    wg.persistent_keepalive_secs = 25;
+                }
+                (Some(wg), excluded, dns)
             } else {
-                (None, Vec::new())
+                (None, Vec::new(), Vec::new())
             };
 
         Ok(Self {
@@ -142,6 +166,7 @@ impl MobileTunnelConfig {
             stun_servers: app.nat.stun_servers.clone(),
             share_local_candidates: app.lan_discovery_enabled,
             excluded_routes,
+            dns_servers,
             wireguard_exit,
             error: String::new(),
         })
@@ -542,6 +567,7 @@ fn empty_config() -> MobileTunnelConfig {
         stun_servers: Vec::new(),
         share_local_candidates: false,
         excluded_routes: Vec::new(),
+        dns_servers: Vec::new(),
         wireguard_exit: None,
         error: String::new(),
     }

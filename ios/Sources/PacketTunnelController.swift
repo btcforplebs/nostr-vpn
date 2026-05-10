@@ -29,6 +29,14 @@ final class PacketTunnelController {
             "mtu": 1280,
             "mobileTunnelConfigJson": tunnelConfigJson,
         ]
+        // Tell iOS to actually use the includedRoutes we install
+        // (without this iOS sometimes lets system services bypass the
+        // tunnel, which is also the only condition under which the
+        // VPN status badge stays hidden).
+        proto.enforceRoutes = true
+        // Don't tear the tunnel down when the screen locks — for a
+        // utility VPN we want it to keep running.
+        proto.disconnectOnSleep = false
         manager.protocolConfiguration = proto
         manager.localizedDescription = "Nostr VPN"
         manager.isEnabled = true
