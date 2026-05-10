@@ -223,7 +223,7 @@ struct RootView: View {
                 pageTitle("Share", "qrcode")
                 if let activeNetwork {
                     inviteSection(activeNetwork)
-                    lanPairingSection
+                    joinNetworkSection(activeNetwork)
                 }
             }
         case .routing:
@@ -590,6 +590,9 @@ struct RootView: View {
                     .frame(width: 150, height: 150)
                 VStack(alignment: .leading, spacing: 12) {
                     sectionHeader("Invite Devices", systemImage: "qrcode")
+                    Text("Your invite")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     HStack(spacing: 8) {
                         Text(state.activeNetworkInvite.isEmpty ? "No invite" : state.activeNetworkInvite)
                             .lineLimit(1)
@@ -604,38 +607,21 @@ struct RootView: View {
                         Button {
                             manager.share(state.activeNetworkInvite)
                         } label: {
-                            Image(systemName: "square.and.arrow.up")
+                            Label("Share", systemImage: "square.and.arrow.up")
                         }
                         .disabled(state.activeNetworkInvite.isEmpty)
                     }
-                    HStack(spacing: 8) {
-                        TextField("Paste invite", text: $manager.inviteInput)
-                            .onSubmit {
-                                manager.importInvite(manager.inviteInput)
-                            }
+                    HStack {
+                        Spacer()
                         Button {
-                            manager.importInvite(manager.inviteInput)
+                            state.inviteBroadcastActive ? manager.stopInviteBroadcast() : manager.startInviteBroadcast()
                         } label: {
-                            Image(systemName: "arrow.down")
-                        }
-                        Button {
-                            showingQrScanner = true
-                        } label: {
-                            Image(systemName: "camera.viewfinder")
-                        }
-                        Button {
-                            manager.chooseInviteQrImage()
-                        } label: {
-                            Image(systemName: "qrcode.viewfinder")
-                        }
-                    }
-                    if network.outboundJoinRequest != nil {
-                        badge("Join requested", style: .warn)
-                    } else if !network.inviteInviterNpub.isEmpty {
-                        Button {
-                            manager.requestNetworkJoin(networkId: network.id)
-                        } label: {
-                            Label("Request Access", systemImage: "person.badge.plus")
+                            Label(
+                                state.inviteBroadcastActive
+                                    ? "Broadcasting · \(formatRemaining(state.inviteBroadcastRemainingSecs))"
+                                    : "Broadcast invite",
+                                systemImage: state.inviteBroadcastActive ? "stop.circle" : "dot.radiowaves.left.and.right"
+                            )
                         }
                         .disabled(manager.actionInFlight)
                     }
@@ -644,24 +630,74 @@ struct RootView: View {
         }
     }
 
-    private var lanPairingSection: some View {
+    private func joinNetworkSection(_ network: NativeNetworkState) -> some View {
         surface {
+            sectionHeader("Join Network", systemImage: "arrow.down.circle")
+            Text("Paste invite code")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                TextField("nvpn://invite/…", text: $manager.inviteInput)
+                    .onChange(of: manager.inviteInput) { _, newValue in
+                        // Auto-import when the field becomes a valid invite —
+                        // saves the user a click. importInvite clears the
+                        // field, which prevents re-firing.
+                        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if trimmed.lowercased().hasPrefix("nvpn://invite/") {
+                            manager.importInvite(trimmed)
+                        }
+                    }
+                    .onSubmit {
+                        manager.importInvite(manager.inviteInput)
+                    }
+                Button {
+                    pasteInviteFromClipboard()
+                } label: {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                }
+                Button {
+                    showingQrScanner = true
+                } label: {
+                    Label("Scan", systemImage: "camera.viewfinder")
+                }
+                Button {
+                    manager.chooseInviteQrImage()
+                } label: {
+                    Label("From file", systemImage: "qrcode.viewfinder")
+                }
+            }
+            if network.outboundJoinRequest != nil {
+                badge("Join requested", style: .warn)
+            } else if !network.inviteInviterNpub.isEmpty {
+                Button {
+                    manager.requestNetworkJoin(networkId: network.id)
+                } label: {
+                    Label("Request Access", systemImage: "person.badge.plus")
+                }
+                .disabled(manager.actionInFlight)
+            }
+
+            Divider()
+
             HStack {
-                sectionHeader("Nearby Devices", systemImage: "dot.radiowaves.left.and.right")
+                Text("Nearby invites")
+                    .font(.subheadline.weight(.medium))
                 Spacer()
                 Button {
-                    state.lanPairingActive ? manager.stopLanPairing() : manager.startLanPairing()
+                    state.nearbyDiscoveryActive ? manager.stopNearbyDiscovery() : manager.startNearbyDiscovery()
                 } label: {
                     Label(
-                        state.lanPairingActive ? formatSeconds(state.lanPairingRemainingSecs) : "Pair Nearby",
-                        systemImage: state.lanPairingActive ? "stop.circle" : "plus.circle"
+                        state.nearbyDiscoveryActive
+                            ? "Listening · \(formatRemaining(state.nearbyDiscoveryRemainingSecs))"
+                            : "Look for nearby",
+                        systemImage: state.nearbyDiscoveryActive ? "stop.circle" : "dot.radiowaves.left.and.right"
                     )
                 }
                 .disabled(manager.actionInFlight)
             }
 
-            if state.lanPeers.isEmpty {
-                emptyRow("No nearby invites", systemImage: "wifi")
+            if state.nearbyDiscoveryActive && state.lanPeers.isEmpty {
+                emptyRow("No nearby invites yet", systemImage: "wifi")
             } else {
                 ForEach(state.lanPeers, id: \.invite) { peer in
                     HStack {
@@ -680,6 +716,20 @@ struct RootView: View {
                 }
             }
         }
+    }
+
+    private func pasteInviteFromClipboard() {
+        if let text = NSPasteboard.general.string(forType: .string) {
+            manager.inviteInput = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private func formatRemaining(_ seconds: UInt64) -> String {
+        if seconds == 0 { return "off" }
+        let minutes = seconds / 60
+        if minutes == 0 { return "\(seconds)s" }
+        let secs = seconds % 60
+        return secs == 0 ? "\(minutes)m" : String(format: "%dm%02ds", minutes, secs)
     }
 
     private func routingSection(_ network: NativeNetworkState) -> some View {
@@ -1564,10 +1614,6 @@ private func formatBytes(_ bytes: UInt64) -> String {
         return "\(bytes) B"
     }
     return String(format: "%.1f %@", value, units[unitIndex])
-}
-
-private func formatSeconds(_ seconds: UInt64) -> String {
-    "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
 }
 
 private func short(_ value: String, prefix: Int, suffix: Int) -> String {

@@ -60,8 +60,10 @@ public sealed class NativeAppState
     public string MagicDnsSuffix { get; set; } = "";
     public string MagicDnsStatus { get; set; } = "";
     public bool Autoconnect { get; set; }
-    public bool LanPairingActive { get; set; }
-    public ulong LanPairingRemainingSecs { get; set; }
+    public bool InviteBroadcastActive { get; set; }
+    public ulong InviteBroadcastRemainingSecs { get; set; }
+    public bool NearbyDiscoveryActive { get; set; }
+    public ulong NearbyDiscoveryRemainingSecs { get; set; }
     public bool LaunchOnStartup { get; set; }
     public bool CloseToTrayOnClose { get; set; }
     public ulong ConnectedPeerCount { get; set; }

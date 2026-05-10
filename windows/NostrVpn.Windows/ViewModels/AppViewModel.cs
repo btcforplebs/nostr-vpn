@@ -77,8 +77,10 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         CopyThisDeviceCommand = new RelayCommand(_ => CopyText(ThisDeviceCopyValue), _ => !string.IsNullOrWhiteSpace(ThisDeviceCopyValue));
         CopyPeerCommand = new RelayCommand(parameter => CopyText(parameter as string ?? ""));
         ImportInviteCommand = new AsyncRelayCommand(_ => ImportInviteAsync(InviteInput), _ => !ActionInFlight && !string.IsNullOrWhiteSpace(InviteInput));
+        PasteInviteCommand = new RelayCommand(_ => PasteInviteFromClipboard(), _ => !ActionInFlight);
         ImportQrImageCommand = new AsyncRelayCommand(_ => ImportQrImageAsync(), _ => !ActionInFlight);
-        ToggleLanPairingCommand = new AsyncRelayCommand(_ => DispatchAsync(State.LanPairingActive ? NativeActions.StopLanPairing() : NativeActions.StartLanPairing(), "Pairing"));
+        ToggleInviteBroadcastCommand = new AsyncRelayCommand(_ => DispatchAsync(State.InviteBroadcastActive ? NativeActions.StopInviteBroadcast() : NativeActions.StartInviteBroadcast(), "Broadcasting invite"));
+        ToggleNearbyDiscoveryCommand = new AsyncRelayCommand(_ => DispatchAsync(State.NearbyDiscoveryActive ? NativeActions.StopNearbyDiscovery() : NativeActions.StartNearbyDiscovery(), "Looking for nearby"));
         AddParticipantCommand = new AsyncRelayCommand(_ => AddParticipantAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(ParticipantInput));
         SaveNodeCommand = new AsyncRelayCommand(_ => SaveNodeAsync(), _ => !ActionInFlight);
         SaveWireGuardExitCommand = new AsyncRelayCommand(_ => SaveWireGuardExitAsync(), _ => !ActionInFlight);
@@ -150,7 +152,27 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    public string InviteInput { get => _inviteInput; set => SetField(ref _inviteInput, value); }
+    public string InviteInput
+    {
+        get => _inviteInput;
+        set
+        {
+            if (!SetField(ref _inviteInput, value))
+            {
+                return;
+            }
+            CommandManager.InvalidateRequerySuggested();
+            // Auto-import as soon as the field contains a recognisable invite —
+            // saves the user a click and matches "paste and you're in" mental
+            // model. We only fire on full nvpn:// URLs so partial typing
+            // doesn't trigger; the import itself clears the field.
+            var trimmed = (value ?? string.Empty).Trim();
+            if (!ActionInFlight && LooksLikeInviteCode(trimmed))
+            {
+                _ = ImportInviteAsync(trimmed);
+            }
+        }
+    }
     public string ParticipantInput { get => _participantInput; set => SetField(ref _participantInput, value); }
     public string ParticipantAliasInput { get => _participantAliasInput; set => SetField(ref _participantAliasInput, value); }
     public string NetworkNameInput { get => _networkNameInput; set => SetField(ref _networkNameInput, value); }
@@ -316,7 +338,30 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
                 : HeaderOffBrush;
     public Brush VpnStatusBrush => State.ExitNodeBlocked ? HeaderDangerBrush : TextSecondaryBrush;
     public string ThisDeviceCopyValue => !string.IsNullOrWhiteSpace(State.OwnNpub) ? State.OwnNpub : State.TunnelIp;
-    public string LanPairingText => State.LanPairingActive ? $"{State.LanPairingRemainingSecs}s" : "Pair nearby";
+    public Visibility NoNearbyInvitesNoticeVisibility => State.NearbyDiscoveryActive && State.LanPeers.Count == 0
+        ? Visibility.Visible
+        : Visibility.Collapsed;
+    public string InviteBroadcastButtonText => State.InviteBroadcastActive
+        ? $"Broadcasting · {FormatRemaining(State.InviteBroadcastRemainingSecs)}"
+        : "Broadcast invite";
+    public string NearbyDiscoveryButtonText => State.NearbyDiscoveryActive
+        ? $"Listening · {FormatRemaining(State.NearbyDiscoveryRemainingSecs)}"
+        : "Look for nearby";
+
+    private static string FormatRemaining(ulong seconds)
+    {
+        if (seconds == 0)
+        {
+            return "off";
+        }
+        var minutes = seconds / 60;
+        if (minutes == 0)
+        {
+            return $"{seconds}s";
+        }
+        var remSecs = seconds % 60;
+        return remSecs == 0 ? $"{minutes}m" : $"{minutes}m{remSecs:D2}s";
+    }
     public string ServiceSummary => State.ServiceInstalled ? "Service installed" : "Service missing";
     public string CliSummary => State.CliInstalled ? "CLI installed" : "CLI missing";
     public string DiagnosticsInterface => string.IsNullOrWhiteSpace(State.Network.DefaultInterface) ? "unknown" : State.Network.DefaultInterface;
@@ -349,8 +394,10 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public ICommand CopyThisDeviceCommand { get; }
     public ICommand CopyPeerCommand { get; }
     public ICommand ImportInviteCommand { get; }
+    public ICommand PasteInviteCommand { get; }
     public ICommand ImportQrImageCommand { get; }
-    public ICommand ToggleLanPairingCommand { get; }
+    public ICommand ToggleInviteBroadcastCommand { get; }
+    public ICommand ToggleNearbyDiscoveryCommand { get; }
     public ICommand AddParticipantCommand { get; }
     public ICommand SaveNodeCommand { get; }
     public ICommand SaveWireGuardExitCommand { get; }
@@ -644,13 +691,37 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private Task ImportInviteAsync(string invite)
+    private async Task ImportInviteAsync(string invite)
     {
         var trimmed = invite.Trim();
-        return string.IsNullOrEmpty(trimmed)
-            ? Task.CompletedTask
-            : DispatchAsync(NativeActions.ImportNetworkInvite(trimmed), "Importing invite");
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return;
+        }
+        await DispatchAsync(NativeActions.ImportNetworkInvite(trimmed), "Importing invite");
+        // Always clear the paste field after a dispatch — keeps stale invites
+        // from sticking around between sessions, and gives instant visual
+        // feedback that the import was accepted.
+        InviteInput = "";
     }
+
+    private void PasteInviteFromClipboard()
+    {
+        try
+        {
+            if (Clipboard.ContainsText())
+            {
+                InviteInput = Clipboard.GetText().Trim();
+            }
+        }
+        catch (Exception error)
+        {
+            Notice = error.Message;
+        }
+    }
+
+    private static bool LooksLikeInviteCode(string value)
+        => value.StartsWith("nvpn://invite/", StringComparison.OrdinalIgnoreCase);
 
     private async Task ImportQrImageAsync()
     {
@@ -755,7 +826,9 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(VpnStatusBrush));
         OnPropertyChanged(nameof(UpdateStripeText));
         OnPropertyChanged(nameof(ThisDeviceCopyValue));
-        OnPropertyChanged(nameof(LanPairingText));
+        OnPropertyChanged(nameof(InviteBroadcastButtonText));
+        OnPropertyChanged(nameof(NearbyDiscoveryButtonText));
+        OnPropertyChanged(nameof(NoNearbyInvitesNoticeVisibility));
         OnPropertyChanged(nameof(ServiceSummary));
         OnPropertyChanged(nameof(CliSummary));
         OnPropertyChanged(nameof(DiagnosticsInterface));

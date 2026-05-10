@@ -19,8 +19,10 @@ public static class NativeActions
     public static string RequestNetworkJoin(string networkId) => AppCoreClient.Action(new { type = "request_network_join", networkId });
     public static string AcceptJoinRequest(string networkId, string requesterNpub) => AppCoreClient.Action(new { type = "accept_join_request", networkId, requesterNpub });
     public static string ImportNetworkInvite(string invite) => AppCoreClient.Action(new { type = "import_network_invite", invite });
-    public static string StartLanPairing() => AppCoreClient.Action(new { type = "start_lan_pairing" });
-    public static string StopLanPairing() => AppCoreClient.Action(new { type = "stop_lan_pairing" });
+    public static string StartInviteBroadcast() => AppCoreClient.Action(new { type = "start_invite_broadcast" });
+    public static string StopInviteBroadcast() => AppCoreClient.Action(new { type = "stop_invite_broadcast" });
+    public static string StartNearbyDiscovery() => AppCoreClient.Action(new { type = "start_nearby_discovery" });
+    public static string StopNearbyDiscovery() => AppCoreClient.Action(new { type = "stop_nearby_discovery" });
     public static string AddParticipant(string networkId, string npub, string? alias) => AppCoreClient.Action(new { type = "add_participant", networkId, npub, alias });
     public static string RemoveParticipant(string networkId, string npub) => AppCoreClient.Action(new { type = "remove_participant", networkId, npub });
     public static string AddAdmin(string networkId, string npub) => AppCoreClient.Action(new { type = "add_admin", networkId, npub });

@@ -1,8 +1,8 @@
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+    Arc, RwLock,
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Receiver},
 };
 use std::thread::{self, JoinHandle};
@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use nostr_vpn_core::config::normalize_nostr_pubkey;
 use serde::{Deserialize, Serialize};
-use socket2::{Domain, Protocol, Socket, Type};
+use socket2::{Domain, Protocol, SockRef, Socket, Type};
 
 use crate::invite::{parse_network_invite, to_npub};
 
@@ -43,10 +43,46 @@ pub(crate) struct LanPairingAnnouncement {
     pub(crate) invite: String,
 }
 
+/// Shared control surface for the worker thread.
+///
+/// Both `broadcast_until` and `listen_until` are unix-second deadlines; the
+/// worker stays alive as long as either is in the future, and inside each tick
+/// it checks them independently to decide whether to send / accept.
+#[derive(Debug)]
+pub(crate) struct LanPairingControl {
+    stop: AtomicBool,
+    announcement: RwLock<LanPairingAnnouncement>,
+    broadcast_until: AtomicU64,
+    listen_until: AtomicU64,
+}
+
+impl LanPairingControl {
+    fn new(announcement: LanPairingAnnouncement) -> Self {
+        Self {
+            stop: AtomicBool::new(false),
+            announcement: RwLock::new(announcement),
+            broadcast_until: AtomicU64::new(0),
+            listen_until: AtomicU64::new(0),
+        }
+    }
+
+    fn broadcast_active(&self, now_secs: u64) -> bool {
+        self.broadcast_until.load(Ordering::Relaxed) > now_secs
+    }
+
+    fn listen_active(&self, now_secs: u64) -> bool {
+        self.listen_until.load(Ordering::Relaxed) > now_secs
+    }
+
+    fn any_active(&self, now_secs: u64) -> bool {
+        self.broadcast_active(now_secs) || self.listen_active(now_secs)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct LanPairingWorker {
     receiver: Receiver<LanPairingSignal>,
-    stop: Arc<AtomicBool>,
+    control: Arc<LanPairingControl>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -73,8 +109,36 @@ impl LanPairingWorker {
         signals
     }
 
+    /// Mark the worker as broadcasting our invite until `expires_at`.
+    pub(crate) fn set_broadcast_until(&self, expires_at: SystemTime) {
+        self.control
+            .broadcast_until
+            .store(unix_seconds(expires_at), Ordering::Relaxed);
+    }
+
+    /// Mark the worker as listening for nearby invites until `expires_at`.
+    pub(crate) fn set_listen_until(&self, expires_at: SystemTime) {
+        self.control
+            .listen_until
+            .store(unix_seconds(expires_at), Ordering::Relaxed);
+    }
+
+    pub(crate) fn clear_broadcast(&self) {
+        self.control.broadcast_until.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn clear_listen(&self) {
+        self.control.listen_until.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn update_announcement(&self, announcement: LanPairingAnnouncement) {
+        if let Ok(mut current) = self.control.announcement.write() {
+            *current = announcement;
+        }
+    }
+
     pub(crate) fn stop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.control.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -89,30 +153,32 @@ impl Drop for LanPairingWorker {
 
 pub(crate) fn spawn_lan_pairing_worker(
     announcement: LanPairingAnnouncement,
-    expires_at: SystemTime,
 ) -> Result<LanPairingWorker> {
     let socket = bind_lan_pairing_socket()?;
+    let interfaces = lan_pairing_interfaces();
+    join_multicast_on_interfaces(&socket, &interfaces);
 
     let (sender, receiver) = mpsc::channel();
-    let stop = Arc::new(AtomicBool::new(false));
-    let thread_stop = Arc::clone(&stop);
-    let own_npub = announcement.npub.clone();
+    let control = Arc::new(LanPairingControl::new(announcement));
+    let own_npub = to_npub_for_filter(&control);
+    let thread_control = Arc::clone(&control);
     let handle = thread::spawn(move || {
-        run_lan_pairing_loop(
-            &socket,
-            &announcement,
-            &own_npub,
-            expires_at,
-            &thread_stop,
-            &sender,
-        );
+        run_lan_pairing_loop(&socket, &thread_control, &interfaces, &own_npub, &sender);
     });
 
     Ok(LanPairingWorker {
         receiver,
-        stop,
+        control,
         handle: Some(handle),
     })
+}
+
+fn to_npub_for_filter(control: &LanPairingControl) -> String {
+    control
+        .announcement
+        .read()
+        .map(|guard| guard.npub.clone())
+        .unwrap_or_default()
 }
 
 fn bind_lan_pairing_socket() -> Result<UdpSocket> {
@@ -131,13 +197,16 @@ fn bind_lan_pairing_socket() -> Result<UdpSocket> {
         .set_reuse_port(true)
         .context("failed to configure LAN pairing port reuse")?;
     socket
+        .set_broadcast(true)
+        .context("failed to enable broadcast on LAN pairing socket")?;
+    socket
         .bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, LAN_PAIRING_PORT).into())
         .context("failed to bind LAN pairing UDP socket")?;
 
     let socket: UdpSocket = socket.into();
-    socket
-        .join_multicast_v4(&LAN_PAIRING_ADDR, &Ipv4Addr::UNSPECIFIED)
-        .context("failed to join LAN pairing multicast group")?;
+    // Default-interface join — preserved as a baseline so single-interface hosts
+    // and the loopback test still work without depending on netdev.
+    let _ = socket.join_multicast_v4(&LAN_PAIRING_ADDR, &Ipv4Addr::UNSPECIFIED);
     socket
         .set_read_timeout(Some(LAN_PAIRING_READ_TIMEOUT))
         .context("failed to configure LAN pairing socket timeout")?;
@@ -148,6 +217,57 @@ fn bind_lan_pairing_socket() -> Result<UdpSocket> {
         .set_multicast_ttl_v4(1)
         .context("failed to configure LAN pairing multicast TTL")?;
     Ok(socket)
+}
+
+#[derive(Debug, Clone)]
+struct LanInterface {
+    addr: Ipv4Addr,
+    broadcast: Option<Ipv4Addr>,
+}
+
+/// Enumerate non-loopback IPv4 interfaces with link addresses.
+///
+/// On Windows, the routing-table-derived `INADDR_ANY` multicast join often
+/// picks a virtual adapter (Hyper-V vEthernet, WSL, Tailscale, etc.) instead
+/// of the physical Wi-Fi/Ethernet, which is why a Mac on the same LAN can see
+/// the Windows announcements (the Mac's join is correct) but not vice versa.
+/// Joining on every real interface fixes that asymmetry.
+fn lan_pairing_interfaces() -> Vec<LanInterface> {
+    let mut out = Vec::new();
+    for iface in netdev::get_interfaces() {
+        if iface.is_loopback() {
+            continue;
+        }
+        for net in &iface.ipv4 {
+            let addr = net.addr();
+            if addr.is_loopback() || addr.is_unspecified() || addr.is_link_local() {
+                continue;
+            }
+            let broadcast = directed_broadcast(addr, net.prefix_len());
+            out.push(LanInterface { addr, broadcast });
+        }
+    }
+    out
+}
+
+fn directed_broadcast(addr: Ipv4Addr, prefix_len: u8) -> Option<Ipv4Addr> {
+    if prefix_len == 0 || prefix_len >= 32 {
+        return None;
+    }
+    let host_bits = 32 - u32::from(prefix_len);
+    let mask = u32::MAX
+        .checked_shl(host_bits)
+        .unwrap_or(0);
+    let bcast = u32::from(addr) | !mask;
+    Some(Ipv4Addr::from(bcast))
+}
+
+fn join_multicast_on_interfaces(socket: &UdpSocket, interfaces: &[LanInterface]) {
+    for iface in interfaces {
+        // Duplicate joins (already covered by the INADDR_ANY join) return
+        // EADDRINUSE on some platforms — harmless, swallow.
+        let _ = socket.join_multicast_v4(&LAN_PAIRING_ADDR, &iface.addr);
+    }
 }
 
 pub(crate) fn decode_lan_pairing_payload(
@@ -187,27 +307,46 @@ pub(crate) fn decode_lan_pairing_payload(
 
 fn run_lan_pairing_loop(
     socket: &UdpSocket,
-    announcement: &LanPairingAnnouncement,
+    control: &Arc<LanPairingControl>,
+    interfaces: &[LanInterface],
     own_npub: &str,
-    expires_at: SystemTime,
-    stop: &Arc<AtomicBool>,
     sender: &mpsc::Sender<LanPairingSignal>,
 ) {
-    let target = SocketAddrV4::new(LAN_PAIRING_ADDR, LAN_PAIRING_PORT);
+    let multicast_target = SocketAddrV4::new(LAN_PAIRING_ADDR, LAN_PAIRING_PORT);
     let mut next_announcement = SystemTime::UNIX_EPOCH;
     let mut buffer = [0_u8; LAN_PAIRING_BUFFER_BYTES];
 
-    while !stop.load(Ordering::Relaxed) && SystemTime::now() < expires_at {
+    while !control.stop.load(Ordering::Relaxed) {
         let now = SystemTime::now();
-        if now >= next_announcement {
-            let _ = send_lan_pairing_announcement(socket, target, announcement);
+        let now_secs = unix_seconds(now);
+        if !control.any_active(now_secs) {
+            break;
+        }
+
+        if control.broadcast_active(now_secs) && now >= next_announcement {
+            let snapshot = control
+                .announcement
+                .read()
+                .ok()
+                .map(|guard| guard.clone());
+            if let Some(announcement) = snapshot {
+                let _ = send_lan_pairing_announcement(
+                    socket,
+                    multicast_target,
+                    interfaces,
+                    &announcement,
+                );
+            }
             next_announcement = now
                 .checked_add(LAN_PAIRING_ANNOUNCE_EVERY)
-                .unwrap_or(expires_at);
+                .unwrap_or_else(SystemTime::now);
         }
 
         match socket.recv_from(&mut buffer) {
             Ok((len, _)) => {
+                if !control.listen_active(unix_seconds(SystemTime::now())) {
+                    continue;
+                }
                 if let Ok(Some(signal)) = decode_lan_pairing_payload(&buffer[..len], own_npub) {
                     let _ = sender.send(signal);
                 }
@@ -222,7 +361,8 @@ fn run_lan_pairing_loop(
 
 fn send_lan_pairing_announcement(
     socket: &UdpSocket,
-    target: SocketAddrV4,
+    multicast_target: SocketAddrV4,
+    interfaces: &[LanInterface],
     announcement: &LanPairingAnnouncement,
 ) -> Result<()> {
     let payload = LanPairingAnnouncementPayload {
@@ -234,15 +374,45 @@ fn send_lan_pairing_announcement(
         timestamp: unix_timestamp(),
     };
     let encoded = serde_json::to_vec(&payload).context("failed to encode LAN announcement")?;
-    socket
-        .send_to(&encoded, target)
-        .context("failed to publish LAN announcement")?;
+
+    let sock_ref = SockRef::from(socket);
+
+    // Always send via the OS-default interface — covers loopback test, single-NIC
+    // hosts, and platforms where the per-interface fan-out below adds nothing.
+    let _ = sock_ref.set_multicast_if_v4(&Ipv4Addr::UNSPECIFIED);
+    let _ = socket.send_to(&encoded, multicast_target);
+
+    // Fan out to every real interface so multi-homed hosts (Windows with
+    // Hyper-V/WSL/Tailscale, Macs on Wi-Fi + Ethernet, etc.) actually reach
+    // peers on every L2 segment they're connected to. Multicast is tried first;
+    // a directed broadcast is the belt-and-suspenders fallback when the LAN
+    // suppresses multicast (some consumer routers do this for IPv4).
+    for iface in interfaces {
+        if sock_ref.set_multicast_if_v4(&iface.addr).is_ok() {
+            let _ = socket.send_to(&encoded, multicast_target);
+        }
+        if let Some(broadcast) = iface.broadcast {
+            let target = SocketAddrV4::new(broadcast, LAN_PAIRING_PORT);
+            let _ = socket.send_to(&encoded, target);
+        }
+    }
+
+    // Global limited broadcast — last-resort fallback for hosts whose interface
+    // enumeration picked up nothing useful (locked-down VMs, captive portals).
+    let _ = socket.send_to(
+        &encoded,
+        SocketAddrV4::new(Ipv4Addr::BROADCAST, LAN_PAIRING_PORT),
+    );
+
     Ok(())
 }
 
 fn unix_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    unix_seconds(SystemTime::now())
+}
+
+fn unix_seconds(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
 }
@@ -303,26 +473,24 @@ mod tests {
             .checked_add(Duration::from_secs(7))
             .expect("expiry");
 
-        let mut alice = spawn_lan_pairing_worker(
-            LanPairingAnnouncement {
-                npub: alice_npub.clone(),
-                node_name: "Alice".to_string(),
-                endpoint: "192.0.2.10:51820".to_string(),
-                invite: alice_invite,
-            },
-            expires_at,
-        )
+        let mut alice = spawn_lan_pairing_worker(LanPairingAnnouncement {
+            npub: alice_npub.clone(),
+            node_name: "Alice".to_string(),
+            endpoint: "192.0.2.10:51820".to_string(),
+            invite: alice_invite,
+        })
         .expect("start alice LAN pairing");
-        let mut bob = spawn_lan_pairing_worker(
-            LanPairingAnnouncement {
-                npub: bob_npub.clone(),
-                node_name: "Bob".to_string(),
-                endpoint: "192.0.2.11:51820".to_string(),
-                invite: bob_invite,
-            },
-            expires_at,
-        )
+        alice.set_broadcast_until(expires_at);
+        alice.set_listen_until(expires_at);
+        let mut bob = spawn_lan_pairing_worker(LanPairingAnnouncement {
+            npub: bob_npub.clone(),
+            node_name: "Bob".to_string(),
+            endpoint: "192.0.2.11:51820".to_string(),
+            invite: bob_invite,
+        })
         .expect("start bob LAN pairing");
+        bob.set_broadcast_until(expires_at);
+        bob.set_listen_until(expires_at);
 
         let deadline = Instant::now() + Duration::from_secs(8);
         let mut alice_saw_bob = false;
@@ -346,6 +514,79 @@ mod tests {
 
         assert!(alice_saw_bob, "alice did not receive bob's LAN invite");
         assert!(bob_saw_alice, "bob did not receive alice's LAN invite");
+    }
+
+    #[test]
+    fn listen_only_worker_receives_without_advertising() {
+        let alice_npub = nostr_sdk::Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("alice npub");
+        let bob_npub = nostr_sdk::Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("bob npub");
+        let alice_invite = invite_for(&alice_npub, "Alice mesh", "alice-mesh");
+        let bob_invite = invite_for(&bob_npub, "Bob mesh", "bob-mesh");
+        let expires_at = SystemTime::now()
+            .checked_add(Duration::from_secs(7))
+            .expect("expiry");
+
+        // Alice broadcasts only — she should never surface bob's invite.
+        let mut alice = spawn_lan_pairing_worker(LanPairingAnnouncement {
+            npub: alice_npub.clone(),
+            node_name: "Alice".to_string(),
+            endpoint: "192.0.2.10:51820".to_string(),
+            invite: alice_invite,
+        })
+        .expect("start alice");
+        alice.set_broadcast_until(expires_at);
+
+        // Bob listens only — he should still see alice.
+        let mut bob = spawn_lan_pairing_worker(LanPairingAnnouncement {
+            npub: bob_npub.clone(),
+            node_name: "Bob".to_string(),
+            endpoint: "192.0.2.11:51820".to_string(),
+            invite: bob_invite,
+        })
+        .expect("start bob");
+        bob.set_listen_until(expires_at);
+
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut bob_saw_alice = false;
+        let mut alice_saw_bob = false;
+        while Instant::now() < deadline && !bob_saw_alice {
+            bob_saw_alice |= bob.drain().into_iter().any(|signal| {
+                signal.npub == alice_npub && signal.network_id == "alice-mesh"
+            });
+            alice_saw_bob |= alice.drain().into_iter().any(|signal| {
+                signal.npub == bob_npub && signal.network_id == "bob-mesh"
+            });
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        alice.stop();
+        bob.stop();
+
+        assert!(bob_saw_alice, "listen-only worker did not receive broadcast");
+        assert!(
+            !alice_saw_bob,
+            "broadcast-only worker should not surface peers (listen disabled)"
+        );
+    }
+
+    #[test]
+    fn directed_broadcast_for_common_prefixes() {
+        assert_eq!(
+            directed_broadcast(Ipv4Addr::new(192, 168, 1, 17), 24),
+            Some(Ipv4Addr::new(192, 168, 1, 255))
+        );
+        assert_eq!(
+            directed_broadcast(Ipv4Addr::new(10, 0, 0, 5), 8),
+            Some(Ipv4Addr::new(10, 255, 255, 255))
+        );
+        assert_eq!(directed_broadcast(Ipv4Addr::new(10, 0, 0, 5), 32), None);
+        assert_eq!(directed_broadcast(Ipv4Addr::new(10, 0, 0, 5), 0), None);
     }
 
     fn invite_for(admin_npub: &str, network_name: &str, network_id: &str) -> String {

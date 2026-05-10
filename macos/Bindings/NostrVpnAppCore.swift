@@ -721,8 +721,10 @@ public struct NativeAppState {
     public var magicDnsSuffix: String
     public var magicDnsStatus: String
     public var autoconnect: Bool
-    public var lanPairingActive: Bool
-    public var lanPairingRemainingSecs: UInt64
+    public var inviteBroadcastActive: Bool
+    public var inviteBroadcastRemainingSecs: UInt64
+    public var nearbyDiscoveryActive: Bool
+    public var nearbyDiscoveryRemainingSecs: UInt64
     public var launchOnStartup: Bool
     public var closeToTrayOnClose: Bool
     public var connectedPeerCount: UInt64
@@ -736,7 +738,7 @@ public struct NativeAppState {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(rev: UInt64, platform: String, mobile: Bool, vpnControlSupported: Bool, cliInstallSupported: Bool, startupSettingsSupported: Bool, trayBehaviorSupported: Bool, runtimeStatusDetail: String, appVersion: String, configPath: String, error: String, cliInstalled: Bool, serviceSupported: Bool, serviceEnablementSupported: Bool, serviceInstalled: Bool, serviceDisabled: Bool, serviceRunning: Bool, serviceStatusDetail: String, daemonRunning: Bool, vpnEnabled: Bool, vpnActive: Bool, vpnStatus: String, daemonBinaryVersion: String, serviceBinaryVersion: String, expectedServiceBinaryVersion: String, ownNpub: String, ownPubkeyHex: String, nodeId: String, nodeName: String, selfMagicDnsName: String, endpoint: String, tunnelIp: String, listenPort: UInt32, networkId: String, activeNetworkInvite: String, exitNode: String, exitNodeLeakProtection: Bool, exitNodeActive: Bool, exitNodeBlocked: Bool, exitNodeStatusText: String, advertiseExitNode: Bool, advertisedRoutes: [String], effectiveAdvertisedRoutes: [String], wireguardExitEnabled: Bool, wireguardExitConfigured: Bool, wireguardExitInterface: String, wireguardExitAddress: String, wireguardExitPrivateKey: String, wireguardExitPeerPublicKey: String, wireguardExitPeerPresharedKey: String, wireguardExitEndpoint: String, wireguardExitAllowedIps: String, wireguardExitDns: String, wireguardExitMtu: UInt16, wireguardExitPersistentKeepaliveSecs: UInt16, wireguardExitConfig: String, magicDnsSuffix: String, magicDnsStatus: String, autoconnect: Bool, lanPairingActive: Bool, lanPairingRemainingSecs: UInt64, launchOnStartup: Bool, closeToTrayOnClose: Bool, connectedPeerCount: UInt64, expectedPeerCount: UInt64, meshReady: Bool, health: [NativeHealthIssue], network: NativeNetworkSummary, portMapping: NativePortMappingStatus, networks: [NativeNetworkState], lanPeers: [NativeLanPeerState]) {
+    public init(rev: UInt64, platform: String, mobile: Bool, vpnControlSupported: Bool, cliInstallSupported: Bool, startupSettingsSupported: Bool, trayBehaviorSupported: Bool, runtimeStatusDetail: String, appVersion: String, configPath: String, error: String, cliInstalled: Bool, serviceSupported: Bool, serviceEnablementSupported: Bool, serviceInstalled: Bool, serviceDisabled: Bool, serviceRunning: Bool, serviceStatusDetail: String, daemonRunning: Bool, vpnEnabled: Bool, vpnActive: Bool, vpnStatus: String, daemonBinaryVersion: String, serviceBinaryVersion: String, expectedServiceBinaryVersion: String, ownNpub: String, ownPubkeyHex: String, nodeId: String, nodeName: String, selfMagicDnsName: String, endpoint: String, tunnelIp: String, listenPort: UInt32, networkId: String, activeNetworkInvite: String, exitNode: String, exitNodeLeakProtection: Bool, exitNodeActive: Bool, exitNodeBlocked: Bool, exitNodeStatusText: String, advertiseExitNode: Bool, advertisedRoutes: [String], effectiveAdvertisedRoutes: [String], wireguardExitEnabled: Bool, wireguardExitConfigured: Bool, wireguardExitInterface: String, wireguardExitAddress: String, wireguardExitPrivateKey: String, wireguardExitPeerPublicKey: String, wireguardExitPeerPresharedKey: String, wireguardExitEndpoint: String, wireguardExitAllowedIps: String, wireguardExitDns: String, wireguardExitMtu: UInt16, wireguardExitPersistentKeepaliveSecs: UInt16, wireguardExitConfig: String, magicDnsSuffix: String, magicDnsStatus: String, autoconnect: Bool, inviteBroadcastActive: Bool, inviteBroadcastRemainingSecs: UInt64, nearbyDiscoveryActive: Bool, nearbyDiscoveryRemainingSecs: UInt64, launchOnStartup: Bool, closeToTrayOnClose: Bool, connectedPeerCount: UInt64, expectedPeerCount: UInt64, meshReady: Bool, health: [NativeHealthIssue], network: NativeNetworkSummary, portMapping: NativePortMappingStatus, networks: [NativeNetworkState], lanPeers: [NativeLanPeerState]) {
         self.rev = rev
         self.platform = platform
         self.mobile = mobile
@@ -796,8 +798,10 @@ public struct NativeAppState {
         self.magicDnsSuffix = magicDnsSuffix
         self.magicDnsStatus = magicDnsStatus
         self.autoconnect = autoconnect
-        self.lanPairingActive = lanPairingActive
-        self.lanPairingRemainingSecs = lanPairingRemainingSecs
+        self.inviteBroadcastActive = inviteBroadcastActive
+        self.inviteBroadcastRemainingSecs = inviteBroadcastRemainingSecs
+        self.nearbyDiscoveryActive = nearbyDiscoveryActive
+        self.nearbyDiscoveryRemainingSecs = nearbyDiscoveryRemainingSecs
         self.launchOnStartup = launchOnStartup
         self.closeToTrayOnClose = closeToTrayOnClose
         self.connectedPeerCount = connectedPeerCount
@@ -995,10 +999,16 @@ extension NativeAppState: Equatable, Hashable {
         if lhs.autoconnect != rhs.autoconnect {
             return false
         }
-        if lhs.lanPairingActive != rhs.lanPairingActive {
+        if lhs.inviteBroadcastActive != rhs.inviteBroadcastActive {
             return false
         }
-        if lhs.lanPairingRemainingSecs != rhs.lanPairingRemainingSecs {
+        if lhs.inviteBroadcastRemainingSecs != rhs.inviteBroadcastRemainingSecs {
+            return false
+        }
+        if lhs.nearbyDiscoveryActive != rhs.nearbyDiscoveryActive {
+            return false
+        }
+        if lhs.nearbyDiscoveryRemainingSecs != rhs.nearbyDiscoveryRemainingSecs {
             return false
         }
         if lhs.launchOnStartup != rhs.launchOnStartup {
@@ -1094,8 +1104,10 @@ extension NativeAppState: Equatable, Hashable {
         hasher.combine(magicDnsSuffix)
         hasher.combine(magicDnsStatus)
         hasher.combine(autoconnect)
-        hasher.combine(lanPairingActive)
-        hasher.combine(lanPairingRemainingSecs)
+        hasher.combine(inviteBroadcastActive)
+        hasher.combine(inviteBroadcastRemainingSecs)
+        hasher.combine(nearbyDiscoveryActive)
+        hasher.combine(nearbyDiscoveryRemainingSecs)
         hasher.combine(launchOnStartup)
         hasher.combine(closeToTrayOnClose)
         hasher.combine(connectedPeerCount)
@@ -1177,8 +1189,10 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
                 magicDnsSuffix: FfiConverterString.read(from: &buf),
                 magicDnsStatus: FfiConverterString.read(from: &buf),
                 autoconnect: FfiConverterBool.read(from: &buf),
-                lanPairingActive: FfiConverterBool.read(from: &buf),
-                lanPairingRemainingSecs: FfiConverterUInt64.read(from: &buf),
+                inviteBroadcastActive: FfiConverterBool.read(from: &buf),
+                inviteBroadcastRemainingSecs: FfiConverterUInt64.read(from: &buf),
+                nearbyDiscoveryActive: FfiConverterBool.read(from: &buf),
+                nearbyDiscoveryRemainingSecs: FfiConverterUInt64.read(from: &buf),
                 launchOnStartup: FfiConverterBool.read(from: &buf),
                 closeToTrayOnClose: FfiConverterBool.read(from: &buf),
                 connectedPeerCount: FfiConverterUInt64.read(from: &buf),
@@ -1252,8 +1266,10 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
         FfiConverterString.write(value.magicDnsSuffix, into: &buf)
         FfiConverterString.write(value.magicDnsStatus, into: &buf)
         FfiConverterBool.write(value.autoconnect, into: &buf)
-        FfiConverterBool.write(value.lanPairingActive, into: &buf)
-        FfiConverterUInt64.write(value.lanPairingRemainingSecs, into: &buf)
+        FfiConverterBool.write(value.inviteBroadcastActive, into: &buf)
+        FfiConverterUInt64.write(value.inviteBroadcastRemainingSecs, into: &buf)
+        FfiConverterBool.write(value.nearbyDiscoveryActive, into: &buf)
+        FfiConverterUInt64.write(value.nearbyDiscoveryRemainingSecs, into: &buf)
         FfiConverterBool.write(value.launchOnStartup, into: &buf)
         FfiConverterBool.write(value.closeToTrayOnClose, into: &buf)
         FfiConverterUInt64.write(value.connectedPeerCount, into: &buf)
@@ -2735,8 +2751,16 @@ public enum NativeAppAction {
     )
     case importNetworkInvite(invite: String
     )
-    case startLanPairing
-    case stopLanPairing
+    /**
+     * Start broadcasting our active-network invite over LAN multicast/broadcast.
+     */
+    case startInviteBroadcast
+    case stopInviteBroadcast
+    /**
+     * Start listening for nearby invites (populates `lan_peers`).
+     */
+    case startNearbyDiscovery
+    case stopNearbyDiscovery
     case removeParticipant(networkId: String, npub: String
     )
     case removeAdmin(networkId: String, npub: String
@@ -2814,23 +2838,27 @@ public struct FfiConverterTypeNativeAppAction: FfiConverterRustBuffer {
         case 20: return .importNetworkInvite(invite: try FfiConverterString.read(from: &buf)
         )
 
-        case 21: return .startLanPairing
+        case 21: return .startInviteBroadcast
 
-        case 22: return .stopLanPairing
+        case 22: return .stopInviteBroadcast
 
-        case 23: return .removeParticipant(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf)
+        case 23: return .startNearbyDiscovery
+
+        case 24: return .stopNearbyDiscovery
+
+        case 25: return .removeParticipant(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf)
         )
 
-        case 24: return .removeAdmin(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf)
+        case 26: return .removeAdmin(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf)
         )
 
-        case 25: return .acceptJoinRequest(networkId: try FfiConverterString.read(from: &buf), requesterNpub: try FfiConverterString.read(from: &buf)
+        case 27: return .acceptJoinRequest(networkId: try FfiConverterString.read(from: &buf), requesterNpub: try FfiConverterString.read(from: &buf)
         )
 
-        case 26: return .setParticipantAlias(npub: try FfiConverterString.read(from: &buf), alias: try FfiConverterString.read(from: &buf)
+        case 28: return .setParticipantAlias(npub: try FfiConverterString.read(from: &buf), alias: try FfiConverterString.read(from: &buf)
         )
 
-        case 27: return .updateSettings(patch: try FfiConverterTypeSettingsPatch.read(from: &buf)
+        case 29: return .updateSettings(patch: try FfiConverterTypeSettingsPatch.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2938,40 +2966,48 @@ public struct FfiConverterTypeNativeAppAction: FfiConverterRustBuffer {
             FfiConverterString.write(invite, into: &buf)
 
 
-        case .startLanPairing:
+        case .startInviteBroadcast:
             writeInt(&buf, Int32(21))
 
 
-        case .stopLanPairing:
+        case .stopInviteBroadcast:
             writeInt(&buf, Int32(22))
 
 
-        case let .removeParticipant(networkId,npub):
+        case .startNearbyDiscovery:
             writeInt(&buf, Int32(23))
+
+
+        case .stopNearbyDiscovery:
+            writeInt(&buf, Int32(24))
+
+
+        case let .removeParticipant(networkId,npub):
+            writeInt(&buf, Int32(25))
             FfiConverterString.write(networkId, into: &buf)
             FfiConverterString.write(npub, into: &buf)
 
 
         case let .removeAdmin(networkId,npub):
-            writeInt(&buf, Int32(24))
+            writeInt(&buf, Int32(26))
             FfiConverterString.write(networkId, into: &buf)
             FfiConverterString.write(npub, into: &buf)
 
 
         case let .acceptJoinRequest(networkId,requesterNpub):
-            writeInt(&buf, Int32(25))
+            writeInt(&buf, Int32(27))
             FfiConverterString.write(networkId, into: &buf)
             FfiConverterString.write(requesterNpub, into: &buf)
 
 
         case let .setParticipantAlias(npub,alias):
-            writeInt(&buf, Int32(26))
+            writeInt(&buf, Int32(28))
             FfiConverterString.write(npub, into: &buf)
             FfiConverterString.write(alias, into: &buf)
 
 
         case let .updateSettings(patch):
-            writeInt(&buf, Int32(27))
+            writeInt(&buf, Int32(29))
             FfiConverterTypeSettingsPatch.write(patch, into: &buf)
 
         }

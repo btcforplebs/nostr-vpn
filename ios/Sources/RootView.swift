@@ -164,23 +164,69 @@ private struct AddDeviceSheet: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Invite Devices")
                                 .font(.headline)
+                            Text("Your invite")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             CopyLine(value: model.state.activeNetworkInvite, model: model)
-                            TextField("Invite", text: $inviteInput)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .textFieldStyle(.roundedBorder)
-                            Button("Import") {
-                                model.importInvite(inviteInput)
-                                inviteInput = ""
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(inviteInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             if !model.state.activeNetworkInvite.isEmpty {
                                 ShareLink(item: model.state.activeNetworkInvite) {
                                     Label("Share", systemImage: "square.and.arrow.up")
                                 }
                             }
+                            Button {
+                                if model.state.inviteBroadcastActive {
+                                    model.dispatch(NativeActions.stopInviteBroadcast(), status: "Stopped broadcasting")
+                                } else {
+                                    model.dispatch(NativeActions.startInviteBroadcast(), status: "Broadcasting invite")
+                                }
+                            } label: {
+                                Label(
+                                    model.state.inviteBroadcastActive
+                                        ? "Broadcasting · \(formatRemaining(model.state.inviteBroadcastRemainingSecs))"
+                                        : "Broadcast invite",
+                                    systemImage: model.state.inviteBroadcastActive ? "stop.circle" : "dot.radiowaves.left.and.right"
+                                )
+                            }
+                            .buttonStyle(.bordered)
                         }
+                    }
+                }
+
+                AppCard {
+                    Text("Join Network")
+                        .font(.headline)
+                    Text("Paste invite code")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("nvpn://invite/…", text: $inviteInput)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: inviteInput) { _, newValue in
+                            // Auto-import as soon as the field looks like a
+                            // valid invite — saves the user a tap. Clearing
+                            // the field below prevents re-firing.
+                            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if trimmed.lowercased().hasPrefix("nvpn://invite/") {
+                                model.importInvite(trimmed)
+                                inviteInput = ""
+                            }
+                        }
+                    HStack {
+                        Button {
+                            if let text = UIPasteboard.general.string {
+                                inviteInput = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                            }
+                        } label: {
+                            Label("Paste", systemImage: "doc.on.clipboard")
+                        }
+                        Spacer()
+                        Button("Import") {
+                            model.importInvite(inviteInput)
+                            inviteInput = ""
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(inviteInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
 
@@ -198,6 +244,14 @@ private struct AddDeviceSheet: View {
             .padding()
         }
         .background(AppColors.background)
+    }
+
+    private func formatRemaining(_ seconds: UInt64) -> String {
+        if seconds == 0 { return "off" }
+        let minutes = seconds / 60
+        if minutes == 0 { return "\(seconds)s" }
+        let secs = seconds % 60
+        return secs == 0 ? "\(minutes)m" : String(format: "%dm%02ds", minutes, secs)
     }
 }
 
@@ -368,19 +422,28 @@ private struct NearbyCard: View {
     var body: some View {
         AppCard {
             HStack {
-                Text("Nearby Devices")
+                Text("Nearby invites")
                     .font(.headline)
                 Spacer()
-                Button(model.state.lanPairingActive ? "\(model.state.lanPairingRemainingSecs)s" : "Pair") {
+                Button {
                     model.dispatch(
-                        model.state.lanPairingActive ? NativeActions.stopLanPairing() : NativeActions.startLanPairing(),
-                        status: "Pairing"
+                        model.state.nearbyDiscoveryActive ? NativeActions.stopNearbyDiscovery() : NativeActions.startNearbyDiscovery(),
+                        status: "Looking for nearby"
+                    )
+                } label: {
+                    Label(
+                        model.state.nearbyDiscoveryActive
+                            ? "Listening · \(formatRemaining(model.state.nearbyDiscoveryRemainingSecs))"
+                            : "Look for nearby",
+                        systemImage: model.state.nearbyDiscoveryActive ? "stop.circle" : "dot.radiowaves.left.and.right"
                     )
                 }
+                .buttonStyle(.bordered)
             }
             if model.state.lanPeers.isEmpty {
-                Text("None")
+                Text(model.state.nearbyDiscoveryActive ? "No nearby invites yet" : "Tap above to look for nearby devices")
                     .foregroundStyle(.secondary)
+                    .font(.footnote)
             } else {
                 ForEach(model.state.lanPeers) { peer in
                     HStack {
@@ -399,6 +462,14 @@ private struct NearbyCard: View {
                 }
             }
         }
+    }
+
+    private func formatRemaining(_ seconds: UInt64) -> String {
+        if seconds == 0 { return "off" }
+        let minutes = seconds / 60
+        if minutes == 0 { return "\(seconds)s" }
+        let secs = seconds % 60
+        return secs == 0 ? "\(minutes)m" : String(format: "%dm%02ds", minutes, secs)
     }
 }
 

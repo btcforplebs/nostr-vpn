@@ -120,7 +120,8 @@ struct NativeAppRuntime {
     expected_service_binary_version: String,
     last_service_status_refresh_at: Option<Instant>,
     lan_pairing_worker: Option<LanPairingWorker>,
-    lan_pairing_expires_at: Option<SystemTime>,
+    invite_broadcast_expires_at: Option<SystemTime>,
+    nearby_discovery_expires_at: Option<SystemTime>,
     lan_peers: HashMap<String, LanPeerRecord>,
 }
 
@@ -205,7 +206,8 @@ impl NativeAppRuntime {
             expected_service_binary_version: String::new(),
             last_service_status_refresh_at: None,
             lan_pairing_worker: None,
-            lan_pairing_expires_at: None,
+            invite_broadcast_expires_at: None,
+            nearby_discovery_expires_at: None,
             lan_peers: HashMap::new(),
         };
         runtime.refresh_expected_service_binary_version();
@@ -243,7 +245,8 @@ impl NativeAppRuntime {
             expected_service_binary_version: String::new(),
             last_service_status_refresh_at: None,
             lan_pairing_worker: None,
-            lan_pairing_expires_at: None,
+            invite_broadcast_expires_at: None,
+            nearby_discovery_expires_at: None,
             lan_peers: HashMap::new(),
         }
     }
@@ -370,8 +373,10 @@ impl NativeAppRuntime {
             magic_dns_suffix: self.config.magic_dns_suffix.clone(),
             magic_dns_status: self.magic_dns_status(),
             autoconnect: self.config.autoconnect,
-            lan_pairing_active: self.lan_pairing_active(),
-            lan_pairing_remaining_secs: self.lan_pairing_remaining_secs(),
+            invite_broadcast_active: self.invite_broadcast_active(),
+            invite_broadcast_remaining_secs: self.invite_broadcast_remaining_secs(),
+            nearby_discovery_active: self.nearby_discovery_active(),
+            nearby_discovery_remaining_secs: self.nearby_discovery_remaining_secs(),
             launch_on_startup: self.config.launch_on_startup,
             close_to_tray_on_close: self.config.close_to_tray_on_close,
             connected_peer_count: connected_peer_count as u64,
@@ -496,9 +501,14 @@ impl NativeAppRuntime {
             NativeAppAction::RequestNetworkJoin { network_id } => {
                 self.request_network_join(&network_id)
             }
-            NativeAppAction::StartLanPairing => self.start_lan_pairing(),
-            NativeAppAction::StopLanPairing => {
-                self.stop_lan_pairing();
+            NativeAppAction::StartInviteBroadcast => self.start_invite_broadcast(),
+            NativeAppAction::StopInviteBroadcast => {
+                self.stop_invite_broadcast();
+                Ok(())
+            }
+            NativeAppAction::StartNearbyDiscovery => self.start_nearby_discovery(),
+            NativeAppAction::StopNearbyDiscovery => {
+                self.stop_nearby_discovery();
                 Ok(())
             }
             NativeAppAction::AddParticipant {
@@ -640,56 +650,117 @@ impl NativeAppRuntime {
         Ok(())
     }
 
-    fn start_lan_pairing(&mut self) -> Result<()> {
+    fn start_invite_broadcast(&mut self) -> Result<()> {
         self.refresh_lan_pairing();
-        if self.lan_pairing_active() {
+        let announcement = self.build_lan_pairing_announcement()?;
+        let expires_at = lan_pairing_deadline();
+        self.ensure_lan_pairing_worker(announcement.clone())?;
+        if let Some(worker) = self.lan_pairing_worker.as_ref() {
+            worker.update_announcement(announcement);
+            worker.set_broadcast_until(expires_at);
+        }
+        self.invite_broadcast_expires_at = Some(expires_at);
+        Ok(())
+    }
+
+    fn stop_invite_broadcast(&mut self) {
+        if let Some(worker) = self.lan_pairing_worker.as_ref() {
+            worker.clear_broadcast();
+        }
+        self.invite_broadcast_expires_at = None;
+        self.gc_lan_pairing_worker();
+    }
+
+    fn start_nearby_discovery(&mut self) -> Result<()> {
+        self.refresh_lan_pairing();
+        let announcement = self.build_lan_pairing_announcement()?;
+        let expires_at = lan_pairing_deadline();
+        self.ensure_lan_pairing_worker(announcement)?;
+        if let Some(worker) = self.lan_pairing_worker.as_ref() {
+            worker.set_listen_until(expires_at);
+        }
+        self.nearby_discovery_expires_at = Some(expires_at);
+        self.lan_peers.clear();
+        Ok(())
+    }
+
+    fn stop_nearby_discovery(&mut self) {
+        if let Some(worker) = self.lan_pairing_worker.as_ref() {
+            worker.clear_listen();
+        }
+        self.nearby_discovery_expires_at = None;
+        self.lan_peers.clear();
+        self.gc_lan_pairing_worker();
+    }
+
+    fn ensure_lan_pairing_worker(
+        &mut self,
+        announcement: LanPairingAnnouncement,
+    ) -> Result<()> {
+        if self.lan_pairing_worker.is_some() {
             return Ok(());
         }
+        let worker = spawn_lan_pairing_worker(announcement)?;
+        self.lan_pairing_worker = Some(worker);
+        Ok(())
+    }
 
+    fn gc_lan_pairing_worker(&mut self) {
+        if self.invite_broadcast_expires_at.is_none()
+            && self.nearby_discovery_expires_at.is_none()
+            && let Some(mut worker) = self.lan_pairing_worker.take()
+        {
+            worker.stop();
+        }
+    }
+
+    fn build_lan_pairing_announcement(&self) -> Result<LanPairingAnnouncement> {
         let own_npub = to_npub(&self.config.own_nostr_pubkey_hex()?);
-        let invite = active_network_invite_code(&self.config)?;
+        let invite = active_network_invite_code(&self.config).unwrap_or_default();
         let endpoint = self
             .daemon_state
             .as_ref()
             .and_then(|state| non_empty(&state.advertised_endpoint))
             .unwrap_or_else(|| self.config.node.endpoint.clone());
-        let expires_at = SystemTime::now()
-            .checked_add(LAN_PAIRING_DURATION)
-            .unwrap_or(SystemTime::now());
-        let announcement = LanPairingAnnouncement {
+        Ok(LanPairingAnnouncement {
             npub: own_npub,
             node_name: self.config.node_name.clone(),
             endpoint,
             invite,
-        };
-        let worker = spawn_lan_pairing_worker(announcement, expires_at)?;
-        self.lan_pairing_worker = Some(worker);
-        self.lan_pairing_expires_at = Some(expires_at);
-        self.lan_peers.clear();
-        Ok(())
-    }
-
-    fn stop_lan_pairing(&mut self) {
-        if let Some(mut worker) = self.lan_pairing_worker.take() {
-            worker.stop();
-        }
-        self.lan_pairing_expires_at = None;
-        self.lan_peers.clear();
+        })
     }
 
     fn refresh_lan_pairing(&mut self) {
         let now = SystemTime::now();
         if self
-            .lan_pairing_expires_at
+            .invite_broadcast_expires_at
             .is_some_and(|expires_at| expires_at <= now)
         {
-            self.stop_lan_pairing();
-            return;
+            self.invite_broadcast_expires_at = None;
+            if let Some(worker) = self.lan_pairing_worker.as_ref() {
+                worker.clear_broadcast();
+            }
         }
+        if self
+            .nearby_discovery_expires_at
+            .is_some_and(|expires_at| expires_at <= now)
+        {
+            self.nearby_discovery_expires_at = None;
+            if let Some(worker) = self.lan_pairing_worker.as_ref() {
+                worker.clear_listen();
+            }
+            self.lan_peers.clear();
+        }
+        self.gc_lan_pairing_worker();
 
         let Some(worker) = &mut self.lan_pairing_worker else {
             return;
         };
+        if self.nearby_discovery_expires_at.is_none() {
+            // Drain + drop — listen stopped, don't surface stale signals.
+            let _ = worker.drain();
+            return;
+        }
         let signals = worker.drain();
         for signal in signals {
             if self.lan_signal_is_existing_peer(&signal) {
@@ -706,13 +777,25 @@ impl NativeAppRuntime {
         }
     }
 
-    fn lan_pairing_active(&self) -> bool {
-        self.lan_pairing_worker.is_some() && self.lan_pairing_remaining_secs() > 0
+    fn invite_broadcast_active(&self) -> bool {
+        self.lan_pairing_worker.is_some() && self.invite_broadcast_remaining_secs() > 0
     }
 
-    fn lan_pairing_remaining_secs(&self) -> u64 {
-        self.lan_pairing_expires_at
-            .and_then(|expires_at| expires_at.duration_since(SystemTime::now()).ok())
+    fn invite_broadcast_remaining_secs(&self) -> u64 {
+        Self::remaining_secs(self.invite_broadcast_expires_at)
+    }
+
+    fn nearby_discovery_active(&self) -> bool {
+        self.lan_pairing_worker.is_some() && self.nearby_discovery_remaining_secs() > 0
+    }
+
+    fn nearby_discovery_remaining_secs(&self) -> u64 {
+        Self::remaining_secs(self.nearby_discovery_expires_at)
+    }
+
+    fn remaining_secs(expires_at: Option<SystemTime>) -> u64 {
+        expires_at
+            .and_then(|expires| expires.duration_since(SystemTime::now()).ok())
             .map_or(0, |remaining| remaining.as_secs())
     }
 
@@ -1501,7 +1584,8 @@ impl NativeAppRuntime {
 
 impl Drop for NativeAppRuntime {
     fn drop(&mut self) {
-        self.stop_lan_pairing();
+        self.stop_invite_broadcast();
+        self.stop_nearby_discovery();
     }
 }
 
@@ -1636,6 +1720,12 @@ fn peer_offers_exit_node(routes: &[String]) -> bool {
     routes
         .iter()
         .any(|route| route == "0.0.0.0/0" || route == "::/0")
+}
+
+fn lan_pairing_deadline() -> SystemTime {
+    SystemTime::now()
+        .checked_add(LAN_PAIRING_DURATION)
+        .unwrap_or_else(SystemTime::now)
 }
 
 fn peer_last_fips_seen_secs(peer: &DaemonPeerState) -> Option<u64> {
@@ -2077,18 +2167,29 @@ mod tests {
         let error = anyhow!("boom");
         let mut runtime = NativeAppRuntime::from_startup_error(&error);
 
-        runtime.dispatch(NativeAppAction::StartLanPairing);
+        runtime.dispatch(NativeAppAction::StartInviteBroadcast);
+        assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
+        runtime.dispatch(NativeAppAction::StartNearbyDiscovery);
         assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
 
         let state = runtime.state();
-        assert!(state.lan_pairing_active);
-        assert!(state.lan_pairing_remaining_secs <= LAN_PAIRING_DURATION.as_secs());
-        assert!(state.lan_pairing_remaining_secs > LAN_PAIRING_DURATION.as_secs() - 10);
+        assert!(state.invite_broadcast_active);
+        assert!(state.nearby_discovery_active);
+        assert!(state.invite_broadcast_remaining_secs <= LAN_PAIRING_DURATION.as_secs());
+        assert!(state.invite_broadcast_remaining_secs > LAN_PAIRING_DURATION.as_secs() - 10);
+        assert!(state.nearby_discovery_remaining_secs <= LAN_PAIRING_DURATION.as_secs());
+        assert!(state.nearby_discovery_remaining_secs > LAN_PAIRING_DURATION.as_secs() - 10);
 
-        runtime.dispatch(NativeAppAction::StopLanPairing);
+        runtime.dispatch(NativeAppAction::StopInviteBroadcast);
         let state = runtime.state();
-        assert!(!state.lan_pairing_active);
-        assert_eq!(state.lan_pairing_remaining_secs, 0);
+        assert!(!state.invite_broadcast_active);
+        assert_eq!(state.invite_broadcast_remaining_secs, 0);
+        assert!(state.nearby_discovery_active, "discovery should keep running");
+
+        runtime.dispatch(NativeAppAction::StopNearbyDiscovery);
+        let state = runtime.state();
+        assert!(!state.nearby_discovery_active);
+        assert_eq!(state.nearby_discovery_remaining_secs, 0);
         assert!(state.lan_peers.is_empty());
     }
 

@@ -69,13 +69,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void JoinLanPeer_Click(object sender, RoutedEventArgs e)
+    private void JoinLanPeer_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button { Tag: string invite })
         {
+            // Setting InviteInput triggers the auto-import path in the
+            // view-model, which also clears the field after dispatch.
             ViewModel.InviteInput = invite;
-            await Task.Delay(1);
-            ViewModel.ImportInviteCommand.Execute(null);
         }
     }
 

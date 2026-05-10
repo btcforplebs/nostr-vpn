@@ -34,8 +34,10 @@ object NativeActions {
     fun connectVpn() = action("connect_vpn")
     fun disconnectVpn() = action("disconnect_vpn")
     fun importInvite(invite: String) = action("import_network_invite", "invite" to invite)
-    fun startLanPairing() = action("start_lan_pairing")
-    fun stopLanPairing() = action("stop_lan_pairing")
+    fun startInviteBroadcast() = action("start_invite_broadcast")
+    fun stopInviteBroadcast() = action("stop_invite_broadcast")
+    fun startNearbyDiscovery() = action("start_nearby_discovery")
+    fun stopNearbyDiscovery() = action("stop_nearby_discovery")
     fun addNetwork(name: String) = action("add_network", "name" to name)
     fun setNetworkEnabled(networkId: String, enabled: Boolean) =
         action("set_network_enabled", "networkId" to networkId, "enabled" to enabled)

@@ -57,8 +57,12 @@ pub enum NativeAppAction {
     ImportNetworkInvite {
         invite: String,
     },
-    StartLanPairing,
-    StopLanPairing,
+    /// Start broadcasting our active-network invite over LAN multicast/broadcast.
+    StartInviteBroadcast,
+    StopInviteBroadcast,
+    /// Start listening for nearby invites (populates `lan_peers`).
+    StartNearbyDiscovery,
+    StopNearbyDiscovery,
     RemoveParticipant {
         network_id: String,
         npub: String,

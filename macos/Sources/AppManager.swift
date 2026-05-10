@@ -204,7 +204,7 @@ final class AppManager: ObservableObject {
     func handle(url: URL) {
         let raw = url.absoluteString
         if raw.starts(with: "nvpn://invite/") {
-            confirmAndImportInvite(raw)
+            importInvite(raw)
             return
         }
 
@@ -238,21 +238,11 @@ final class AppManager: ObservableObject {
         guard !trimmed.isEmpty else {
             return
         }
-        inviteInput = trimmed
-        confirmAndImportInvite(trimmed)
-    }
-
-    private func confirmAndImportInvite(_ invite: String) {
-        let trimmed = invite.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return
-        }
-        inviteInput = trimmed
-        performImportInvite(trimmed)
-    }
-
-    private func performImportInvite(_ invite: String) {
-        dispatch(.importNetworkInvite(invite: invite), status: "Importing invite")
+        // Clear immediately so the field reflects "import in flight" rather
+        // than holding the same text the user just submitted (and so a stale
+        // invite from a prior session doesn't quietly re-fire).
+        inviteInput = ""
+        dispatch(.importNetworkInvite(invite: trimmed), status: "Importing invite")
     }
 
     func chooseInviteQrImage() {
@@ -469,12 +459,20 @@ final class AppManager: ObservableObject {
         dispatch(.uninstallSystemService, status: "Uninstalling service", successStatus: "Service uninstalled", settleService: true)
     }
 
-    func startLanPairing() {
-        dispatch(.startLanPairing, status: "Starting LAN pairing")
+    func startInviteBroadcast() {
+        dispatch(.startInviteBroadcast, status: "Broadcasting invite")
     }
 
-    func stopLanPairing() {
-        dispatch(.stopLanPairing, status: "Stopping LAN pairing")
+    func stopInviteBroadcast() {
+        dispatch(.stopInviteBroadcast, status: "Stopped broadcasting")
+    }
+
+    func startNearbyDiscovery() {
+        dispatch(.startNearbyDiscovery, status: "Looking for nearby")
+    }
+
+    func stopNearbyDiscovery() {
+        dispatch(.stopNearbyDiscovery, status: "Stopped looking")
     }
 
     func checkForUpdates(manual: Bool = true) {

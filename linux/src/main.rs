@@ -1300,54 +1300,42 @@ fn build_share_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     code.set_hexpand(true);
     code.set_placeholder_text(Some("No invite"));
     invite_row.append(&code);
-    let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
-    copy.set_tooltip_text(Some("Copy invite"));
+    let copy = icon_text_button("Copy", "edit-copy-symbolic");
     copy.set_sensitive(!state.active_network_invite.is_empty());
     {
         let invite = state.active_network_invite.clone();
         copy.connect_clicked(move |_| copy_text(&invite));
     }
     invite_row.append(&copy);
+    let broadcast_label = if state.invite_broadcast_active {
+        format!("Broadcasting · {}", remaining_text(state.invite_broadcast_remaining_secs))
+    } else {
+        "Broadcast invite".to_string()
+    };
+    let broadcast = icon_text_button(
+        &broadcast_label,
+        if state.invite_broadcast_active {
+            "media-playback-stop-symbolic"
+        } else {
+            "network-wireless-symbolic"
+        },
+    );
+    {
+        let app = app.clone();
+        let active = state.invite_broadcast_active;
+        broadcast.connect_clicked(move |_| {
+            dispatch(
+                &app,
+                if active {
+                    NativeAppAction::StopInviteBroadcast
+                } else {
+                    NativeAppAction::StartInviteBroadcast
+                },
+            );
+        });
+    }
+    invite_row.append(&broadcast);
     column.append(&invite_row);
-
-    let import_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let invite_entry = entry("Paste invite", &app.borrow().drafts.invite);
-    {
-        let app = app.clone();
-        invite_entry.connect_changed(move |entry| {
-            app.borrow_mut().drafts.invite = entry.text().to_string();
-        });
-    }
-    let import = icon_text_button("Import", "go-down-symbolic");
-    {
-        let app = app.clone();
-        import.connect_clicked(move |_| {
-            let invite = app.borrow().drafts.invite.trim().to_string();
-            import_invite(&app, invite);
-        });
-    }
-    let image = gtk::Button::from_icon_name("insert-image-symbolic");
-    image.set_tooltip_text(Some("Import QR image"));
-    {
-        let app = app.clone();
-        image.connect_clicked(move |button| choose_invite_qr_image(&app, button));
-    }
-    let camera = gtk::Button::from_icon_name("camera-photo-symbolic");
-    camera.set_tooltip_text(Some("Scan QR"));
-    {
-        let app = app.clone();
-        camera.connect_clicked(move |button| scan_invite_qr(&app, button));
-    }
-    import_row.append(&invite_entry);
-    import_row.append(&import);
-    import_row.append(&camera);
-    import_row.append(&image);
-    column.append(&import_row);
-
-    let notice = app.borrow().notice.clone();
-    if !notice.trim().is_empty() {
-        row_label(&column, "Import", &notice, "dialog-warning-symbolic");
-    }
 
     if network.outbound_join_request.is_some() {
         column.append(&badge("Join requested", "warn"));
@@ -1372,36 +1360,85 @@ fn build_share_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     invite.append(&row);
     page.append(&invite);
 
+    let join_card = card();
+    section_header(&join_card, "Join Network", "go-down-symbolic");
+
+    let import_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let invite_entry = entry("Paste invite", &app.borrow().drafts.invite);
+    {
+        let app = app.clone();
+        invite_entry.connect_changed(move |entry| {
+            let value = entry.text().to_string();
+            app.borrow_mut().drafts.invite.clone_from(&value);
+            // Auto-import as soon as the entry holds a valid invite URL —
+            // no extra click required. Mirrors the Windows / mobile UX.
+            let trimmed = value.trim();
+            if trimmed.starts_with("nvpn://invite/") {
+                import_invite(&app, trimmed.to_string());
+            }
+        });
+    }
+    let import = icon_text_button("Import", "go-down-symbolic");
+    {
+        let app = app.clone();
+        import.connect_clicked(move |_| {
+            let invite = app.borrow().drafts.invite.trim().to_string();
+            import_invite(&app, invite);
+        });
+    }
+    let image = icon_text_button("From file", "insert-image-symbolic");
+    {
+        let app = app.clone();
+        image.connect_clicked(move |button| choose_invite_qr_image(&app, button));
+    }
+    let camera = icon_text_button("Scan", "camera-photo-symbolic");
+    {
+        let app = app.clone();
+        camera.connect_clicked(move |button| scan_invite_qr(&app, button));
+    }
+    import_row.append(&invite_entry);
+    import_row.append(&import);
+    import_row.append(&camera);
+    import_row.append(&image);
+    join_card.append(&import_row);
+
+    let notice = app.borrow().notice.clone();
+    if !notice.trim().is_empty() {
+        row_label(&join_card, "Import", &notice, "dialog-warning-symbolic");
+    }
+
+    page.append(&join_card);
+
     let nearby = card();
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     header.set_valign(gtk::Align::Center);
-    section_header(&header, "Nearby Devices", "");
+    section_header(&header, "Nearby invites", "");
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     header.append(&spacer);
-    let lan_label = if state.lan_pairing_active {
-        format!("{}s", state.lan_pairing_remaining_secs)
+    let nearby_label = if state.nearby_discovery_active {
+        format!("Listening · {}", remaining_text(state.nearby_discovery_remaining_secs))
     } else {
-        "Pair Nearby".to_string()
+        "Look for nearby".to_string()
     };
     let lan = icon_text_button(
-        &lan_label,
-        if state.lan_pairing_active {
+        &nearby_label,
+        if state.nearby_discovery_active {
             "media-playback-stop-symbolic"
         } else {
-            "list-add-symbolic"
+            "system-search-symbolic"
         },
     );
     {
         let app = app.clone();
-        let active = state.lan_pairing_active;
+        let active = state.nearby_discovery_active;
         lan.connect_clicked(move |_| {
             dispatch(
                 &app,
                 if active {
-                    NativeAppAction::StopLanPairing
+                    NativeAppAction::StopNearbyDiscovery
                 } else {
-                    NativeAppAction::StartLanPairing
+                    NativeAppAction::StartNearbyDiscovery
                 },
             );
         });
@@ -2783,6 +2820,22 @@ fn short_text(value: &str, keep: usize) -> String {
         &trimmed[..keep],
         &trimmed[trimmed.len() - keep..]
     )
+}
+
+fn remaining_text(seconds: u64) -> String {
+    if seconds == 0 {
+        return "off".to_string();
+    }
+    let minutes = seconds / 60;
+    if minutes == 0 {
+        return format!("{seconds}s");
+    }
+    let secs = seconds % 60;
+    if secs == 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{minutes}m{secs:02}s")
+    }
 }
 
 fn non_empty_or(value: &str, fallback: &str) -> String {

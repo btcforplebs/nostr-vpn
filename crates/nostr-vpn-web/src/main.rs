@@ -157,8 +157,10 @@ async fn main() -> Result<()> {
         .route("/api/add_participant", post(add_participant))
         .route("/api/add_admin", post(add_admin))
         .route("/api/import_network_invite", post(import_network_invite))
-        .route("/api/start_lan_pairing", post(start_lan_pairing))
-        .route("/api/stop_lan_pairing", post(stop_lan_pairing))
+        .route("/api/start_invite_broadcast", post(start_invite_broadcast))
+        .route("/api/stop_invite_broadcast", post(stop_invite_broadcast))
+        .route("/api/start_nearby_discovery", post(start_nearby_discovery))
+        .route("/api/stop_nearby_discovery", post(stop_nearby_discovery))
         .route("/api/remove_participant", post(remove_participant))
         .route("/api/remove_admin", post(remove_admin))
         .route("/api/accept_join_request", post(accept_join_request))
@@ -372,20 +374,28 @@ async fn import_network_invite(
     })
 }
 
-async fn start_lan_pairing(State(state): State<ServerState>) -> ApiResult<Json<UiState>> {
-    set_action_status(
-        &state,
-        "LAN pairing is not available in the Umbrel web build yet.",
-    );
-    Ok(Json(build_ui_state(&state).map_err(internal_error)?))
+async fn start_invite_broadcast(State(state): State<ServerState>) -> ApiResult<Json<UiState>> {
+    lan_pairing_unavailable(&state)
 }
 
-async fn stop_lan_pairing(State(state): State<ServerState>) -> ApiResult<Json<UiState>> {
+async fn stop_invite_broadcast(State(state): State<ServerState>) -> ApiResult<Json<UiState>> {
+    lan_pairing_unavailable(&state)
+}
+
+async fn start_nearby_discovery(State(state): State<ServerState>) -> ApiResult<Json<UiState>> {
+    lan_pairing_unavailable(&state)
+}
+
+async fn stop_nearby_discovery(State(state): State<ServerState>) -> ApiResult<Json<UiState>> {
+    lan_pairing_unavailable(&state)
+}
+
+fn lan_pairing_unavailable(state: &ServerState) -> ApiResult<Json<UiState>> {
     set_action_status(
-        &state,
+        state,
         "LAN pairing is not available in the Umbrel web build yet.",
     );
-    Ok(Json(build_ui_state(&state).map_err(internal_error)?))
+    Ok(Json(build_ui_state(state).map_err(internal_error)?))
 }
 
 async fn remove_participant(

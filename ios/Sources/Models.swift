@@ -45,8 +45,10 @@ struct AppState: Decodable {
     var magicDnsSuffix = ""
     var magicDnsStatus = ""
     var autoconnect = false
-    var lanPairingActive = false
-    var lanPairingRemainingSecs: UInt64 = 0
+    var inviteBroadcastActive = false
+    var inviteBroadcastRemainingSecs: UInt64 = 0
+    var nearbyDiscoveryActive = false
+    var nearbyDiscoveryRemainingSecs: UInt64 = 0
     var configPath = ""
     var networks: [NetworkState] = []
     var lanPeers: [LanPeerState] = []
@@ -68,7 +70,8 @@ struct AppState: Decodable {
         case wireguardExitEndpoint, wireguardExitAllowedIps, wireguardExitDns
         case wireguardExitMtu, wireguardExitPersistentKeepaliveSecs, wireguardExitConfig
         case magicDnsSuffix, magicDnsStatus, autoconnect
-        case lanPairingActive, lanPairingRemainingSecs, configPath
+        case inviteBroadcastActive, inviteBroadcastRemainingSecs
+        case nearbyDiscoveryActive, nearbyDiscoveryRemainingSecs, configPath
         case networks, lanPeers, health
     }
 
@@ -120,8 +123,10 @@ struct AppState: Decodable {
         magicDnsSuffix = container.string(.magicDnsSuffix)
         magicDnsStatus = container.string(.magicDnsStatus)
         autoconnect = container.bool(.autoconnect)
-        lanPairingActive = container.bool(.lanPairingActive)
-        lanPairingRemainingSecs = container.uint64(.lanPairingRemainingSecs)
+        inviteBroadcastActive = container.bool(.inviteBroadcastActive)
+        inviteBroadcastRemainingSecs = container.uint64(.inviteBroadcastRemainingSecs)
+        nearbyDiscoveryActive = container.bool(.nearbyDiscoveryActive)
+        nearbyDiscoveryRemainingSecs = container.uint64(.nearbyDiscoveryRemainingSecs)
         configPath = container.string(.configPath)
         networks = container.array(.networks)
         lanPeers = container.array(.lanPeers)

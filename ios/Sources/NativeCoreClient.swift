@@ -117,12 +117,20 @@ enum NativeActions {
         ["type": "import_network_invite", "invite": invite]
     }
 
-    static func startLanPairing() -> [String: Any] {
-        ["type": "start_lan_pairing"]
+    static func startInviteBroadcast() -> [String: Any] {
+        ["type": "start_invite_broadcast"]
     }
 
-    static func stopLanPairing() -> [String: Any] {
-        ["type": "stop_lan_pairing"]
+    static func stopInviteBroadcast() -> [String: Any] {
+        ["type": "stop_invite_broadcast"]
+    }
+
+    static func startNearbyDiscovery() -> [String: Any] {
+        ["type": "start_nearby_discovery"]
+    }
+
+    static func stopNearbyDiscovery() -> [String: Any] {
+        ["type": "stop_nearby_discovery"]
     }
 
     static func addNetwork(_ name: String) -> [String: Any] {

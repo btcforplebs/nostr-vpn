@@ -129,25 +129,42 @@ internal fun AddParticipantForm(network: NetworkState, dispatch: (JSONObject) ->
 internal fun NearbyCard(state: AppState, dispatch: (JSONObject) -> Unit) {
     AppCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Nearby Devices", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text("Nearby invites", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             Button(onClick = {
                 dispatch(
-                    if (state.lanPairingActive) {
-                        NativeActions.stopLanPairing()
+                    if (state.nearbyDiscoveryActive) {
+                        NativeActions.stopNearbyDiscovery()
                     } else {
-                        NativeActions.startLanPairing()
+                        NativeActions.startNearbyDiscovery()
                     },
                 )
             }) {
-                Text(if (state.lanPairingActive) "${state.lanPairingRemainingSecs}s" else "Pair")
+                Text(
+                    if (state.nearbyDiscoveryActive) {
+                        "Listening · ${formatRemaining(state.nearbyDiscoveryRemainingSecs)}"
+                    } else {
+                        "Look for nearby"
+                    },
+                )
             }
         }
         if (state.lanPeers.isEmpty()) {
-            Text("None", color = Muted)
+            Text(
+                if (state.nearbyDiscoveryActive) "No nearby invites yet" else "Tap above to look for nearby devices",
+                color = Muted,
+            )
         } else {
             state.lanPeers.forEach { peer -> LanPeerRow(peer, dispatch) }
         }
     }
+}
+
+private fun formatRemaining(seconds: Long): String {
+    if (seconds <= 0) return "off"
+    val minutes = seconds / 60
+    if (minutes == 0L) return "${seconds}s"
+    val secs = seconds % 60
+    return if (secs == 0L) "${minutes}m" else "${minutes}m%02ds".format(secs)
 }
 
 @Composable

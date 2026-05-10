@@ -37,3 +37,4 @@ targets:
     dependencies:
       - framework: Frameworks/NostrVpnAppCore.xcframework
         embed: false
+      - sdk: SystemConfiguration.framework

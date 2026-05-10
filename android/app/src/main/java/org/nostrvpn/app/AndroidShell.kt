@@ -22,6 +22,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
@@ -331,6 +332,10 @@ private fun AddDevicesDialog(
     onDismiss: () -> Unit,
 ) {
     var inviteInput by remember { mutableStateOf("") }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = remember(context) {
+        context.getSystemService(android.content.ClipboardManager::class.java)
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add Device") },
@@ -339,25 +344,65 @@ private fun AddDevicesDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                Text("Invite Devices", style = MaterialTheme.typography.titleMedium)
                 if (state.activeNetworkInvite.isNotBlank()) {
                     QrCode(invite = state.activeNetworkInvite, qrJson = qrJson)
+                    Text("Your invite", color = Muted, style = MaterialTheme.typography.bodySmall)
                     CopyLine(state.activeNetworkInvite)
                 }
+                Button(onClick = {
+                    dispatch(
+                        if (state.inviteBroadcastActive) {
+                            NativeActions.stopInviteBroadcast()
+                        } else {
+                            NativeActions.startInviteBroadcast()
+                        },
+                    )
+                }) {
+                    Text(
+                        if (state.inviteBroadcastActive) {
+                            "Broadcasting · ${formatDialogRemaining(state.inviteBroadcastRemainingSecs)}"
+                        } else {
+                            "Broadcast invite"
+                        },
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Join Network", style = MaterialTheme.typography.titleMedium)
+                Text("Paste invite code", color = Muted, style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
                     value = inviteInput,
-                    onValueChange = { inviteInput = it },
+                    onValueChange = { newValue ->
+                        inviteInput = newValue
+                        // Auto-import on a recognisable invite — saves the
+                        // user a tap. Clearing prevents re-firing.
+                        val trimmed = newValue.trim()
+                        if (trimmed.startsWith("nvpn://invite/", ignoreCase = true)) {
+                            dispatch(NativeActions.importInvite(trimmed))
+                            inviteInput = ""
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("Invite") },
+                    label = { Text("nvpn://invite/…") },
                 )
-                Button(
-                    enabled = inviteInput.isNotBlank(),
-                    onClick = {
-                        dispatch(NativeActions.importInvite(inviteInput.trim()))
-                        inviteInput = ""
-                    },
-                ) {
-                    Text("Import")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        val item = clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)
+                        item?.toString()?.let { inviteInput = it.trim() }
+                    }) {
+                        Text("Paste")
+                    }
+                    Button(
+                        enabled = inviteInput.isNotBlank(),
+                        onClick = {
+                            dispatch(NativeActions.importInvite(inviteInput.trim()))
+                            inviteInput = ""
+                        },
+                    ) {
+                        Text("Import")
+                    }
                 }
                 if (network?.outboundJoinRequest == true) {
                     Pill("Join requested", Color(0xFFFFF7ED), Color(0xFF9A3412))
@@ -381,6 +426,14 @@ private fun AddDevicesDialog(
             }
         },
     )
+}
+
+private fun formatDialogRemaining(seconds: Long): String {
+    if (seconds <= 0) return "off"
+    val minutes = seconds / 60
+    if (minutes == 0L) return "${seconds}s"
+    val secs = seconds % 60
+    return if (secs == 0L) "${minutes}m" else "${minutes}m%02ds".format(secs)
 }
 
 private fun androidx.compose.foundation.lazy.LazyListScope.exitNodesPage(

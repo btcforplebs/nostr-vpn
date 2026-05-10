@@ -2500,6 +2500,7 @@ dependencies = [
  "fips-endpoint",
  "image",
  "jni",
+ "netdev",
  "nostr-sdk 0.35.0",
  "nostr-vpn-core",
  "qrcode",
