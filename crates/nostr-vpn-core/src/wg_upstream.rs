@@ -515,7 +515,12 @@ fn raw_udp_socket_fd(_socket: &UdpSocket) -> c_int {
 // actually surface during device testing — Rust stderr/stdout on
 // Android is redirected to /dev/null by default, and the existing
 // `tracing` macros silently no-op without a registered subscriber.
-// Cheap, self-contained, no extra dep.
+// Cheap, self-contained, no extra dep. iOS doesn't get an equivalent
+// here: NSLog wants an NSString, `os_log` requires Apple-only
+// inline-helper plumbing, and shipping a binding for either crashed
+// the PacketTunnel extension during device testing. iOS verification
+// for the WG pump is done indirectly — same Rust code runs on Android
+// where logging works.
 
 #[cfg(target_os = "android")]
 fn log_android(prio: i32, message: &str) {

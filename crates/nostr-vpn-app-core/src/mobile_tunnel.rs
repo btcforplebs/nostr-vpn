@@ -438,6 +438,13 @@ impl Drop for MobileTunnel {
 
 fn fips_endpoint_config(scope: &str, mobile: &MobileTunnelConfig) -> FipsConfig {
     let mut config = FipsConfig::new();
+    // The fips control socket binds a UNIX socket at
+    // `/tmp/fips-control.sock` by default. Inside an iOS app extension
+    // the sandbox forbids /tmp writes, which crashes the
+    // PacketTunnelProvider before it can finish startTunnel. Android's
+    // sandbox accepts it but we don't need control on mobile either —
+    // there's no daemon to talk to.
+    config.node.control.enabled = false;
     let nostr_enabled = !mobile.peers.is_empty();
     config.node.discovery.nostr.enabled = nostr_enabled;
     config.node.discovery.nostr.advertise = false;
