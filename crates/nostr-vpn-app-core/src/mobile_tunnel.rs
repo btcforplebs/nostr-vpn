@@ -1,3 +1,4 @@
+use std::os::raw::c_int;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::time::Duration;
@@ -7,8 +8,11 @@ use fips_endpoint::{
     Config as FipsConfig, ConnectPolicy, FipsEndpoint, NostrDiscoveryPolicy,
     PeerConfig as FipsPeerConfig, TransportInstances, UdpConfig,
 };
-use nostr_vpn_core::config::{AppConfig, derive_mesh_tunnel_ip, maybe_autoconfigure_node};
+use nostr_vpn_core::config::{
+    AppConfig, WireGuardExitConfig, derive_mesh_tunnel_ip, maybe_autoconfigure_node,
+};
 use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
+use nostr_vpn_core::wg_upstream::{DAEMON_WG_UPSTREAM_HANDSHAKE_TIMEOUT, WgUpstreamRuntime};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -33,6 +37,24 @@ pub(crate) struct MobileTunnelConfig {
     pub(crate) stun_servers: Vec<String>,
     #[serde(default)]
     pub(crate) share_local_candidates: bool,
+    /// When the user has WG upstream enabled + configured, the OS-side
+    /// (NEPacketTunnelProvider on iOS, VpnService on Android) is
+    /// expected to:
+    ///   * include `0.0.0.0/0` in the tunnel's includedRoutes (so all
+    ///     non-mesh outbound traffic enters the tun and we can forward
+    ///     it to boringtun)
+    ///   * route every IP in `excluded_routes` outside the tunnel so
+    ///     the encrypted UDP can actually reach the WG upstream
+    ///     endpoint (iOS does this via `NEIPv4Settings.excludedRoutes`;
+    ///     on Android the host calls `VpnService.protect(socket_fd)`
+    ///     instead, see `MobileTunnel::wg_upstream_socket_fd`).
+    #[serde(default)]
+    pub(crate) excluded_routes: Vec<String>,
+    /// The WG upstream config to drive boringtun against. None when
+    /// the user hasn't enabled WG upstream — in which case the mobile
+    /// tunnel runs in pure FIPS-mesh mode.
+    #[serde(default)]
+    pub(crate) wireguard_exit: Option<WireGuardExitConfig>,
     #[serde(default)]
     pub(crate) error: String,
 }
@@ -85,6 +107,27 @@ impl MobileTunnelConfig {
             |tunnel_ip| local_interface_address_for_tunnel(&tunnel_ip),
         );
 
+        // WireGuard upstream: when the user has enabled it AND the
+        // config is fully populated, expand the tunnel's route set to
+        // 0.0.0.0/0 (all outbound traffic should enter the tun) and
+        // ask the host platform to keep the WG endpoint outside the
+        // tunnel via `excluded_routes`.
+        let (wireguard_exit, excluded_routes) =
+            if app.wireguard_exit.enabled && app.wireguard_exit.configured() {
+                let mut excluded = Vec::new();
+                if let Some(ip) = wireguard_endpoint_host_ip(&app.wireguard_exit.endpoint) {
+                    excluded.push(format!("{ip}/32"));
+                }
+                if !route_targets.iter().any(|route| route == "0.0.0.0/0") {
+                    route_targets.push("0.0.0.0/0".to_string());
+                }
+                route_targets.sort();
+                route_targets.dedup();
+                (Some(app.wireguard_exit.clone()), excluded)
+            } else {
+                (None, Vec::new())
+            };
+
         Ok(Self {
             identity_nsec: app.nostr.secret_key.clone(),
             network_id,
@@ -95,9 +138,22 @@ impl MobileTunnelConfig {
             nostr_relays: app.nostr.relays.clone(),
             stun_servers: app.nat.stun_servers.clone(),
             share_local_candidates: app.lan_discovery_enabled,
+            excluded_routes,
+            wireguard_exit,
             error: String::new(),
         })
     }
+}
+
+/// Pull just the IP literal out of an `Endpoint = host:port` string.
+/// Returns None if the host is a DNS name (we can't pre-resolve here
+/// — the OS-side glue would need to do that). Mullvad / Proton ship
+/// configs with literal IPs, so this is fine for the common case.
+fn wireguard_endpoint_host_ip(endpoint: &str) -> Option<std::net::IpAddr> {
+    let trimmed = endpoint.trim();
+    let host = trimmed.rsplit_once(':').map(|(h, _)| h).unwrap_or(trimmed);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.parse().ok()
 }
 
 pub(crate) fn tunnel_config_json(data_dir: &str) -> String {
@@ -120,6 +176,11 @@ pub(crate) struct MobileTunnel {
     outbound_tx: tokio_mpsc::Sender<Vec<u8>>,
     inbound_rx: Mutex<mpsc::Receiver<Vec<u8>>>,
     tasks: Vec<JoinHandle<()>>,
+    wg_upstream: Option<WgUpstreamRuntime>,
+    /// Raw fd of the boringtun UDP socket. On Android the host
+    /// reads this and calls `VpnService.protect(fd)` so the encrypted
+    /// UDP escapes the VPN tun. -1 when WG upstream isn't running.
+    wg_upstream_socket_fd: c_int,
 }
 
 impl MobileTunnel {
@@ -135,25 +196,19 @@ impl MobileTunnel {
             .thread_name("nvpn-mobile-fips")
             .build()
             .context("failed to start mobile FIPS runtime")?;
-        let (endpoint, outbound_tx, inbound_rx, tasks) =
-            runtime.block_on(Self::start_async(config))?;
+        let started = runtime.block_on(Self::start_async(config))?;
         Ok(Self {
             runtime,
-            endpoint: Some(endpoint),
-            outbound_tx,
-            inbound_rx: Mutex::new(inbound_rx),
-            tasks,
+            endpoint: Some(started.endpoint),
+            outbound_tx: started.outbound_tx,
+            inbound_rx: Mutex::new(started.inbound_rx),
+            tasks: started.tasks,
+            wg_upstream: started.wg_upstream,
+            wg_upstream_socket_fd: started.wg_upstream_socket_fd,
         })
     }
 
-    async fn start_async(
-        config: MobileTunnelConfig,
-    ) -> Result<(
-        Arc<FipsEndpoint>,
-        tokio_mpsc::Sender<Vec<u8>>,
-        mpsc::Receiver<Vec<u8>>,
-        Vec<JoinHandle<()>>,
-    )> {
+    async fn start_async(config: MobileTunnelConfig) -> Result<MobileTunnelStarted> {
         let scope = format!("nostr-vpn:{}", config.network_id.trim());
         let endpoint = FipsEndpoint::builder()
             .config(fips_endpoint_config(&scope, &config))
@@ -173,9 +228,71 @@ impl MobileTunnel {
             tokio_mpsc::channel::<Vec<u8>>(TUNNEL_CHANNEL_CAPACITY);
         let (inbound_tx, inbound_rx) = mpsc::sync_channel::<Vec<u8>>(TUNNEL_CHANNEL_CAPACITY);
 
+        // If the user has WG upstream enabled, stand up the boringtun
+        // pump alongside the FIPS endpoint. The WG runtime is fed via
+        // an mpsc::channel pair: `wg_send_tx` carries plaintext that
+        // should be encapsulated and sent to the upstream;
+        // `wg_recv_rx` carries plaintext we got back after
+        // decapsulating the upstream's reply, ready to write back to
+        // the OS tun.
+        let mut tasks: Vec<JoinHandle<()>> = Vec::new();
+        let mut wg_runtime: Option<WgUpstreamRuntime> = None;
+        let mut wg_send_tx: Option<tokio_mpsc::Sender<Vec<u8>>> = None;
+        let mut wg_socket_fd: c_int = -1;
+        if let Some(wg_config) = config.wireguard_exit.as_ref() {
+            let (send_tx, send_rx) = tokio_mpsc::channel::<Vec<u8>>(TUNNEL_CHANNEL_CAPACITY);
+            let (recv_tx, mut recv_rx) = tokio_mpsc::channel::<Vec<u8>>(TUNNEL_CHANNEL_CAPACITY);
+            match WgUpstreamRuntime::start_with_channels(wg_config, send_rx, recv_tx).await {
+                Ok(runtime) => {
+                    wg_socket_fd = runtime.udp_socket_fd();
+                    let upstream = runtime.upstream();
+                    wg_runtime = Some(runtime);
+                    wg_send_tx = Some(send_tx);
+                    // Forward decrypted WG packets back to the OS as
+                    // inbound traffic.
+                    let inbound_tx_for_wg = inbound_tx.clone();
+                    tasks.push(tokio::spawn(async move {
+                        while let Some(packet) = recv_rx.recv().await {
+                            if inbound_tx_for_wg.send(packet).is_err() {
+                                break;
+                            }
+                        }
+                    }));
+                    // Watchdog: log if the handshake doesn't complete
+                    // promptly. We don't tear down the tun on mobile
+                    // (the OS owns it) but the host can surface the
+                    // status to the UI.
+                    if let Some(runtime_ref) = wg_runtime.as_ref() {
+                        let timeout = DAEMON_WG_UPSTREAM_HANDSHAKE_TIMEOUT;
+                        if !runtime_ref.wait_for_handshake(timeout).await {
+                            tracing::warn!(
+                                ?upstream,
+                                "wg-upstream: no handshake within {timeout:?} on mobile tunnel; \
+                                 traffic will queue until upstream becomes reachable"
+                            );
+                        } else {
+                            tracing::info!(
+                                ?upstream,
+                                "wg-upstream: mobile tunnel handshake completed"
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    // Don't fail the whole tunnel — FIPS mesh still
+                    // works. Just log and continue without WG.
+                    tracing::warn!(
+                        ?error,
+                        "wg-upstream: failed to start mobile WG runtime; continuing without WG upstream"
+                    );
+                }
+            }
+        }
+
         let send_task = {
             let endpoint = Arc::clone(&endpoint);
             let mesh = Arc::clone(&mesh);
+            let wg_send_tx_for_dispatch = wg_send_tx.clone();
             tokio::spawn(async move {
                 while let Some(packet) = outbound_rx.recv().await {
                     let outgoing = mesh
@@ -184,10 +301,17 @@ impl MobileTunnel {
                         .and_then(|mesh| mesh.route_outbound_packet(&packet));
                     if let Some(outgoing) = outgoing {
                         let _ = endpoint.send(outgoing.endpoint_npub, outgoing.bytes).await;
+                    } else if let Some(wg_tx) = wg_send_tx_for_dispatch.as_ref() {
+                        // No matching mesh peer route: hand the
+                        // plaintext off to the WG runtime, which will
+                        // boringtun-encapsulate and send out via the
+                        // upstream UDP socket.
+                        let _ = wg_tx.try_send(packet);
                     }
                 }
             })
         };
+        tasks.push(send_task);
 
         let recv_task = {
             let endpoint = Arc::clone(&endpoint);
@@ -208,13 +332,25 @@ impl MobileTunnel {
                 }
             })
         };
+        tasks.push(recv_task);
 
-        Ok((
+        Ok(MobileTunnelStarted {
             endpoint,
             outbound_tx,
             inbound_rx,
-            vec![send_task, recv_task],
-        ))
+            tasks,
+            wg_upstream: wg_runtime,
+            wg_upstream_socket_fd: wg_socket_fd,
+        })
+    }
+
+    /// Raw fd of the WG upstream UDP socket, or -1 if WG upstream
+    /// isn't running. On Android, the host's `VpnService` calls
+    /// `protect(fd)` on this so the encrypted UDP escapes the VPN
+    /// tun. iOS doesn't need this — it relies on `excludedRoutes`
+    /// declared at tunnel-establish time instead.
+    pub(crate) fn wg_upstream_socket_fd(&self) -> c_int {
+        self.wg_upstream_socket_fd
     }
 
     pub(crate) fn send_packet(&self, packet: &[u8]) -> bool {
@@ -244,6 +380,15 @@ impl MobileTunnel {
     }
 }
 
+struct MobileTunnelStarted {
+    endpoint: Arc<FipsEndpoint>,
+    outbound_tx: tokio_mpsc::Sender<Vec<u8>>,
+    inbound_rx: mpsc::Receiver<Vec<u8>>,
+    tasks: Vec<JoinHandle<()>>,
+    wg_upstream: Option<WgUpstreamRuntime>,
+    wg_upstream_socket_fd: c_int,
+}
+
 impl Drop for MobileTunnel {
     fn drop(&mut self) {
         for task in &self.tasks {
@@ -251,9 +396,13 @@ impl Drop for MobileTunnel {
         }
         let tasks = std::mem::take(&mut self.tasks);
         let endpoint = self.endpoint.take();
+        let wg_upstream = self.wg_upstream.take();
         self.runtime.block_on(async move {
             for task in tasks {
                 let _ = task.await;
+            }
+            if let Some(wg) = wg_upstream {
+                wg.shutdown().await;
             }
             if let Some(endpoint) = endpoint
                 && let Ok(endpoint) = Arc::try_unwrap(endpoint)
@@ -358,6 +507,8 @@ fn empty_config() -> MobileTunnelConfig {
         nostr_relays: Vec::new(),
         stun_servers: Vec::new(),
         share_local_candidates: false,
+        excluded_routes: Vec::new(),
+        wireguard_exit: None,
         error: String::new(),
     }
 }

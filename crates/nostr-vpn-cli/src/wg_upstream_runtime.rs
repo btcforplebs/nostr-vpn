@@ -1,27 +1,11 @@
-//! Userspace WireGuard upstream runtime — single-peer (Mullvad/Proton-style).
+//! Platform-routing helpers around the shared userspace WG runtime.
 //!
-//! Wraps `boringtun::noise::Tunn` for the case where this device is a WG
-//! *client* of one upstream provider, not a multi-peer mesh participant.
-//! The same shape used to live in tree as `userspace_wg.rs` until commit
-//! `2ca833c`; this is the slimmed single-peer reincarnation we use to bring
-//! WireGuard upstream support to macOS (and any platform without a kernel
-//! WG implementation handy).
-//!
-//! The runtime owns:
-//!   * a `Tunn` (encrypts/decrypts packets, runs the handshake state machine)
-//!   * a UDP socket bound to ephemeral 0.0.0.0:0 that talks to the upstream
-//!   * optionally a `TunSocket` (utun on macOS / tun on Linux). Without one,
-//!     this is just a "did the handshake succeed" probe — useful for the
-//!     first integration test before any platform routing is attempted.
-//!
-//! Three concurrent jobs drive it, all dispatched in a single tokio
-//! `select!` loop so the `Tunn` doesn't need a mutex:
-//!   * UDP-rx: receive ciphertext from upstream → `Tunn::decapsulate` → write
-//!     plaintext to tun (and drain queued outputs).
-//!   * tun-rx: receive plaintext from the kernel → `Tunn::encapsulate` →
-//!     send ciphertext to upstream.
-//!   * timer: every 250ms call `Tunn::update_timers` so the handshake +
-//!     keepalive state machine can re-key / re-init on schedule.
+//! The boringtun pump itself lives in `nostr_vpn_core::wg_upstream`
+//! (so mobile + desktop both use the same tunnel state machine). This
+//! module is the desktop-only glue: routing-table swaps, default-route
+//! capture/restore, scoped host routes for the test command, and the
+//! `DaemonWgUpstream` lifecycle holder that the daemon's reconcile
+//! loop owns.
 
 use std::net::{IpAddr, SocketAddr};
 use std::process::Command as ProcessCommand;
@@ -29,401 +13,47 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
-use boringtun::noise::{Tunn, TunnResult};
-use boringtun::x25519::{PublicKey, StaticSecret};
-use nostr_vpn_core::config::WireGuardExitConfig;
-use tokio::net::UdpSocket;
-use tokio::sync::{Notify, RwLock, mpsc};
-use tokio::task::JoinHandle;
-use tokio::time::interval;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use boringtun::device::tun::TunSocket;
 #[cfg(target_os = "windows")]
 use wintun::Session as WintunSession;
 
-const MAX_WG_PACKET: usize = 65_535;
-const TIMER_TICK: Duration = Duration::from_millis(250);
+use nostr_vpn_core::config::WireGuardExitConfig;
+pub use nostr_vpn_core::wg_upstream::{
+    DAEMON_WG_UPSTREAM_HANDSHAKE_TIMEOUT, MAX_WG_PACKET, WgUpstreamRuntime,
+    WireGuardExitFingerprint,
+};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
-/// Handle to a running userspace WG upstream tunnel.
-///
-/// Drop or call [`Self::shutdown`] to stop the pump tasks. The owned
-/// `TunSocket` (if any) is dropped here too, which on macOS deletes the
-/// utun device.
-pub struct WgUpstreamRuntime {
-    pump: Option<JoinHandle<()>>,
-    tun_reader: Option<JoinHandle<()>>,
-    tun_writer: Option<JoinHandle<()>>,
-    handshake: Arc<HandshakeState>,
-    upstream: SocketAddr,
+/// Spin up a userspace WG runtime over a POSIX `TunSocket` (Linux tun
+/// or macOS utun). Builds the platform-specific reader+writer tasks
+/// here so `nostr-vpn-core` doesn't need the boringtun `device`
+/// feature (which doesn't compile on iOS/Android).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub async fn start_wg_runtime_with_posix_tun(
+    config: &WireGuardExitConfig,
+    tun: Arc<TunSocket>,
+) -> Result<WgUpstreamRuntime> {
+    let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>(256);
+    let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>(256);
+    let reader = spawn_posix_tun_reader(tun.clone(), in_tx);
+    let writer = spawn_posix_tun_writer(tun, out_rx);
+    WgUpstreamRuntime::start_with_io(config, Some((in_rx, out_tx)), Some((reader, writer))).await
 }
 
-#[derive(Default)]
-struct HandshakeState {
-    completed: Notify,
-    last_age: RwLock<Option<Duration>>,
-}
-
-impl WgUpstreamRuntime {
-    /// Build the runtime *without* a tun device — i.e. just enough to
-    /// drive the WG handshake against the upstream and prove the keys +
-    /// connectivity work. Useful as a smoke test before any platform
-    /// routing is attempted.
-    pub async fn start_handshake_only(config: &WireGuardExitConfig) -> Result<Self> {
-        Self::start_inner(config, None, None).await
-    }
-
-    /// Build the runtime with a POSIX tun device (Linux tun / macOS
-    /// utun). Plaintext packets read from the tun get encapsulated and
-    /// sent to the upstream; decrypted packets from the upstream get
-    /// written back to the tun. The caller is responsible for
-    /// assigning the tun's IP / MTU / routes — this runtime only does
-    /// the data plane.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub async fn start_with_tun(config: &WireGuardExitConfig, tun: Arc<TunSocket>) -> Result<Self> {
-        let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>(256);
-        let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>(256);
-        let reader = spawn_posix_tun_reader(tun.clone(), in_tx);
-        let writer = spawn_posix_tun_writer(tun, out_rx);
-        Self::start_inner(config, Some((in_rx, out_tx)), Some((reader, writer))).await
-    }
-
-    /// Build the runtime with a Windows WinTun session. Same shape as
-    /// `start_with_tun` — pump is platform-agnostic, just the tun
-    /// reader/writer threads do the OS-specific I/O.
-    #[cfg(target_os = "windows")]
-    pub async fn start_with_wintun(
-        config: &WireGuardExitConfig,
-        session: Arc<WintunSession>,
-    ) -> Result<Self> {
-        let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>(256);
-        let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>(256);
-        let reader = spawn_wintun_reader(session.clone(), in_tx);
-        let writer = spawn_wintun_writer(session, out_rx);
-        Self::start_inner(config, Some((in_rx, out_tx)), Some((reader, writer))).await
-    }
-
-    /// Build the runtime with raw mpsc channels for tun I/O. Used by
-    /// platforms where the OS owns the tun (iOS NEPacketTunnelProvider,
-    /// Android VpnService): the host code feeds plaintext packets into
-    /// `tun_in_tx` (drained from the OS-provided packet flow) and
-    /// reads plaintext packets out of `tun_out_rx` (to write back via
-    /// the OS-provided packet flow). The runtime's Drop / `shutdown`
-    /// closes the WG side; the host is responsible for the OS side.
-    pub async fn start_with_channels(
-        config: &WireGuardExitConfig,
-        tun_in_rx: mpsc::Receiver<Vec<u8>>,
-        tun_out_tx: mpsc::Sender<Vec<u8>>,
-    ) -> Result<Self> {
-        Self::start_inner(config, Some((tun_in_rx, tun_out_tx)), None).await
-    }
-
-    /// Inner constructor. `tun_io = Some((rx, tx))` means we have a
-    /// real tun: `rx` yields plaintext packets the kernel handed us
-    /// (via the platform reader task), `tx` carries plaintext packets
-    /// we want written back. `tun_handles` are the reader+writer
-    /// JoinHandles so we can abort them on shutdown. None for
-    /// handshake-only mode.
-    async fn start_inner(
-        config: &WireGuardExitConfig,
-        tun_io: Option<(mpsc::Receiver<Vec<u8>>, mpsc::Sender<Vec<u8>>)>,
-        tun_handles: Option<(JoinHandle<()>, JoinHandle<()>)>,
-    ) -> Result<Self> {
-        let private = decode_private_key(&config.private_key)?;
-        let public = decode_public_key(&config.peer_public_key)?;
-        let preshared = decode_optional_preshared_key(&config.peer_preshared_key)?;
-        let upstream = resolve_endpoint(&config.endpoint).await?;
-
-        let udp = UdpSocket::bind("0.0.0.0:0")
-            .await
-            .context("bind upstream WG udp socket")?;
-        let udp = Arc::new(udp);
-
-        let keepalive = if config.persistent_keepalive_secs == 0 {
-            None
-        } else {
-            Some(config.persistent_keepalive_secs)
-        };
-        let tunn = Tunn::new(private, public, preshared, keepalive, 1, None);
-
-        let handshake = Arc::new(HandshakeState::default());
-        let (tun_in_rx, tun_out_tx) = match tun_io {
-            Some((rx, tx)) => (Some(rx), Some(tx)),
-            None => (None, None),
-        };
-        let (tun_reader, tun_writer) = match tun_handles {
-            Some((r, w)) => (Some(r), Some(w)),
-            None => (None, None),
-        };
-
-        let pump = tokio::spawn(run_pump(
-            tunn,
-            udp,
-            upstream,
-            tun_in_rx,
-            tun_out_tx,
-            handshake.clone(),
-        ));
-
-        Ok(Self {
-            pump: Some(pump),
-            tun_reader,
-            tun_writer,
-            handshake,
-            upstream,
-        })
-    }
-
-    /// Wait for at most `timeout` for the WG handshake to complete.
-    /// Returns `true` if a handshake was observed; `false` on timeout.
-    pub async fn wait_for_handshake(&self, timeout: Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            if self.handshake.last_age.read().await.is_some() {
-                return true;
-            }
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return false;
-            }
-            tokio::select! {
-                _ = self.handshake.completed.notified() => continue,
-                _ = tokio::time::sleep(remaining) => return false,
-            }
-        }
-    }
-
-    pub fn upstream(&self) -> SocketAddr {
-        self.upstream
-    }
-
-    /// Stop the pump and drop the tunnel state. Idempotent.
-    pub async fn shutdown(mut self) {
-        if let Some(reader) = self.tun_reader.take() {
-            reader.abort();
-            let _ = reader.await;
-        }
-        if let Some(writer) = self.tun_writer.take() {
-            writer.abort();
-            let _ = writer.await;
-        }
-        if let Some(pump) = self.pump.take() {
-            pump.abort();
-            let _ = pump.await;
-        }
-    }
-}
-
-impl Drop for WgUpstreamRuntime {
-    fn drop(&mut self) {
-        if let Some(reader) = self.tun_reader.take() {
-            reader.abort();
-        }
-        if let Some(writer) = self.tun_writer.take() {
-            writer.abort();
-        }
-        if let Some(pump) = self.pump.take() {
-            pump.abort();
-        }
-    }
-}
-
-/// Events fed into the coordinator task. We funnel UDP-rx, tun-rx, and the
-/// timer through a single mpsc instead of using `tokio::select!` directly
-/// so the `Tunn` (which is `!Send`-friendly but still requires `&mut self`
-/// per call) is owned by exactly one task and we don't have to wrestle
-/// with the `select!` borrow surface across `&mut udp_buf` and other arms.
-enum PumpEvent {
-    Timer,
-    UdpDatagram {
-        source: std::net::IpAddr,
-        payload: Vec<u8>,
-    },
-    TunPacket(Vec<u8>),
-    TunReaderClosed,
-}
-
-async fn run_pump(
-    mut tunn: Tunn,
-    udp: Arc<UdpSocket>,
-    upstream: SocketAddr,
-    tun_in_rx: Option<mpsc::Receiver<Vec<u8>>>,
-    tun_out_tx: Option<mpsc::Sender<Vec<u8>>>,
-    handshake: Arc<HandshakeState>,
-) {
-    // Kick off the handshake immediately so the upstream sees us and we
-    // don't have to wait for the first plaintext packet (which might
-    // never arrive in handshake-only mode).
-    {
-        let mut buf = vec![0u8; MAX_WG_PACKET];
-        if let TunnResult::WriteToNetwork(packet) =
-            tunn.format_handshake_initiation(&mut buf, false)
-            && let Err(error) = udp.send_to(packet, upstream).await
-        {
-            tracing::warn!(?error, "wg-upstream: initial handshake send failed");
-        }
-    }
-
-    let (event_tx, mut event_rx) = mpsc::channel::<PumpEvent>(256);
-
-    // Feeder: timer. Drives `Tunn::update_timers` so handshake
-    // re-init / keepalives / cookies happen on schedule.
-    let timer_tx = event_tx.clone();
-    let timer_task = tokio::spawn(async move {
-        let mut ticker = interval(TIMER_TICK);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            ticker.tick().await;
-            if timer_tx.send(PumpEvent::Timer).await.is_err() {
-                return;
-            }
-        }
-    });
-
-    // Feeder: UDP receive from the upstream WG endpoint.
-    let udp_rx_socket = udp.clone();
-    let udp_tx = event_tx.clone();
-    let udp_task = tokio::spawn(async move {
-        let mut buf = vec![0u8; MAX_WG_PACKET];
-        loop {
-            match udp_rx_socket.recv_from(&mut buf).await {
-                Ok((n, src)) => {
-                    let event = PumpEvent::UdpDatagram {
-                        source: src.ip(),
-                        payload: buf[..n].to_vec(),
-                    };
-                    if udp_tx.send(event).await.is_err() {
-                        return;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(?error, "wg-upstream: udp recv failed");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
-    });
-
-    // Feeder: tun receive — forwards plaintext packets from the
-    // platform-specific reader task into our event channel. In
-    // handshake-only mode tun_in_rx is None so this branch is just
-    // skipped; the pump still runs on the timer + UDP feeders.
-    let tun_forward_task = tun_in_rx.map(|mut tun_rx| {
-        let tun_forward_tx = event_tx.clone();
-        tokio::spawn(async move {
-            while let Some(packet) = tun_rx.recv().await {
-                if tun_forward_tx
-                    .send(PumpEvent::TunPacket(packet))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-            let _ = tun_forward_tx.send(PumpEvent::TunReaderClosed).await;
-        })
-    });
-
-    // Drop the cloned sender so the channel closes when all feeders exit.
-    drop(event_tx);
-
-    // Coordinator: own the Tunn, dispatch events sequentially. This is
-    // where every &mut Tunn call lives, so the Tunn never needs a mutex
-    // and we don't fight the borrow checker on `select!` arms.
-    while let Some(event) = event_rx.recv().await {
-        match event {
-            PumpEvent::Timer => {
-                let mut out = vec![0u8; MAX_WG_PACKET];
-                let result = tunn.update_timers(&mut out);
-                handle_tunn_result(&result, &udp, upstream, tun_out_tx.as_ref()).await;
-                drain_decapsulate(&mut tunn, &udp, upstream, tun_out_tx.as_ref()).await;
-                let (age, _, _, _, _) = tunn.stats();
-                let mut current = handshake.last_age.write().await;
-                let prev = current.is_some();
-                *current = age;
-                if !prev && age.is_some() {
-                    handshake.completed.notify_waiters();
-                }
-            }
-            PumpEvent::UdpDatagram { source, payload } => {
-                let mut out = vec![0u8; MAX_WG_PACKET];
-                let result = tunn.decapsulate(Some(source), &payload, &mut out);
-                handle_tunn_result(&result, &udp, upstream, tun_out_tx.as_ref()).await;
-                drain_decapsulate(&mut tunn, &udp, upstream, tun_out_tx.as_ref()).await;
-                // Update handshake-completion eagerly on UDP rx as well —
-                // boringtun establishes the session as a side-effect of
-                // decapsulate. Don't wait for the next 250ms timer tick.
-                let (age, _, _, _, _) = tunn.stats();
-                let mut current = handshake.last_age.write().await;
-                let prev = current.is_some();
-                *current = age;
-                if !prev && age.is_some() {
-                    handshake.completed.notify_waiters();
-                }
-            }
-            PumpEvent::TunPacket(packet) => {
-                let mut out = vec![0u8; MAX_WG_PACKET];
-                let result = tunn.encapsulate(&packet, &mut out);
-                handle_tunn_result(&result, &udp, upstream, tun_out_tx.as_ref()).await;
-            }
-            PumpEvent::TunReaderClosed => break,
-        }
-    }
-
-    timer_task.abort();
-    udp_task.abort();
-    if let Some(handle) = tun_forward_task {
-        handle.abort();
-    }
-}
-
-/// Common handler for whatever a `Tunn::*` call produced. Outbound
-/// network packets get sent via UDP; outbound tunnel packets get
-/// forwarded to the platform-specific writer task via the
-/// `tun_out_tx` channel — dropped when there is no tun (handshake-only
-/// mode) or when the channel is full (the writer task has stalled,
-/// in which case the packet would have been dropped by the kernel
-/// anyway).
-async fn handle_tunn_result(
-    result: &TunnResult<'_>,
-    udp: &Arc<UdpSocket>,
-    upstream: SocketAddr,
-    tun_out_tx: Option<&mpsc::Sender<Vec<u8>>>,
-) {
-    match result {
-        TunnResult::Done | TunnResult::Err(_) => {}
-        TunnResult::WriteToNetwork(packet) => {
-            if let Err(error) = udp.send_to(packet, upstream).await {
-                tracing::warn!(?error, "wg-upstream: udp send failed");
-            }
-        }
-        TunnResult::WriteToTunnelV4(packet, _) | TunnResult::WriteToTunnelV6(packet, _) => {
-            if let Some(tx) = tun_out_tx {
-                let _ = tx.try_send(packet.to_vec());
-            }
-        }
-    }
-}
-
-/// After `decapsulate(Some(src), ciphertext, ...)` produces a result,
-/// boringtun may still hold queued outbound packets that need to be
-/// flushed via `decapsulate(None, &[], ...)` calls. Loop until Done.
-async fn drain_decapsulate(
-    tunn: &mut Tunn,
-    udp: &Arc<UdpSocket>,
-    upstream: SocketAddr,
-    tun_out_tx: Option<&mpsc::Sender<Vec<u8>>>,
-) {
-    loop {
-        let mut out = vec![0u8; MAX_WG_PACKET];
-        let result = tunn.decapsulate(None, &[], &mut out);
-        match &result {
-            TunnResult::Done | TunnResult::Err(_) => return,
-            _ => handle_tunn_result(&result, udp, upstream, tun_out_tx).await,
-        }
-    }
+/// Same idea for Windows WinTun.
+#[cfg(target_os = "windows")]
+pub async fn start_wg_runtime_with_wintun(
+    config: &WireGuardExitConfig,
+    session: Arc<WintunSession>,
+) -> Result<WgUpstreamRuntime> {
+    let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>(256);
+    let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>(256);
+    let reader = spawn_wintun_reader(session.clone(), in_tx);
+    let writer = spawn_wintun_writer(session, out_rx);
+    WgUpstreamRuntime::start_with_io(config, Some((in_rx, out_tx)), Some((reader, writer))).await
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -471,14 +101,8 @@ fn spawn_posix_tun_reader(tun: Arc<TunSocket>, tun_tx: mpsc::Sender<Vec<u8>>) ->
     })
 }
 
-/// POSIX tun writer. Reads decrypted plaintext packets off the channel
-/// and writes them back to the tun. The IP version is sniffed from the
-/// first nibble so we call the right write4/write6 variant.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn spawn_posix_tun_writer(
-    tun: Arc<TunSocket>,
-    mut rx: mpsc::Receiver<Vec<u8>>,
-) -> JoinHandle<()> {
+fn spawn_posix_tun_writer(tun: Arc<TunSocket>, mut rx: mpsc::Receiver<Vec<u8>>) -> JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(packet) = rx.recv().await {
             match packet.first().map(|byte| byte >> 4) {
@@ -494,39 +118,28 @@ fn spawn_posix_tun_writer(
     })
 }
 
-/// Windows tun reader. WinTun's `receive_blocking` is, well, blocking,
-/// so we run it on a dedicated `spawn_blocking` task and bridge to the
-/// async pump via the mpsc.
 #[cfg(target_os = "windows")]
 fn spawn_wintun_reader(
     session: Arc<WintunSession>,
     tun_tx: mpsc::Sender<Vec<u8>>,
 ) -> JoinHandle<()> {
-    tokio::task::spawn_blocking(move || {
-        loop {
-            match session.receive_blocking() {
-                Ok(packet) => {
-                    let bytes = packet.bytes().to_vec();
-                    drop(packet);
-                    // blocking_send is fine — we're already on a
-                    // blocking task. If the channel is closed the
-                    // pump is shutting down; bail.
-                    if tun_tx.blocking_send(bytes).is_err() {
-                        return;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(?error, "wg-upstream: wintun receive failed");
+    tokio::task::spawn_blocking(move || loop {
+        match session.receive_blocking() {
+            Ok(packet) => {
+                let bytes = packet.bytes().to_vec();
+                drop(packet);
+                if tun_tx.blocking_send(bytes).is_err() {
                     return;
                 }
+            }
+            Err(error) => {
+                tracing::warn!(?error, "wg-upstream: wintun receive failed");
+                return;
             }
         }
     })
 }
 
-/// Windows tun writer. Same reasoning as the reader: WinTun's
-/// `allocate_send_packet` + `send_packet` are synchronous, so we run
-/// the loop on a `spawn_blocking` task.
 #[cfg(target_os = "windows")]
 fn spawn_wintun_writer(
     session: Arc<WintunSession>,
@@ -552,34 +165,6 @@ fn spawn_wintun_writer(
             }
         }
     })
-}
-
-fn decode_private_key(encoded: &str) -> Result<StaticSecret> {
-    let raw = decode_key_bytes(encoded.trim()).context("invalid WG private key")?;
-    Ok(StaticSecret::from(raw))
-}
-
-fn decode_public_key(encoded: &str) -> Result<PublicKey> {
-    let raw = decode_key_bytes(encoded.trim()).context("invalid WG public key")?;
-    Ok(PublicKey::from(raw))
-}
-
-fn decode_optional_preshared_key(encoded: &str) -> Result<Option<[u8; 32]>> {
-    let trimmed = encoded.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(
-        decode_key_bytes(trimmed).context("invalid WG preshared key")?,
-    ))
-}
-
-fn decode_key_bytes(encoded: &str) -> Result<[u8; 32]> {
-    let raw = STANDARD
-        .decode(encoded)
-        .map_err(|_| anyhow!("base64 decode failed"))?;
-    raw.try_into()
-        .map_err(|_| anyhow!("WG key must be exactly 32 bytes"))
 }
 
 /// Bring up a userspace WG tun interface and install **only** a single
@@ -1095,13 +680,10 @@ fn run_checked(command: &mut ProcessCommand) -> Result<()> {
 // whenever the config changes.
 // ---------------------------------------------------------------------------
 
-/// Default time the daemon waits for the WG handshake to complete before
-/// giving up and tearing the tun back down. Acts as the implicit
-/// watchdog: by waiting for a real handshake before swapping the
-/// default route, a misconfigured config or unreachable upstream cannot
-/// take the host offline.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-pub const DAEMON_WG_UPSTREAM_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+// `DAEMON_WG_UPSTREAM_HANDSHAKE_TIMEOUT` and `WireGuardExitFingerprint`
+// are re-exported from `nostr_vpn_core::wg_upstream` at the top of
+// this module so the daemon-side code below can keep referring to
+// them by short names without duplicating definitions.
 
 #[cfg(target_os = "macos")]
 pub struct DaemonWgUpstream {
@@ -1127,39 +709,6 @@ pub struct DaemonWgUpstream {
     _session: Arc<WintunSession>,
     _adapter: Arc<wintun::Adapter>,
     config_fingerprint: WireGuardExitFingerprint,
-}
-
-/// Subset of `WireGuardExitConfig` that meaningfully affects the
-/// userspace tunnel — used to short-circuit reconcile if nothing
-/// changed. We deliberately exclude DNS / MTU since they don't
-/// require tearing the WG tunnel down.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WireGuardExitFingerprint {
-    enabled: bool,
-    address: String,
-    private_key: String,
-    peer_public_key: String,
-    peer_preshared_key: String,
-    endpoint: String,
-    allowed_ips: Vec<String>,
-    persistent_keepalive_secs: u16,
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-impl WireGuardExitFingerprint {
-    pub fn from_config(config: &WireGuardExitConfig) -> Self {
-        Self {
-            enabled: config.enabled,
-            address: config.address.clone(),
-            private_key: config.private_key.clone(),
-            peer_public_key: config.peer_public_key.clone(),
-            peer_preshared_key: config.peer_preshared_key.clone(),
-            endpoint: config.endpoint.clone(),
-            allowed_ips: config.allowed_ips.clone(),
-            persistent_keepalive_secs: config.persistent_keepalive_secs,
-        }
-    }
 }
 
 /// Bring up the daemon-owned WG upstream tunnel: create utun, run the
@@ -1194,7 +743,7 @@ pub async fn apply_daemon_wg_upstream(
     let actual_iface = tun.name().context("read utun name (probably needs root)")?;
     let tun = Arc::new(tun);
 
-    let runtime = WgUpstreamRuntime::start_with_tun(config, tun.clone())
+    let runtime = start_wg_runtime_with_posix_tun(config, tun.clone())
         .await
         .context("start userspace WG runtime")?;
     let upstream = runtime.upstream();
@@ -1606,7 +1155,7 @@ pub async fn apply_daemon_wg_upstream(
     );
     let adapter = Arc::new(adapter);
 
-    let runtime = WgUpstreamRuntime::start_with_wintun(config, session.clone())
+    let runtime = start_wg_runtime_with_wintun(config, session.clone())
         .await
         .context("start userspace WG runtime on wintun")?;
     let upstream = runtime.upstream();
@@ -1640,34 +1189,9 @@ pub async fn apply_daemon_wg_upstream(
     })
 }
 
-async fn resolve_endpoint(endpoint: &str) -> Result<SocketAddr> {
-    let endpoint = endpoint.trim();
-    if let Ok(addr) = endpoint.parse::<SocketAddr>() {
-        return Ok(addr);
-    }
-    let resolved = tokio::net::lookup_host(endpoint)
-        .await
-        .with_context(|| format!("resolve WG upstream endpoint '{endpoint}'"))?
-        .next()
-        .ok_or_else(|| anyhow!("no DNS results for '{endpoint}'"))?;
-    Ok(resolved)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use boringtun::x25519::PublicKey;
-    use nostr_vpn_core::config::parse_wireguard_exit_config;
-
-    fn random_keypair() -> (StaticSecret, PublicKey, String, String) {
-        let bytes: [u8; 32] = rand::random();
-        let private = StaticSecret::from(bytes);
-        let public = PublicKey::from(&private);
-        let priv_b64 = STANDARD.encode(private.to_bytes());
-        let pub_b64 = STANDARD.encode(public.as_bytes());
-        (private, public, priv_b64, pub_b64)
-    }
-
     #[test]
     fn parses_windows_default_route_from_route_print() {
         // Synthetic `route print -4 0.0.0.0` output. Only the
@@ -1712,83 +1236,5 @@ Network Destination        Netmask          Gateway       Interface  Metric
     fn returns_none_when_no_default_route_present() {
         let sample = "Active Routes:\n      127.0.0.0  255.0.0.0  On-link  127.0.0.1  331\n";
         assert!(parse_windows_default_route_columns(sample).is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn handshake_completes_against_paired_responder() {
-        let (_, _client_pub, client_priv_b64, _client_pub_b64) = random_keypair();
-        let (server_priv_obj, _, _, server_pub_b64) = random_keypair();
-
-        // Stand up a paired Tunn on a real UDP port acting as the
-        // "server"; this is enough to drive the handshake without
-        // wiring up any actual tun.
-        let server_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let server_addr = server_socket.local_addr().unwrap();
-        let server_socket = Arc::new(server_socket);
-
-        let mut server_tunn = Tunn::new(
-            server_priv_obj,
-            PublicKey::from(&decode_private_key(&client_priv_b64).unwrap()),
-            None,
-            Some(25),
-            2,
-            None,
-        );
-
-        let server_socket_pump = server_socket.clone();
-        let server_pump = tokio::spawn(async move {
-            let mut udp_buf = vec![0u8; MAX_WG_PACKET];
-            for _ in 0..32 {
-                let (n, src) = match tokio::time::timeout(
-                    Duration::from_millis(500),
-                    server_socket_pump.recv_from(&mut udp_buf),
-                )
-                .await
-                {
-                    Ok(Ok(value)) => value,
-                    _ => continue,
-                };
-                let mut out = vec![0u8; MAX_WG_PACKET];
-                // Decapsulate the inbound datagram, then drain queued
-                // outputs via decapsulate(None, &[], ...) until Done.
-                let to_send = match server_tunn.decapsulate(Some(src.ip()), &udp_buf[..n], &mut out)
-                {
-                    TunnResult::WriteToNetwork(packet) => Some(packet.to_vec()),
-                    _ => None,
-                };
-                if let Some(bytes) = to_send {
-                    let _ = server_socket_pump.send_to(&bytes, src).await;
-                }
-                // Drain any queued outputs (handshake protocol can stack
-                // packets in the boringtun internal queue).
-                loop {
-                    let mut drain_buf = vec![0u8; MAX_WG_PACKET];
-                    let drained = match server_tunn.decapsulate(None, &[], &mut drain_buf) {
-                        TunnResult::WriteToNetwork(packet) => Some(packet.to_vec()),
-                        _ => None,
-                    };
-                    let Some(bytes) = drained else { break };
-                    let _ = server_socket_pump.send_to(&bytes, src).await;
-                }
-            }
-        });
-
-        // Compose a WG config that points at the local "server"
-        let cfg_text = format!(
-            "[Interface]\nPrivateKey = {client_priv_b64}\nAddress = 10.99.99.2/32\n\n[Peer]\nPublicKey = {server_pub_b64}\nEndpoint = {server_addr}\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 1\n"
-        );
-        let cfg = parse_wireguard_exit_config(&cfg_text).expect("parse WG config");
-
-        let runtime = WgUpstreamRuntime::start_handshake_only(&cfg)
-            .await
-            .expect("start runtime");
-        let ok = runtime.wait_for_handshake(Duration::from_secs(10)).await;
-        runtime.shutdown().await;
-        server_pump.abort();
-        let _ = server_pump.await;
-        assert!(
-            ok,
-            "expected handshake to complete against the paired responder"
-        );
     }
 }

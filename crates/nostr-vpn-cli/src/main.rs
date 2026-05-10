@@ -1237,7 +1237,7 @@ async fn run_wg_upstream_test(args: WgUpstreamTestArgs) -> Result<()> {
         cfg.address.trim_end_matches("/32")
     );
 
-    let runtime = WgUpstreamRuntime::start_with_tun(&cfg, tun.clone())
+    let runtime = crate::wg_upstream_runtime::start_wg_runtime_with_posix_tun(&cfg, tun.clone())
         .await
         .context("start userspace WG runtime with tun")?;
     let upstream = runtime.upstream();
@@ -1298,7 +1298,7 @@ async fn run_wg_upstream_replace_default(
     args: &WgUpstreamTestArgs,
     timeout: std::time::Duration,
 ) -> Result<()> {
-    use crate::wg_upstream_runtime::{WgUpstreamRuntime, apply_full_default_route};
+    use crate::wg_upstream_runtime::apply_full_default_route;
     use boringtun::device::tun::TunSocket;
     use std::sync::Arc;
     use std::time::Duration;
@@ -1322,7 +1322,7 @@ async fn run_wg_upstream_replace_default(
     // from the runtime is the handshake init; until we wait for it
     // there's no proof the upstream is reachable / our config is
     // valid.
-    let runtime = WgUpstreamRuntime::start_with_tun(cfg, tun.clone())
+    let runtime = crate::wg_upstream_runtime::start_wg_runtime_with_posix_tun(cfg, tun.clone())
         .await
         .context("start userspace WG runtime with tun")?;
     let upstream = runtime.upstream();

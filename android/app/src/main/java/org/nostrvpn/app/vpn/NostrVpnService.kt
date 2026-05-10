@@ -83,6 +83,22 @@ class NostrVpnService : VpnService() {
         tunnelInterface = descriptor
         tunnelHandle = handle
         running.set(true)
+
+        // If the user has WG upstream enabled, the boringtun runtime
+        // owns a UDP socket that talks to the Mullvad/Proton server.
+        // That socket has to escape the VPN tun (otherwise the
+        // encrypted UDP loops back into our own tunnel), which on
+        // Android means calling VpnService.protect(socketFd). The
+        // Rust side exposes the fd via the JNI binding below; -1 means
+        // WG upstream isn't running so there's nothing to protect.
+        val wgSocketFd = NativeCore.mobileTunnelWgSocketFd(handle)
+        if (wgSocketFd >= 0 && !protect(wgSocketFd)) {
+            android.util.Log.w(
+                "NostrVpnService",
+                "VpnService.protect(wgSocketFd=$wgSocketFd) returned false; WG upstream may loop into the VPN tun",
+            )
+        }
+
         registerUnderlyingNetworkUpdates()
         readThread = Thread({ readTunLoop(descriptor, handle) }, "nvpn-tun-read").also { it.start() }
         writeThread = Thread({ writeTunLoop(descriptor, handle) }, "nvpn-tun-write").also { it.start() }
@@ -111,6 +127,14 @@ class NostrVpnService : VpnService() {
                 builder.addRoute(route.address, route.prefix)
             }
         }
+
+        // When WG upstream is on, the Rust runtime expanded
+        // routeTargets to 0.0.0.0/0 so all traffic enters the tun.
+        // Android doesn't have an `excludedRoutes` equivalent — we
+        // rely on `protect(socketFd)` instead (called below after the
+        // tunnel handle is created). The excludedRoutes JSON field
+        // is therefore informational on Android; the actual escape
+        // mechanism is the protected socket.
 
         return builder.establish()
     }

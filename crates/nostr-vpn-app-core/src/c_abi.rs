@@ -180,6 +180,27 @@ pub unsafe extern "C" fn nostr_vpn_mobile_tunnel_send_packet(
     tunnel.tunnel.send_packet(packet)
 }
 
+/// Raw fd of the userspace WG upstream UDP socket, or -1 when WG
+/// upstream isn't running on this tunnel. The Android host calls
+/// `VpnService.protect(fd)` on this fd so the encrypted UDP escapes
+/// the VPN tun. iOS doesn't need this — it relies on
+/// `NEIPv4Settings.excludedRoutes` declared at tunnel-establish time
+/// instead.
+///
+/// # Safety
+///
+/// `handle` must be a live mobile tunnel handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nostr_vpn_mobile_tunnel_wg_socket_fd(
+    handle: *const NvpnMobileTunnelHandle,
+) -> std::os::raw::c_int {
+    if handle.is_null() {
+        return -1;
+    }
+    let tunnel = unsafe { &*handle };
+    tunnel.tunnel.wg_upstream_socket_fd()
+}
+
 /// # Safety
 ///
 /// `handle` must be a live mobile tunnel handle. `out` must point to
@@ -425,6 +446,22 @@ pub extern "system" fn Java_org_nostrvpn_app_core_NativeCore_mobileTunnelNextPac
         return -1;
     }
     jint::try_from(len).unwrap_or(-1)
+}
+
+/// Returns the raw fd of the userspace WG upstream UDP socket so the
+/// VpnService can call `protect(fd)` on it. Returns -1 when WG
+/// upstream isn't running on this tunnel.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_nostrvpn_app_core_NativeCore_mobileTunnelWgSocketFd(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+) -> jint {
+    let Some(tunnel) = tunnel_from_jlong(handle) else {
+        return -1;
+    };
+    tunnel.tunnel.wg_upstream_socket_fd()
 }
 
 fn app_from_handle<'a>(handle: *const NvpnAppHandle) -> Result<&'a NvpnAppHandle> {

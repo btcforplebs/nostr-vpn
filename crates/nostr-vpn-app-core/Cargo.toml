@@ -25,6 +25,7 @@ serde.workspace = true
 serde_json.workspace = true
 socket2.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 uniffi.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]

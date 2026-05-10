@@ -34,6 +34,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if let parsed = parseIPv4CIDR(parsedConfig.localAddress) {
             let ipv4 = NEIPv4Settings(addresses: [parsed.address], subnetMasks: [parsed.mask])
             ipv4.includedRoutes = parsedConfig.routeTargets.compactMap(ipv4Route)
+            // When WG upstream is on, the Rust runtime has expanded
+            // `routeTargets` to include 0.0.0.0/0 so all outbound
+            // traffic enters the tun. We then exclude the WG
+            // endpoint IP itself so the encrypted UDP can actually
+            // escape the tunnel and reach the upstream.
+            if !parsedConfig.excludedRoutes.isEmpty {
+                ipv4.excludedRoutes = parsedConfig.excludedRoutes.compactMap(ipv4Route)
+            }
             settings.ipv4Settings = ipv4
         }
 
@@ -158,6 +166,7 @@ private enum PacketTunnelError: LocalizedError {
 private struct MobileTunnelConfig {
     let localAddress: String
     let routeTargets: [String]
+    let excludedRoutes: [String]
     let mtu: Int
     let errorText: Error?
 
@@ -167,6 +176,7 @@ private struct MobileTunnelConfig {
         else {
             localAddress = "10.44.0.1/32"
             routeTargets = []
+            excludedRoutes = []
             mtu = 1280
             errorText = PacketTunnelError.invalidConfig("Invalid tunnel configuration")
             return
@@ -174,6 +184,7 @@ private struct MobileTunnelConfig {
         let error = object["error"] as? String ?? ""
         localAddress = object["localAddress"] as? String ?? "10.44.0.1/32"
         routeTargets = object["routeTargets"] as? [String] ?? []
+        excludedRoutes = object["excludedRoutes"] as? [String] ?? []
         mtu = object["mtu"] as? Int ?? 1280
         errorText = error.isEmpty ? nil : PacketTunnelError.invalidConfig(error)
     }
