@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.11 - 2026-05-11
+
+### Changed
+
+- **Bumped fips-endpoint to `9b7c723` — boringtun-style data-plane perf overhaul.** Single squash-merge landing 49 commits worth of FIPS receive/send hot-path work. **Single-stream TCP went from ~1.5 Gbps baseline to ~2.2 Gbps on Mac docker bench (+47%) and 2.24 Gbps on ubuntu-dev netns+veth host bench (+62% over same-host baseline).** Multi-stream throughput moves up 8-15% across 4/8-stream configurations. Highlights:
+  - **Shard-owned decrypt worker pool** (std::thread + crossbeam_channel) — each worker owns its session state in a thread-local HashMap. No `Arc<RwLock<HashMap>>` cache on Node, no `Arc<Mutex<ReplayWindow>>` shared with rx_loop. Direct `&mut` access per packet, zero lock acquires per AEAD layer. Hash-by-cache_key dispatch so a session always lands on the same shard.
+  - **UDP_GSO on Linux** — `sendmsg(2)` + `UDP_SEGMENT` cmsg path for uniform-size batches, falling back to `sendmmsg(2)` on EINVAL/EOPNOTSUPP. Kernel splits one super-skb into N on-the-wire UDP datagrams via a single skb walk (the same primitive WireGuard kernel + boringtun use to hit 2.5–3.2 Gbps).
+  - **Connected UDP per peer on Linux** — `ConnectedPeerSocket` (SO_REUSEPORT + bind + connect) for each established peer, with a `PeerRecvDrain` std::thread feeding the existing `packet_tx`. Encrypt-worker send path uses the peer's connected fd with `msg_name = NULL`; kernel skips per-packet sockaddr handling + route lookup + neighbor resolve. Pairs cleanly with UDP_GSO.
+  - **Hot-path zero-copy** — UDP RX `mem::replace` (recv buffer IS the packet buffer), `SessionDatagramRef::decode` borrowed view (no inner-payload alloc on the default rx_loop path), FSP decrypt in-place on `packet_data`, eliminated `payload.drain(..6)` 1.5 KB memmove. Sender builds the FMP wire buffer in one allocation directly. Net ~150–450 MB/sec of memory bandwidth recovered.
+  - **Eager session registration** — workers receive the FMP recv state at handshake completion (`promote_connection`) rather than lazily on first packet, eliminating the legacy lazy-register path entirely.
+  - **`FipsEndpoint::send` SendOneway fast path** — skips the per-packet `oneshot::channel()` allocation that the old code created and immediately dropped.
+  - All env-gated experimental knobs collapsed into always-on defaults. `FIPS_ENCRYPT_WORKERS` / `FIPS_DECRYPT_WORKERS` / `FIPS_TUN_QUEUES` remain as debug overrides; their default is `num_cpus`. `FIPS_CONNECTED_UDP` is removed (unconditionally on for Linux).
+  - 221 node tests pass; 8 new transport/encrypt-worker unit tests pass on Linux (5 GSO + 2 ConnectedPeerSocket + 1 PeerRecvDrain).
+- All-platform fips-endpoint refresh — Android, iOS, macOS, Windows, Linux, GTK, WinTun, and the CLI / daemon all pick up the new perf profile via the workspace fips-endpoint dep.
+
 ### Added
 
 - **macOS daemon now drives WireGuard upstream end-to-end.** The "WireGuard upstream" radio item in the GUI does something on Mac for the first time: when toggled on (and a config has been pasted), the daemon's `FipsPrivateTunnelRuntime` brings up a userspace tun via boringtun, runs the WG handshake against the upstream, and **only swaps the default route to the WG tun once the handshake actually completes within a 10-second watchdog window**. If the handshake doesn't complete the routing table is deliberately left untouched, so a misconfigured config or unreachable upstream cannot blackhole the host. Toggling off, changing the config, or stopping the daemon tears the tunnel back down via a `Drop`-guard that restores the original default route + deletes the WG-endpoint bypass.
