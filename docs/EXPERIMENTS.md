@@ -30,6 +30,10 @@ Setup:
 - App endpoint bytes and TUN packets were both queued behind that stale session.
 - Live MacBook could see VM peers directly, while mini could not complete
   direct NAT traversal to those same VM peers.
+- Later live debugging showed mini was receiving signed lookup responses for
+  the missing VM peers, so discovery/routing was no longer the blocker. The
+  remaining symptom was repeated encrypted traffic from those peers while the
+  mini-side FSP session was still waiting for handshake completion.
 
 Result:
 - Before FIPS `c1c71eb`, queued traffic returned without starting discovery,
@@ -51,11 +55,35 @@ Result:
 - Added unit coverage for both endpoint-data and TUN-packet branches, including
   the stale direct-route case, direct non-tree target forwarding, origin fallback
   to a non-tree sendable peer, and transit fallback without origin echo.
+- FIPS `cf6a582` keeps the final XK `SessionMsg3` around briefly after the
+  initiator marks a session established, resends it on the normal handshake
+  resend timer, and resends it again if a duplicate `SessionAck` arrives. A
+  responder that sees early encrypted data while still waiting for msg3 also
+  resends its `SessionAck`. The regression test drops the first msg3 and proves
+  the responder establishes from the replacement. The final commit also includes
+  clippy cleanup for the FIPS hot-path refactor.
+- Strengthened `scripts/e2e-fips-routed-udp-docker.sh` to force the safe MTU
+  profile, assert `utun100` MTU 1150, and move 1000-byte no-fragment ping
+  payloads plus UDP payloads both ways while direct Alice/Bob underlay UDP is
+  blocked.
+- Added `scripts/e2e-fips-nat-safe-mtu-docker.sh`, which places Bob behind a
+  Docker NAT, forces the safe MTU profile, verifies both peers show online via
+  FIPS, and moves safe-MTU ping plus UDP payloads in both directions.
+- `./scripts/e2e-fips-routed-udp-docker.sh` passed after the stricter safe-MTU
+  and bidirectional data checks.
+- `./scripts/e2e-fips-nat-safe-mtu-docker.sh` passed with Bob using
+  `198.51.100.10 via 172.30.242.2` for the underlay route to Alice, Alice
+  observing Bob through the NAT public address, and 976-byte UDP payload files
+  received on both sides.
+- `NVPN_RELEASE_GATE_DOCKER_E2E=0 ./scripts/release-gate.sh` passed against
+  FIPS `cf6a582`, including fmt, clippy, workspace tests, and the `nvpn update`
+  CLI e2e.
 
 Decision:
-- Keep the explicit routed-FIPS Docker e2e in the nvpn release gate, and keep
-  this FIPS unit coverage as the lower-level guard against stale direct/NAT
-  session state blocking mesh fallback.
+- Keep the explicit routed-FIPS and NAT safe-MTU Docker e2e tests in the nvpn
+  release gate, and keep this FIPS unit coverage as the lower-level guard
+  against stale direct/NAT session state and half-established XK sessions
+  blocking mesh fallback.
 
 ## 2026-05-12 - macOS Wi-Fi to Ethernet, safe MTU
 

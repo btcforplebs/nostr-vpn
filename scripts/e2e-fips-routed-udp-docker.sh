@@ -8,6 +8,8 @@ COMPOSE=(docker compose -p "$PROJECT_NAME" -f "$ROOT_DIR/docker-compose.e2e.yml"
 NETWORK_ID="docker-fips-routed-udp"
 CONFIG_PATH="/root/.config/nvpn/config.toml"
 UDP_PORT=42424
+SAFE_TUNNEL_MTU=1150
+PING_PAYLOAD_SIZE=1000
 
 cleanup() {
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -167,7 +169,7 @@ assert_peer_online_via_fips() {
     .daemon.state.peers
     | any(
       (.participant_pubkey == $peer_key or .fips_endpoint_npub == $peer_key)
-      and .runtime_endpoint == "fips"
+      and (.endpoint == "fips" or .runtime_endpoint == "fips")
       and .reachable == true
     )
   ' >/dev/null <<<"$status"; then
@@ -212,6 +214,36 @@ wait_for_payload() {
   local payload="$3"
   for _ in $(seq 1 20); do
     if "${COMPOSE[@]}" exec -T "$node" sh -lc "grep -q '$payload' '$output' 2>/dev/null"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+start_nvpn_daemon() {
+  local node="$1"
+  "${COMPOSE[@]}" exec -T "$node" sh -lc \
+    "NVPN_MESH_MTU_PROFILE=safe NVPN_MESH_UNDERLAY_UDP_MTU=1280 NVPN_MESH_TUNNEL_MTU=$SAFE_TUNNEL_MTU nvpn start --daemon --connect" >/dev/null
+}
+
+assert_tunnel_mtu() {
+  local node="$1"
+  local actual
+  actual="$("${COMPOSE[@]}" exec -T "$node" sh -lc \
+    "ip -o link show utun100 | awk -F ' mtu ' '{ print \$2 }' | awk '{ print \$1 }'" | tr -d '\r')"
+  if [[ "$actual" != "$SAFE_TUNNEL_MTU" ]]; then
+    echo "fips routed udp e2e failed: $node utun100 MTU was '$actual', expected '$SAFE_TUNNEL_MTU'" >&2
+    exit 1
+  fi
+}
+
+ping_tunnel_payload() {
+  local node="$1"
+  local target_ip="$2"
+  local log_path="$3"
+  for _ in $(seq 1 10); do
+    if "${COMPOSE[@]}" exec -T "$node" ping -M do -s "$PING_PAYLOAD_SIZE" -c 2 -W 2 "$target_ip" >"$log_path"; then
       return 0
     fi
     sleep 1
@@ -279,7 +311,7 @@ done
 block_direct_alice_bob_udp
 
 for node in node-a node-b node-c; do
-  "${COMPOSE[@]}" exec -T "$node" nvpn start --daemon --connect >/dev/null
+  start_nvpn_daemon "$node"
 done
 
 ALICE_STATUS="$(wait_for_mesh node-a 1)" || {
@@ -331,6 +363,21 @@ if ! grep -q 'dev utun100' <<<"$BOB_ROUTE"; then
   exit 1
 fi
 
+assert_tunnel_mtu node-a
+assert_tunnel_mtu node-b
+
+if ! ping_tunnel_payload node-a "$BOB_TUNNEL_IP" /tmp/alice-to-bob-safe-mtu-ping.log; then
+  echo "fips routed udp e2e failed: alice could not move $PING_PAYLOAD_SIZE-byte no-fragment ping payload to bob over FIPS" >&2
+  cat /tmp/alice-to-bob-safe-mtu-ping.log >&2 2>/dev/null || true
+  exit 1
+fi
+
+if ! ping_tunnel_payload node-b "$ALICE_TUNNEL_IP" /tmp/bob-to-alice-safe-mtu-ping.log; then
+  echo "fips routed udp e2e failed: bob could not move $PING_PAYLOAD_SIZE-byte no-fragment ping payload to alice over FIPS" >&2
+  cat /tmp/bob-to-alice-safe-mtu-ping.log >&2 2>/dev/null || true
+  exit 1
+fi
+
 start_udp_listener node-b /tmp/bob-udp.out
 send_udp_payload node-a "$BOB_TUNNEL_IP" "alice-to-bob-fips-udp"
 wait_for_payload node-b /tmp/bob-udp.out "alice-to-bob-fips-udp"
@@ -353,8 +400,11 @@ echo "node-b getent alice.nvpn -> $ALICE_SYSTEM_TUNNEL_IP"
 echo "--- Routes ---"
 echo "$ALICE_ROUTE"
 echo "$BOB_ROUTE"
+echo "--- Safe MTU pings ---"
+cat /tmp/alice-to-bob-safe-mtu-ping.log
+cat /tmp/bob-to-alice-safe-mtu-ping.log
 echo "--- UDP payloads ---"
 "${COMPOSE[@]}" exec -T node-b sh -lc 'cat /tmp/bob-udp.out'
 "${COMPOSE[@]}" exec -T node-a sh -lc 'cat /tmp/alice-udp.out'
 
-echo "fips routed udp docker e2e passed: alice.nvpn and bob.nvpn resolved to tunnel IPs and UDP crossed the FIPS overlay while direct Alice/Bob underlay UDP was blocked"
+echo "fips routed udp docker e2e passed: alice.nvpn and bob.nvpn resolved to tunnel IPs, safe-MTU payloads crossed both ways, and UDP crossed the FIPS overlay while direct Alice/Bob underlay UDP was blocked"

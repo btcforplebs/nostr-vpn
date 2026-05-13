@@ -24,7 +24,7 @@ base64 = "0.22"
 boringtun = "0.7"
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
-fips-endpoint = { git = "https://github.com/mmalmi/fips.git", rev = "83fbf03dd26c96580e3028a7ca55c47140f718a7" }
+fips-endpoint = { git = "https://github.com/mmalmi/fips.git", rev = "cf6a5829476987e832371f27e5c7d97a5d688f7a" }
 futures = "0.3"
 hex = "0.4"
 hickory-proto = "0.25"

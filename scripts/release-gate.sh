@@ -16,5 +16,6 @@ case "${NVPN_RELEASE_GATE_DOCKER_E2E:-1}" in
     ;;
   *)
     ./scripts/e2e-fips-routed-udp-docker.sh
+    ./scripts/e2e-fips-nat-safe-mtu-docker.sh
     ;;
 esac

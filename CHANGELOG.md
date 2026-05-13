@@ -15,14 +15,19 @@ All notable changes to this project are documented in this file.
   the origin. This keeps tree/bloom lookup routing primary while letting peers
   fall back through the mesh when direct routes, NAT traversal, or the current
   spanning-tree view are asymmetric.
+- Bumped FIPS to `cf6a582` so initiators resend the final XK
+  `SessionMsg3` after entering `Established`. This fixes a half-established
+  session failure where one peer sent encrypted endpoint traffic while the
+  other peer was still waiting for the last handshake message.
 - The macOS GUI refreshes participant alias edit drafts when the backend alias
   changes, so a renamed peer no longer appears under an old draft name in the
   Manage Device panel.
 
 ### Changed
 
-- `just release-gate`, CI, and local release verification now run the routed
-  FIPS Docker e2e in addition to format, clippy, and Rust tests.
+- `just release-gate`, CI, and local release verification now run routed-FIPS
+  and NAT safe-MTU Docker e2e tests that verify peers show online and move
+  tunnel payloads both ways.
 - `just release-gate`, CI, and local release verification now run a local
   `nvpn update` CLI e2e against a file-backed release manifest and archive.
 
