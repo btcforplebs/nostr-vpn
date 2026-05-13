@@ -27,6 +27,7 @@ struct RootView: View {
     @State private var lastSyncedListenPort: UInt32 = 0
     @State private var lastSyncedMagicDnsSuffix = ""
     @State private var lastSyncedWireguardExitConfig: String? = nil
+    @State private var lastSyncedParticipantAliases: [String: String] = [:]
 
     private var state: NativeAppState {
         manager.state
@@ -1262,9 +1263,13 @@ struct RootView: View {
                 networkNameDrafts[network.id] = network.name
             }
             for participant in network.participants {
-                if participantAliasDrafts[participant.pubkeyHex] == nil {
-                    participantAliasDrafts[participant.pubkeyHex] = participant.magicDnsAlias
+                let key = participant.pubkeyHex
+                let alias = participant.magicDnsAlias
+                let previousAlias = lastSyncedParticipantAliases[key]
+                if participantAliasDrafts[key] == nil || participantAliasDrafts[key] == previousAlias {
+                    participantAliasDrafts[key] = alias
                 }
+                lastSyncedParticipantAliases[key] = alias
             }
         }
 

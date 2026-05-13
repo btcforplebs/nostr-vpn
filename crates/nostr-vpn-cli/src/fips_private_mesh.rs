@@ -4,7 +4,8 @@ use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use fips_endpoint::{
     Config, ConnectPolicy, FipsEndpoint, FipsEndpointError, FipsEndpointMessage, FipsEndpointPeer,
-    NostrDiscoveryPolicy, PeerAddress, PeerConfig as FipsPeerConfig, TransportInstances, UdpConfig,
+    NostrDiscoveryPolicy, PeerAddress, PeerConfig as FipsPeerConfig, RoutingMode,
+    TransportInstances, UdpConfig,
 };
 use nostr_sdk::prelude::{PublicKey, ToBech32};
 use nostr_vpn_core::config::{
@@ -944,6 +945,10 @@ fn fips_endpoint_config(
 ) -> Config {
     let mut config = Config::new();
     config.node.control.enabled = false;
+    // App mesh peers may be routable only through already-connected
+    // neighbors when direct NAT traversal fails. Reply-learned routing lets
+    // first-contact EndpointData trigger discovery through those neighbors.
+    config.node.routing.mode = RoutingMode::ReplyLearned;
     config.dns.enabled = false;
     let advertise_udp = transport
         .map(|transport| transport.advertise_endpoint)
@@ -2807,7 +2812,8 @@ mod tests {
         control_frame_source_pubkey, fips_endpoint_config, fips_endpoint_peers_from_mesh,
     };
     use fips_endpoint::{
-        Config, ConnectPolicy, PeerConfig as FipsPeerConfig, TransportInstances, UdpConfig,
+        Config, ConnectPolicy, PeerConfig as FipsPeerConfig, RoutingMode, TransportInstances,
+        UdpConfig,
     };
     use nostr_sdk::prelude::{Keys, ToBech32};
     use nostr_vpn_core::config::{AppConfig, derive_mesh_tunnel_ip};
@@ -3123,6 +3129,7 @@ mod tests {
         auto_connect: bool,
     ) -> Config {
         let mut config = Config::new();
+        config.node.routing.mode = RoutingMode::ReplyLearned;
         config.transports.udp = TransportInstances::Single(UdpConfig {
             bind_addr: Some(format!("127.0.0.1:{local_port}")),
             accept_connections: Some(true),
@@ -3271,6 +3278,7 @@ mod tests {
         );
 
         assert!(!config.node.control.enabled);
+        assert_eq!(config.node.routing.mode, RoutingMode::ReplyLearned);
         assert!(!config.dns.enabled);
         assert!(config.node.discovery.nostr.enabled);
         assert!(!config.node.discovery.nostr.advertise);

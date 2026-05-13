@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Private FIPS mesh endpoint traffic now uses reply-learned routing so a peer
+  whose direct UDP/NAT path is down can still be reached through established
+  FIPS neighbors. This is covered by the routed-FIPS Docker e2e release gate.
+- The macOS GUI refreshes participant alias edit drafts when the backend alias
+  changes, so a renamed peer no longer appears under an old draft name in the
+  Manage Device panel.
+
+### Changed
+
+- `just release-gate`, CI, and local release verification now run the routed
+  FIPS Docker e2e in addition to format, clippy, and Rust tests.
+
 ## 4.0.14 - 2026-05-13
 
 ### Fixed

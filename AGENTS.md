@@ -22,20 +22,18 @@ fail, **no installers / binaries are produced** and the GitHub Release
 isn't created — you have to push a fix, force-update the tag, and wait
 through another full release run.
 
-Always run the Lint + Tests gate locally first, before bumping the
-version and tagging:
+Always run the release gate locally first, before bumping the version
+and tagging:
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+just release-gate
 ```
 
-These mirror the three steps in the `Lint + Tests (push)` job in
-`.github/workflows/ci.yml`. If any of them fail or warn, fix it
-**before** you cut the release commit. Pushing a tag and then chasing
-a fmt/clippy nit afterwards burns a full release CI cycle (~16 min on
-v4.0.9) and leaves a misleading "failed" run in the actions history.
+This runs sync-versions, fmt, clippy, Rust tests, and the routed-FIPS
+Docker e2e that verifies two peers can communicate through an
+intermediary when their direct UDP path is blocked. These mirror the
+regular CI gate. If any step fails or warns, fix it before you cut the
+release commit.
 
 For the Linux GTK app (`linux/`, excluded from the workspace) also run:
 
@@ -55,7 +53,7 @@ For the Linux GTK app (`linux/`, excluded from the workspace) also run:
    with `node scripts/sync-versions.mjs` (covers Linux Cargo.toml,
    macOS / iOS `project.yml`, Android `build.gradle.kts`, Windows
    `.csproj`). Verify with `node scripts/sync-versions.mjs --check`.
-3. Run the local Lint + Tests gate (above).
+3. Run the local release gate (above).
 4. Commit, tag (`git tag vX.Y.Z` — lightweight, pointing at the bump
    commit), and push the tag to `github` to trigger the release
    workflow. Also push `master` to both `github` and the htree `origin`.

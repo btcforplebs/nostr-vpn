@@ -159,6 +159,24 @@ wait_for_mesh() {
   return 1
 }
 
+assert_peer_online_via_fips() {
+  local status="$1"
+  local peer_key="$2"
+  local label="$3"
+  if ! jq -e --arg peer_key "$peer_key" '
+    .daemon.state.peers
+    | any(
+      (.participant_pubkey == $peer_key or .fips_endpoint_npub == $peer_key)
+      and .runtime_endpoint == "fips"
+      and .reachable == true
+    )
+  ' >/dev/null <<<"$status"; then
+    echo "fips routed udp e2e failed: $label did not show peer online via FIPS routing" >&2
+    printf '%s\n' "$status" >&2
+    exit 1
+  fi
+}
+
 resolve_magic_dns() {
   local node="$1"
   local name="$2"
@@ -275,6 +293,9 @@ BOB_STATUS="$(wait_for_mesh node-b 1)" || {
   exit 1
 }
 CHARLIE_STATUS="$("${COMPOSE[@]}" exec -T node-c nvpn status --json --discover-secs 0 | tr -d '\r')"
+
+assert_peer_online_via_fips "$ALICE_STATUS" "$BOB_NPUB" "alice"
+assert_peer_online_via_fips "$BOB_STATUS" "$ALICE_NPUB" "bob"
 
 BOB_TUNNEL_IP="$(resolve_magic_dns node-a bob.nvpn)"
 ALICE_TUNNEL_IP="$(resolve_magic_dns node-b alice.nvpn)"

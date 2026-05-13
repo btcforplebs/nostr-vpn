@@ -42,6 +42,7 @@ info:
     @echo
     @echo "Checks"
     @echo "  just test"
+    @echo "  just release-gate"
     @echo "  just security-regressions"
     @echo "  just e2e"
     @echo "  just e2e-connect"
@@ -129,6 +130,9 @@ release-publish:
 
 test:
     cargo test
+
+release-gate:
+    ./scripts/release-gate.sh
 
 security-regressions:
     cargo test -p nostr-vpn-cli platform_routing

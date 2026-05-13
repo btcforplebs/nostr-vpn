@@ -619,6 +619,29 @@ Decision:
   guessing until the instrumentation can count ENOBUFS, dropped bulk packets,
   and per-stage queue waits in the same run.
 
+## 2026-05-13: direct-link failure must route through FIPS neighbors
+
+Observation:
+- On the MacBook, `hashtree-node.nvpn` was reachable directly, but on the mini
+  it stayed `pending (fips link pending)` after repeated NAT traversal timeouts.
+  Mini still had six healthy FIPS links, so endpoint traffic should have routed
+  through the mesh instead of failing.
+
+Finding:
+- FIPS core already supports multi-hop EndpointData once route coordinates are
+  known. The app embedding was still using tree routing defaults, which can
+  strand first-contact traffic when the destination's direct link is down and
+  bloom/coordinate state is incomplete.
+
+Change:
+- `nostr-vpn` now sets the embedded FIPS endpoint to reply-learned routing.
+  That lets first-contact EndpointData discovery flood through established tree
+  neighbors and learn the reverse path from the verified response.
+- Promoted `scripts/e2e-fips-routed-udp-docker.sh` into `scripts/release-gate.sh`
+  so release verification catches the app-level Docker version of this failure:
+  Alice and Bob's direct UDP path is blocked and packets must pass both
+  directions through Charlie.
+
 ## Bench commands
 
 Use both directions and record both TCP and UDP:

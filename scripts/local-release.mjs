@@ -725,11 +725,8 @@ function syncPlatformVersions({ tag, dryRun, builtLines }) {
 }
 
 function runVerify({ dryRun, builtLines }) {
-  run('node', ['scripts/sync-versions.mjs'], { dryRun })
-  run('cargo', ['fmt', '--check'], { dryRun })
-  run('cargo', ['clippy', '--workspace', '--all-targets', '--', '-D', 'warnings'], { dryRun })
-  run('cargo', ['test', '--workspace'], { dryRun })
-  builtLines.push('Ran sync-versions, cargo fmt --check, cargo clippy, and cargo test.')
+  run('./scripts/release-gate.sh', [], { dryRun })
+  builtLines.push('Ran release gate: sync-versions, fmt, clippy, tests, and routed-FIPS Docker e2e.')
 }
 
 function shouldRunStep(step, options) {
