@@ -3,6 +3,28 @@
 Running notes for nvpn/FIPS performance and reliability work. Keep entries
 short enough to compare later: date, build/commit, setup, result, and decision.
 
+## 2026-05-13 - routed FIPS fallback for stale pending sessions
+
+Setup:
+- Private FIPS mesh with reply-learned routing enabled.
+- Regression modeled a destination that still has a sendable direct peer route
+  while its end-to-end FSP session is stuck in `Initiating`.
+- App endpoint bytes and TUN packets were both queued behind that stale session.
+
+Result:
+- Before FIPS `c1c71eb`, queued traffic returned without starting discovery,
+  so a peer could remain `fips link pending` and not fall back through other
+  mesh neighbors.
+- FIPS `c1c71eb` now kicks reply-learned discovery for queued endpoint and TUN
+  traffic whenever the existing session is not established.
+- Added unit coverage for both endpoint-data and TUN-packet branches, including
+  the stale direct-route case.
+
+Decision:
+- Keep the explicit routed-FIPS Docker e2e in the nvpn release gate, and keep
+  this FIPS unit coverage as the lower-level guard against stale direct/NAT
+  session state blocking mesh fallback.
+
 ## 2026-05-12 - macOS Wi-Fi to Ethernet, safe MTU
 
 Setup:
