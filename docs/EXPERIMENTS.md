@@ -55,13 +55,16 @@ Result:
 - Added unit coverage for both endpoint-data and TUN-packet branches, including
   the stale direct-route case, direct non-tree target forwarding, origin fallback
   to a non-tree sendable peer, and transit fallback without origin echo.
-- FIPS `cf6a582` keeps the final XK `SessionMsg3` around briefly after the
+- FIPS `811eef3` keeps the final XK `SessionMsg3` around briefly after the
   initiator marks a session established, resends it on the normal handshake
   resend timer, and resends it again if a duplicate `SessionAck` arrives. A
   responder that sees early encrypted data while still waiting for msg3 also
   resends its `SessionAck`. The regression test drops the first msg3 and proves
-  the responder establishes from the replacement. The final commit also includes
-  clippy cleanup for the FIPS hot-path refactor.
+  the responder establishes from the replacement. The final FIPS commit also
+  includes clippy cleanup for the hot-path refactor, a CI fixture repair for
+  dropped one-shot synthetic UDP handshakes, nextest serialization for
+  synthetic localhost UDP node tests, and CI harness fixes for STUN-fault and
+  DNS resolver tests.
 - Strengthened `scripts/e2e-fips-routed-udp-docker.sh` to force the safe MTU
   profile, assert `utun100` MTU 1150, and move 1000-byte no-fragment ping
   payloads plus UDP payloads both ways while direct Alice/Bob underlay UDP is
@@ -76,7 +79,7 @@ Result:
   observing Bob through the NAT public address, and 976-byte UDP payload files
   received on both sides.
 - `NVPN_RELEASE_GATE_DOCKER_E2E=0 ./scripts/release-gate.sh` passed against
-  FIPS `cf6a582`, including fmt, clippy, workspace tests, and the `nvpn update`
+  FIPS `811eef3`, including fmt, clippy, workspace tests, and the `nvpn update`
   CLI e2e.
 
 Decision:

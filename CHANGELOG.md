@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## 4.0.15 - 2026-05-13
 
 ### Fixed
 
@@ -15,10 +15,15 @@ All notable changes to this project are documented in this file.
   the origin. This keeps tree/bloom lookup routing primary while letting peers
   fall back through the mesh when direct routes, NAT traversal, or the current
   spanning-tree view are asymmetric.
-- Bumped FIPS to `cf6a582` so initiators resend the final XK
+- Bumped FIPS to `811eef3` so initiators resend the final XK
   `SessionMsg3` after entering `Established`. This fixes a half-established
   session failure where one peer sent encrypted endpoint traffic while the
-  other peer was still waiting for the last handshake message.
+  other peer was still waiting for the last handshake message, and keeps the
+  synthetic localhost-UDP node tests reliable on slower CI runners by
+  serializing the nextest group and draining synthetic handshake repairs per
+  edge. The FIPS release gate also now keeps STUN-fault testing from being
+  masked by LAN mDNS fallback and fixes portable timestamp checks in the DNS
+  resolver harness.
 - The macOS GUI refreshes participant alias edit drafts when the backend alias
   changes, so a renamed peer no longer appears under an old draft name in the
   Manage Device panel.
