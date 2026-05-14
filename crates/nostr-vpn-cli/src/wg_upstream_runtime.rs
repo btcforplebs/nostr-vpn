@@ -695,6 +695,61 @@ impl Drop for ScopedHostRoute {
     }
 }
 
+#[cfg(target_os = "windows")]
+pub fn apply_windows_scoped_host_route(
+    interface_index: u32,
+    target: IpAddr,
+) -> Result<WindowsScopedHostRoute> {
+    let target = match target {
+        IpAddr::V4(target) => target,
+        IpAddr::V6(_) => {
+            return Err(anyhow!(
+                "Windows scoped WG upstream routes only support IPv4 targets"
+            ));
+        }
+    };
+    let route_targets = vec![format!("{target}/32")];
+    crate::windows_tunnel::apply_windows_routes(interface_index, &route_targets)?;
+    Ok(WindowsScopedHostRoute {
+        interface_index,
+        route_targets,
+        reverted: false,
+    })
+}
+
+#[cfg(target_os = "windows")]
+pub struct WindowsScopedHostRoute {
+    interface_index: u32,
+    route_targets: Vec<String>,
+    reverted: bool,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsScopedHostRoute {
+    pub fn revert(&mut self) -> Result<()> {
+        if self.reverted {
+            return Ok(());
+        }
+        crate::windows_tunnel::remove_windows_routes(self.interface_index, &self.route_targets)?;
+        self.reverted = true;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsScopedHostRoute {
+    fn drop(&mut self) {
+        if let Err(error) = self.revert() {
+            eprintln!(
+                "wg-upstream: WARNING — Windows scoped host route cleanup failed: {error}. \
+                 You may need to run `netsh interface ipv4 delete route <target>/32 \
+                 interface={}` manually.",
+                self.interface_index
+            );
+        }
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_checked(command: &mut ProcessCommand) -> Result<()> {
     let status = command

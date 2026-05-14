@@ -1273,13 +1273,7 @@ async fn run_wg_upstream_test(args: WgUpstreamTestArgs) -> Result<()> {
         return run_wg_upstream_scoped_host(&cfg, &args, timeout, scoped_host).await;
 
         #[cfg(target_os = "windows")]
-        {
-            let _ = scoped_host;
-            return Err(anyhow!(
-                "--scoped-host is not implemented on Windows; use --replace-default \
-                 with --probe-target to verify the Windows WinTun data plane"
-            ));
-        }
+        return run_wg_upstream_windows_scoped_host(&cfg, &args, timeout, scoped_host).await;
     }
 
     run_wg_upstream_handshake_only(&cfg, timeout, args.timeout_secs).await
@@ -1407,6 +1401,132 @@ async fn run_wg_upstream_scoped_host(
     if ping_ok {
         println!(
             "wg-upstream-test: pinged {scoped_host} successfully through {actual_iface} \
+             via WG upstream {upstream}"
+        );
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "wg-upstream-test: ping {scoped_host} failed (handshake completed, \
+             but no replies came back through the tunnel)"
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn run_wg_upstream_windows_scoped_host(
+    cfg: &nostr_vpn_core::config::WireGuardExitConfig,
+    args: &WgUpstreamTestArgs,
+    timeout: std::time::Duration,
+    scoped_host: std::net::IpAddr,
+) -> Result<()> {
+    use crate::wg_upstream_runtime::{
+        apply_windows_scoped_host_route, start_wg_runtime_with_wintun,
+    };
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    if let Some(endpoint_host) = cfg.endpoint.split(':').next()
+        && let Ok(endpoint_ip) = endpoint_host.parse::<std::net::IpAddr>()
+        && endpoint_ip == scoped_host
+    {
+        return Err(anyhow!(
+            "--scoped-host {scoped_host} matches the WG upstream endpoint; \
+             that would route the encrypted UDP back into the tunnel"
+        ));
+    }
+
+    let adapter_name = if cfg.interface.trim().is_empty() {
+        "nvpn-wg-test".to_string()
+    } else {
+        cfg.interface.clone()
+    };
+    let wintun = nostr_vpn_wintun::load_wintun().context("load wintun.dll for WG upstream test")?;
+    let adapter = wintun::Adapter::open(&wintun, &adapter_name)
+        .or_else(|_| wintun::Adapter::create(&wintun, &adapter_name, "NostrVPN", None))
+        .with_context(|| format!("open or create wintun adapter {adapter_name}"))?;
+
+    let mtu = if cfg.mtu > 0 { cfg.mtu } else { 1420 };
+    adapter
+        .set_mtu(mtu as usize)
+        .with_context(|| format!("set MTU on wintun adapter {adapter_name}"))?;
+    let parsed_address = crate::windows_tunnel::windows_interface_address(&cfg.address)?;
+    adapter
+        .set_network_addresses_tuple(
+            parsed_address.address.into(),
+            parsed_address.mask.into(),
+            None,
+        )
+        .with_context(|| format!("set address on wintun adapter {adapter_name}"))?;
+    let interface_index = adapter
+        .get_adapter_index()
+        .with_context(|| format!("read interface index for {adapter_name}"))?;
+    let session = Arc::new(
+        adapter
+            .start_session(wintun::MAX_RING_CAPACITY)
+            .with_context(|| format!("start wintun session for {adapter_name}"))?,
+    );
+    let _route =
+        apply_windows_scoped_host_route(interface_index, scoped_host).with_context(|| {
+            format!(
+                "install scoped host route for {scoped_host} via {adapter_name} \
+             (probably needs Administrator)"
+            )
+        })?;
+    println!(
+        "wg-upstream-test: wintun {adapter_name} up at {} mtu {mtu}, \
+         host route {scoped_host} via interface {interface_index} installed",
+        cfg.address.trim_end_matches("/32")
+    );
+
+    let runtime = start_wg_runtime_with_wintun(cfg, session.clone())
+        .await
+        .context("start userspace WG runtime on wintun")?;
+    let upstream = runtime.upstream();
+    println!("wg-upstream-test: probing handshake to {upstream}");
+
+    if !runtime.wait_for_handshake(timeout).await {
+        runtime.shutdown().await;
+        return Err(anyhow!(
+            "wg-upstream-test: no handshake from {upstream} within {}s",
+            args.timeout_secs
+        ));
+    }
+    println!("wg-upstream-test: handshake completed, pinging {scoped_host}...");
+
+    let mut ping = tokio::process::Command::new("ping");
+    ping.arg("-n")
+        .arg(args.ping_count.to_string())
+        .arg("-w")
+        .arg("3000")
+        .arg(scoped_host.to_string());
+    let status = match ping.status().await.context("spawn ping") {
+        Ok(status) => status,
+        Err(error) => {
+            runtime.shutdown().await;
+            return Err(error);
+        }
+    };
+    let ping_ok = status.success();
+
+    if args.hold_secs > 0 {
+        println!(
+            "wg-upstream-test: holding tunnel up for {}s - Ctrl-C to revert sooner",
+            args.hold_secs
+        );
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(args.hold_secs)) => {}
+            _ = tokio::signal::ctrl_c() => {
+                println!("wg-upstream-test: Ctrl-C received, reverting now");
+            }
+        }
+    }
+
+    runtime.shutdown().await;
+    drop(_route);
+
+    if ping_ok {
+        println!(
+            "wg-upstream-test: pinged {scoped_host} successfully through {adapter_name} \
              via WG upstream {upstream}"
         );
         Ok(())
