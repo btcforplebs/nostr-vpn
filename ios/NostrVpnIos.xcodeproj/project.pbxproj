@@ -22,6 +22,7 @@
 		B9BD3A30C0A8D50809A96E69 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F7274F66C76E9FC38CB0DEDB /* Assets.xcassets */; };
 		C702E63D6DC6BEAE80CBEBD7 /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BD1EA5A948BC1EEB916CEC3D /* SystemConfiguration.framework */; };
 		DC1FC354C9FEA443CBCE3ABF /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10601F7E977CA9A2CA70782B /* PacketTunnelProvider.swift */; };
+		E3E54273AC9D7243E17F7CFD /* QRCodeScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEC242766CE8040856CB2DC9 /* QRCodeScannerView.swift */; };
 		F5B16700D01D8F8004402AF9 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C8BAA0EBA6F30832FC35B6E6 /* NetworkExtension.framework */; };
 /* End PBXBuildFile section */
 
@@ -66,6 +67,7 @@
 		E8ECBFB09C508ED9BE10C907 /* PacketTunnelController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelController.swift; sourceTree = "<group>"; };
 		F581F9BC69EA220D465E29EC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F7274F66C76E9FC38CB0DEDB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		FEC242766CE8040856CB2DC9 /* QRCodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeScannerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -112,6 +114,7 @@
 				E3C4E67D5D36550552B70435 /* NativeCoreClient.swift */,
 				E8C2C375478E216EE34D7E2A /* NostrVpnIosApp.swift */,
 				E8ECBFB09C508ED9BE10C907 /* PacketTunnelController.swift */,
+				FEC242766CE8040856CB2DC9 /* QRCodeScannerView.swift */,
 				620E8362A0A3215BB8EFF1F5 /* RootView.swift */,
 			);
 			path = Sources;
@@ -255,6 +258,7 @@
 				6CD25EAFAEB49BF8DD9DBCC2 /* NativeCoreClient.swift in Sources */,
 				9E4E18AFBA1E70116199E68D /* NostrVpnIosApp.swift in Sources */,
 				050CC6FAA230A6EDA894CCF8 /* PacketTunnelController.swift in Sources */,
+				E3E54273AC9D7243E17F7CFD /* QRCodeScannerView.swift in Sources */,
 				134D0AE1F2653934E68D66F4 /* RootView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

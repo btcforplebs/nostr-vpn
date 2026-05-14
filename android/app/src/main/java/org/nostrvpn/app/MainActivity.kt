@@ -1,6 +1,7 @@
 package org.nostrvpn.app
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
 import android.net.VpnService
@@ -88,6 +89,29 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+            val qrScanLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.TakePicturePreview(),
+            ) { bitmap ->
+                if (bitmap == null) {
+                    return@rememberLauncherForActivityResult
+                }
+                try {
+                    val qrFile = cacheDir.resolve("nvpn-invite-qr.png")
+                    qrFile.outputStream().use { output ->
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+                    }
+                    val result = core.decodeQrImage(qrFile.absolutePath)
+                    val error = result.optString("error")
+                    val value = result.optString("value").trim()
+                    if (error.isNotBlank()) {
+                        state = state.copy(error = error)
+                    } else if (value.isNotBlank()) {
+                        dispatch(NativeActions.importInvite(value))
+                    }
+                } catch (error: Exception) {
+                    state = state.copy(error = error.message ?: "QR scan failed")
+                }
+            }
 
             DisposableEffect(core) {
                 onDispose { core.close() }
@@ -132,6 +156,12 @@ class MainActivity : ComponentActivity() {
                 NostrVpnApp(
                     state = state,
                     qrJson = { invite -> core.qrMatrix(invite) },
+                    scanQr = {
+                        runCatching { qrScanLauncher.launch(null) }
+                            .onFailure { error ->
+                                state = state.copy(error = error.message ?: "QR scan failed")
+                            }
+                    },
                     dispatch = dispatch,
                 )
             }

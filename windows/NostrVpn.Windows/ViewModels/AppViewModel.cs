@@ -73,7 +73,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         ShowExitNodesCommand = new RelayCommand(_ => Page = AppPage.ExitNodes);
         ShowSettingsCommand = new RelayCommand(_ => Page = AppPage.Settings);
         RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !ActionInFlight);
-        ToggleVpnCommand = new AsyncRelayCommand(_ => ToggleVpnAsync(), _ => !ActionInFlight && State.VpnControlSupported);
+        ToggleVpnCommand = new AsyncRelayCommand(_ => ToggleVpnAsync(), _ => !ActionInFlight && State.VpnControlSupported && HasActiveNetwork);
         CopyInviteCommand = new RelayCommand(_ => CopyText(State.ActiveNetworkInvite));
         CopyThisDeviceCommand = new RelayCommand(_ => CopyText(ThisDeviceCopyValue), _ => !string.IsNullOrWhiteSpace(ThisDeviceCopyValue));
         CopyPeerCommand = new RelayCommand(parameter => CopyText(parameter as string ?? ""));
@@ -85,6 +85,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         AddParticipantCommand = new AsyncRelayCommand(_ => AddParticipantAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(ParticipantInput));
         SaveNodeCommand = new AsyncRelayCommand(_ => SaveNodeAsync(), _ => !ActionInFlight);
         SaveWireGuardExitCommand = new AsyncRelayCommand(_ => SaveWireGuardExitAsync(), _ => !ActionInFlight);
+        CreateNetworkCommand = new AsyncRelayCommand(_ => CreateNetworkAsync(), _ => !ActionInFlight);
         AddNetworkCommand = new AsyncRelayCommand(_ => AddNetworkAsync(), _ => !ActionInFlight && !string.IsNullOrWhiteSpace(NetworkNameInput));
         SaveNetworkNameCommand = new AsyncRelayCommand(_ => RenameActiveNetworkAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(NetworkNameDraft));
         SaveNetworkMeshIdCommand = new AsyncRelayCommand(_ => SaveActiveNetworkMeshIdAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(NetworkMeshIdDraft));
@@ -315,6 +316,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public NativeNetworkState? ActiveNetwork => State.Networks.FirstOrDefault(network => network.Enabled) ?? State.Networks.FirstOrDefault();
+    public bool HasActiveNetwork => ActiveNetwork is not null;
     public IEnumerable<NativeNetworkState> InactiveNetworks => State.Networks.Where(network => !network.Enabled);
     public string ActiveNetworkName => DisplayNetworkName(ActiveNetwork);
     public string HeroSubtitle => $"{State.ConnectedPeerCount} of {State.ExpectedPeerCount} connected";
@@ -422,6 +424,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public ICommand AddParticipantCommand { get; }
     public ICommand SaveNodeCommand { get; }
     public ICommand SaveWireGuardExitCommand { get; }
+    public ICommand CreateNetworkCommand { get; }
     public ICommand AddNetworkCommand { get; }
     public ICommand SaveNetworkNameCommand { get; }
     public ICommand SaveNetworkMeshIdCommand { get; }
@@ -830,6 +833,13 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         return DispatchAsync(NativeActions.AddNetwork(NetworkNameInput.Trim()), "Adding network");
     }
 
+    private Task CreateNetworkAsync()
+    {
+        var name = string.IsNullOrWhiteSpace(NetworkNameInput) ? "Private network" : NetworkNameInput.Trim();
+        NetworkNameInput = "";
+        return DispatchAsync(NativeActions.AddNetwork(name), "Creating network");
+    }
+
     private Task SaveNodeAsync()
     {
         ushort? port = ushort.TryParse(ListenPort.Trim(), out var parsed) ? parsed : null;
@@ -902,6 +912,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     private void RaiseDerivedStateChanged()
     {
         OnPropertyChanged(nameof(ActiveNetwork));
+        OnPropertyChanged(nameof(HasActiveNetwork));
         OnPropertyChanged(nameof(InactiveNetworks));
         OnPropertyChanged(nameof(ActiveNetworkName));
         OnPropertyChanged(nameof(HeroSubtitle));

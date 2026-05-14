@@ -41,6 +41,7 @@ use crate::state::{
 
 const NVPN_BIN_ENV: &str = "NVPN_CLI_PATH";
 const SERVICE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const FIRST_RUN_NETWORK_NAME: &str = "Private network";
 
 #[derive(uniffi::Object, Debug)]
 pub struct FfiApp {
@@ -348,6 +349,8 @@ impl NativeAppRuntime {
         let config_unavailable = self.startup_error.is_some();
         let own_pubkey_hex = self.config.own_nostr_pubkey_hex().unwrap_or_default();
         let active_network = self.config.active_network();
+        let network_setup_required =
+            !config_unavailable && network_setup_required_for_config(&self.config);
         let daemon_state = self.daemon_state.as_ref();
         let vpn_enabled = self
             .daemon_state
@@ -357,11 +360,15 @@ impl NativeAppRuntime {
             .daemon_state
             .as_ref()
             .map_or(self.vpn_active, |state| state.vpn_active);
-        let expected_peer_count = daemon_state.map_or_else(
-            || remote_network_participant_count(active_network, &own_pubkey_hex),
-            |state| state.expected_peer_count,
-        );
-        let connected_peer_count = if vpn_active {
+        let expected_peer_count = if network_setup_required {
+            0
+        } else {
+            daemon_state.map_or_else(
+                || remote_network_participant_count(active_network, &own_pubkey_hex),
+                |state| state.expected_peer_count,
+            )
+        };
+        let connected_peer_count = if vpn_active && !network_setup_required {
             daemon_state.map_or(0, |state| state.connected_peer_count)
         } else {
             0
@@ -381,8 +388,11 @@ impl NativeAppRuntime {
         let port_mapping = daemon_state
             .map(|state| native_port_mapping_status(&state.port_mapping))
             .unwrap_or_default();
-        let exit_node_status =
-            self.exit_node_ui_status(vpn_enabled, vpn_active, daemon_state, active_network);
+        let exit_node_status = if network_setup_required {
+            ExitNodeUiStatus::default()
+        } else {
+            self.exit_node_ui_status(vpn_enabled, vpn_active, daemon_state, active_network)
+        };
 
         NativeAppState {
             rev: self.rev,
@@ -460,12 +470,12 @@ impl NativeAppRuntime {
             } else {
                 u32::from(listen_port)
             },
-            network_id: if config_unavailable {
+            network_id: if config_unavailable || network_setup_required {
                 String::new()
             } else {
                 self.config.effective_network_id()
             },
-            active_network_invite: if config_unavailable {
+            active_network_invite: if config_unavailable || network_setup_required {
                 String::new()
             } else {
                 active_network_invite_code(&self.config).unwrap_or_default()
@@ -567,11 +577,13 @@ impl NativeAppRuntime {
             close_to_tray_on_close: !config_unavailable && self.config.close_to_tray_on_close,
             connected_peer_count: connected_peer_count as u64,
             expected_peer_count: expected_peer_count as u64,
-            mesh_ready: vpn_active && daemon_state.is_some_and(|state| state.mesh_ready),
+            mesh_ready: !network_setup_required
+                && vpn_active
+                && daemon_state.is_some_and(|state| state.mesh_ready),
             health,
             network,
             port_mapping,
-            networks: if config_unavailable {
+            networks: if config_unavailable || network_setup_required {
                 Vec::new()
             } else {
                 self.network_states(&own_pubkey_hex, vpn_active)
@@ -668,7 +680,11 @@ impl NativeAppRuntime {
                 self.refresh_service_status()
             }
             NativeAppAction::AddNetwork { name } => {
-                self.config.add_network(&name);
+                if network_setup_required_for_config(&self.config) {
+                    self.claim_starter_network(&name)?;
+                } else {
+                    self.config.add_network(&name);
+                }
                 self.save_reload_and_refresh()
             }
             NativeAppAction::RenameNetwork { network_id, name } => {
@@ -854,6 +870,9 @@ impl NativeAppRuntime {
     }
 
     fn start_invite_broadcast(&mut self) -> Result<()> {
+        if network_setup_required_for_config(&self.config) {
+            return Err(anyhow!("Create or join a network first"));
+        }
         self.refresh_lan_pairing();
         let announcement = self.build_lan_pairing_announcement()?;
         let expires_at = lan_pairing_deadline();
@@ -916,7 +935,11 @@ impl NativeAppRuntime {
 
     fn build_lan_pairing_announcement(&self) -> Result<LanPairingAnnouncement> {
         let own_npub = to_npub(&self.config.own_nostr_pubkey_hex()?);
-        let invite = active_network_invite_code(&self.config).unwrap_or_default();
+        let invite = if network_setup_required_for_config(&self.config) {
+            String::new()
+        } else {
+            active_network_invite_code(&self.config).unwrap_or_default()
+        };
         let endpoint = self
             .daemon_state
             .as_ref()
@@ -1157,6 +1180,12 @@ impl NativeAppRuntime {
     }
 
     fn connect_vpn(&mut self) -> Result<()> {
+        if network_setup_required_for_config(&self.config) {
+            self.vpn_enabled = false;
+            self.vpn_active = false;
+            self.vpn_status = "Create or join a network first".to_string();
+            return Err(anyhow!(self.vpn_status.clone()));
+        }
         self.vpn_enabled = true;
         if self.mobile_runtime {
             self.vpn_enabled = true;
@@ -1367,6 +1396,17 @@ impl NativeAppRuntime {
             .iter()
             .map(|network| self.network_state(network, own_pubkey_hex, vpn_active))
             .collect()
+    }
+
+    fn claim_starter_network(&mut self, name: &str) -> Result<()> {
+        self.config.ensure_defaults();
+        let name = starter_network_name(name);
+        {
+            let network = self.config.active_network_mut();
+            network.name = name;
+            network.enabled = true;
+        }
+        self.config.note_active_network_roster_local_change()
     }
 
     fn exit_node_ui_status(
@@ -1884,6 +1924,29 @@ fn remote_network_participant_count(network: &NetworkConfig, own_pubkey_hex: &st
         .count()
 }
 
+fn network_setup_required_for_config(config: &AppConfig) -> bool {
+    config
+        .networks
+        .first()
+        .is_some_and(unclaimed_starter_network)
+        && config.networks.len() == 1
+}
+
+fn unclaimed_starter_network(network: &NetworkConfig) -> bool {
+    let name = network.name.trim();
+    network.participants.is_empty()
+        && network.invite_inviter.trim().is_empty()
+        && network.outbound_join_request.is_none()
+        && network.inbound_join_requests.is_empty()
+        && network.shared_roster_updated_at == 0
+        && network.shared_roster_signed_by.trim().is_empty()
+        && (name.is_empty() || name.starts_with("Network "))
+}
+
+fn starter_network_name(name: &str) -> String {
+    non_empty(name).unwrap_or_else(|| FIRST_RUN_NETWORK_NAME.to_string())
+}
+
 fn native_health_issues(issues: &[HealthIssue]) -> Vec<NativeHealthIssue> {
     issues
         .iter()
@@ -2322,9 +2385,62 @@ mod tests {
 
         assert!(state.error.is_empty(), "{}", state.error);
         assert_eq!(state.node_name, "real-config");
-        assert!(!state.networks.is_empty());
+        assert!(state.networks.is_empty());
+        assert!(state.network_id.is_empty());
+        assert!(state.active_network_invite.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn starter_network_is_hidden_until_created() {
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("nvpn-app-core-starter-create-{nonce}"));
+        fs::create_dir_all(&dir).expect("create test dir");
+
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.mobile_runtime = true;
+        runtime.config_path = dir.join("config.toml");
+
+        let state = runtime.state();
+        assert!(state.networks.is_empty());
+        assert!(state.network_id.is_empty());
+        assert!(state.active_network_invite.is_empty());
+
+        runtime.dispatch(NativeAppAction::AddNetwork {
+            name: "Home".to_string(),
+        });
+
+        let state = runtime.state();
+        assert!(state.error.is_empty(), "{}", state.error);
+        assert_eq!(runtime.config.networks.len(), 1);
+        assert_eq!(state.networks.len(), 1);
+        assert_eq!(state.networks[0].name, "Home");
+        assert!(!state.network_id.is_empty());
+        assert!(!state.active_network_invite.is_empty());
+        assert_eq!(state.expected_peer_count, 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn connect_vpn_requires_created_or_joined_network() {
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.mobile_runtime = true;
+
+        runtime.dispatch(NativeAppAction::ConnectVpn);
+        let state = runtime.state();
+
+        assert!(state.error.contains("Create or join a network first"));
+        assert!(!state.vpn_enabled);
+        assert!(!state.vpn_active);
     }
 
     #[test]
@@ -2482,6 +2598,9 @@ mod tests {
             .expect("join request should be queued");
         assert_eq!(pending.recipient, admin_hex);
         assert!(network.participants.is_empty());
+        let state = runtime.state();
+        assert_eq!(state.networks.len(), 1);
+        assert_eq!(state.networks[0].network_id, "8d4f34f5425bc50e");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2491,6 +2610,9 @@ mod tests {
         let error = anyhow!("boom");
         let mut runtime = NativeAppRuntime::from_startup_error(&error);
         runtime.startup_error = None;
+        runtime
+            .claim_starter_network("Home")
+            .expect("create network");
 
         runtime.dispatch(NativeAppAction::StartInviteBroadcast);
         assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
@@ -2632,6 +2754,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nvpn-app-core-mobile-connect-{nonce}"));
         fs::create_dir_all(&dir).expect("create test dir");
         runtime.config_path = dir.join("config.toml");
+        runtime
+            .claim_starter_network("Home")
+            .expect("create network");
         runtime
             .config
             .save(&runtime.config_path)
@@ -2899,6 +3024,9 @@ exit 0
         runtime.last_error.clear();
         runtime.config_path = dir.join("config.toml");
         runtime
+            .claim_starter_network("Home")
+            .expect("create network");
+        runtime
             .config
             .save(&runtime.config_path)
             .expect("save test config");
@@ -2965,6 +3093,9 @@ exit 0
         runtime.startup_error = None;
         runtime.last_error.clear();
         runtime.config_path = dir.join("config.toml");
+        runtime
+            .claim_starter_network("Home")
+            .expect("create network");
         runtime
             .config
             .save(&runtime.config_path)

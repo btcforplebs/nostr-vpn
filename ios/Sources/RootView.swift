@@ -4,26 +4,54 @@ struct RootView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        TabView {
-            NavigationStack {
-                DevicesPage(model: model)
-                    .navigationTitle("Devices")
-            }
-            .tabItem { Label("Devices", systemImage: "circle.grid.2x2.fill") }
+        Group {
+            if model.activeNetwork == nil {
+                NavigationStack {
+                    SetupPage(model: model)
+                        .navigationTitle("Nostr VPN")
+                }
+            } else {
+                TabView {
+                    NavigationStack {
+                        DevicesPage(model: model)
+                            .navigationTitle("Devices")
+                    }
+                    .tabItem { Label("Devices", systemImage: "circle.grid.2x2.fill") }
 
-            NavigationStack {
-                ExitNodesPage(model: model)
-                    .navigationTitle("Exit Nodes")
-            }
-            .tabItem { Label("Exit Nodes", systemImage: "arrow.triangle.branch") }
+                    NavigationStack {
+                        ExitNodesPage(model: model)
+                            .navigationTitle("Exit Nodes")
+                    }
+                    .tabItem { Label("Exit Nodes", systemImage: "arrow.triangle.branch") }
 
-            NavigationStack {
-                SettingsPage(model: model)
-                    .navigationTitle("Settings")
+                    NavigationStack {
+                        SettingsPage(model: model)
+                            .navigationTitle("Settings")
+                    }
+                    .tabItem { Label("Settings", systemImage: "gearshape") }
+                }
             }
-            .tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .tint(.purple)
+    }
+}
+
+private struct SetupPage: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 14) {
+                if !model.state.error.isEmpty || !model.statusMessage.isEmpty {
+                    NoticeCard(text: model.state.error.isEmpty ? model.statusMessage : model.state.error)
+                }
+                CreateNetworkCard(model: model)
+                JoinNetworkCard(model: model)
+                NearbyCard(model: model)
+            }
+            .padding()
+        }
+        .background(AppColors.background)
     }
 }
 
@@ -95,7 +123,7 @@ private struct ToolbarVpnSwitch: View {
     @ObservedObject var model: AppModel
 
     private var enabled: Bool {
-        !model.actionInFlight && model.state.vpnControlSupported
+        !model.actionInFlight && model.state.vpnControlSupported && model.activeNetwork != nil
     }
 
     var body: some View {
@@ -120,6 +148,98 @@ private struct ToolbarVpnSwitch: View {
         .disabled(!enabled)
         .accessibilityLabel(model.state.vpnEnabled ? "Turn VPN off" : "Turn VPN on")
         .accessibilityValue(model.state.vpnEnabled ? "On" : "Off")
+    }
+}
+
+private struct CreateNetworkCard: View {
+    @ObservedObject var model: AppModel
+    @State private var networkName = ""
+
+    var body: some View {
+        AppCard {
+            Text("Create Network")
+                .font(.headline)
+            HStack {
+                TextField("Network name", text: $networkName)
+                    .textFieldStyle(.roundedBorder)
+                Button("Create") {
+                    let name = networkName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    model.dispatch(
+                        NativeActions.addNetwork(name.isEmpty ? "Private network" : name),
+                        status: "Creating network"
+                    )
+                    networkName = ""
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.actionInFlight)
+            }
+        }
+    }
+}
+
+private struct JoinNetworkCard: View {
+    @ObservedObject var model: AppModel
+    @State private var inviteInput = ""
+    @State private var qrScannerPresented = false
+
+    var body: some View {
+        AppCard {
+            Text("Join Network")
+                .font(.headline)
+            TextField("nvpn://invite/…", text: $inviteInput)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: inviteInput) { _, newValue in
+                    let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.lowercased().hasPrefix("nvpn://invite/") {
+                        model.importInvite(trimmed)
+                        inviteInput = ""
+                    }
+                }
+            HStack {
+                Button {
+                    if let text = UIPasteboard.general.string {
+                        inviteInput = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                } label: {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                }
+                Button {
+                    qrScannerPresented = true
+                } label: {
+                    Label("Scan", systemImage: "camera.viewfinder")
+                }
+                Spacer()
+                Button("Import") {
+                    model.importInvite(inviteInput)
+                    inviteInput = ""
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(inviteInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if let network = model.activeNetwork {
+                if network.outboundJoinRequest != nil {
+                    Pill("Join requested", tint: .orange)
+                } else if !network.inviteInviterNpub.isEmpty {
+                    Button {
+                        model.dispatch(
+                            NativeActions.requestNetworkJoin(networkId: network.id),
+                            status: "Requesting access"
+                        )
+                    } label: {
+                        Label("Request Access", systemImage: "person.badge.plus")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .sheet(isPresented: $qrScannerPresented) {
+            QRCodeScannerSheet { code in
+                model.importInvite(code)
+                qrScannerPresented = false
+            }
+        }
     }
 }
 
@@ -152,7 +272,6 @@ private struct DeviceListHeader: View {
 
 private struct AddDeviceSheet: View {
     @ObservedObject var model: AppModel
-    @State private var inviteInput = ""
 
     var body: some View {
         ScrollView {
@@ -192,43 +311,8 @@ private struct AddDeviceSheet: View {
                     }
                 }
 
-                AppCard {
-                    Text("Join Network")
-                        .font(.headline)
-                    Text("Paste invite code")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField("nvpn://invite/…", text: $inviteInput)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: inviteInput) { _, newValue in
-                            // Auto-import as soon as the field looks like a
-                            // valid invite — saves the user a tap. Clearing
-                            // the field below prevents re-firing.
-                            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if trimmed.lowercased().hasPrefix("nvpn://invite/") {
-                                model.importInvite(trimmed)
-                                inviteInput = ""
-                            }
-                        }
-                    HStack {
-                        Button {
-                            if let text = UIPasteboard.general.string {
-                                inviteInput = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                            }
-                        } label: {
-                            Label("Paste", systemImage: "doc.on.clipboard")
-                        }
-                        Spacer()
-                        Button("Import") {
-                            model.importInvite(inviteInput)
-                            inviteInput = ""
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(inviteInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
+                JoinNetworkCard(model: model)
+                NearbyCard(model: model)
 
                 if let network = model.activeNetwork, network.localIsAdmin {
                     AddDeviceCard(network: network) { npub, alias in
@@ -238,8 +322,6 @@ private struct AddDeviceSheet: View {
                         )
                     }
                 }
-
-                NearbyCard(model: model)
             }
             .padding()
         }

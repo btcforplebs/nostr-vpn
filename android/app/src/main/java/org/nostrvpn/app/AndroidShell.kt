@@ -82,6 +82,7 @@ internal fun NostrVpnTheme(content: @Composable () -> Unit) {
 internal fun NostrVpnApp(
     state: AppState,
     qrJson: (String) -> JSONObject,
+    scanQr: () -> Unit,
     dispatch: (JSONObject) -> Unit,
 ) {
     var page by remember { mutableStateOf(Page.Devices) }
@@ -95,7 +96,7 @@ internal fun NostrVpnApp(
                 state = state,
                 network = network,
                 dispatch = dispatch,
-                onAddDevice = if (page == Page.Devices) {
+                onAddDevice = if (page == Page.Devices && network != null) {
                     { showAddDevice = true }
                 } else {
                     null
@@ -126,7 +127,7 @@ internal fun NostrVpnApp(
                 item { Notice(state.error) }
             }
             when (page) {
-                Page.Devices -> devicesPage(state, network, dispatch)
+                Page.Devices -> devicesPage(state, network, scanQr, dispatch)
                 Page.ExitNodes -> exitNodesPage(state, network, dispatch)
                 Page.Settings -> settingsPage(state, network, dispatch)
             }
@@ -137,6 +138,7 @@ internal fun NostrVpnApp(
             state = state,
             network = network,
             qrJson = qrJson,
+            scanQr = scanQr,
             dispatch = dispatch,
             onDismiss = { showAddDevice = false },
         )
@@ -170,7 +172,7 @@ private fun MobileTopBar(
         }
         Switch(
             checked = state.vpnEnabled,
-            enabled = state.vpnControlSupported,
+            enabled = state.vpnControlSupported && network != null,
             onCheckedChange = { enabled ->
                 dispatch(
                     if (enabled) {
@@ -255,10 +257,11 @@ private fun NavIcon(page: Page, selected: Boolean) {
 private fun androidx.compose.foundation.lazy.LazyListScope.devicesPage(
     state: AppState,
     network: NetworkState?,
+    scanQr: () -> Unit,
     dispatch: (JSONObject) -> Unit,
 ) {
     if (network == null) {
-        item { EmptyCard("No network") }
+        item { NetworkSetupCard(state, scanQr, dispatch) }
         return
     }
     item { DeviceListHeader(state, network) }
@@ -324,10 +327,83 @@ private fun deviceCountText(network: NetworkState): String {
 }
 
 @Composable
+private fun NetworkSetupCard(
+    state: AppState,
+    scanQr: () -> Unit,
+    dispatch: (JSONObject) -> Unit,
+) {
+    var networkName by remember { mutableStateOf("") }
+    var inviteInput by remember { mutableStateOf("") }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = remember(context) {
+        context.getSystemService(android.content.ClipboardManager::class.java)
+    }
+
+    AppCard {
+        Text("Create Network", style = MaterialTheme.typography.titleMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = networkName,
+                onValueChange = { networkName = it },
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                label = { Text("Network name") },
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = {
+                dispatch(NativeActions.addNetwork(networkName.trim().ifBlank { "Private network" }))
+                networkName = ""
+            }) {
+                Text("Create")
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Text("Join Network", style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(
+            value = inviteInput,
+            onValueChange = { newValue ->
+                inviteInput = newValue
+                val trimmed = newValue.trim()
+                if (trimmed.startsWith("nvpn://invite/", ignoreCase = true)) {
+                    dispatch(NativeActions.importInvite(trimmed))
+                    inviteInput = ""
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("nvpn://invite/…") },
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                val item = clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)
+                item?.toString()?.let { inviteInput = it.trim() }
+            }) {
+                Text("Paste")
+            }
+            OutlinedButton(onClick = scanQr) {
+                Text("Scan")
+            }
+            Button(
+                enabled = inviteInput.isNotBlank(),
+                onClick = {
+                    dispatch(NativeActions.importInvite(inviteInput.trim()))
+                    inviteInput = ""
+                },
+            ) {
+                Text("Import")
+            }
+        }
+    }
+    NearbyCard(state, dispatch)
+}
+
+@Composable
 private fun AddDevicesDialog(
     state: AppState,
     network: NetworkState?,
     qrJson: (String) -> JSONObject,
+    scanQr: () -> Unit,
     dispatch: (JSONObject) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -393,6 +469,9 @@ private fun AddDevicesDialog(
                         item?.toString()?.let { inviteInput = it.trim() }
                     }) {
                         Text("Paste")
+                    }
+                    OutlinedButton(onClick = scanQr) {
+                        Text("Scan")
                     }
                     Button(
                         enabled = inviteInput.isNotBlank(),

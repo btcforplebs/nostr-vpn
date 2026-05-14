@@ -51,7 +51,7 @@ import org.nostrvpn.app.core.NetworkState
 import org.nostrvpn.app.core.ParticipantState
 
 internal fun networkTitle(network: NetworkState?): String =
-    network?.name?.ifBlank { "Private network" } ?: "Private network"
+    network?.name?.ifBlank { "Private network" } ?: "No network"
 
 @Composable
 internal fun ParticipantRow(state: AppState, participant: ParticipantState) {

@@ -81,8 +81,40 @@
             <TextBlock Text="{Binding Notice}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" />
           </Border>
 
+          <Border Style="{StaticResource Card}" Visibility="{Binding HasActiveNetwork, Converter={StaticResource InverseBoolToVisibility}}">
+            <StackPanel>
+              <TextBlock Text="Create Network" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox Text="{Binding NetworkNameInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
+                <Button Grid.Column="1" Content="Create" Command="{Binding CreateNetworkCommand}" />
+              </Grid>
+
+              <Border BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Margin="0,16,0,0" Padding="0,16,0,0">
+                <StackPanel>
+                  <TextBlock Text="Join Network" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox Text="{Binding InviteInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                      <Button Content="Paste" Command="{Binding PasteInviteCommand}" Margin="0,0,8,0" />
+                      <Button Content="Import" Command="{Binding ImportInviteCommand}" Margin="0,0,8,0" />
+                      <Button Content="From QR file" Command="{Binding ImportQrImageCommand}" />
+                    </StackPanel>
+                  </Grid>
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </Border>
+
           <StackPanel Visibility="{Binding Page, Converter={StaticResource PageVisibility}, ConverterParameter=Devices}">
-            <Border Style="{StaticResource Card}">
+            <Border Style="{StaticResource Card}" Visibility="{Binding HasActiveNetwork, Converter={StaticResource BoolToVisibility}}">
               <DockPanel LastChildFill="True">
                 <Button DockPanel.Dock="Right" Command="{Binding ShowShareCommand}" Content="+" />
                 <TextBlock Text="Devices" FontSize="18" FontWeight="SemiBold" />
@@ -176,7 +208,7 @@
           </StackPanel>
 
           <StackPanel Visibility="{Binding Page, Converter={StaticResource PageVisibility}, ConverterParameter=Share}">
-            <Border Style="{StaticResource Card}">
+            <Border Style="{StaticResource Card}" Visibility="{Binding HasActiveNetwork, Converter={StaticResource BoolToVisibility}}">
               <Grid>
                 <Grid.ColumnDefinitions>
                   <ColumnDefinition Width="170" />

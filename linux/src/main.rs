@@ -252,20 +252,18 @@ fn run_update_e2e(install: bool) -> Result<serde_json::Value, String> {
             .as_ref()
             .ok_or_else(|| "no Linux update asset selected".to_string())?;
         let path = updater::download_blocking(asset)?;
-        executable = std::fs::metadata(&path)
-            .ok()
-            .map(|metadata| {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    metadata.permissions().mode() & 0o111 != 0
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = metadata;
-                    false
-                }
-            });
+        executable = std::fs::metadata(&path).ok().map(|metadata| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o111 != 0
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = metadata;
+                false
+            }
+        });
         downloaded_path = Some(path.display().to_string());
     }
 
@@ -743,6 +741,11 @@ fn import_invite(app: &AppRef, invite: String) {
     dispatch(app, NativeAppAction::ImportNetworkInvite { invite });
 }
 
+fn create_network(app: &AppRef, name: String) {
+    let name = non_empty_or(&name, "Private network");
+    dispatch(app, NativeAppAction::AddNetwork { name });
+}
+
 fn set_notice(app: &AppRef, notice: impl Into<String>) {
     app.borrow_mut().notice = notice.into();
     render(app);
@@ -779,7 +782,7 @@ fn refresh_header(app: &AppRef, state: &NativeAppState) {
         dot.add_css_class("warn");
     }
 
-    switch.set_sensitive(state.vpn_control_supported);
+    switch.set_sensitive(state.vpn_control_supported && active_network(state).is_some());
     if switch.is_active() != state.vpn_enabled {
         switch.set_active(state.vpn_enabled);
     }
@@ -839,7 +842,10 @@ fn build_update_stripe(app: &AppRef, parent: &gtk::Box, state: &NativeAppState) 
     row.add_css_class("nvpn-update-stripe");
     row.set_valign(gtk::Align::Center);
 
-    let title = gtk::Label::new(Some(&update_stripe_text(&update.version, &state.app_version)));
+    let title = gtk::Label::new(Some(&update_stripe_text(
+        &update.version,
+        &state.app_version,
+    )));
     title.set_xalign(0.0);
     title.set_hexpand(true);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -958,9 +964,7 @@ fn build_devices_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     }
 
     let Some(network) = active_network(state).cloned() else {
-        let card = card();
-        row_label(&card, "No network", "Create a network in Settings.", "");
-        page.append(&card);
+        build_network_setup(app, page, state);
         return;
     };
 
@@ -1289,11 +1293,7 @@ fn build_network_hero(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     top.append(&text);
 
     let connect = icon_text_button(
-        if state.vpn_enabled {
-            "On"
-        } else {
-            "Off"
-        },
+        if state.vpn_enabled { "On" } else { "Off" },
         if state.vpn_enabled {
             "media-playback-stop-symbolic"
         } else {
@@ -1301,7 +1301,7 @@ fn build_network_hero(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
         },
     );
     connect.add_css_class("suggested-action");
-    connect.set_sensitive(state.vpn_control_supported);
+    connect.set_sensitive(state.vpn_control_supported && active_network(state).is_some());
     {
         let app = app.clone();
         let enabled = state.vpn_enabled;
@@ -1361,6 +1361,148 @@ fn build_network_hero(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     page.append(&hero);
 }
 
+fn build_network_setup(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
+    let create_card = card();
+    section_header(&create_card, "Create Network", "list-add-symbolic");
+    let create_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let name = entry("Network name", &app.borrow().drafts.new_network_name);
+    {
+        let app = app.clone();
+        name.connect_changed(move |entry| {
+            app.borrow_mut().drafts.new_network_name = entry.text().to_string();
+        });
+    }
+    let create = icon_text_button("Create", "list-add-symbolic");
+    {
+        let app = app.clone();
+        create.connect_clicked(move |_| {
+            let name = {
+                let mut model = app.borrow_mut();
+                let name = model.drafts.new_network_name.trim().to_string();
+                model.drafts.new_network_name.clear();
+                name
+            };
+            create_network(&app, name);
+        });
+    }
+    create_row.append(&name);
+    create_row.append(&create);
+    create_card.append(&create_row);
+    page.append(&create_card);
+
+    let join_card = card();
+    section_header(&join_card, "Join Network", "go-down-symbolic");
+    let import_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let invite_entry = entry("Paste invite", &app.borrow().drafts.invite);
+    {
+        let app = app.clone();
+        invite_entry.connect_changed(move |entry| {
+            let value = entry.text().to_string();
+            app.borrow_mut().drafts.invite.clone_from(&value);
+            let trimmed = value.trim();
+            if trimmed.starts_with("nvpn://invite/") {
+                import_invite(&app, trimmed.to_string());
+            }
+        });
+    }
+    let import = icon_text_button("Import", "go-down-symbolic");
+    {
+        let app = app.clone();
+        import.connect_clicked(move |_| {
+            let invite = app.borrow().drafts.invite.trim().to_string();
+            import_invite(&app, invite);
+        });
+    }
+    let camera = icon_text_button("Scan", "camera-photo-symbolic");
+    {
+        let app = app.clone();
+        camera.connect_clicked(move |button| scan_invite_qr(&app, button));
+    }
+    let image = icon_text_button("From file", "insert-image-symbolic");
+    {
+        let app = app.clone();
+        image.connect_clicked(move |button| choose_invite_qr_image(&app, button));
+    }
+    import_row.append(&invite_entry);
+    import_row.append(&import);
+    import_row.append(&camera);
+    import_row.append(&image);
+    join_card.append(&import_row);
+    page.append(&join_card);
+
+    let nearby = card();
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    header.set_valign(gtk::Align::Center);
+    section_header(&header, "Nearby invites", "");
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    header.append(&spacer);
+    let nearby_label = if state.nearby_discovery_active {
+        format!(
+            "Listening · {}",
+            remaining_text(state.nearby_discovery_remaining_secs)
+        )
+    } else {
+        "Look for nearby".to_string()
+    };
+    let lan = icon_text_button(
+        &nearby_label,
+        if state.nearby_discovery_active {
+            "media-playback-stop-symbolic"
+        } else {
+            "system-search-symbolic"
+        },
+    );
+    {
+        let app = app.clone();
+        let active = state.nearby_discovery_active;
+        lan.connect_clicked(move |_| {
+            dispatch(
+                &app,
+                if active {
+                    NativeAppAction::StopNearbyDiscovery
+                } else {
+                    NativeAppAction::StartNearbyDiscovery
+                },
+            );
+        });
+    }
+    header.append(&lan);
+    nearby.append(&header);
+    if state.lan_peers.is_empty() {
+        empty_row(&nearby, "No nearby invites");
+    } else {
+        for peer in &state.lan_peers {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            let title = gtk::Label::new(Some(if peer.node_name.trim().is_empty() {
+                &peer.network_name
+            } else {
+                &peer.node_name
+            }));
+            title.set_xalign(0.0);
+            title.add_css_class("heading");
+            text.append(&title);
+            let sub = gtk::Label::new(Some(&peer.last_seen_text));
+            sub.add_css_class("caption");
+            sub.add_css_class("dim-label");
+            sub.set_xalign(0.0);
+            text.append(&sub);
+            text.set_hexpand(true);
+            row.append(&text);
+            let join = icon_text_button("Join", "go-next-symbolic");
+            {
+                let app = app.clone();
+                let invite = peer.invite.clone();
+                join.connect_clicked(move |_| import_invite(&app, invite.clone()));
+            }
+            row.append(&join);
+            nearby.append(&row);
+        }
+    }
+    page.append(&nearby);
+}
+
 fn build_share_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     page_title(page, "Share", "emblem-shared-symbolic");
 
@@ -1392,7 +1534,10 @@ fn build_share_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     }
     invite_row.append(&copy);
     let broadcast_label = if state.invite_broadcast_active {
-        format!("Broadcasting · {}", remaining_text(state.invite_broadcast_remaining_secs))
+        format!(
+            "Broadcasting · {}",
+            remaining_text(state.invite_broadcast_remaining_secs)
+        )
     } else {
         "Broadcast invite".to_string()
     };
@@ -1501,7 +1646,10 @@ fn build_share_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     spacer.set_hexpand(true);
     header.append(&spacer);
     let nearby_label = if state.nearby_discovery_active {
-        format!("Listening · {}", remaining_text(state.nearby_discovery_remaining_secs))
+        format!(
+            "Listening · {}",
+            remaining_text(state.nearby_discovery_remaining_secs)
+        )
     } else {
         "Look for nearby".to_string()
     };
@@ -1783,10 +1931,7 @@ fn route_choice(
                     ..SettingsPatch::default()
                 },
             };
-            dispatch(
-                &app,
-                NativeAppAction::UpdateSettings { patch },
-            );
+            dispatch(&app, NativeAppAction::UpdateSettings { patch });
         });
     }
     parent.append(&button);
@@ -2372,7 +2517,8 @@ fn build_wireguard_settings_card(app: &AppRef, page: &gtk::Box, state: &NativeAp
     let config = gtk::TextView::new();
     config.set_monospace(true);
     config.set_wrap_mode(gtk::WrapMode::None);
-    config.buffer()
+    config
+        .buffer()
         .set_text(&app.borrow().drafts.wireguard_exit_config);
     {
         let app = app.clone();
@@ -2901,10 +3047,7 @@ fn hero_subtitle(state: &NativeAppState) -> String {
     } else if state.vpn_control_supported {
         "Ready to connect this device to your private network".to_string()
     } else {
-        non_empty_or(
-            &state.runtime_status_detail,
-            "VPN control is unavailable",
-        )
+        non_empty_or(&state.runtime_status_detail, "VPN control is unavailable")
     }
 }
 

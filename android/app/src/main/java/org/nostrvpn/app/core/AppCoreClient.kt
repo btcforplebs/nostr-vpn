@@ -14,6 +14,8 @@ class AppCoreClient(private val dataDir: String, appVersion: String) : AutoClose
 
     fun qrMatrix(invite: String): JSONObject = JSONObject(NativeCore.qrMatrixJson(invite))
 
+    fun decodeQrImage(path: String): JSONObject = JSONObject(NativeCore.decodeQrImageJson(path))
+
     fun mobileTunnelConfigJson(): String = NativeCore.mobileTunnelConfigJson(dataDir)
 
     override fun close() {

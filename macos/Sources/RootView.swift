@@ -156,7 +156,7 @@ struct RootView: View {
     }
 
     private var headerVpnSwitch: some View {
-        let disabled = manager.actionInFlight || !state.vpnControlSupported
+        let disabled = manager.actionInFlight || !state.vpnControlSupported || activeNetwork == nil
         return Button {
             manager.toggleVpn()
         } label: {
@@ -217,7 +217,7 @@ struct RootView: View {
             if let activeNetwork {
                 devicesPane(activeNetwork)
             } else {
-                emptyDevicesPane
+                setupPane
             }
         case .sharing:
             pageScroll {
@@ -226,6 +226,9 @@ struct RootView: View {
                     inviteSection(activeNetwork)
                     joinRequestsSection(activeNetwork)
                     joinNetworkSection(activeNetwork)
+                } else {
+                    createNetworkSection
+                    joinNetworkSection(nil)
                 }
             }
         case .routing:
@@ -272,15 +275,12 @@ struct RootView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var emptyDevicesPane: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Devices")
-                .font(.system(size: 24, weight: .semibold))
-            emptyRow("No network selected", systemImage: "circle.dotted")
+    private var setupPane: some View {
+        pageScroll {
+            pageTitle("Nostr VPN", "network")
+            createNetworkSection
+            joinNetworkSection(nil)
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private func deviceListColumn(_ network: NativeNetworkState) -> some View {
@@ -639,7 +639,23 @@ struct RootView: View {
         }
     }
 
-    private func joinNetworkSection(_ network: NativeNetworkState) -> some View {
+    private var createNetworkSection: some View {
+        surface {
+            sectionHeader("Create Network", systemImage: "plus.circle")
+            HStack(spacing: 8) {
+                TextField("Network name", text: $networkNameInput)
+                    .onSubmit { addNetwork() }
+                Button {
+                    addNetwork(defaultName: "Private network")
+                } label: {
+                    Label("Create", systemImage: "plus")
+                }
+                .disabled(manager.actionInFlight)
+            }
+        }
+    }
+
+    private func joinNetworkSection(_ network: NativeNetworkState?) -> some View {
         surface {
             sectionHeader("Join Network", systemImage: "arrow.down.circle")
             Text("Paste invite code")
@@ -675,15 +691,17 @@ struct RootView: View {
                     Label("From file", systemImage: "qrcode.viewfinder")
                 }
             }
-            if network.outboundJoinRequest != nil {
-                badge("Join requested", style: .warn)
-            } else if !network.inviteInviterNpub.isEmpty {
-                Button {
-                    manager.requestNetworkJoin(networkId: network.id)
-                } label: {
-                    Label("Request Access", systemImage: "person.badge.plus")
+            if let network {
+                if network.outboundJoinRequest != nil {
+                    badge("Join requested", style: .warn)
+                } else if !network.inviteInviterNpub.isEmpty {
+                    Button {
+                        manager.requestNetworkJoin(networkId: network.id)
+                    } label: {
+                        Label("Request Access", systemImage: "person.badge.plus")
+                    }
+                    .disabled(manager.actionInFlight)
                 }
-                .disabled(manager.actionInFlight)
             }
 
             Divider()
@@ -924,7 +942,7 @@ struct RootView: View {
                 Spacer()
                 TextField("New network", text: $networkNameInput)
                     .frame(width: 180)
-                    .onSubmit(addNetwork)
+                    .onSubmit { addNetwork() }
                 Button {
                     addNetwork()
                 } label: {
@@ -1227,8 +1245,9 @@ struct RootView: View {
         )
     }
 
-    private func addNetwork() {
-        manager.addNetwork(networkNameInput)
+    private func addNetwork(defaultName: String = "") {
+        let name = networkNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        manager.addNetwork(name.isEmpty ? defaultName : name)
         networkNameInput = ""
     }
 

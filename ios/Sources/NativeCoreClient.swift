@@ -141,6 +141,10 @@ enum NativeActions {
         ["type": "set_network_enabled", "networkId": networkId, "enabled": enabled]
     }
 
+    static func requestNetworkJoin(networkId: String) -> [String: Any] {
+        ["type": "request_network_join", "networkId": networkId]
+    }
+
     static func updateSettings(_ patch: [String: Any]) -> [String: Any] {
         ["type": "update_settings", "patch": patch]
     }
