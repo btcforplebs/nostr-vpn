@@ -109,8 +109,8 @@ pub(crate) use crate::service_management::parse_nonzero_pid;
 pub(crate) use crate::service_management::windows_should_apply_config_via_service;
 #[cfg(test)]
 pub(crate) use crate::service_management::{
-    linux_service_executable_path_from_unit_contents, linux_service_status_from_show_output,
-    linux_service_unit_content,
+    linux_service_binary_path, linux_service_executable_path_from_unit_contents,
+    linux_service_status_from_show_output, linux_service_unit_content,
 };
 #[cfg(test)]
 pub(crate) use crate::service_management::{

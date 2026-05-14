@@ -11,6 +11,13 @@ All notable changes to this project are documented in this file.
   WireGuard baseline testing possible without replacing the Windows default
   route.
 
+### Fixed
+
+- macOS and Linux service installation now copies the daemon to a stable
+  service-owned path before writing the launchd plist or systemd unit. This
+  keeps development builds from rewriting the running service executable under
+  `target/release/nvpn` and causing a supervised daemon restart.
+
 ## 4.0.15 - 2026-05-13
 
 ### Fixed

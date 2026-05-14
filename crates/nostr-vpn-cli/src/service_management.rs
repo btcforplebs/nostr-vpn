@@ -175,6 +175,50 @@ fn service_uninstall(args: ServiceUninstallArgs) -> Result<()> {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn install_service_executable_copy(source: &Path, destination: &Path) -> Result<()> {
+    if let Ok(existing) = fs::canonicalize(destination)
+        && existing == source
+    {
+        return Ok(());
+    }
+
+    let parent = destination.parent().ok_or_else(|| {
+        anyhow!(
+            "service executable path has no parent: {}",
+            destination.display()
+        )
+    })?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+
+    let temp = destination.with_extension(format!("tmp-{}", std::process::id()));
+    let copy_result = (|| -> Result<()> {
+        fs::copy(source, &temp).with_context(|| {
+            format!(
+                "failed to copy service executable from {} to {}",
+                source.display(),
+                temp.display()
+            )
+        })?;
+        #[cfg(unix)]
+        fs::set_permissions(&temp, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("failed to chmod {}", temp.display()))?;
+        fs::rename(&temp, destination).with_context(|| {
+            format!(
+                "failed to move {} into {}",
+                temp.display(),
+                destination.display()
+            )
+        })?;
+        Ok(())
+    })();
+
+    if copy_result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    copy_result
+}
+
 fn service_enable(args: ServiceControlArgs) -> Result<()> {
     let _config_path = args.config.unwrap_or_else(default_config_path);
 
@@ -357,6 +401,11 @@ fn linux_service_unit_path() -> PathBuf {
     PathBuf::from(format!("/etc/systemd/system/{LINUX_SERVICE_UNIT_NAME}"))
 }
 
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn linux_service_binary_path() -> PathBuf {
+    PathBuf::from("/usr/local/bin/nvpn")
+}
+
 #[cfg(target_os = "linux")]
 fn linux_install_service(
     executable: &Path,
@@ -385,8 +434,10 @@ fn linux_install_service(
         true,
     );
     stop_existing_daemons_before_service_install(config_path)?;
+    let service_executable = linux_service_binary_path();
+    install_service_executable_copy(executable, &service_executable)?;
     let unit = linux_service_unit_content(
-        executable,
+        &service_executable,
         config_path,
         iface,
         mesh_refresh_interval_secs,

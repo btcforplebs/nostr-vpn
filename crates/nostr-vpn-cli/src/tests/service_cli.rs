@@ -102,6 +102,14 @@ fn macos_service_label_uses_stable_default_for_main_config() {
 }
 
 #[test]
+fn macos_service_binary_uses_privileged_helper_copy() {
+    assert_eq!(
+        crate::macos_service::macos_service_binary_path(&crate::default_config_path()),
+        Path::new("/Library/PrivilegedHelperTools/to.nostrvpn.nvpn")
+    );
+}
+
+#[test]
 fn macos_service_label_scopes_non_default_configs() {
     let label = crate::macos_service::macos_service_label(Path::new("/tmp/nvpn-debug/config.toml"));
     assert!(label.starts_with("to.nostrvpn.nvpn."));
@@ -242,6 +250,14 @@ fn linux_service_unit_runs_service_supervised_daemon() {
     assert!(unit.contains("StandardError=append:/home/sirius/.local/state/nvpn/daemon.log"));
     assert!(!unit.contains("StandardOutput=append:\""));
     assert!(!unit.contains("StandardError=append:\""));
+}
+
+#[test]
+fn linux_service_binary_uses_stable_path_copy() {
+    assert_eq!(
+        linux_service_binary_path(),
+        Path::new("/usr/local/bin/nvpn")
+    );
 }
 
 #[test]

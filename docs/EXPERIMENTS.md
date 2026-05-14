@@ -845,3 +845,26 @@ iperf3 -u -b 400M -c <peer-nvpn-ip> -t 15 -R --json
 Compare with Tailscale on the same machines and with boringtun/wireguard-go
 where available. Once short runs look good, repeat with 90 second TCP/UDP runs
 and churn tests: daemon restart, peer rejoin, and network roaming.
+
+## 2026-05-14: screenshare reconnect during dev daemon rebuild
+
+Observation:
+- A macOS-to-macOS screenshare session briefly went into reconnect while the
+  nvpn mesh was being rebuilt and redeployed.
+
+Finding:
+- Both macOS launchd services were running the daemon directly from
+  `target/release/nvpn`. A release build rewrites that file. The daemon detected
+  `service executable changed on disk` and exited so launchd restarted it,
+  matching the brief reconnect window.
+- Separately, one macOS host stayed at 6/8 peers until Linux VM daemons were
+  updated. Those daemons had the same product version but were still built with
+  older FIPS code. Updating to `fips-core`/`fips-endpoint` 0.3.4 keeps stale
+  traversal failures from disturbing already-active peers.
+
+Change:
+- `nvpn service install` now stages the daemon to a stable service executable
+  path before writing service metadata: `/Library/PrivilegedHelperTools/<label>`
+  on macOS and `/usr/local/bin/nvpn` on Linux. Rebuilding a Cargo target should
+  no longer bounce the installed service after the service is reinstalled once
+  with a binary containing this fix.

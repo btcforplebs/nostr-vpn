@@ -8,6 +8,14 @@ pub(super) fn macos_service_plist_path(config_path: &Path) -> PathBuf {
     ))
 }
 
+#[cfg(any(target_os = "macos", test))]
+pub(super) fn macos_service_binary_path(config_path: &Path) -> PathBuf {
+    PathBuf::from(format!(
+        "/Library/PrivilegedHelperTools/{}",
+        macos_service_label(config_path)
+    ))
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn macos_service_executable_path(plist_path: &Path) -> Option<PathBuf> {
     let plist = fs::read_to_string(plist_path).ok()?;
@@ -82,9 +90,11 @@ pub(super) fn macos_install_service(
 
     macos_service_bootout(config_path, true)?;
     stop_existing_daemons_before_service_install(config_path)?;
+    let service_executable = macos_service_binary_path(config_path);
+    crate::service_management::install_service_executable_copy(executable, &service_executable)?;
     let plist = macos_service_plist_content(
         &service_label,
-        executable,
+        &service_executable,
         config_path,
         iface,
         mesh_refresh_interval_secs,
