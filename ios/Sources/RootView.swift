@@ -105,7 +105,8 @@ private struct DevicesPage: View {
         .sheet(isPresented: $addDevicePresented) {
             NavigationStack {
                 AddDeviceSheet(model: model)
-                    .navigationTitle("Add Device")
+                    .navigationTitle("Connect")
+                    .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Done") {
@@ -153,7 +154,7 @@ private struct ToolbarVpnSwitch: View {
 
 private struct CreateNetworkCard: View {
     @ObservedObject var model: AppModel
-    @State private var networkName = ""
+    @State private var networkName = "My Network"
 
     var body: some View {
         AppCard {
@@ -165,10 +166,10 @@ private struct CreateNetworkCard: View {
                 Button("Create") {
                     let name = networkName.trimmingCharacters(in: .whitespacesAndNewlines)
                     model.dispatch(
-                        NativeActions.addNetwork(name.isEmpty ? "Private network" : name),
+                        NativeActions.addNetwork(name.isEmpty ? "My Network" : name),
                         status: "Creating network"
                     )
-                    networkName = ""
+                    networkName = "My Network"
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.actionInFlight)
@@ -211,12 +212,6 @@ private struct JoinNetworkCard: View {
                     Label("Scan", systemImage: "camera.viewfinder")
                 }
                 Spacer()
-                Button("Import") {
-                    model.importInvite(inviteInput)
-                    inviteInput = ""
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(inviteInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             if let network = model.activeNetwork {
                 if network.outboundJoinRequest != nil {
@@ -276,43 +271,19 @@ private struct AddDeviceSheet: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
-                AppCard {
-                    HStack(alignment: .top, spacing: 16) {
-                        QrCodeView(matrix: model.qrMatrix(for: model.state.activeNetworkInvite))
-                            .frame(width: 136, height: 136)
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Invite Devices")
-                                .font(.headline)
-                            Text("Your invite")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            CopyLine(value: model.state.activeNetworkInvite, model: model)
-                            if !model.state.activeNetworkInvite.isEmpty {
-                                ShareLink(item: model.state.activeNetworkInvite) {
-                                    Label("Share", systemImage: "square.and.arrow.up")
-                                }
-                            }
-                            Button {
-                                if model.state.inviteBroadcastActive {
-                                    model.dispatch(NativeActions.stopInviteBroadcast(), status: "Stopped broadcasting")
-                                } else {
-                                    model.dispatch(NativeActions.startInviteBroadcast(), status: "Broadcasting invite")
-                                }
-                            } label: {
-                                Label(
-                                    model.state.inviteBroadcastActive
-                                        ? "Broadcasting · \(formatRemaining(model.state.inviteBroadcastRemainingSecs))"
-                                        : "Broadcast invite",
-                                    systemImage: model.state.inviteBroadcastActive ? "stop.circle" : "dot.radiowaves.left.and.right"
-                                )
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
-                }
+                // Three distinct flows, in order of "happens first" likelihood
+                // for a fresh user:
+                //   1. Join someone else's network (paste their invite)
+                //   2. Find networks broadcasting nearby (LAN discovery)
+                //   3. Share my network with others (QR / link / broadcast)
+                //   4. (admin only) Manually add another device by ID
+                // Previously all four lived under a single "Add Device" sheet
+                // title, which suggested they were variations of one action.
+                // They aren't — joining and inviting go in opposite directions.
 
                 JoinNetworkCard(model: model)
                 NearbyCard(model: model)
+                InviteToMyNetworkCard(model: model)
 
                 if let network = model.activeNetwork, network.localIsAdmin {
                     AddDeviceCard(network: network) { npub, alias in
@@ -326,6 +297,47 @@ private struct AddDeviceSheet: View {
             .padding()
         }
         .background(AppColors.background)
+    }
+}
+
+private struct InviteToMyNetworkCard: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        AppCard {
+            HStack(alignment: .top, spacing: 16) {
+                QrCodeView(matrix: model.qrMatrix(for: model.state.activeNetworkInvite))
+                    .frame(width: 136, height: 136)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Invite to my network")
+                        .font(.headline)
+                    Text("Share this code with another device to give it access to your network.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    CopyLine(value: model.state.activeNetworkInvite, model: model)
+                    if !model.state.activeNetworkInvite.isEmpty {
+                        ShareLink(item: model.state.activeNetworkInvite) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    Button {
+                        if model.state.inviteBroadcastActive {
+                            model.dispatch(NativeActions.stopInviteBroadcast(), status: "Stopped broadcasting")
+                        } else {
+                            model.dispatch(NativeActions.startInviteBroadcast(), status: "Broadcasting invite")
+                        }
+                    } label: {
+                        Label(
+                            model.state.inviteBroadcastActive
+                                ? "Broadcasting · \(formatRemaining(model.state.inviteBroadcastRemainingSecs))"
+                                : "Broadcast invite",
+                            systemImage: model.state.inviteBroadcastActive ? "stop.circle" : "dot.radiowaves.left.and.right"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
     }
 
     private func formatRemaining(_ seconds: UInt64) -> String {
@@ -773,6 +785,20 @@ private struct NetworksCard: View {
             Text("Networks")
                 .font(.headline)
             if let network = model.activeNetwork {
+                HStack {
+                    Text(network.displayName)
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text("active")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button(role: .destructive) {
+                        pendingRemoval = network
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                }
                 CopyLine(value: network.networkId, model: model)
                 Toggle("Join requests", isOn: Binding(
                     get: { network.joinRequestsEnabled },

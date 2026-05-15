@@ -332,7 +332,7 @@ private fun NetworkSetupCard(
     scanQr: () -> Unit,
     dispatch: (JSONObject) -> Unit,
 ) {
-    var networkName by remember { mutableStateOf("") }
+    var networkName by remember { mutableStateOf("My Network") }
     var inviteInput by remember { mutableStateOf("") }
     val context = androidx.compose.ui.platform.LocalContext.current
     val clipboard = remember(context) {
@@ -351,8 +351,8 @@ private fun NetworkSetupCard(
             )
             Spacer(Modifier.width(8.dp))
             Button(onClick = {
-                dispatch(NativeActions.addNetwork(networkName.trim().ifBlank { "Private network" }))
-                networkName = ""
+                dispatch(NativeActions.addNetwork(networkName.trim().ifBlank { "My Network" }))
+                networkName = "My Network"
             }) {
                 Text("Create")
             }
@@ -472,15 +472,6 @@ private fun AddDevicesDialog(
                     }
                     OutlinedButton(onClick = scanQr) {
                         Text("Scan")
-                    }
-                    Button(
-                        enabled = inviteInput.isNotBlank(),
-                        onClick = {
-                            dispatch(NativeActions.importInvite(inviteInput.trim()))
-                            inviteInput = ""
-                        },
-                    ) {
-                        Text("Import")
                     }
                 }
                 if (network?.outboundJoinRequest == true) {

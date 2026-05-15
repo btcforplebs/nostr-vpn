@@ -901,7 +901,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
 
     private Task CreateNetworkAsync()
     {
-        var name = string.IsNullOrWhiteSpace(NetworkNameInput) ? "Private network" : NetworkNameInput.Trim();
+        var name = string.IsNullOrWhiteSpace(NetworkNameInput) ? "My Network" : NetworkNameInput.Trim();
         NetworkNameInput = "";
         return DispatchAsync(NativeActions.AddNetwork(name), "Creating network");
     }

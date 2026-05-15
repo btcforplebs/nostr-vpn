@@ -313,6 +313,15 @@ internal fun NetworksCard(state: AppState, network: NetworkState?, dispatch: (JS
     AppCard {
         Text("Networks", style = MaterialTheme.typography.titleMedium)
         network?.let {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(it.name.ifBlank { "Private network" }, fontWeight = FontWeight.SemiBold)
+                    Text("active", color = Muted)
+                }
+                OutlinedButton(onClick = { pendingRemoval = it }) {
+                    Text("Remove")
+                }
+            }
             Text(it.networkId, color = Muted, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(

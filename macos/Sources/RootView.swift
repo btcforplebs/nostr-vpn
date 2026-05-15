@@ -727,7 +727,7 @@ struct RootView: View {
                 TextField("Network name", text: $networkNameInput)
                     .onSubmit { addNetwork() }
                 Button {
-                    addNetwork(defaultName: "Private network")
+                    addNetwork(defaultName: "My Network")
                 } label: {
                     Label("Create", systemImage: "plus")
                 }
@@ -1062,6 +1062,34 @@ struct RootView: View {
                         .disabled(!network.localIsAdmin || manager.actionInFlight)
                         Text(network.joinRequestsEnabled ? "Open" : "Closed")
                             .foregroundStyle(.secondary)
+                    }
+                    GridRow {
+                        label("")
+                        Button(role: .destructive) {
+                            pendingNetworkRemoval = network
+                        } label: {
+                            Label("Delete this network", systemImage: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(manager.actionInFlight)
+                        .confirmationDialog(
+                            "Remove \(displayName(network))?",
+                            isPresented: Binding(
+                                get: { pendingNetworkRemoval?.id == network.id },
+                                set: { if !$0 { pendingNetworkRemoval = nil } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            Button("Remove", role: .destructive) {
+                                if let target = pendingNetworkRemoval {
+                                    manager.removeNetwork(target.id)
+                                }
+                                pendingNetworkRemoval = nil
+                            }
+                            Button("Cancel", role: .cancel) { pendingNetworkRemoval = nil }
+                        } message: {
+                            Text("This deletes the network from this device. You can rejoin later with the invite.")
+                        }
                     }
                 }
             }

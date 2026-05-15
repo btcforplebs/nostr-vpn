@@ -2,6 +2,19 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Source release_common.sh so xcodegen can substitute NVPN_APP_VERSION_NAME /
+# NVPN_APP_VERSION_CODE into project.yml's MARKETING_VERSION and
+# CURRENT_PROJECT_VERSION. xcodegen only does plain ${VAR} substitution — the
+# bash-style ${VAR:-default} syntax leaks through verbatim into pbxproj and
+# xcodebuild then emits an empty CFBundleVersion, which makes the simulator
+# fail with "Invalid placeholder attributes" when installing the app
+# extension. Always resolving from the workspace version keeps debug + sim
+# builds working.
+if [[ -f "$ROOT/scripts/release_common.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$ROOT/scripts/release_common.sh"
+  resolve_shared_build_metadata "$ROOT"
+fi
 IOS_DIR="$ROOT/ios"
 BUILD_DIR="$IOS_DIR/.build"
 FRAMEWORKS_DIR="$IOS_DIR/Frameworks"

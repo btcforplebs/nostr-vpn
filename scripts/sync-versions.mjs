@@ -54,21 +54,12 @@ const targets = [
       (_, prefix, suffix) => `${prefix}${version}${suffix}`,
     ),
   ),
-  // project.yml uses ${NVPN_APP_VERSION_NAME:-X.Y.Z} for MARKETING_VERSION so
-  // release builds get the env-resolved value and debug builds (no env) get
-  // the default. We just bump the default in the template.
-  makeTarget('macos/project.yml', (text, version) =>
-    text.replace(
-      /^(\s*MARKETING_VERSION:\s*\$\{NVPN_APP_VERSION_NAME:-)[^}]+(\}\s*)$/m,
-      (_, prefix, suffix) => `${prefix}${version}${suffix}`,
-    ),
-  ),
-  makeTarget('ios/project.yml', (text, version) =>
-    text.replace(
-      /^(\s*MARKETING_VERSION:\s*\$\{NVPN_APP_VERSION_NAME:-)[^}]+(\}\s*)$/m,
-      (_, prefix, suffix) => `${prefix}${version}${suffix}`,
-    ),
-  ),
+  // ios/project.yml + macos/project.yml use plain ${NVPN_APP_VERSION_NAME} /
+  // ${NVPN_APP_VERSION_CODE} substitution. Both env vars resolve from the
+  // workspace version via release_common.sh's resolve_shared_build_metadata,
+  // which is called by the entry-point scripts (tools/run-ios, scripts/ios-build,
+  // scripts/macos-build) right before xcodegen runs. Nothing for sync-versions
+  // to bump in project.yml itself — keeps a single source of truth.
   makeTarget('android/app/build.gradle.kts', (text, version) => {
     const code = androidVersionCode(version)
     return text

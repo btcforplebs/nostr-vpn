@@ -637,3 +637,154 @@ fn set_network_mesh_id_rejects_empty_values() {
 
     assert_eq!(error.to_string(), "network id cannot be empty");
 }
+
+// --- Active-network switch: roster isolation ----------------------------
+//
+// When the user activates a different saved network, queries used by the
+// daemon (which peers can talk to us, which keys can sign roster updates,
+// which mesh id are we on, etc.) must reflect ONLY the new network. Old
+// networks remain in storage but their roster must not leak into the
+// active surface — otherwise the daemon would keep accepting traffic from
+// peers that aren't supposed to be in the new mesh.
+
+#[test]
+fn switching_active_network_swaps_participant_roster() {
+    let home_peer_keys = Keys::generate();
+    let work_peer_keys = Keys::generate();
+    let home_peer_hex = home_peer_keys.public_key().to_hex();
+    let work_peer_hex = work_peer_keys.public_key().to_hex();
+    let home_peer_npub = home_peer_keys.public_key().to_bech32().expect("npub");
+    let work_peer_npub = work_peer_keys.public_key().to_bech32().expect("npub");
+
+    let mut config = AppConfig::generated();
+    let home_id = config.networks[0].id.clone();
+    config
+        .add_participant_to_network(&home_id, &home_peer_npub)
+        .expect("home peer added");
+
+    let work_id = config.add_network("Work");
+    config
+        .add_participant_to_network(&work_id, &work_peer_npub)
+        .expect("work peer added");
+
+    // Home is active by default.
+    assert!(
+        config
+            .participant_pubkeys_hex()
+            .contains(&home_peer_hex),
+        "active roster should expose the home peer while home is active"
+    );
+    assert!(
+        !config
+            .participant_pubkeys_hex()
+            .contains(&work_peer_hex),
+        "work peer must not leak into the active roster while work is inactive"
+    );
+
+    config
+        .set_network_enabled(&work_id, true)
+        .expect("activate work");
+
+    // After the switch, only the new network's peer is "active".
+    assert!(
+        !config
+            .participant_pubkeys_hex()
+            .contains(&home_peer_hex),
+        "home peer must drop out of the active roster after switching to work"
+    );
+    assert!(
+        config
+            .participant_pubkeys_hex()
+            .contains(&work_peer_hex),
+        "work peer must be in the active roster after switching"
+    );
+
+    // Storage of inactive networks must NOT be wiped — switching back
+    // should restore the old roster.
+    assert!(
+        config
+            .network_by_id(&home_id)
+            .expect("home still present")
+            .participants
+            .contains(&home_peer_hex),
+        "home roster persists across switch"
+    );
+}
+
+#[test]
+fn switching_active_network_swaps_admin_roster_and_mesh_id() {
+    let admin1 = Keys::generate();
+    let admin2 = Keys::generate();
+    let mut config = AppConfig::generated();
+    let home_id = config.networks[0].id.clone();
+    config.networks[0].network_id = "mesh-home".to_string();
+    config
+        .add_admin_to_network(&home_id, &admin1.public_key().to_hex())
+        .expect("admin1 added to home");
+
+    let work_id = config.add_network("Work");
+    config
+        .network_by_id_mut(&work_id)
+        .expect("work network")
+        .network_id = "mesh-work".to_string();
+    config
+        .add_admin_to_network(&work_id, &admin2.public_key().to_hex())
+        .expect("admin2 added to work");
+
+    // While home is active, admin1 is the trusted signer; mesh is "mesh-home".
+    let home_admins = config.active_network_admin_pubkeys_hex();
+    assert!(home_admins.contains(&admin1.public_key().to_hex()));
+    assert!(!home_admins.contains(&admin2.public_key().to_hex()));
+    assert_eq!(config.effective_network_id(), "mesh-home");
+
+    config
+        .set_network_enabled(&work_id, true)
+        .expect("activate work");
+
+    // After the switch the daemon should only honour admin2's roster
+    // signatures, on the new mesh. A roster signed by admin1 (the previous
+    // network's admin) must not be accepted on the new mesh.
+    let work_admins = config.active_network_admin_pubkeys_hex();
+    assert!(
+        !work_admins.contains(&admin1.public_key().to_hex()),
+        "old network admin must not be a valid signer on the new active network"
+    );
+    assert!(work_admins.contains(&admin2.public_key().to_hex()));
+    assert_eq!(config.effective_network_id(), "mesh-work");
+}
+
+#[test]
+fn wireguard_exit_and_exit_node_are_global_not_per_network() {
+    // Documents current behaviour: wireguard_exit + exit_node are
+    // top-level AppConfig fields, not per-network. Switching the active
+    // network does NOT clear or change them. If we ever move these
+    // settings under NetworkConfig (so each saved network can carry its
+    // own upstream WireGuard tunnel and chosen exit peer), this test
+    // should be rewritten to assert old-network exits stop being applied
+    // on switch.
+    let exit_peer = Keys::generate().public_key().to_bech32().expect("npub");
+    let mut config = AppConfig::generated();
+    let home_id = config.networks[0].id.clone();
+    config.exit_node = exit_peer.clone();
+    config.wireguard_exit.address = "10.66.66.2/32".to_string();
+
+    let work_id = config.add_network("Work");
+    config
+        .set_network_enabled(&work_id, true)
+        .expect("activate work");
+
+    assert_eq!(
+        config.exit_node, exit_peer,
+        "exit_node currently survives an active-network switch (global setting)"
+    );
+    assert_eq!(
+        config.wireguard_exit.address, "10.66.66.2/32",
+        "wireguard_exit currently survives an active-network switch (global setting)"
+    );
+
+    // Inactive home network is still in storage with its own roster.
+    assert!(
+        config.network_by_id(&home_id).is_some(),
+        "home network is preserved as a saved network"
+    );
+}
