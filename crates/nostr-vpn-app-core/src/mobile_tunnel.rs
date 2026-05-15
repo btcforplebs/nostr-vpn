@@ -531,7 +531,10 @@ fn fips_endpoint_config(scope: &str, mobile: &MobileTunnelConfig) -> FipsConfig 
     let nostr_enabled = !mobile.peers.is_empty();
     config.node.discovery.nostr.enabled = nostr_enabled;
     config.node.discovery.nostr.advertise = false;
-    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    // Open discovery: handshake with any nvpn node we see, gate the data plane
+    // by roster downstream. See fips_private_mesh::fips_endpoint_config for the
+    // full rationale and security model.
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
     config.node.discovery.nostr.share_local_candidates = mobile.share_local_candidates;
     // Leave the relay-side `app` at fips-core's default ("fips-overlay-v1");
     // see fips_private_mesh::fips_endpoint_config for the rationale (the relay
@@ -794,7 +797,7 @@ mod tests {
         assert!(config.node.discovery.nostr.share_local_candidates);
         assert_eq!(
             config.node.discovery.nostr.policy,
-            NostrDiscoveryPolicy::ConfiguredOnly
+            NostrDiscoveryPolicy::Open
         );
         // The mesh id must NOT appear in the publicly visible relay app tag.
         assert_eq!(config.node.discovery.nostr.app, FIPS_NOSTR_DISCOVERY_APP);

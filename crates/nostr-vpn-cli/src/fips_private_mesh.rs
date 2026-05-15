@@ -971,7 +971,17 @@ fn fips_endpoint_config(
     let nostr_enabled = advertise_udp || !peers.is_empty();
     config.node.discovery.nostr.enabled = nostr_enabled;
     config.node.discovery.nostr.advertise = advertise_udp;
-    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    // Open discovery so we can FIPS-handshake with any nvpn node we see on
+    // relays, not just configured roster peers. This is what lets us route
+    // app-mesh traffic through transit hops that aren't in our network roster
+    // (a friend-of-a-friend nvpn node can ferry our packets when direct
+    // traversal fails). Security boundary: the FIPS handshake is open; the
+    // per-network data plane is NOT. `FipsMeshRuntime::receive_endpoint_data*`
+    // drops every inbound packet whose source npub doesn't own the inner
+    // source IP per our roster, so a non-roster transit peer can carry frames
+    // but cannot inject anything that surfaces on the tun. See the
+    // `inbound_endpoint_data_*` tests in `nostr-vpn-core::fips_mesh`.
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
     config.node.discovery.nostr.share_local_candidates = transport
         .map(|transport| transport.share_local_candidates)
         .unwrap_or(false);
@@ -3350,7 +3360,7 @@ mod tests {
         assert!(!config.node.discovery.nostr.advertise);
         assert_eq!(
             config.node.discovery.nostr.policy,
-            fips_endpoint::NostrDiscoveryPolicy::ConfiguredOnly
+            fips_endpoint::NostrDiscoveryPolicy::Open
         );
         assert!(!config.node.discovery.nostr.share_local_candidates);
         // The mesh id must NOT appear in the publicly visible relay app tag.
@@ -3395,7 +3405,7 @@ mod tests {
         assert!(config.node.discovery.nostr.advertise);
         assert_eq!(
             config.node.discovery.nostr.policy,
-            fips_endpoint::NostrDiscoveryPolicy::ConfiguredOnly
+            fips_endpoint::NostrDiscoveryPolicy::Open
         );
         assert!(config.node.discovery.nostr.share_local_candidates);
         assert_eq!(config.node.discovery.nostr.app, FIPS_NOSTR_DISCOVERY_APP);
@@ -3469,5 +3479,81 @@ mod tests {
         assert_eq!(charlie.addresses.len(), 1);
         assert_eq!(charlie.addresses[0].transport, "udp");
         assert_eq!(charlie.addresses[0].addr, "10.203.0.12:51820");
+    }
+
+    /// Pin the open-discovery / closed-data-plane invariant.
+    ///
+    /// FIPS handshake is `Open` so any nvpn node we see on relays may
+    /// connect to us (this is what enables transit through friend-of-a-friend
+    /// peers). The data plane MUST stay closed: a packet whose FIPS source
+    /// npub doesn't own its inner-source IP per the local roster is dropped
+    /// before it reaches the tun. This test wires both halves together so a
+    /// future "fix" that re-pins policy to ConfiguredOnly OR loosens the
+    /// roster gate will fail loudly.
+    ///
+    /// The cross-platform integration variants (T1: live handshake, T4:
+    /// transit through non-roster peer) live in the FIPS docker continuity
+    /// suite — they need a real endpoint pair and can't run as unit tests.
+    #[test]
+    fn open_discovery_does_not_loosen_tun_roster_gate() {
+        let roster_peer = Keys::generate();
+        let stranger = Keys::generate();
+        let roster_pubkey = roster_peer.public_key().to_hex();
+        let roster_npub = roster_peer.public_key().to_bech32().expect("roster npub");
+        let stranger_npub = stranger.public_key().to_bech32().expect("stranger npub");
+
+        let mesh_peer = FipsMeshPeerConfig::from_participant_pubkey(
+            &roster_pubkey,
+            vec!["10.44.1.2/32".to_string()],
+        )
+        .expect("roster peer config");
+        let endpoint_peers = fips_endpoint_peers_from_mesh(
+            std::slice::from_ref(&mesh_peer),
+            Vec::new(),
+        );
+        let config = fips_endpoint_config(
+            &endpoint_peers,
+            None,
+            super::resolve_private_mesh_mtu(None, None, None),
+        );
+
+        assert_eq!(
+            config.node.discovery.nostr.policy,
+            fips_endpoint::NostrDiscoveryPolicy::Open,
+            "FIPS handshake must stay open so non-roster peers can carry transit",
+        );
+
+        let mesh = FipsMeshRuntime::new(vec![mesh_peer.clone()]);
+
+        // The roster peer's own packet is admitted.
+        let mut packet = vec![0_u8; 28];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&28_u16.to_be_bytes());
+        packet[8] = 64;
+        packet[9] = 17;
+        packet[12..16].copy_from_slice(&[10, 44, 1, 2]);
+        packet[16..20].copy_from_slice(&[10, 44, 1, 1]);
+        assert!(
+            mesh.receive_endpoint_data(Some(&roster_npub), &packet)
+                .is_some(),
+            "roster peer's owned source IP must be admitted",
+        );
+
+        // A stranger that successfully completed the open FIPS handshake
+        // still cannot inject anything onto our tun, regardless of inner
+        // source IP.
+        assert!(
+            mesh.receive_endpoint_data(Some(&stranger_npub), &packet)
+                .is_none(),
+            "non-roster peer must not inject packets onto the tun",
+        );
+
+        let mut spoofed = packet.clone();
+        spoofed[12..16].copy_from_slice(&[203, 0, 113, 9]);
+        assert!(
+            mesh.receive_endpoint_data(Some(&stranger_npub), &spoofed)
+                .is_none(),
+            "non-roster peer must not inject packets onto the tun (spoofed source)",
+        );
     }
 }
