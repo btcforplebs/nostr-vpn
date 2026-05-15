@@ -85,21 +85,21 @@ internal fun ParticipantRow(state: AppState, participant: ParticipantState) {
 
 @Composable
 internal fun AddParticipantForm(network: NetworkState, dispatch: (JSONObject) -> Unit) {
-    var npub by remember { mutableStateOf("") }
+    var deviceId by remember { mutableStateOf("") }
     var alias by remember { mutableStateOf("") }
-    val trimmedNpub = npub.trim()
-    val showError = trimmedNpub.isNotEmpty() && !isValidNpub(trimmedNpub)
-    val canSubmit = trimmedNpub.isNotEmpty() && !showError
+    val trimmedDeviceId = deviceId.trim()
+    val showError = trimmedDeviceId.isNotEmpty() && !isValidDeviceId(trimmedDeviceId)
+    val canSubmit = trimmedDeviceId.isNotEmpty() && !showError
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
-            value = npub,
-            onValueChange = { npub = it },
+            value = deviceId,
+            onValueChange = { deviceId = it },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             label = { Text("npub1…") },
             isError = showError,
             supportingText = if (showError) {
-                { Text("Not a valid npub") }
+                { Text("Not a valid device ID") }
             } else {
                 null
             },
@@ -118,10 +118,10 @@ internal fun AddParticipantForm(network: NetworkState, dispatch: (JSONObject) ->
                     JSONObject()
                         .put("type", "add_participant")
                         .put("networkId", network.id)
-                        .put("npub", trimmedNpub)
+                        .put("npub", trimmedDeviceId)
                         .put("alias", alias.trim().ifBlank { JSONObject.NULL }),
                 )
-                npub = ""
+                deviceId = ""
                 alias = ""
             },
         ) {
@@ -130,12 +130,13 @@ internal fun AddParticipantForm(network: NetworkState, dispatch: (JSONObject) ->
     }
 }
 
-private val NPUB_BODY_CHARSET: Set<Char> = "qpzry9x8gf2tvdw0s3jn54khce6mua7l".toSet()
+private val BECH32_BODY_CHARSET: Set<Char> = "qpzry9x8gf2tvdw0s3jn54khce6mua7l".toSet()
 
-internal fun isValidNpub(value: String): Boolean {
+/** A valid device ID is a bech32-encoded npub: `npub1` + 58 bech32 chars. */
+internal fun isValidDeviceId(value: String): Boolean {
     val trimmed = value.trim()
     if (trimmed.length != 63 || !trimmed.startsWith("npub1")) return false
-    return trimmed.substring(5).all { it in NPUB_BODY_CHARSET }
+    return trimmed.substring(5).all { it in BECH32_BODY_CHARSET }
 }
 
 @Composable

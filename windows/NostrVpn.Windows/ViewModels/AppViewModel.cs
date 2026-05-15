@@ -192,7 +192,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         get
         {
             var trimmed = (_participantInput ?? string.Empty).Trim();
-            return trimmed.Length > 0 && !IsValidNpub(trimmed);
+            return trimmed.Length > 0 && !IsValidDeviceId(trimmed);
         }
     }
     public Visibility ParticipantInputErrorVisibility => ParticipantInputInvalid ? Visibility.Visible : Visibility.Collapsed;
@@ -845,16 +845,19 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     private static bool LooksLikeInviteCode(string value)
         => value.StartsWith("nvpn://invite/", StringComparison.OrdinalIgnoreCase);
 
-    private const string NpubBech32Charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    private const string Bech32BodyCharset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
-    public static bool IsValidNpub(string value)
+    /// <summary>
+    /// A valid device ID is a bech32-encoded npub: "npub1" + 58 bech32 chars.
+    /// </summary>
+    public static bool IsValidDeviceId(string value)
     {
         if (string.IsNullOrWhiteSpace(value)) return false;
         var trimmed = value.Trim();
         if (trimmed.Length != 63 || !trimmed.StartsWith("npub1", StringComparison.Ordinal)) return false;
         for (var i = 5; i < trimmed.Length; i++)
         {
-            if (NpubBech32Charset.IndexOf(trimmed[i]) < 0) return false;
+            if (Bech32BodyCharset.IndexOf(trimmed[i]) < 0) return false;
         }
         return true;
     }

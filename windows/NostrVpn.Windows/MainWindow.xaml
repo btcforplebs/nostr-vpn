@@ -288,8 +288,8 @@
             <Expander Header="Manage Devices" Margin="0,4,0,14" Visibility="{Binding ActiveNetwork.LocalIsAdmin, Converter={StaticResource BoolToVisibility}}">
               <Border Style="{StaticResource Card}" Margin="0,8,0,0">
                 <StackPanel>
-                  <TextBlock Text="Add by npub" FontWeight="SemiBold" Margin="0,0,0,4" />
-                  <TextBlock Text="Manual pairing: enter the other device's npub. They also need to add yours." Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                  <TextBlock Text="Add by Device ID" FontWeight="SemiBold" Margin="0,0,0,4" />
+                  <TextBlock Text="Manual pairing: enter the other device's ID (starts with npub1). They also need to add yours." Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,8" />
                   <Grid>
                     <Grid.ColumnDefinitions>
                       <ColumnDefinition Width="*" />
@@ -311,7 +311,7 @@
                     <TextBox Grid.Column="1" Text="{Binding ParticipantAliasInput, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
                     <Button Grid.Column="2" Content="Add" Command="{Binding AddParticipantCommand}" />
                   </Grid>
-                  <TextBlock Text="Not a valid npub" Foreground="{StaticResource Danger}" FontSize="11" Margin="0,4,0,0" Visibility="{Binding ParticipantInputErrorVisibility}" />
+                  <TextBlock Text="Not a valid device ID" Foreground="{StaticResource Danger}" FontSize="11" Margin="0,4,0,0" Visibility="{Binding ParticipantInputErrorVisibility}" />
 
                   <ItemsControl ItemsSource="{Binding ActiveNetwork.Participants}" Margin="0,12,0,0">
                     <ItemsControl.ItemTemplate>

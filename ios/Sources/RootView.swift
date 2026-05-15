@@ -540,46 +540,46 @@ private struct ParticipantRow: View {
 private struct AddDeviceCard: View {
     let network: NetworkState
     let add: (String, String) -> Void
-    @State private var npub = ""
+    @State private var deviceId = ""
     @State private var alias = ""
 
-    private var trimmedNpub: String {
-        npub.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var trimmedDeviceId: String {
+        deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var npubInvalid: Bool {
-        !trimmedNpub.isEmpty && !isValidNpub(trimmedNpub)
+    private var deviceIdInvalid: Bool {
+        !trimmedDeviceId.isEmpty && !isValidDeviceId(trimmedDeviceId)
     }
 
     var body: some View {
         AppCard {
-            Text("Add by npub")
+            Text("Add by Device ID")
                 .font(.headline)
-            Text("Manual pairing: enter the other device's npub. They also need to add yours.")
+            Text("Manual pairing: enter the other device's ID (starts with npub1). They also need to add yours.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            TextField("npub1…", text: $npub)
+            TextField("npub1…", text: $deviceId)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.red, lineWidth: npubInvalid ? 1 : 0)
+                        .stroke(Color.red, lineWidth: deviceIdInvalid ? 1 : 0)
                 )
-            if npubInvalid {
-                Text("Not a valid npub")
+            if deviceIdInvalid {
+                Text("Not a valid device ID")
                     .font(.caption)
                     .foregroundStyle(.red)
             }
             TextField("Name", text: $alias)
                 .textFieldStyle(.roundedBorder)
             Button("Add") {
-                add(trimmedNpub, alias)
-                npub = ""
+                add(trimmedDeviceId, alias)
+                deviceId = ""
                 alias = ""
             }
             .buttonStyle(.borderedProminent)
-            .disabled(trimmedNpub.isEmpty || npubInvalid)
+            .disabled(trimmedDeviceId.isEmpty || deviceIdInvalid)
         }
     }
 }
@@ -1082,10 +1082,11 @@ private func short(_ value: String, prefix: Int, suffix: Int) -> String {
     return "\(value.prefix(prefix))...\(value.suffix(suffix))"
 }
 
-private let npubBodyCharset: Set<Character> = Set("qpzry9x8gf2tvdw0s3jn54khce6mua7l")
+private let bech32BodyCharset: Set<Character> = Set("qpzry9x8gf2tvdw0s3jn54khce6mua7l")
 
-func isValidNpub(_ value: String) -> Bool {
+/// A valid device ID is a bech32-encoded npub: `npub1` + 58 bech32 chars.
+func isValidDeviceId(_ value: String) -> Bool {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard trimmed.count == 63, trimmed.hasPrefix("npub1") else { return false }
-    return trimmed.dropFirst(5).allSatisfy { npubBodyCharset.contains($0) }
+    return trimmed.dropFirst(5).allSatisfy { bech32BodyCharset.contains($0) }
 }

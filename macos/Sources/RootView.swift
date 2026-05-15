@@ -19,8 +19,8 @@ struct RootView: View {
     @State private var participantAliasDrafts: [String: String] = [:]
     @State private var savedNetworksExpanded = false
     @State private var pendingNetworkRemoval: NativeNetworkState?
-    @State private var addByNpubInput = ""
-    @State private var addByNpubAlias = ""
+    @State private var addByDeviceIdInput = ""
+    @State private var addByDeviceIdAlias = ""
     @State private var diagnosticsExpanded = false
     @State private var showingQrScanner = false
     @State private var selectedSidebarItem: SidebarItem? = .devices
@@ -229,7 +229,7 @@ struct RootView: View {
                     inviteSection(activeNetwork)
                     joinRequestsSection(activeNetwork)
                     if activeNetwork.localIsAdmin {
-                        addByNpubSection(activeNetwork)
+                        addByDeviceIdSection(activeNetwork)
                     }
                     joinNetworkSection(activeNetwork)
                 } else {
@@ -645,35 +645,35 @@ struct RootView: View {
         }
     }
 
-    private func addByNpubSection(_ network: NativeNetworkState) -> some View {
-        let trimmed = addByNpubInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let invalid = !trimmed.isEmpty && !isValidNpub(trimmed)
+    private func addByDeviceIdSection(_ network: NativeNetworkState) -> some View {
+        let trimmed = addByDeviceIdInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let invalid = !trimmed.isEmpty && !isValidDeviceId(trimmed)
         return surface {
-            sectionHeader("Add by npub", systemImage: "person.crop.circle.badge.plus")
-            Text("Manual pairing: enter the other device's npub. They also need to add yours.")
+            sectionHeader("Add by Device ID", systemImage: "person.crop.circle.badge.plus")
+            Text("Manual pairing: enter the other device's ID (starts with npub1). They also need to add yours.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack(spacing: 8) {
-                TextField("npub1…", text: $addByNpubInput)
+                TextField("npub1…", text: $addByDeviceIdInput)
                     .textFieldStyle(.roundedBorder)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(Color.red, lineWidth: invalid ? 1 : 0)
                     )
-                TextField("Name (optional)", text: $addByNpubAlias)
+                TextField("Name (optional)", text: $addByDeviceIdAlias)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 200)
                 Button {
-                    manager.addParticipant(networkId: network.id, npub: trimmed, alias: addByNpubAlias)
-                    addByNpubInput = ""
-                    addByNpubAlias = ""
+                    manager.addParticipant(networkId: network.id, npub: trimmed, alias: addByDeviceIdAlias)
+                    addByDeviceIdInput = ""
+                    addByDeviceIdAlias = ""
                 } label: {
                     Label("Add", systemImage: "plus")
                 }
                 .disabled(trimmed.isEmpty || invalid || manager.actionInFlight)
             }
             if invalid {
-                Text("Not a valid npub")
+                Text("Not a valid device ID")
                     .font(.caption)
                     .foregroundStyle(.red)
             }
@@ -1367,7 +1367,8 @@ struct RootView: View {
         network.name.isEmpty ? "Network" : network.name
     }
 
-    private func isValidNpub(_ value: String) -> Bool {
+    /// A valid device ID is a bech32-encoded npub: `npub1` + 58 bech32 chars.
+    private func isValidDeviceId(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count == 63, trimmed.hasPrefix("npub1") else { return false }
         let body = trimmed.dropFirst(5)

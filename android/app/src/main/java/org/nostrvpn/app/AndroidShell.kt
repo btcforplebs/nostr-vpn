@@ -493,9 +493,9 @@ private fun AddDevicesDialog(
                     }
                 }
                 if (network?.localIsAdmin == true) {
-                    Text("Add by npub", style = MaterialTheme.typography.titleMedium)
+                    Text("Add by Device ID", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Manual pairing: enter the other device's npub. They also need to add yours.",
+                        "Manual pairing: enter the other device's ID (starts with npub1). They also need to add yours.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Muted,
                     )
