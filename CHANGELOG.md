@@ -4,6 +4,48 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.17 - 2026-05-15
+
+### Added
+
+- macOS service install/uninstall/enable/disable now elevate through
+  Authorization Services instead of `osascript`, so the system prompt uses
+  Touch ID when "Use Touch ID for: Allow apps to request your password" is
+  enabled in System Settings (password fallback otherwise).
+- Mobile apps (iOS, Android) gained a Remove network button with a
+  confirmation dialog; previously you could add saved networks but never
+  delete them from the device. Mac and Windows Remove now also confirm.
+- macOS gained an admin-only "Add by Device ID" card on the Share page so an
+  admin can directly add another device by its identifier; iOS, Android, and
+  Windows already had this. All four shells now show a brief "manual pairing
+  needs both sides" explainer above the input.
+- Optional Desktop shortcut task in the Windows installer.
+
+### Changed
+
+- The "Add by npub" UI is now consistently labelled "Add by Device ID" across
+  iOS, Android, Mac, and Windows; `npub` is just a format and the user-facing
+  concept is the device's identifier. Internal types and the wire format are
+  unchanged.
+- Device ID input fields now show a "Not a valid device ID" error and disable
+  the Add button when the input is non-empty but doesn't match the
+  bech32 npub1... shape, so typos are caught before dispatch.
+- `scripts/local-release.mjs --publish` now also runs `scripts/publish.sh`,
+  so cutting a release ships the htree tree and the Rust crates in a single
+  command. Use `--skip-cargo-publish` for the htree-only flow; `--cargo-publish`
+  still works on its own.
+
+### Fixed
+
+- Windows installer: the Start Menu shortcut's `IconFilename` pointed at
+  `{app}\nostr-vpn.ico`, but `.NET` actually copies the icon to
+  `{app}\Assets\nostr-vpn.ico`, so the shortcut had no usable icon. Path
+  corrected.
+- Windows Exit Nodes view: the right-aligned subtitles (Direct, WireGuard
+  upstream, participant rows) rendered immediately to the right of the bold
+  label with no gap, because WPF's `DockPanel` with `LastChildFill="True"`
+  silently overrides `DockPanel.Dock` on the last child.
+
 ## 4.0.16 - 2026-05-15
 
 ### Added
