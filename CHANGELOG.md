@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.19 - 2026-05-15
+
+### Changed
+
+- macOS / Linux: when the bundled GUI's expected service version
+  doesn't match the installed background-service binary, the GUI now
+  shows an always-visible header strip with an inline Update button —
+  not just a small badge buried inside the System settings page.
+  Wording is "Update", not "Repair", everywhere user-facing and in
+  the underlying Swift / Rust names: the operation is bringing the
+  daemon up to the new version, nothing's broken to repair.
+
+### Fixed
+
+- The VPN switch no longer flips OFF after a service update. The
+  `InstallSystemService` FFI handler snapshots whether the VPN was on
+  before the install and, if so, calls `connect_vpn` once the new
+  daemon is reachable. Previously `nvpn service install --force`
+  would tear down the old daemon and start a fresh one in
+  disconnected state, leaving the user to click the toggle again.
+
 ## 4.0.18 - 2026-05-15
 
 ### Fixed
