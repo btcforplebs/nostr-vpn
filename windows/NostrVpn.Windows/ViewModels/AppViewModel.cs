@@ -80,7 +80,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         ImportQrImageCommand = new AsyncRelayCommand(_ => ImportQrImageAsync(), _ => !ActionInFlight);
         ToggleInviteBroadcastCommand = new AsyncRelayCommand(_ => DispatchAsync(State.InviteBroadcastActive ? NativeActions.StopInviteBroadcast() : NativeActions.StartInviteBroadcast(), "Broadcasting invite"));
         ToggleNearbyDiscoveryCommand = new AsyncRelayCommand(_ => DispatchAsync(State.NearbyDiscoveryActive ? NativeActions.StopNearbyDiscovery() : NativeActions.StartNearbyDiscovery(), "Looking for nearby"));
-        AddParticipantCommand = new AsyncRelayCommand(_ => AddParticipantAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(ParticipantInput));
+        AddParticipantCommand = new AsyncRelayCommand(_ => AddParticipantAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(ParticipantInput) && !ParticipantInputInvalid);
         SaveNodeCommand = new AsyncRelayCommand(_ => SaveNodeAsync(), _ => !ActionInFlight);
         SaveWireGuardExitCommand = new AsyncRelayCommand(_ => SaveWireGuardExitAsync(), _ => !ActionInFlight);
         CreateNetworkCommand = new AsyncRelayCommand(_ => CreateNetworkAsync(), _ => !ActionInFlight);
@@ -173,8 +173,29 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             }
         }
     }
-    public string ParticipantInput { get => _participantInput; set => SetField(ref _participantInput, value); }
+    public string ParticipantInput
+    {
+        get => _participantInput;
+        set
+        {
+            if (SetField(ref _participantInput, value))
+            {
+                OnPropertyChanged(nameof(ParticipantInputInvalid));
+                OnPropertyChanged(nameof(ParticipantInputErrorVisibility));
+                CommandManager.InvalidateRequerySuggested();
+            }
+        }
+    }
     public string ParticipantAliasInput { get => _participantAliasInput; set => SetField(ref _participantAliasInput, value); }
+    public bool ParticipantInputInvalid
+    {
+        get
+        {
+            var trimmed = (_participantInput ?? string.Empty).Trim();
+            return trimmed.Length > 0 && !IsValidNpub(trimmed);
+        }
+    }
+    public Visibility ParticipantInputErrorVisibility => ParticipantInputInvalid ? Visibility.Visible : Visibility.Collapsed;
     public string NetworkNameInput { get => _networkNameInput; set => SetField(ref _networkNameInput, value); }
     public string NetworkNameDraft
     {
@@ -823,6 +844,20 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
 
     private static bool LooksLikeInviteCode(string value)
         => value.StartsWith("nvpn://invite/", StringComparison.OrdinalIgnoreCase);
+
+    private const string NpubBech32Charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+    public static bool IsValidNpub(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var trimmed = value.Trim();
+        if (trimmed.Length != 63 || !trimmed.StartsWith("npub1", StringComparison.Ordinal)) return false;
+        for (var i = 5; i < trimmed.Length; i++)
+        {
+            if (NpubBech32Charset.IndexOf(trimmed[i]) < 0) return false;
+        }
+        return true;
+    }
 
     private async Task ImportQrImageAsync()
     {

@@ -84,24 +84,25 @@ internal fun ParticipantRow(state: AppState, participant: ParticipantState) {
 }
 
 @Composable
-internal fun AddParticipantCard(network: NetworkState, dispatch: (JSONObject) -> Unit) {
-    AppCard {
-        Text("Add Device", style = MaterialTheme.typography.titleMedium)
-        AddParticipantForm(network, dispatch)
-    }
-}
-
-@Composable
 internal fun AddParticipantForm(network: NetworkState, dispatch: (JSONObject) -> Unit) {
     var npub by remember { mutableStateOf("") }
     var alias by remember { mutableStateOf("") }
+    val trimmedNpub = npub.trim()
+    val showError = trimmedNpub.isNotEmpty() && !isValidNpub(trimmedNpub)
+    val canSubmit = trimmedNpub.isNotEmpty() && !showError
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
             value = npub,
             onValueChange = { npub = it },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            label = { Text("npub") },
+            label = { Text("npub1…") },
+            isError = showError,
+            supportingText = if (showError) {
+                { Text("Not a valid npub") }
+            } else {
+                null
+            },
         )
         OutlinedTextField(
             value = alias,
@@ -111,13 +112,13 @@ internal fun AddParticipantForm(network: NetworkState, dispatch: (JSONObject) ->
             label = { Text("Name") },
         )
         Button(
-            enabled = npub.isNotBlank(),
+            enabled = canSubmit,
             onClick = {
                 dispatch(
                     JSONObject()
                         .put("type", "add_participant")
                         .put("networkId", network.id)
-                        .put("npub", npub.trim())
+                        .put("npub", trimmedNpub)
                         .put("alias", alias.trim().ifBlank { JSONObject.NULL }),
                 )
                 npub = ""
@@ -127,6 +128,14 @@ internal fun AddParticipantForm(network: NetworkState, dispatch: (JSONObject) ->
             Text("Add")
         }
     }
+}
+
+private val NPUB_BODY_CHARSET: Set<Char> = "qpzry9x8gf2tvdw0s3jn54khce6mua7l".toSet()
+
+internal fun isValidNpub(value: String): Boolean {
+    val trimmed = value.trim()
+    if (trimmed.length != 63 || !trimmed.startsWith("npub1")) return false
+    return trimmed.substring(5).all { it in NPUB_BODY_CHARSET }
 }
 
 @Composable

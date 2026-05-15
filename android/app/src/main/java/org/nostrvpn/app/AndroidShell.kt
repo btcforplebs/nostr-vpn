@@ -493,7 +493,12 @@ private fun AddDevicesDialog(
                     }
                 }
                 if (network?.localIsAdmin == true) {
-                    Text("Manual", style = MaterialTheme.typography.titleMedium)
+                    Text("Add by npub", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Manual pairing: enter the other device's npub. They also need to add yours.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Muted,
+                    )
                     AddParticipantForm(network, dispatch)
                 }
                 NearbyCard(state, dispatch)

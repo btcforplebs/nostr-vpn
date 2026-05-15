@@ -19,6 +19,8 @@ struct RootView: View {
     @State private var participantAliasDrafts: [String: String] = [:]
     @State private var savedNetworksExpanded = false
     @State private var pendingNetworkRemoval: NativeNetworkState?
+    @State private var addByNpubInput = ""
+    @State private var addByNpubAlias = ""
     @State private var diagnosticsExpanded = false
     @State private var showingQrScanner = false
     @State private var selectedSidebarItem: SidebarItem? = .devices
@@ -226,6 +228,9 @@ struct RootView: View {
                 if let activeNetwork {
                     inviteSection(activeNetwork)
                     joinRequestsSection(activeNetwork)
+                    if activeNetwork.localIsAdmin {
+                        addByNpubSection(activeNetwork)
+                    }
                     joinNetworkSection(activeNetwork)
                 } else {
                     createNetworkSection
@@ -636,6 +641,41 @@ struct RootView: View {
                         .disabled(manager.actionInFlight)
                     }
                 }
+            }
+        }
+    }
+
+    private func addByNpubSection(_ network: NativeNetworkState) -> some View {
+        let trimmed = addByNpubInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let invalid = !trimmed.isEmpty && !isValidNpub(trimmed)
+        return surface {
+            sectionHeader("Add by npub", systemImage: "person.crop.circle.badge.plus")
+            Text("Manual pairing: enter the other device's npub. They also need to add yours.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                TextField("npub1…", text: $addByNpubInput)
+                    .textFieldStyle(.roundedBorder)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.red, lineWidth: invalid ? 1 : 0)
+                    )
+                TextField("Name (optional)", text: $addByNpubAlias)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 200)
+                Button {
+                    manager.addParticipant(networkId: network.id, npub: trimmed, alias: addByNpubAlias)
+                    addByNpubInput = ""
+                    addByNpubAlias = ""
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
+                .disabled(trimmed.isEmpty || invalid || manager.actionInFlight)
+            }
+            if invalid {
+                Text("Not a valid npub")
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
         }
     }
@@ -1325,6 +1365,14 @@ struct RootView: View {
 
     private func displayName(_ network: NativeNetworkState) -> String {
         network.name.isEmpty ? "Network" : network.name
+    }
+
+    private func isValidNpub(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count == 63, trimmed.hasPrefix("npub1") else { return false }
+        let body = trimmed.dropFirst(5)
+        let allowed: Set<Character> = Set("qpzry9x8gf2tvdw0s3jn54khce6mua7l")
+        return body.allSatisfy { allowed.contains($0) }
     }
 
     private var headerVpnStatusText: String {

@@ -543,23 +543,43 @@ private struct AddDeviceCard: View {
     @State private var npub = ""
     @State private var alias = ""
 
+    private var trimmedNpub: String {
+        npub.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var npubInvalid: Bool {
+        !trimmedNpub.isEmpty && !isValidNpub(trimmedNpub)
+    }
+
     var body: some View {
         AppCard {
             Text("Add by npub")
                 .font(.headline)
+            Text("Manual pairing: enter the other device's npub. They also need to add yours.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             TextField("npub1…", text: $npub)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.red, lineWidth: npubInvalid ? 1 : 0)
+                )
+            if npubInvalid {
+                Text("Not a valid npub")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
             TextField("Name", text: $alias)
                 .textFieldStyle(.roundedBorder)
             Button("Add") {
-                add(npub.trimmingCharacters(in: .whitespacesAndNewlines), alias)
+                add(trimmedNpub, alias)
                 npub = ""
                 alias = ""
             }
             .buttonStyle(.borderedProminent)
-            .disabled(npub.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(trimmedNpub.isEmpty || npubInvalid)
         }
     }
 }
@@ -1060,4 +1080,12 @@ private func short(_ value: String, prefix: Int, suffix: Int) -> String {
         return value.isEmpty ? "Device" : value
     }
     return "\(value.prefix(prefix))...\(value.suffix(suffix))"
+}
+
+private let npubBodyCharset: Set<Character> = Set("qpzry9x8gf2tvdw0s3jn54khce6mua7l")
+
+func isValidNpub(_ value: String) -> Bool {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.count == 63, trimmed.hasPrefix("npub1") else { return false }
+    return trimmed.dropFirst(5).allSatisfy { npubBodyCharset.contains($0) }
 }
