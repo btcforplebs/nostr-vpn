@@ -162,12 +162,21 @@ pub(crate) fn macos_underlay_default_route_from_system() -> Result<Option<MacosR
 
 #[cfg(target_os = "macos")]
 fn macos_unscoped_default_route_works() -> bool {
-    ProcessCommand::new("route")
+    let Ok(output) = ProcessCommand::new("route")
         .arg("-n")
         .arg("get")
         .arg("1.1.1.1")
-        .status()
-        .is_ok_and(|status| status.success())
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    !stderr.to_ascii_lowercase().contains("not in table")
+        && (stdout.contains("gateway:") || stdout.contains("interface:"))
 }
 
 #[cfg(target_os = "macos")]
