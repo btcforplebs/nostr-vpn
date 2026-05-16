@@ -1,4 +1,8 @@
 use std::collections::HashMap;
+#[cfg(debug_assertions)]
+use std::fs::{self, OpenOptions};
+#[cfg(debug_assertions)]
+use std::io::Write;
 use std::net::Ipv4Addr;
 use std::os::raw::c_int;
 use std::path::{Path, PathBuf};
@@ -273,18 +277,30 @@ pub(crate) struct MobileTunnel {
 
 impl MobileTunnel {
     pub(crate) fn start(config_json: &str) -> Result<Self> {
+        mobile_debug_log("MobileTunnel::start parse begin");
         let config: MobileTunnelConfig =
             serde_json::from_str(config_json).context("invalid mobile tunnel config JSON")?;
+        mobile_debug_log(format!(
+            "MobileTunnel::start parsed peers={} routes={} nostr_relays={} share_lan={} listen={}",
+            config.peers.len(),
+            config.route_targets.len(),
+            config.nostr_relays.len(),
+            config.share_local_candidates,
+            config.listen_port
+        ));
         if !config.error.trim().is_empty() {
             return Err(anyhow!(config.error));
         }
+        mobile_debug_log("MobileTunnel::start building tokio runtime");
         let runtime = RuntimeBuilder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .thread_name("nvpn-mobile-fips")
             .build()
             .context("failed to start mobile FIPS runtime")?;
+        mobile_debug_log("MobileTunnel::start entering start_async");
         let started = runtime.block_on(Self::start_async(config))?;
+        mobile_debug_log("MobileTunnel::start start_async returned");
         Ok(Self {
             runtime,
             endpoint: Some(started.endpoint),
@@ -298,10 +314,17 @@ impl MobileTunnel {
 
     #[allow(clippy::large_futures, clippy::too_many_lines)]
     async fn start_async(config: MobileTunnelConfig) -> Result<MobileTunnelStarted> {
+        mobile_debug_log("MobileTunnel::start_async begin");
         let scope = format!("nostr-vpn:{}", config.network_id.trim());
         let initial_peers = config.peers.clone();
         let config_path = non_empty_path(&config.config_path);
         let local_capability_hints = mobile_endpoint_hints(&config);
+        mobile_debug_log(format!(
+            "MobileTunnel::start_async binding FIPS endpoint scope={} peers={} hints={}",
+            scope,
+            initial_peers.len(),
+            local_capability_hints.len()
+        ));
         let endpoint = FipsEndpoint::builder()
             .config(fips_endpoint_config(&scope, &config))
             .identity_nsec(config.identity_nsec.clone())
@@ -310,6 +333,7 @@ impl MobileTunnel {
             .bind()
             .await
             .context("failed to bind mobile FIPS endpoint")?;
+        mobile_debug_log("MobileTunnel::start_async FIPS endpoint bound");
         let endpoint = Arc::new(endpoint);
         let local_routes = vec![config.local_address.clone()];
         let mesh = Arc::new(RwLock::new(FipsMeshRuntime::with_local_routes(
@@ -1076,6 +1100,20 @@ fn endpoint_with_listen_port(endpoint: &str, listen_port: u16) -> String {
 fn strip_cidr(value: &str) -> &str {
     value.split('/').next().unwrap_or(value)
 }
+
+#[cfg(debug_assertions)]
+pub(crate) fn mobile_debug_log(message: impl AsRef<str>) {
+    let dir = std::env::temp_dir();
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join("nvpn-mobile-debug.log");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(file, "{:?} {}", SystemTime::now(), message.as_ref());
+}
+
+#[cfg(not(debug_assertions))]
+pub(crate) fn mobile_debug_log(_message: impl AsRef<str>) {}
 
 fn parse_ipv4(value: &str) -> Option<Ipv4Addr> {
     strip_cidr(value.trim()).parse().ok()
