@@ -13,9 +13,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler: @escaping (Error?) -> Void
     ) {
         NSLog("nvpn-pkt: startTunnel entered")
-        packetDebugLog("startTunnel entered options=\(options?.keys.map(String.init).sorted() ?? [])")
+        packetDebugLog("startTunnel entered options=\(options.map { Array($0.keys).sorted() } ?? [])")
         let configuration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
-        packetDebugLog("providerConfiguration keys=\(configuration.keys.map(String.init).sorted())")
+        packetDebugLog("providerConfiguration keys=\(Array(configuration.keys).sorted())")
         let configJson = configuration["mobileTunnelConfigJson"] as? String ?? ""
         let parsedConfig = MobileTunnelConfig(json: configJson)
         if let error = parsedConfig.errorText {
