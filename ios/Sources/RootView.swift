@@ -184,7 +184,7 @@ private struct DevicesPage: View {
                         Button {
                             addDevicePresented = true
                         } label: {
-                            Label("Add device", systemImage: "person.crop.circle.badge.plus")
+                            Label("Add device", systemImage: "plus")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)

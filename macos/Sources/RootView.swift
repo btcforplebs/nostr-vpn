@@ -112,7 +112,7 @@ struct RootView: View {
 
     private func addDeviceSheetContent(_ network: NativeNetworkState) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            sheetTitleBar("Add Device", systemImage: "person.crop.circle.badge.plus") {
+            sheetTitleBar("Add Device", systemImage: "plus") {
                 addDevicePresented = false
             }
             Divider()
@@ -454,7 +454,7 @@ struct RootView: View {
                         Button {
                             addDevicePresented = true
                         } label: {
-                            Label("Add device", systemImage: "person.crop.circle.badge.plus")
+                            Label("Add device", systemImage: "plus")
                         }
                         .help("Add device to this network")
                     }
@@ -821,7 +821,7 @@ struct RootView: View {
         let trimmed = addByDeviceIdInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let invalid = !trimmed.isEmpty && !isValidDeviceId(trimmed)
         return surface {
-            sectionHeader("Add by Device ID", systemImage: "person.crop.circle.badge.plus")
+            sectionHeader("Add by Device ID", systemImage: "plus")
             Text("Manual pairing: enter the other device's Device ID. They also need to add yours.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
