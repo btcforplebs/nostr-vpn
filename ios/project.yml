@@ -23,6 +23,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: 5.0
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
+    ENABLE_DEBUG_DYLIB: NO
 
 targets:
   NostrVpnIos:
