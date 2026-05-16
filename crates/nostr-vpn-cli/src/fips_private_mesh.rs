@@ -1093,7 +1093,6 @@ impl FipsPrivateMeshRuntime {
                     .collect(),
                 connect_policy: ConnectPolicy::AutoConnect,
                 auto_reconnect: true,
-                discovery_fallback_transit: true,
             })
             .collect();
         self.endpoint
@@ -1248,7 +1247,6 @@ fn fips_endpoint_config(
                 .collect(),
             connect_policy: ConnectPolicy::AutoConnect,
             auto_reconnect: true,
-            discovery_fallback_transit: true,
         })
         .collect();
     config

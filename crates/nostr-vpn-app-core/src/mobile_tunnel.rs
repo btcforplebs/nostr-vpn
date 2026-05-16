@@ -1035,7 +1035,6 @@ fn fips_peer_config_from_hint(
         addresses,
         connect_policy: ConnectPolicy::AutoConnect,
         auto_reconnect: true,
-        discovery_fallback_transit: true,
     }
 }
 
