@@ -3,6 +3,8 @@ import NetworkExtension
 import Darwin
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
+    private static let nextPacketPollTimeoutMs: UInt32 = 10
+
     private var tunnelHandle: OpaquePointer?
     private var tunnelRunning = false
     private let tunnelLock = NSLock()
@@ -155,7 +157,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     guard let base = raw.bindMemory(to: UInt8.self).baseAddress else {
                         return -1
                     }
-                    return nostr_vpn_mobile_tunnel_next_packet(handle, base, UInt(capacity), 100)
+                    return nostr_vpn_mobile_tunnel_next_packet(
+                        handle,
+                        base,
+                        UInt(capacity),
+                        Self.nextPacketPollTimeoutMs
+                    )
                 }
             }
             guard let count else {
