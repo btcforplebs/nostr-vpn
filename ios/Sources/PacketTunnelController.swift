@@ -17,10 +17,12 @@ enum PacketTunnelControllerError: LocalizedError {
 
 final class PacketTunnelController {
     private let providerBundleIdentifier = "to.iris.nvpn.PacketTunnel"
+    private var activeManager: NETunnelProviderManager?
 
     func start(state: AppState, network: NetworkState?, tunnelConfigJson: String) async throws {
         debugLog("PacketTunnelController.start begin")
         let manager = try await loadOrCreateManager()
+        activeManager = manager
         let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
         proto.providerBundleIdentifier = providerBundleIdentifier
         proto.serverAddress = network?.displayName ?? "Nostr VPN"
@@ -53,6 +55,7 @@ final class PacketTunnelController {
     func stop() async throws {
         debugLog("PacketTunnelController.stop begin")
         let manager = try await loadOrCreateManager()
+        activeManager = manager
         manager.connection.stopVPNTunnel()
         debugLog("stopVPNTunnel returned status=\(manager.connection.status.rawValue)")
     }
