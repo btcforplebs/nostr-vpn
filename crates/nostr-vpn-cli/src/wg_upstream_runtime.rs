@@ -529,16 +529,30 @@ fn install_endpoint_bypass(target: &IpAddr, original: &CapturedDefaultRoute) -> 
     }
     #[cfg(target_os = "macos")]
     {
-        // route add -host <ip> <gateway> -ifscope <iface>
+        // The daemon installs 0/1 + 128/1 routes through the WG utun.
+        // The WG server itself must be an unscoped host route so
+        // ordinary lookups still prefer the underlay gateway.
+        let _ = ProcessCommand::new("route")
+            .arg("-n")
+            .arg("delete")
+            .arg("-host")
+            .arg(&target_str)
+            .arg("-ifscope")
+            .arg(&original.interface)
+            .status();
+        let _ = ProcessCommand::new("route")
+            .arg("-n")
+            .arg("delete")
+            .arg("-host")
+            .arg(&target_str)
+            .status();
         run_checked(
             ProcessCommand::new("route")
                 .arg("-n")
                 .arg("add")
                 .arg("-host")
                 .arg(&target_str)
-                .arg(&original.gateway)
-                .arg("-ifscope")
-                .arg(&original.interface),
+                .arg(&original.gateway),
         )?;
     }
     Ok(())
