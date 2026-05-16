@@ -60,6 +60,8 @@ targets:
     platform: iOS
     sources:
       - path: PacketTunnel
+      - path: Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: Nostr VPN Tunnel

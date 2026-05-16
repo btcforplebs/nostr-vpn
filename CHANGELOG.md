@@ -12,6 +12,9 @@ All notable changes to this project are documented in this file.
   activation, explaining private-network data use, user-selected
   relays/exit nodes, and the no sale/tracking/third-party disclosure
   policy.
+- iOS now bundles a privacy manifest declaring the app-local
+  UserDefaults, file metadata, and timer API reasons used by the app and
+  packet-tunnel extension.
 
 ### Changed
 
