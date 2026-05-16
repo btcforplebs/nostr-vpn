@@ -83,6 +83,10 @@ if [[ -n ${NVPN_FIPS_ENDPOINT_PATCH_PATH:-} ]]; then
   cargo_config_args+=(--config "patch.crates-io.fips-endpoint.path=\"${NVPN_FIPS_ENDPOINT_PATCH_PATH}\"")
 fi
 
+if [[ -n ${NVPN_FIPS_ENDPOINT_PATCH_PATH:-} ]]; then
+  cargo "${cargo_config_args[@]}" update -p fips-endpoint
+fi
+
 cargo "${cargo_config_args[@]}" fetch --target "$TARGET"
 
 rustables_src=$(find "${CARGO_HOME:-/root/.cargo}/registry/src" -maxdepth 3 -type d -name rustables-0.8.7 -print -quit)
