@@ -21,8 +21,8 @@ use serde::Deserialize;
 use crate::actions::NativeAppAction;
 use crate::invite::{
     NETWORK_INVITE_VERSION, NetworkInvite, active_network_invite_code,
-    apply_network_invite_to_active_network, parse_network_invite,
-    preferred_join_request_recipient, to_npub,
+    apply_network_invite_to_active_network, parse_network_invite, preferred_join_request_recipient,
+    to_npub,
 };
 use crate::lan_pairing::{
     LAN_PAIRING_DURATION, LAN_PAIRING_STALE_AFTER, LanPairingAnnouncement, LanPairingSignal,
