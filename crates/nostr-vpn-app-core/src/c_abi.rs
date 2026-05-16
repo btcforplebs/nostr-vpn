@@ -1,4 +1,5 @@
 use std::ffi::{CStr, CString, c_char};
+use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +15,7 @@ use jni::sys::{jboolean, jint, jlong, jstring};
 use qrcode::QrCode;
 use serde::Serialize;
 
-use crate::mobile_tunnel::{MobileTunnel, tunnel_config_json};
+use crate::mobile_tunnel::{MobileTunnel, mobile_debug_log, tunnel_config_json};
 use crate::{FfiApp, NativeAppAction, NativeAppState};
 
 pub struct NvpnAppHandle {
@@ -142,9 +143,23 @@ pub extern "C" fn nostr_vpn_mobile_tunnel_new(
     config_json: *const c_char,
 ) -> *mut NvpnMobileTunnelHandle {
     let config_json = c_string_lossy(config_json);
-    match MobileTunnel::start(&config_json) {
-        Ok(tunnel) => Box::into_raw(Box::new(NvpnMobileTunnelHandle { tunnel })),
-        Err(_) => ptr::null_mut(),
+    mobile_debug_log("nostr_vpn_mobile_tunnel_new enter");
+    match panic::catch_unwind(AssertUnwindSafe(|| MobileTunnel::start(&config_json))) {
+        Ok(Ok(tunnel)) => {
+            mobile_debug_log("nostr_vpn_mobile_tunnel_new success");
+            Box::into_raw(Box::new(NvpnMobileTunnelHandle { tunnel }))
+        }
+        Ok(Err(error)) => {
+            mobile_debug_log(format!("nostr_vpn_mobile_tunnel_new error: {error:#}"));
+            ptr::null_mut()
+        }
+        Err(payload) => {
+            mobile_debug_log(format!(
+                "nostr_vpn_mobile_tunnel_new panic: {}",
+                panic_payload_message(&payload)
+            ));
+            ptr::null_mut()
+        }
     }
 }
 
@@ -595,6 +610,16 @@ fn decode_qr_image(path: &str) -> Result<String> {
         }
     }
     Err(anyhow!("no QR code found in image"))
+}
+
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
 }
 
 #[cfg(test)]
