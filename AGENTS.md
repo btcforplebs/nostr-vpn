@@ -5,7 +5,7 @@ global `~/.claude/CLAUDE.md` instructions.
 
 ## Development notes
 
-For nvpn performance work, build only the daemon (`cargo build -p nvpn --bin nvpn --release`), install/ad-hoc-sign that binary on each test machine, then compare `iperf3` over LAN/Tailscale/nvpn in both directions (`-R`) on macOS and Linux; use `mesh_mtu_profile = "lan"` or `NVPN_MESH_MTU_PROFILE=lan` only for explicit clean-LAN MTU trials.
+For nvpn performance work, build only the daemon. On macOS, use `cargo build -p nvpn --bin nvpn --release` and install/ad-hoc-sign that binary on each test machine. For Linux binaries copied between machines, avoid host-glibc coupling by building `cargo build -p nvpn --bin nvpn --release --target x86_64-unknown-linux-musl` and installing `target/x86_64-unknown-linux-musl/release/nvpn`; use the default `target/release/nvpn` Linux binary only on the same distro/glibc family that built it. Then compare `iperf3` over LAN/Tailscale/nvpn in both directions (`-R`) on macOS and Linux; use `mesh_mtu_profile = "lan"` or `NVPN_MESH_MTU_PROFILE=lan` only for explicit clean-LAN MTU trials.
 
 Ad-hoc signing is sufficient for replacing the macOS daemon binary during development, but clear extended attributes before signing/copying (`xattr -c`) and use `launchctl bootout` + `bootstrap` if launchd reports `OS_REASON_CODESIGNING`; restarting the system LaunchDaemon still requires elevated `launchctl kickstart -k system/to.nostrvpn.nvpn` unless a narrow passwordless sudo rule is installed for that restart.
 
