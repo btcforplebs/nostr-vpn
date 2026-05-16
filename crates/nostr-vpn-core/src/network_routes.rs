@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 
 use crate::config::normalize_runtime_network_id;
 
+pub const MESH_TUNNEL_IPV4_CIDR: &str = "10.44.0.0/16";
+
 pub fn derive_mesh_tunnel_ip(network_id: &str, own_pubkey_hex: &str) -> Option<String> {
     let network_id = normalize_runtime_network_id(network_id);
     let network_id = network_id.trim();

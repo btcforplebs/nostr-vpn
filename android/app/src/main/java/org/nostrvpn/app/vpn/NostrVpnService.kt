@@ -12,6 +12,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.VpnService
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import org.json.JSONObject
@@ -29,6 +30,7 @@ class NostrVpnService : VpnService() {
     private var readThread: Thread? = null
     private var writeThread: Thread? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -66,8 +68,10 @@ class NostrVpnService : VpnService() {
             return
         }
         startServiceForeground()
+        acquireMulticastLock()
 
         val descriptor = buildVpnInterface(config) ?: run {
+            releaseMulticastLock()
             stopServiceForeground()
             stopSelf()
             return
@@ -75,6 +79,7 @@ class NostrVpnService : VpnService() {
         val handle = NativeCore.mobileTunnelNew(configJson)
         if (handle == 0L) {
             descriptor.close()
+            releaseMulticastLock()
             stopServiceForeground()
             stopSelf()
             return
@@ -217,6 +222,25 @@ class NostrVpnService : VpnService() {
         }
     }
 
+    private fun acquireMulticastLock() {
+        if (multicastLock != null) return
+        val wifi = applicationContext.getSystemService(WifiManager::class.java) ?: return
+        multicastLock = wifi.createMulticastLock("nostr-vpn-lan-discovery").apply {
+            setReferenceCounted(false)
+            runCatching { acquire() }
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        val lock = multicastLock ?: return
+        multicastLock = null
+        runCatching {
+            if (lock.isHeld) {
+                lock.release()
+            }
+        }
+    }
+
     private fun refreshUnderlyingNetworks() {
         val networks = currentUnderlyingNetworks()
         setUnderlyingNetworks(networks.takeIf { it.isNotEmpty() })
@@ -258,6 +282,7 @@ class NostrVpnService : VpnService() {
     private fun stopTunnel() {
         unregisterUnderlyingNetworkUpdates()
         running.set(false)
+        releaseMulticastLock()
         val descriptor = tunnelInterface
         tunnelInterface = null
         descriptor?.close()

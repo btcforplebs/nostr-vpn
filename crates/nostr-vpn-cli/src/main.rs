@@ -2611,7 +2611,12 @@ fn drain_fips_mesh_events(
                 network_id,
                 capabilities,
             } => {
-                let _ = (sender_pubkey, network_id, capabilities);
+                let _ = (sender_pubkey, network_id);
+                if !capabilities.endpoint_hints.is_empty()
+                    || !capabilities.advertised_routes.is_empty()
+                {
+                    roster_changed = true;
+                }
             }
         }
     }

@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result, anyhow};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use fips_endpoint::{
     Config, ConnectPolicy, FipsEndpoint, FipsEndpointError, FipsEndpointMessage, FipsEndpointPeer,
     NostrDiscoveryPolicy, PeerAddress, PeerConfig as FipsPeerConfig, RoutingMode,
@@ -13,8 +12,8 @@ use nostr_vpn_core::config::{
 };
 use nostr_vpn_core::data_plane::{MeshPeerStatus, PrivatePacket};
 use nostr_vpn_core::fips_control::{
-    FipsControlFrame, NetworkRoster, PeerCapabilities, PeerEndpointHint, decode_fips_control_frame,
-    encode_fips_control_frame, encode_fips_control_messages,
+    FipsControlFragmentBuffer, FipsControlFrame, NetworkRoster, PeerCapabilities, PeerEndpointHint,
+    decode_fips_control_frame, encode_fips_control_frame, encode_fips_control_messages,
 };
 use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
 use nostr_vpn_core::join_requests::MeshJoinRequest;
@@ -29,7 +28,9 @@ use std::io::IoSlice;
 use std::io::{self, Write};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::mem::ManuallyDrop;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+#[cfg(target_os = "linux")]
+use std::net::Ipv4Addr;
+use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
@@ -52,9 +53,6 @@ const FIPS_PEER_ONLINE_GRACE_SECS: u64 = 45;
 const FIPS_NOSTR_DISCOVERY_APP: &str = "fips-overlay-v1";
 const FIPS_LAN_DISCOVERY_SCOPE_PREFIX: &str = "nostr-vpn";
 const FIPS_PEER_CAPS_GRACE_SECS: u64 = 600;
-const FIPS_CONTROL_FRAGMENT_TTL_SECS: u64 = 120;
-const FIPS_CONTROL_MAX_FRAGMENTS: u16 = 128;
-const FIPS_CONTROL_MAX_REASSEMBLED_LEN: usize = 128 * 1024;
 const MESH_LAN_UNDERLAY_UDP_MTU: u16 = 1420;
 const MESH_LAN_TUNNEL_MTU: u16 = 1290;
 const MESH_MIN_UNDERLAY_UDP_MTU: u16 = 1280;
@@ -97,98 +95,7 @@ pub(crate) struct FipsPrivateMeshRuntime {
     control_fragments: Mutex<ControlFragmentBuffer>,
 }
 
-#[derive(Default)]
-struct ControlFragmentBuffer {
-    entries: HashMap<ControlFragmentKey, PendingControlFragment>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ControlFragmentKey {
-    source_npub: String,
-    id: String,
-}
-
-struct PendingControlFragment {
-    total: u16,
-    received_at: u64,
-    chunks: Vec<Option<Vec<u8>>>,
-    received_len: usize,
-}
-
-impl ControlFragmentBuffer {
-    fn push(
-        &mut self,
-        source_npub: &str,
-        id: String,
-        index: u16,
-        total: u16,
-        data: String,
-        now: u64,
-    ) -> Result<Option<Vec<u8>>> {
-        if total == 0 || total > FIPS_CONTROL_MAX_FRAGMENTS || index >= total {
-            return Ok(None);
-        }
-
-        self.entries.retain(|_, entry| {
-            now.saturating_sub(entry.received_at) <= FIPS_CONTROL_FRAGMENT_TTL_SECS
-        });
-
-        let Ok(decoded) = URL_SAFE_NO_PAD.decode(data.as_bytes()) else {
-            return Ok(None);
-        };
-        if decoded.len() > nostr_vpn_core::fips_control::FIPS_CONTROL_FRAGMENT_CHUNK_LEN {
-            return Ok(None);
-        }
-
-        let key = ControlFragmentKey {
-            source_npub: source_npub.to_string(),
-            id,
-        };
-        let entry = self
-            .entries
-            .entry(key.clone())
-            .or_insert_with(|| PendingControlFragment {
-                total,
-                received_at: now,
-                chunks: vec![None; usize::from(total)],
-                received_len: 0,
-            });
-        if entry.total != total {
-            *entry = PendingControlFragment {
-                total,
-                received_at: now,
-                chunks: vec![None; usize::from(total)],
-                received_len: 0,
-            };
-        }
-        entry.received_at = now;
-
-        let slot = &mut entry.chunks[usize::from(index)];
-        if let Some(existing) = slot.as_ref() {
-            entry.received_len = entry.received_len.saturating_sub(existing.len());
-        }
-        entry.received_len += decoded.len();
-        if entry.received_len > FIPS_CONTROL_MAX_REASSEMBLED_LEN {
-            self.entries.remove(&key);
-            return Ok(None);
-        }
-        *slot = Some(decoded);
-
-        if !entry.chunks.iter().all(|chunk| chunk.is_some()) {
-            return Ok(None);
-        }
-
-        let entry = self
-            .entries
-            .remove(&key)
-            .expect("complete fragment entry should exist");
-        let mut reassembled = Vec::with_capacity(entry.received_len);
-        for chunk in entry.chunks.into_iter().flatten() {
-            reassembled.extend_from_slice(&chunk);
-        }
-        Ok(Some(reassembled))
-    }
-}
+type ControlFragmentBuffer = FipsControlFragmentBuffer;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 struct BorrowedTunFd(RawFd);
@@ -340,55 +247,7 @@ fn fips_peer_liveness(
 }
 
 fn peer_endpoint_hint_addr(hint: &PeerEndpointHint) -> Option<String> {
-    if !hint.transport.trim().eq_ignore_ascii_case("udp") {
-        return None;
-    }
-    let trimmed = hint.addr.trim();
-    if let Ok(parsed) = trimmed.parse::<SocketAddr>() {
-        if parsed.port() == 0 || endpoint_hint_ip_is_unusable(parsed.ip()) {
-            return None;
-        }
-        return Some(parsed.to_string());
-    }
-
-    let (host, port) = trimmed.rsplit_once(':')?;
-    let host = host.trim();
-    let port = port.trim().parse::<u16>().ok()?;
-    if host.is_empty() || port == 0 || host.eq_ignore_ascii_case("localhost") {
-        return None;
-    }
-    if host.contains(':') {
-        return None;
-    }
-    if let Ok(ip) = host.parse::<IpAddr>()
-        && endpoint_hint_ip_is_unusable(ip)
-    {
-        return None;
-    }
-    Some(format!("{host}:{port}"))
-}
-
-fn endpoint_hint_ip_is_unusable(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            ip.is_unspecified()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_multicast()
-                || ipv4_is_cgnat(ip)
-        }
-        IpAddr::V6(ip) => {
-            ip.is_unspecified()
-                || ip.is_loopback()
-                || ip.is_unicast_link_local()
-                || ip.is_multicast()
-        }
-    }
-}
-
-fn ipv4_is_cgnat(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    octets[0] == 100 && (64..=127).contains(&octets[1])
+    nostr_vpn_core::fips_control::peer_endpoint_hint_addr(hint)
 }
 
 fn endpoint_addr_ip(addr: &str) -> Option<IpAddr> {

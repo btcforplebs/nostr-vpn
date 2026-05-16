@@ -17,8 +17,8 @@ pub use crate::config_magic_dns::{
     normalize_magic_dns_suffix,
 };
 pub use crate::network_routes::{
-    derive_mesh_tunnel_ip, effective_advertised_routes, exit_node_default_routes,
-    normalize_advertised_route, normalize_advertised_routes,
+    MESH_TUNNEL_IPV4_CIDR, derive_mesh_tunnel_ip, effective_advertised_routes,
+    exit_node_default_routes, normalize_advertised_route, normalize_advertised_routes,
 };
 
 use crate::config_defaults::{
