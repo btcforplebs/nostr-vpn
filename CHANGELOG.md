@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.26 - 2026-05-17
+
+### Added
+
+- iOS now bundles a privacy manifest declaring the app-local
+  UserDefaults, file metadata, and timer API reasons used by the app and
+  packet-tunnel extension.
+- TestFlight tooling can now expire a specific uploaded build before
+  submitting a replacement public beta.
+
 ## 4.0.25 - 2026-05-17
 
 ### Added
@@ -12,9 +22,6 @@ All notable changes to this project are documented in this file.
   activation, explaining private-network data use, user-selected
   relays/exit nodes, and the no sale/tracking/third-party disclosure
   policy.
-- iOS now bundles a privacy manifest declaring the app-local
-  UserDefaults, file metadata, and timer API reasons used by the app and
-  packet-tunnel extension.
 
 ### Changed
 
