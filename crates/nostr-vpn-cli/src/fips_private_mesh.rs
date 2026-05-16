@@ -1093,6 +1093,7 @@ impl FipsPrivateMeshRuntime {
                     .collect(),
                 connect_policy: ConnectPolicy::AutoConnect,
                 auto_reconnect: true,
+                discovery_fallback_transit: peer.discovery_fallback_transit,
             })
             .collect();
         self.endpoint
@@ -1154,6 +1155,7 @@ pub(crate) struct FipsPeerAddressHint {
 pub(crate) struct FipsEndpointPeerTransportConfig {
     pub(crate) npub: String,
     pub(crate) addresses: Vec<FipsPeerAddressHint>,
+    pub(crate) discovery_fallback_transit: bool,
 }
 
 fn fips_endpoint_config(
@@ -1247,6 +1249,7 @@ fn fips_endpoint_config(
                 .collect(),
             connect_policy: ConnectPolicy::AutoConnect,
             auto_reconnect: true,
+            discovery_fallback_transit: peer.discovery_fallback_transit,
         })
         .collect();
     config
@@ -1265,6 +1268,7 @@ fn fips_endpoint_peers_from_mesh(
             .or_insert_with(|| FipsEndpointPeerTransportConfig {
                 npub,
                 addresses: Vec::new(),
+                discovery_fallback_transit: true,
             });
     }
 
@@ -1277,6 +1281,7 @@ fn fips_endpoint_peers_from_mesh(
             .or_insert_with(|| FipsEndpointPeerTransportConfig {
                 npub,
                 addresses: Vec::new(),
+                discovery_fallback_transit: true,
             });
         for raw in addresses {
             let trimmed = raw.trim();
@@ -1303,6 +1308,7 @@ fn fips_endpoint_peers_from_mesh(
             .or_insert_with(|| FipsEndpointPeerTransportConfig {
                 npub,
                 addresses: Vec::new(),
+                discovery_fallback_transit: false,
             });
         for (addr, seen_at_ms) in addresses {
             let trimmed = addr.trim();
@@ -4016,6 +4022,10 @@ mod tests {
             .find(|peer| peer.npub == mesh_peer.endpoint_npub)
             .expect("mesh peer should be configured");
         assert!(bob.addresses.is_empty());
+        assert!(
+            bob.discovery_fallback_transit,
+            "roster peer should be eligible for private lookup transit"
+        );
         let charlie = config
             .peers
             .iter()
@@ -4024,6 +4034,10 @@ mod tests {
         assert_eq!(charlie.addresses.len(), 1);
         assert_eq!(charlie.addresses[0].transport, "udp");
         assert_eq!(charlie.addresses[0].addr, "10.203.0.12:51820");
+        assert!(
+            charlie.discovery_fallback_transit,
+            "operator-configured transit peers are explicit lookup transit"
+        );
     }
 
     #[test]
@@ -4059,6 +4073,10 @@ mod tests {
         assert_eq!(charlie.addresses.len(), 1);
         assert_eq!(charlie.addresses[0].addr, "10.203.0.12:51820");
         assert_eq!(charlie.addresses[0].seen_at_ms, Some(123_000));
+        assert!(
+            !charlie.discovery_fallback_transit,
+            "recent non-roster peers seed direct hints but are not ambient lookup transit"
+        );
     }
 
     #[test]
@@ -4161,6 +4179,10 @@ mod tests {
         assert_eq!(charlie.addresses.len(), 1);
         assert_eq!(charlie.addresses[0].addr, "203.0.113.55:51820");
         assert_eq!(charlie.addresses[0].seen_at_ms, Some(123_000));
+        assert!(
+            !charlie.discovery_fallback_transit,
+            "recent non-roster peers should not receive fallback lookup fanout"
+        );
     }
 
     #[test]

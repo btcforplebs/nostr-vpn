@@ -997,6 +997,7 @@ fn fips_peer_configs_from_mesh(
         configs.push(fips_peer_config_from_hint(
             &peer.endpoint_npub,
             peer_hints.get(&peer.participant_pubkey),
+            true,
         ));
     }
 
@@ -1005,7 +1006,11 @@ fn fips_peer_configs_from_mesh(
             continue;
         }
         if let Ok(peer) = FipsMeshPeerConfig::from_participant_pubkey(participant, Vec::new()) {
-            configs.push(fips_peer_config_from_hint(&peer.endpoint_npub, Some(hints)));
+            configs.push(fips_peer_config_from_hint(
+                &peer.endpoint_npub,
+                Some(hints),
+                false,
+            ));
         }
     }
 
@@ -1017,6 +1022,7 @@ fn fips_peer_configs_from_mesh(
 fn fips_peer_config_from_hint(
     endpoint_npub: &str,
     hints: Option<&Vec<FipsPeerAddressHint>>,
+    discovery_fallback_transit: bool,
 ) -> FipsPeerConfig {
     let addresses = hints
         .into_iter()
@@ -1035,6 +1041,7 @@ fn fips_peer_config_from_hint(
         addresses,
         connect_policy: ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit,
     }
 }
 
@@ -1613,6 +1620,10 @@ mod tests {
         assert_eq!(transit_config.addresses[0].transport, "udp");
         assert_eq!(transit_config.addresses[0].addr, "192.168.50.33:51820");
         assert_eq!(transit_config.addresses[0].seen_at_ms, Some(1234));
+        assert!(
+            !transit_config.discovery_fallback_transit,
+            "hinted non-roster peers seed direct reconnects but not fallback fanout"
+        );
     }
 
     #[test]
