@@ -450,14 +450,7 @@ struct RootView: View {
                             .lineLimit(1)
                     }
                     Spacer()
-                    if network.localIsAdmin {
-                        Button {
-                            addDevicePresented = true
-                        } label: {
-                            Label("Add device", systemImage: "plus")
-                        }
-                        .help("Add device to this network")
-                    }
+                    deviceHeaderActions(network)
                 }
                 TextField("Search", text: $deviceSearch)
                     .textFieldStyle(.roundedBorder)
@@ -489,6 +482,55 @@ struct RootView: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 24)
             }
+        }
+    }
+
+    private func deviceHeaderActions(_ network: NativeNetworkState) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                activateNetworkButton(network)
+                addDeviceButton(network)
+            }
+            HStack(spacing: 8) {
+                activateNetworkButton(network, compact: true)
+                addDeviceButton(network, compact: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func activateNetworkButton(_ network: NativeNetworkState, compact: Bool = false) -> some View {
+        if !network.enabled {
+            Button {
+                activateNetwork(network)
+            } label: {
+                if compact {
+                    Image(systemName: "checkmark.circle.fill")
+                } else {
+                    Label("Activate", systemImage: "checkmark.circle.fill")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(manager.actionInFlight)
+            .help("Activate this network")
+        }
+    }
+
+    @ViewBuilder
+    private func addDeviceButton(_ network: NativeNetworkState, compact: Bool = false) -> some View {
+        if network.localIsAdmin {
+            Button {
+                addDevicePresented = true
+            } label: {
+                if compact {
+                    Image(systemName: "plus")
+                } else {
+                    Label("Add device", systemImage: "plus")
+                }
+            }
+            .controlSize(.small)
+            .help("Add device to this network")
         }
     }
 
@@ -1322,8 +1364,9 @@ struct RootView: View {
             }
             Spacer()
             Button("Activate") {
-                manager.setNetworkEnabled(networkId: network.id, enabled: true)
+                activateNetwork(network)
             }
+            .disabled(manager.actionInFlight)
             Button(role: .destructive) {
                 pendingNetworkRemoval = network
             } label: {
@@ -1560,6 +1603,12 @@ struct RootView: View {
             get: { networkNameDrafts[network.id] ?? network.name },
             set: { networkNameDrafts[network.id] = $0 }
         )
+    }
+
+    private func activateNetwork(_ network: NativeNetworkState) {
+        guard !network.enabled else { return }
+        shownNetworkId = network.id
+        manager.setNetworkEnabled(networkId: network.id, enabled: true)
     }
 
     private func participantAliasBinding(_ participant: NativeParticipantState) -> Binding<String> {

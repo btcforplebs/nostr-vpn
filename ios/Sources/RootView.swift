@@ -180,6 +180,19 @@ private struct DevicesPage: View {
                     NoticeCard(text: model.state.error.isEmpty ? model.statusMessage : model.state.error)
                 }
                 if let network {
+                    if !network.enabled {
+                        Button {
+                            model.dispatch(
+                                NativeActions.setNetworkEnabled(network.id, true),
+                                status: "Activating network"
+                            )
+                        } label: {
+                            Label("Activate Network", systemImage: "checkmark.circle.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.actionInFlight)
+                    }
                     if network.localIsAdmin {
                         Button {
                             addDevicePresented = true
