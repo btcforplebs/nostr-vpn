@@ -313,6 +313,13 @@ pub(super) fn apply_macos_default_route(
 ) -> Result<()> {
     if let Some(ifscope) = ifscope {
         let _ = delete_macos_default_route_for_interface(ifscope);
+        let _ = ProcessCommand::new("route")
+            .arg("-n")
+            .arg("delete")
+            .arg("default")
+            .arg("-ifscope")
+            .arg(ifscope)
+            .status();
     }
 
     if gateway.is_none() {

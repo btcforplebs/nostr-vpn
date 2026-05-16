@@ -627,6 +627,13 @@ impl FullDefaultRoute {
                     .arg(&self.iface)
                     .status();
             }
+            let _ = ProcessCommand::new("route")
+                .arg("-n")
+                .arg("delete")
+                .arg("default")
+                .arg("-ifscope")
+                .arg(&self.original_default.interface)
+                .status();
             let mut change = ProcessCommand::new("route");
             change
                 .arg("-n")
