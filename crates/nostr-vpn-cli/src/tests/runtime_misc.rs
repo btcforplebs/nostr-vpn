@@ -91,6 +91,20 @@ fn local_fips_endpoint_hints_do_not_share_loopback_when_lan_enabled() {
 
 #[cfg(feature = "embedded-fips")]
 #[test]
+fn local_fips_endpoint_hints_do_not_share_tunnel_endpoint() {
+    let mut app = AppConfig::generated();
+    app.node.endpoint = "10.44.1.1:1111".to_string();
+    app.node.listen_port = 51820;
+    app.node.tunnel_ip = "10.44.1.1/32".to_string();
+    app.lan_discovery_enabled = true;
+
+    let hints = local_fips_endpoint_hints(&app, Vec::new());
+
+    assert!(hints.is_empty());
+}
+
+#[cfg(feature = "embedded-fips")]
+#[test]
 fn local_fips_endpoint_hints_keep_dns_endpoint_and_listen_port() {
     let mut app = AppConfig::generated();
     app.node.endpoint = "peer.example.com:1111".to_string();

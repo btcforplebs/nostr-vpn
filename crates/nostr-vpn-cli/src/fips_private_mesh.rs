@@ -18,7 +18,7 @@ use nostr_vpn_core::fips_control::{
 };
 use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
 use nostr_vpn_core::join_requests::MeshJoinRequest;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs::File;
@@ -372,6 +372,67 @@ fn endpoint_hint_ip_is_unusable(ip: IpAddr) -> bool {
                 || ip.is_multicast()
         }
     }
+}
+
+fn endpoint_addr_ip(addr: &str) -> Option<IpAddr> {
+    let trimmed = addr.trim();
+    if let Ok(parsed) = trimmed.parse::<SocketAddr>() {
+        return Some(parsed.ip());
+    }
+
+    let (host, _) = trimmed.rsplit_once(':')?;
+    host.trim().parse::<IpAddr>().ok()
+}
+
+fn endpoint_uses_tunnel_ip(addr: &str, tunnel_ips: &HashSet<IpAddr>) -> bool {
+    endpoint_addr_ip(addr).is_some_and(|ip| tunnel_ips.contains(&ip))
+}
+
+fn filter_static_tunnel_endpoints(
+    groups: Vec<(String, Vec<String>)>,
+    tunnel_ips: &HashSet<IpAddr>,
+) -> Vec<(String, Vec<String>)> {
+    groups
+        .into_iter()
+        .filter_map(|(participant, addrs)| {
+            let addrs = addrs
+                .into_iter()
+                .filter(|addr| !endpoint_uses_tunnel_ip(addr, tunnel_ips))
+                .collect::<Vec<_>>();
+            (!addrs.is_empty()).then_some((participant, addrs))
+        })
+        .collect()
+}
+
+fn filter_stamped_tunnel_endpoints(
+    groups: Vec<(String, Vec<(String, u64)>)>,
+    tunnel_ips: &HashSet<IpAddr>,
+) -> Vec<(String, Vec<(String, u64)>)> {
+    groups
+        .into_iter()
+        .filter_map(|(participant, addrs)| {
+            let addrs = addrs
+                .into_iter()
+                .filter(|(addr, _)| !endpoint_uses_tunnel_ip(addr, tunnel_ips))
+                .collect::<Vec<_>>();
+            (!addrs.is_empty()).then_some((participant, addrs))
+        })
+        .collect()
+}
+
+fn fips_tunnel_endpoint_hosts(app: &AppConfig, network_id: &str) -> HashSet<IpAddr> {
+    let mut hosts = HashSet::new();
+    if let Ok(ip) = strip_cidr(&app.node.tunnel_ip).parse::<IpAddr>() {
+        hosts.insert(ip);
+    }
+    for participant in app.participant_pubkeys_hex() {
+        if let Some(tunnel_ip) = derive_mesh_tunnel_ip(network_id, &participant)
+            && let Ok(ip) = strip_cidr(&tunnel_ip).parse::<IpAddr>()
+        {
+            hosts.insert(ip);
+        }
+    }
+    hosts
 }
 
 // The historical FIPS endpoint cache (`daemon.fips-cache.json`) persisted observed
@@ -1397,20 +1458,35 @@ impl FipsPrivateTunnelConfig {
             .filter(|participant| Some(participant.as_str()) != own_pubkey)
             .map(|participant| normalize_fips_endpoint_npub(&participant))
             .collect::<std::collections::HashSet<_>>();
-        let operator_static = app.fips_static_peer_endpoints();
+        let tunnel_endpoint_hosts = fips_tunnel_endpoint_hosts(app, network_id);
+        let operator_static = filter_static_tunnel_endpoints(
+            app.fips_static_peer_endpoints(),
+            &tunnel_endpoint_hosts,
+        );
         let mut recent_peer_endpoints = recent_peers
             .map(|cache| cache.as_static_peer_endpoints_with_seen_at())
             .unwrap_or_default();
         recent_peer_endpoints.retain(|(participant, _)| {
             desired_endpoint_hint_npubs.contains(&normalize_fips_endpoint_npub(participant))
         });
+        recent_peer_endpoints =
+            filter_stamped_tunnel_endpoints(recent_peer_endpoints, &tunnel_endpoint_hosts);
         recent_peer_endpoints.extend(
-            live_peer_endpoints
-                .iter()
-                .filter(|(participant, _)| {
-                    desired_endpoint_hint_npubs.contains(&normalize_fips_endpoint_npub(participant))
-                })
-                .cloned(),
+            filter_stamped_tunnel_endpoints(
+                live_peer_endpoints
+                    .iter()
+                    .filter(|(participant, _)| {
+                        desired_endpoint_hint_npubs
+                            .contains(&normalize_fips_endpoint_npub(participant))
+                    })
+                    .cloned()
+                    .collect(),
+                &tunnel_endpoint_hosts,
+            )
+            .into_iter()
+            .filter(|(participant, _)| {
+                desired_endpoint_hint_npubs.contains(&normalize_fips_endpoint_npub(participant))
+            }),
         );
         let endpoint_peers =
             fips_endpoint_peers_from_mesh(&peers, operator_static, recent_peer_endpoints);
@@ -3224,6 +3300,7 @@ mod tests {
         ControlFragmentBuffer, FIPS_NOSTR_DISCOVERY_APP, FipsEndpointTransportConfig,
         FipsPrivateMeshRuntime, FipsPrivateTunnelConfig, control_frame_destination_npub,
         control_frame_source_pubkey, fips_endpoint_config, fips_endpoint_peers_from_mesh,
+        strip_cidr,
     };
     use fips_endpoint::{
         Config, ConnectPolicy, PeerConfig as FipsPeerConfig, RoutingMode, TransportInstances,
@@ -3958,6 +4035,59 @@ mod tests {
             .find(|peer| peer.npub == admin_npub)
             .expect("admin endpoint peer");
         assert!(admin.addresses.is_empty());
+    }
+
+    #[test]
+    fn tunnel_config_drops_overlay_tunnel_endpoint_hints() {
+        let alice_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let alice_nsec = alice_keys.secret_key().to_bech32().expect("alice nsec");
+        let alice_pubkey = alice_keys.public_key().to_hex();
+        let bob_pubkey = bob_keys.public_key().to_hex();
+        let bob_npub = bob_keys.public_key().to_bech32().expect("bob npub");
+        let network_id = "fips-tunnel-hints-test";
+        let bob_tunnel_ip = derive_mesh_tunnel_ip(network_id, &bob_pubkey).expect("bob tunnel ip");
+        let bob_tunnel_endpoint = format!("{}:51820", strip_cidr(&bob_tunnel_ip));
+
+        let mut app = AppConfig::default();
+        app.nostr.secret_key = alice_nsec;
+        app.networks[0].network_id = network_id.to_string();
+        app.networks[0].participants = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.fips_peer_endpoints.insert(
+            bob_npub.clone(),
+            vec![
+                bob_tunnel_endpoint.clone(),
+                "192.168.50.23:51820".to_string(),
+            ],
+        );
+
+        let config = FipsPrivateTunnelConfig::from_app(
+            &app,
+            network_id,
+            "utun-test",
+            Some(&alice_pubkey),
+            None,
+            &[(
+                bob_pubkey.clone(),
+                vec![
+                    (bob_tunnel_endpoint, 123_000),
+                    ("192.168.50.22:51820".to_string(), 124_000),
+                ],
+            )],
+        )
+        .expect("fips tunnel config");
+
+        let bob = config
+            .endpoint_peers
+            .iter()
+            .find(|peer| peer.npub == bob_npub)
+            .expect("bob endpoint peer");
+        let addrs = bob
+            .addresses
+            .iter()
+            .map(|hint| hint.addr.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(addrs, vec!["192.168.50.22:51820", "192.168.50.23:51820"]);
     }
 
     /// Pin the open-discovery / closed-data-plane invariant.

@@ -2836,7 +2836,9 @@ fn local_fips_endpoint_hints(
     let mut endpoints = Vec::new();
 
     let configured = endpoint_with_listen_port(&app.node.endpoint, app.node.listen_port);
-    if endpoint_is_gossipable_direct_hint(&configured, app.lan_discovery_enabled) {
+    if endpoint_is_gossipable_direct_hint(&configured, app.lan_discovery_enabled)
+        && !endpoint_uses_tunnel_ip(&configured, &app.node.tunnel_ip)
+    {
         endpoints.push(configured);
     }
 
@@ -2914,6 +2916,25 @@ fn endpoint_is_gossipable_direct_hint(endpoint: &str, allow_local: bool) -> bool
         return false;
     }
     allow_local || !endpoint_is_local_only(trimmed)
+}
+
+#[cfg(feature = "embedded-fips")]
+fn endpoint_uses_tunnel_ip(endpoint: &str, tunnel_ip: &str) -> bool {
+    let Ok(tunnel_ip) = strip_cidr(tunnel_ip).parse::<IpAddr>() else {
+        return false;
+    };
+    endpoint_addr_ip(endpoint).is_some_and(|ip| ip == tunnel_ip)
+}
+
+#[cfg(feature = "embedded-fips")]
+fn endpoint_addr_ip(endpoint: &str) -> Option<IpAddr> {
+    let trimmed = endpoint.trim();
+    if let Ok(parsed) = trimmed.parse::<SocketAddr>() {
+        return Some(parsed.ip());
+    }
+
+    let (host, _) = trimmed.rsplit_once(':')?;
+    host.trim().parse::<IpAddr>().ok()
 }
 
 #[cfg(feature = "embedded-fips")]
