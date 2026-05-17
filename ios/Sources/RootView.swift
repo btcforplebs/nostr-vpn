@@ -911,7 +911,7 @@ private struct DeviceDetailSheet: View {
                         Circle()
                             .fill(connectivityTint(participant, state: model.state))
                             .frame(width: 12, height: 12)
-                        Text(deviceStatus(participant, state: model.state))
+                        Text(deviceDetailStatus(participant, state: model.state))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -1514,9 +1514,6 @@ private func deviceStatus(_ participant: ParticipantState, state: AppState) -> S
     if isSelf(participant, state: state) {
         return state.vpnEnabled ? "This device" : "Off"
     }
-    if !participant.statusText.isEmpty {
-        return participant.statusText
-    }
     switch participant.state {
     case "local", "online", "present":
         return "Online"
@@ -1525,8 +1522,18 @@ private func deviceStatus(_ participant: ParticipantState, state: AppState) -> S
     case "offline", "absent", "off":
         return "Offline"
     default:
-        return "Unknown"
+        return participant.reachable ? "Online" : "Unknown"
     }
+}
+
+private func deviceDetailStatus(_ participant: ParticipantState, state: AppState) -> String {
+    if isSelf(participant, state: state) {
+        return deviceStatus(participant, state: state)
+    }
+    if !participant.statusText.isEmpty {
+        return participant.statusText
+    }
+    return deviceStatus(participant, state: state)
 }
 
 private func connectivityTint(_ participant: ParticipantState, state: AppState) -> Color {

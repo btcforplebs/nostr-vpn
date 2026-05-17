@@ -2926,11 +2926,8 @@ fn device_row(
         &device_status_text(participant),
         if participant.reachable { "ok" } else { "muted" },
     ));
-    if matches!(
-        fips_path_kind(participant),
-        FipsPathKind::Direct | FipsPathKind::Routed
-    ) {
-        row.append(&badge(&fips_path_text(participant), "muted"));
+    if matches!(fips_path_kind(participant), FipsPathKind::Routed) {
+        row.append(&badge("via mesh", "muted"));
     }
 
     let copy = gtk::Button::from_icon_name("edit-copy-symbolic");

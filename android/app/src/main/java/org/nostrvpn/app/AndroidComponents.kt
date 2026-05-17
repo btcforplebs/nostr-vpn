@@ -112,7 +112,8 @@ private fun DeviceDetailDialog(
     onDismiss: () -> Unit,
 ) {
     val isSelf = participant.isSelf(state)
-    val canManage = network?.localIsAdmin == true && !isSelf && dispatch != null
+    val manageNetwork = network?.takeIf { it.localIsAdmin && !isSelf }
+    val manageDispatch = dispatch
     var aliasDraft by remember { mutableStateOf(participant.magicDnsAlias) }
     var pendingRemove by remember { mutableStateOf(false) }
     AlertDialog(
@@ -123,7 +124,7 @@ private fun DeviceDetailDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text(participant.statusLabel(state), color = Muted)
+                Text(participant.detailStatusLabel(state), color = Muted)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (isSelf) Pill("This device", Color(0xFFECFDF5), Ok)
                     if (participant.isAdmin) Pill("Admin", Color(0xFFF5F3FF), Accent)
@@ -139,7 +140,7 @@ private fun DeviceDetailDialog(
                     Text("Tunnel IP", style = MaterialTheme.typography.labelMedium, color = Muted)
                     CopyLine(participant.tunnelIp)
                 }
-                if (canManage && network != null && dispatch != null) {
+                if (manageNetwork != null && manageDispatch != null) {
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = aliasDraft,
@@ -149,13 +150,13 @@ private fun DeviceDetailDialog(
                         label = { Text("Alias") },
                     )
                     Button(onClick = {
-                        dispatch(JSONObject().put("type", "set_participant_alias")
+                        manageDispatch(JSONObject().put("type", "set_participant_alias")
                             .put("npub", participant.npub).put("alias", aliasDraft))
                     }) { Text("Save alias") }
                     OutlinedButton(onClick = {
                         val type = if (participant.isAdmin) "remove_admin" else "add_admin"
-                        dispatch(JSONObject().put("type", type)
-                            .put("networkId", network.id).put("npub", participant.npub))
+                        manageDispatch(JSONObject().put("type", type)
+                            .put("networkId", manageNetwork.id).put("npub", participant.npub))
                     }) {
                         Text(if (participant.isAdmin) "Remove admin" else "Make admin")
                     }
@@ -169,15 +170,15 @@ private fun DeviceDetailDialog(
             TextButton(onClick = onDismiss) { Text("Done") }
         },
     )
-    if (pendingRemove && canManage && network != null && dispatch != null) {
+    if (pendingRemove && manageNetwork != null && manageDispatch != null) {
         AlertDialog(
             onDismissRequest = { pendingRemove = false },
             title = { Text("Remove ${participant.displayName(state)}?") },
             text = { Text("This removes the device from the network's roster. They keep the network locally but won't be in this roster anymore.") },
             confirmButton = {
                 TextButton(onClick = {
-                    dispatch(JSONObject().put("type", "remove_participant")
-                        .put("networkId", network.id).put("npub", participant.npub))
+                    manageDispatch(JSONObject().put("type", "remove_participant")
+                        .put("networkId", manageNetwork.id).put("npub", participant.npub))
                     pendingRemove = false
                     onDismiss()
                 }) { Text("Remove") }
@@ -560,12 +561,19 @@ private fun ParticipantState.subtitle(isSelf: Boolean): String {
 
 private fun ParticipantState.statusLabel(appState: AppState): String {
     if (isSelf(appState)) return if (appState.vpnEnabled) "This device" else "Off"
-    if (statusText.isNotBlank()) return statusText
     return when (state) {
         "local", "online", "present" -> "Online"
         "pending" -> "Connecting"
         "offline", "absent", "off" -> "Offline"
-        else -> "Unknown"
+        else -> if (reachable) "Online" else "Unknown"
+    }
+}
+
+private fun ParticipantState.detailStatusLabel(appState: AppState): String {
+    if (isSelf(appState)) return statusLabel(appState)
+    return when {
+        statusText.isNotBlank() -> statusText
+        else -> statusLabel(appState)
     }
 }
 

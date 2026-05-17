@@ -1825,16 +1825,15 @@ struct RootView: View {
     }
 
     private func deviceStatusText(_ participant: NativeParticipantState) -> String {
-        if participant.state == "off" {
-            return "Off"
-        }
         switch participant.state {
-        case "local", "online":
+        case "local", "online", "present":
             return "Online"
         case "pending":
             return "Connecting"
-        case "offline":
+        case "offline", "absent", "off":
             return "Offline"
+        case _ where participant.reachable:
+            return "Online"
         default:
             return "Unknown"
         }
