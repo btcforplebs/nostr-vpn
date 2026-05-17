@@ -391,7 +391,24 @@
     if (isSelf(participant) || participant.state === 'local' || participant.meshState === 'local') {
       return 'Online';
     }
-    return nonEmpty(participant.statusText || participant.state);
+    const pathState = `${participant.state} ${participant.meshState}`.toLowerCase();
+    if (pathState.includes('online') || pathState.includes('present')) {
+      return 'Online';
+    }
+    if (pathState.includes('pending')) {
+      return 'Connecting';
+    }
+    if (pathState.includes('offline') || pathState.includes('absent') || pathState.includes('off')) {
+      return 'Offline';
+    }
+    return nonEmpty(participant.state, 'Unknown');
+  }
+
+  function deviceDetailStatusText(participant: ParticipantView): string {
+    if (isSelf(participant) || participant.state === 'local' || participant.meshState === 'local') {
+      return deviceStatusText(participant);
+    }
+    return nonEmpty(participant.statusText || participant.state, 'Unknown');
   }
 
   function isSelf(participant: ParticipantView): boolean {
@@ -1108,7 +1125,7 @@
                   </div>
                   <div class="detail-status">
                     <span class="status-dot {participantTone(selectedParticipant)}"></span>
-                    <span>{deviceStatusText(selectedParticipant)}</span>
+                    <span>{deviceDetailStatusText(selectedParticipant)}</span>
                   </div>
                 </header>
 
