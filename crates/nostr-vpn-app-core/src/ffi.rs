@@ -1392,6 +1392,7 @@ impl NativeAppRuntime {
             self.vpn_active = false;
             self.daemon_running = false;
             self.vpn_status = "Disconnected".to_string();
+            self.clear_mobile_runtime_state();
             return self.refresh_mobile_status();
         }
         let output = self.run_nvpn(["pause", "--config", self.config_path_str()?])?;
@@ -1410,7 +1411,8 @@ impl NativeAppRuntime {
         self.service_running = false;
         self.service_binary_version.clear();
         self.service_status_detail = "Background service unsupported on mobile".to_string();
-        if self.vpn_enabled {
+        let mobile_state = self.load_mobile_runtime_state();
+        if self.vpn_enabled || mobile_state.is_some() {
             self.daemon_running = true;
             self.vpn_active = true;
             if self.vpn_status.trim().is_empty()
@@ -1419,9 +1421,10 @@ impl NativeAppRuntime {
             {
                 self.vpn_status = "VPN on".to_string();
             }
-            if let Some(state) = self.load_mobile_runtime_state() {
+            if let Some(state) = mobile_state {
                 self.daemon_state = Some(state.clone());
                 self.daemon_running = state.vpn_enabled;
+                self.vpn_enabled = state.vpn_enabled;
                 self.vpn_active = state.vpn_active;
                 self.vpn_status = state.vpn_status;
             }
@@ -1434,17 +1437,26 @@ impl NativeAppRuntime {
     }
 
     fn load_mobile_runtime_state(&self) -> Option<DaemonRuntimeState> {
-        let path = self
-            .config_path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())?
-            .join(MOBILE_RUNTIME_STATE_FILE);
+        let path = self.mobile_runtime_state_path()?;
         let raw = fs::read_to_string(path).ok()?;
         let state = serde_json::from_str::<DaemonRuntimeState>(&raw).ok()?;
         if age_secs_since(state.updated_at) > MOBILE_RUNTIME_STATE_STALE_SECS {
             return None;
         }
         Some(state)
+    }
+
+    fn clear_mobile_runtime_state(&self) {
+        if let Some(path) = self.mobile_runtime_state_path() {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    fn mobile_runtime_state_path(&self) -> Option<PathBuf> {
+        self.config_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(|parent| parent.join(MOBILE_RUNTIME_STATE_FILE))
     }
 
     fn refresh_status(&mut self) -> Result<()> {
@@ -3218,6 +3230,111 @@ mod tests {
         assert!(state.vpn_enabled);
         assert!(state.vpn_active);
         assert_eq!(state.vpn_status, "VPN on");
+    }
+
+    #[test]
+    fn mobile_refresh_restores_fresh_runtime_state_after_app_recreation() {
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.mobile_runtime = true;
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("nvpn-app-core-mobile-refresh-{nonce}"));
+        fs::create_dir_all(&dir).expect("create test dir");
+        runtime.config_path = dir.join("config.toml");
+        let network_id = create_test_network(&mut runtime, "Home");
+        let peer = Keys::generate().public_key().to_hex();
+        runtime
+            .config
+            .add_participant_to_network(&network_id, &peer)
+            .expect("add peer");
+        runtime
+            .config
+            .save(&runtime.config_path)
+            .expect("save config");
+        let now = unix_timestamp();
+        let runtime_state = DaemonRuntimeState {
+            updated_at: now,
+            binary_version: "test".to_string(),
+            vpn_enabled: true,
+            vpn_active: true,
+            vpn_status: "VPN on (1/1 peers)".to_string(),
+            expected_peer_count: 1,
+            connected_peer_count: 1,
+            mesh_ready: true,
+            peers: vec![DaemonPeerState {
+                participant_pubkey: peer.clone(),
+                reachable: true,
+                last_fips_seen_at: Some(now),
+                ..DaemonPeerState::default()
+            }],
+            ..DaemonRuntimeState::default()
+        };
+        fs::write(
+            dir.join(MOBILE_RUNTIME_STATE_FILE),
+            serde_json::to_vec(&runtime_state).expect("encode runtime state"),
+        )
+        .expect("write runtime state");
+
+        runtime.dispatch(NativeAppAction::Tick);
+        let state = runtime.state();
+        let participant = state.networks[0]
+            .participants
+            .iter()
+            .find(|participant| participant.pubkey_hex == peer)
+            .expect("peer participant");
+
+        assert!(state.vpn_enabled);
+        assert!(state.vpn_active);
+        assert_eq!(state.connected_peer_count, 1);
+        assert!(participant.reachable);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mobile_disconnect_clears_persisted_runtime_state() {
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.mobile_runtime = true;
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("nvpn-app-core-mobile-disconnect-{nonce}"));
+        fs::create_dir_all(&dir).expect("create test dir");
+        runtime.config_path = dir.join("config.toml");
+        create_test_network(&mut runtime, "Home");
+        runtime
+            .config
+            .save(&runtime.config_path)
+            .expect("save config");
+        let state_path = dir.join(MOBILE_RUNTIME_STATE_FILE);
+        fs::write(
+            &state_path,
+            serde_json::to_vec(&DaemonRuntimeState {
+                updated_at: unix_timestamp(),
+                vpn_enabled: true,
+                vpn_active: true,
+                vpn_status: "VPN on".to_string(),
+                ..DaemonRuntimeState::default()
+            })
+            .expect("encode runtime state"),
+        )
+        .expect("write runtime state");
+
+        runtime.dispatch(NativeAppAction::DisconnectVpn);
+        let state = runtime.state();
+
+        assert!(!state_path.exists());
+        assert!(!state.vpn_enabled);
+        assert!(!state.vpn_active);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]

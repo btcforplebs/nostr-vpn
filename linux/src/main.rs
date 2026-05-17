@@ -174,7 +174,7 @@ fn main() -> glib::ExitCode {
             let mut urls = Vec::new();
             for arg in command_line.arguments() {
                 let arg = arg.to_string_lossy();
-                if arg == "--autostart" || arg == "--hidden" {
+                if arg == "--hidden" {
                     present = false;
                 }
                 if arg.starts_with("nvpn://") {
@@ -3598,7 +3598,7 @@ fn autostart_desktop_path() -> Option<PathBuf> {
 
 fn autostart_desktop_entry(executable: &std::path::Path) -> String {
     format!(
-        "[Desktop Entry]\nType=Application\nName=Nostr VPN\nExec={} --autostart\nIcon=nostr-vpn\nTerminal=false\nCategories=Network;Security;\nX-GNOME-Autostart-enabled=true\n",
+        "[Desktop Entry]\nType=Application\nName=Nostr VPN\nExec={}\nIcon=nostr-vpn\nTerminal=false\nCategories=Network;Security;\nX-GNOME-Autostart-enabled=true\n",
         desktop_exec_escape(&executable.to_string_lossy())
     )
 }

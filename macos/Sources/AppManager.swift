@@ -82,8 +82,7 @@ final class AppManager: ObservableObject {
         app.setPrivilegedCommandRunner(runner: AuthorizationServicesPrivilegedCommandRunner())
         self.app = app
         self.state = app.state()
-        self.launchedHidden = CommandLine.arguments.contains("--autostart")
-            || ProcessInfo.processInfo.environment["NVPN_AUTOSTART"] == "1"
+        self.launchedHidden = CommandLine.arguments.contains("--hidden")
     }
 
     var activeNetwork: NativeNetworkState? {
@@ -1088,7 +1087,6 @@ private func launchAgentPlist(executable: String) -> String {
         <key>ProgramArguments</key>
         <array>
             <string>\(xmlEscaped(executable))</string>
-            <string>--autostart</string>
         </array>
         <key>RunAtLoad</key>
         <true/>

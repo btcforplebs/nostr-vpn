@@ -65,6 +65,7 @@ const MOBILE_CAPABILITIES_STARTUP_BURST_INTERVAL_MS: u64 = 750;
 const MOBILE_JOIN_REQUEST_RETRY_SECS: u64 = 10;
 const MOBILE_RUNTIME_STATE_REFRESH_SECS: u64 = 2;
 const MOBILE_RUNTIME_STATE_FILE: &str = "mobile-runtime-state.json";
+const MOBILE_PEER_ONLINE_GRACE_SECS: u64 = 45;
 const MOBILE_HANDSHAKE_RESEND_INTERVAL_MS: u64 = 300;
 const MOBILE_HANDSHAKE_RESEND_BACKOFF: f64 = 1.5;
 
@@ -312,6 +313,7 @@ pub(crate) struct MobileTunnel {
     runtime: Runtime,
     endpoint: Option<Arc<FipsEndpoint>>,
     mesh: Arc<RwLock<FipsMeshRuntime>>,
+    presence: Arc<RwLock<HashMap<String, MobilePeerPresence>>>,
     config: Arc<RwLock<MobileTunnelConfig>>,
     app_config: Arc<RwLock<AppConfig>>,
     app_config_dirty: Arc<AtomicBool>,
@@ -356,6 +358,7 @@ impl MobileTunnel {
             runtime,
             endpoint: Some(started.endpoint),
             mesh: started.mesh,
+            presence: started.presence,
             config: started.config,
             app_config: started.app_config,
             app_config_dirty: started.app_config_dirty,
@@ -400,6 +403,7 @@ impl MobileTunnel {
         )));
         let mesh_peers = Arc::new(RwLock::new(initial_peers));
         let peer_hints = Arc::new(RwLock::new(config.peer_hints.clone()));
+        let presence = Arc::new(RwLock::new(HashMap::new()));
         let config_state = Arc::new(RwLock::new(config.clone()));
         let app_config = Arc::new(RwLock::new(app_config));
         let app_config_dirty = Arc::new(AtomicBool::new(false));
@@ -616,12 +620,18 @@ impl MobileTunnel {
         if let Some(status_path) = config_path.as_deref().and_then(mobile_runtime_state_path) {
             let endpoint = Arc::clone(&endpoint);
             let mesh = Arc::clone(&mesh);
+            let presence = Arc::clone(&presence);
             let status_config = Arc::clone(&config_state);
             tasks.push(tokio::spawn(async move {
                 loop {
-                    if let Err(error) =
-                        persist_mobile_runtime_state(&status_path, &endpoint, &mesh, &status_config)
-                            .await
+                    if let Err(error) = persist_mobile_runtime_state(
+                        &status_path,
+                        &endpoint,
+                        &mesh,
+                        &presence,
+                        &status_config,
+                    )
+                    .await
                     {
                         tracing::warn!(?error, "mobile: failed to persist runtime state");
                     }
@@ -636,6 +646,7 @@ impl MobileTunnel {
             let mesh = Arc::clone(&mesh);
             let mesh_peers = Arc::clone(&mesh_peers);
             let peer_hints = Arc::clone(&peer_hints);
+            let presence = Arc::clone(&presence);
             let config_state = Arc::clone(&config_state);
             let app_config = Arc::clone(&app_config);
             let app_config_dirty = Arc::clone(&app_config_dirty);
@@ -653,6 +664,7 @@ impl MobileTunnel {
                         &mesh,
                         &mesh_peers,
                         &peer_hints,
+                        &presence,
                         &config_state,
                         &app_config,
                         &app_config_dirty,
@@ -674,10 +686,11 @@ impl MobileTunnel {
                     let packet = mesh.read().ok().and_then(|mesh| {
                         mesh.receive_endpoint_data(message.source_npub.as_deref(), &message.data)
                     });
-                    if let Some(packet) = packet
-                        && inbound_tx.send(packet.bytes).is_err()
-                    {
-                        break;
+                    if let Some(packet) = packet {
+                        note_mobile_peer_rx(&presence, &packet.source_pubkey, message.data.len());
+                        if inbound_tx.send(packet.bytes).is_err() {
+                            break;
+                        }
                     }
                 }
             })
@@ -687,6 +700,7 @@ impl MobileTunnel {
         Ok(MobileTunnelStarted {
             endpoint,
             mesh,
+            presence,
             config: config_state,
             app_config,
             app_config_dirty,
@@ -713,6 +727,7 @@ impl MobileTunnel {
             .clone()
             .ok_or_else(|| anyhow!("mobile tunnel stopped"))?;
         let mesh = Arc::clone(&self.mesh);
+        let presence = Arc::clone(&self.presence);
         let config = self
             .config
             .read()
@@ -727,7 +742,10 @@ impl MobileTunnel {
                 let mesh = mesh
                     .read()
                     .map_err(|_| anyhow!("mobile FIPS mesh route table lock poisoned"))?;
-                mobile_runtime_state(&config, &mesh, endpoint_peers, unix_timestamp())
+                let presence = presence
+                    .read()
+                    .map_err(|_| anyhow!("mobile FIPS presence lock poisoned"))?;
+                mobile_runtime_state(&config, &mesh, &presence, endpoint_peers, unix_timestamp())
             };
             serde_json::to_string(&state).context("serialize mobile runtime state")
         })
@@ -780,6 +798,7 @@ impl MobileTunnel {
 struct MobileTunnelStarted {
     endpoint: Arc<FipsEndpoint>,
     mesh: Arc<RwLock<FipsMeshRuntime>>,
+    presence: Arc<RwLock<HashMap<String, MobilePeerPresence>>>,
     config: Arc<RwLock<MobileTunnelConfig>>,
     app_config: Arc<RwLock<AppConfig>>,
     app_config_dirty: Arc<AtomicBool>,
@@ -820,12 +839,19 @@ struct FipsPeerAddressHint {
     seen_at_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct MobilePeerPresence {
+    last_seen_at: Option<u64>,
+    rx_bytes: u64,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_mobile_control_frame(
     endpoint: &FipsEndpoint,
     mesh: &Arc<RwLock<FipsMeshRuntime>>,
     mesh_peers: &Arc<RwLock<Vec<FipsMeshPeerConfig>>>,
     peer_hints: &Arc<RwLock<HashMap<String, Vec<FipsPeerAddressHint>>>>,
+    presence: &Arc<RwLock<HashMap<String, MobilePeerPresence>>>,
     config_state: &Arc<RwLock<MobileTunnelConfig>>,
     app_config: &Arc<RwLock<AppConfig>>,
     app_config_dirty: &AtomicBool,
@@ -850,6 +876,7 @@ async fn handle_mobile_control_frame(
     let Some(source_pubkey) = source_pubkey else {
         return Ok(true);
     };
+    note_mobile_peer_rx(presence, &source_pubkey, message.data.len());
 
     match frame {
         FipsControlFrame::Roster { network_id, roster } => {
@@ -1020,6 +1047,7 @@ async fn persist_mobile_runtime_state(
     path: &Path,
     endpoint: &FipsEndpoint,
     mesh: &Arc<RwLock<FipsMeshRuntime>>,
+    presence: &Arc<RwLock<HashMap<String, MobilePeerPresence>>>,
     config: &Arc<RwLock<MobileTunnelConfig>>,
 ) -> Result<()> {
     let endpoint_peers = endpoint
@@ -1034,7 +1062,10 @@ async fn persist_mobile_runtime_state(
         let mesh = mesh
             .read()
             .map_err(|_| anyhow!("mobile FIPS mesh route table lock poisoned"))?;
-        mobile_runtime_state(&config, &mesh, endpoint_peers, unix_timestamp())
+        let presence = presence
+            .read()
+            .map_err(|_| anyhow!("mobile FIPS presence lock poisoned"))?;
+        mobile_runtime_state(&config, &mesh, &presence, endpoint_peers, unix_timestamp())
     };
     write_mobile_runtime_state(path, &state)
 }
@@ -1042,6 +1073,7 @@ async fn persist_mobile_runtime_state(
 fn mobile_runtime_state(
     config: &MobileTunnelConfig,
     mesh: &FipsMeshRuntime,
+    presence: &HashMap<String, MobilePeerPresence>,
     endpoint_peers: Vec<FipsEndpointPeer>,
     now: u64,
 ) -> DaemonRuntimeState {
@@ -1064,7 +1096,12 @@ fn mobile_runtime_state(
         .map(|status| {
             let peer_config = peer_config_by_participant.get(&status.pubkey);
             let link = link_by_participant.get(&status.pubkey);
-            let reachable = link.is_some();
+            let peer_presence = presence.get(&status.pubkey);
+            let last_seen_at = peer_presence.and_then(|presence| presence.last_seen_at);
+            let presence_connected = last_seen_at.is_some_and(|last_seen_at| {
+                now.saturating_sub(last_seen_at) <= MOBILE_PEER_ONLINE_GRACE_SECS
+            });
+            let reachable = presence_connected || link.is_some();
             let advertised_routes = peer_config
                 .map(|peer| peer.allowed_ips.clone())
                 .unwrap_or_default();
@@ -1094,13 +1131,14 @@ fn mobile_runtime_state(
                 fips_bytes_sent: link.map_or(0, |peer| peer.bytes_sent),
                 fips_bytes_recv: link.map_or(0, |peer| peer.bytes_recv),
                 tx_bytes: 0,
-                rx_bytes: 0,
+                rx_bytes: peer_presence.map_or(0, |presence| presence.rx_bytes),
                 public_key: status.pubkey,
                 advertised_routes,
-                last_mesh_seen_at: if reachable { now } else { 0 },
-                last_fips_seen_at: reachable.then_some(now),
+                last_mesh_seen_at: last_seen_at
+                    .unwrap_or_else(|| if link.is_some() { now } else { 0 }),
+                last_fips_seen_at: last_seen_at.or_else(|| link.is_some().then_some(now)),
                 reachable,
-                last_handshake_at: reachable.then_some(now),
+                last_handshake_at: last_seen_at.or_else(|| link.is_some().then_some(now)),
                 error: if reachable {
                     None
                 } else {
@@ -1131,6 +1169,20 @@ fn mobile_runtime_state(
         peers,
         ..DaemonRuntimeState::default()
     }
+}
+
+fn note_mobile_peer_rx(
+    presence: &Arc<RwLock<HashMap<String, MobilePeerPresence>>>,
+    participant: &str,
+    len: usize,
+) {
+    let now = unix_timestamp();
+    let Ok(mut presence) = presence.write() else {
+        return;
+    };
+    let entry = presence.entry(participant.to_string()).or_default();
+    entry.last_seen_at = Some(now);
+    entry.rx_bytes = entry.rx_bytes.saturating_add(len as u64);
 }
 
 fn write_mobile_runtime_state(path: &Path, state: &DaemonRuntimeState) -> Result<()> {
@@ -1895,7 +1947,13 @@ mod tests {
             bytes_recv: 240,
         };
 
-        let state = mobile_runtime_state(&config, &mesh, vec![endpoint_peer], 1_778_998_000);
+        let state = mobile_runtime_state(
+            &config,
+            &mesh,
+            &HashMap::new(),
+            vec![endpoint_peer],
+            1_778_998_000,
+        );
 
         assert_eq!(state.expected_peer_count, 1);
         assert_eq!(state.connected_peer_count, 1);
@@ -1904,6 +1962,48 @@ mod tests {
         assert!(state.peers[0].reachable);
         assert_eq!(state.peers[0].fips_transport_type, "udp");
         assert_eq!(state.peers[0].fips_srtt_ms, Some(14));
+    }
+
+    #[test]
+    fn mobile_runtime_state_marks_recent_control_presence_reachable_without_link() {
+        let mut app = AppConfig::generated();
+        app.ensure_defaults();
+        let own = app.own_nostr_pubkey_hex().expect("own pubkey");
+        let peer = "26525c442dd039de4e728b41ee8d7f717b267ab25b7c219d53a3249e1c9174cc";
+        app.networks = vec![NetworkConfig {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            enabled: true,
+            network_id: "test".to_string(),
+            participants: vec![peer.to_string()],
+            admins: vec![own],
+            listen_for_join_requests: true,
+            invite_inviter: String::new(),
+            outbound_join_request: None,
+            inbound_join_requests: Vec::new(),
+            shared_roster_updated_at: 0,
+            shared_roster_signed_by: String::new(),
+        }];
+        let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
+        let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
+        let now = 1_778_998_000;
+        let mut presence = HashMap::new();
+        presence.insert(
+            peer.to_string(),
+            MobilePeerPresence {
+                last_seen_at: Some(now - 10),
+                rx_bytes: 64,
+            },
+        );
+
+        let state = mobile_runtime_state(&config, &mesh, &presence, Vec::new(), now);
+
+        assert_eq!(state.expected_peer_count, 1);
+        assert_eq!(state.connected_peer_count, 1);
+        assert!(state.mesh_ready);
+        assert!(state.peers[0].reachable);
+        assert_eq!(state.peers[0].rx_bytes, 64);
+        assert_eq!(state.peers[0].last_fips_seen_at, Some(now - 10));
     }
 
     #[test]

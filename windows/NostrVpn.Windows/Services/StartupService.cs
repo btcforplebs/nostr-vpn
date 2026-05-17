@@ -13,7 +13,7 @@ public static class StartupService
         using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath);
         if (enabled)
         {
-            key.SetValue(AppName, $"\"{Environment.ProcessPath}\" --autostart");
+            key.SetValue(AppName, $"\"{Environment.ProcessPath}\"");
         }
         else
         {
