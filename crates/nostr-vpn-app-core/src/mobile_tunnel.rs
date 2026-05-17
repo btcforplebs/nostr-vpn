@@ -2274,15 +2274,22 @@ mod tests {
         config
     }
 
-    async fn bind_local_mobile_endpoint(scope: &str, mobile: &MobileTunnelConfig) -> FipsEndpoint {
-        FipsEndpoint::builder()
-            .config(local_mobile_fips_config(scope, mobile))
-            .identity_nsec(mobile.identity_nsec.clone())
-            .discovery_scope(scope.to_string())
-            .without_system_tun()
-            .bind()
+    fn bind_local_mobile_endpoint<'a>(
+        scope: &'a str,
+        mobile: &'a MobileTunnelConfig,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = FipsEndpoint> + 'a>> {
+        Box::pin(async move {
+            Box::pin(
+                FipsEndpoint::builder()
+                    .config(local_mobile_fips_config(scope, mobile))
+                    .identity_nsec(mobile.identity_nsec.clone())
+                    .discovery_scope(scope.to_string())
+                    .without_system_tun()
+                    .bind(),
+            )
             .await
             .expect("bind local mobile FIPS endpoint")
+        })
     }
 
     fn admin_join_request_app(admin_nsec: &str, admin_pubkey: &str, network_id: &str) -> AppConfig {
