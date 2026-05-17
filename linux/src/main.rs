@@ -1319,7 +1319,8 @@ fn device_detail_card(
     header.append(&status);
     detail.append(&header);
 
-    if network.local_is_admin && !is_self(&participant, state) {
+    let participant_is_self = is_self(&participant, state);
+    if network.local_is_admin {
         let manage = gtk::Box::new(gtk::Orientation::Vertical, 10);
         section_header(&manage, "Manage Device", "changes-allow-symbolic");
 
@@ -1350,51 +1351,53 @@ fn device_detail_card(
         }
         row.append(&save);
 
-        let admin = gtk::Button::from_icon_name(if participant.is_admin {
-            "starred-symbolic"
-        } else {
-            "non-starred-symbolic"
-        });
-        admin.set_tooltip_text(Some(if participant.is_admin {
-            "Remove admin"
-        } else {
-            "Make admin"
-        }));
-        {
-            let app = app.clone();
-            let network_id = network.id.clone();
-            let npub = participant.npub.clone();
-            let is_admin = participant.is_admin;
-            admin.connect_clicked(move |_| {
-                dispatch(
-                    &app,
-                    if is_admin {
-                        NativeAppAction::RemoveAdmin {
-                            network_id: network_id.clone(),
-                            npub: npub.clone(),
-                        }
-                    } else {
-                        NativeAppAction::AddAdmin {
-                            network_id: network_id.clone(),
-                            npub: npub.clone(),
-                        }
-                    },
-                );
+        if !participant_is_self {
+            let admin = gtk::Button::from_icon_name(if participant.is_admin {
+                "starred-symbolic"
+            } else {
+                "non-starred-symbolic"
             });
-        }
-        row.append(&admin);
+            admin.set_tooltip_text(Some(if participant.is_admin {
+                "Remove admin"
+            } else {
+                "Make admin"
+            }));
+            {
+                let app = app.clone();
+                let network_id = network.id.clone();
+                let npub = participant.npub.clone();
+                let is_admin = participant.is_admin;
+                admin.connect_clicked(move |_| {
+                    dispatch(
+                        &app,
+                        if is_admin {
+                            NativeAppAction::RemoveAdmin {
+                                network_id: network_id.clone(),
+                                npub: npub.clone(),
+                            }
+                        } else {
+                            NativeAppAction::AddAdmin {
+                                network_id: network_id.clone(),
+                                npub: npub.clone(),
+                            }
+                        },
+                    );
+                });
+            }
+            row.append(&admin);
 
-        let remove = gtk::Button::from_icon_name("edit-delete-symbolic");
-        remove.set_tooltip_text(Some("Remove device"));
-        remove.add_css_class("destructive-action");
-        connect_remove_participant_confirmation(
-            &remove,
-            app,
-            network.id.clone(),
-            participant.npub.clone(),
-            device_name(&participant),
-        );
-        row.append(&remove);
+            let remove = gtk::Button::from_icon_name("edit-delete-symbolic");
+            remove.set_tooltip_text(Some("Remove device"));
+            remove.add_css_class("destructive-action");
+            connect_remove_participant_confirmation(
+                &remove,
+                app,
+                network.id.clone(),
+                participant.npub.clone(),
+                device_name(&participant),
+            );
+            row.append(&remove);
+        }
         manage.append(&row);
         detail.append(&manage);
     }

@@ -43,7 +43,7 @@ fn default_node_name_from_hostname_ignores_container_hex_names() {
 }
 
 #[test]
-fn default_node_name_resolution_prefers_hostname_over_petname() {
+fn default_node_name_resolution_prefers_hostname_over_pubkey_fallback() {
     let keys = Keys::generate();
     let own_hex = keys.public_key().to_hex();
 
@@ -54,7 +54,7 @@ fn default_node_name_resolution_prefers_hostname_over_petname() {
 }
 
 #[test]
-fn default_node_name_resolution_falls_back_to_petname_for_localhost() {
+fn default_node_name_resolution_falls_back_to_device_id_for_localhost() {
     let keys = Keys::generate();
     let own_hex = keys.public_key().to_hex();
 

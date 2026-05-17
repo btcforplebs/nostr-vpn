@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- MagicDNS no longer invents aliases for unnamed roster members;
+  devices can be in a roster without an `.nvpn` name until an admin names them.
+- Pending join requests seed only temporary local `self.nvpn` and `admin.nvpn`
+  names until the accepted shared roster provides real aliases.
+
+### Fixed
+
+- Admins can rename their own device from every native network UI.
+
 ## 4.0.28 - 2026-05-17
 
 ### Changed
@@ -20,7 +31,7 @@ All notable changes to this project are documented in this file.
 
 - Admin-signed shared rosters now apply MagicDNS aliases for the local device
   itself, so an admin-set name such as `iphone.nvpn` replaces an older local
-  fallback like `snail.nvpn`.
+  fallback.
 - Mobile admins now persist inbound FIPS join requests from unknown requesters,
   and native app state exposes pending requests for every UI shell.
 - The release gate now runs the routed FIPS and NAT safe-MTU Docker e2e tests

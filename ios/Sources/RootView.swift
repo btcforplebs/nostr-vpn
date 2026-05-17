@@ -968,7 +968,7 @@ private struct DeviceDetailSheet: View {
                     }
                 }
 
-                if localIsAdmin && !isMe {
+                if localIsAdmin {
                     AppCard {
                         Text("Manage")
                             .font(.headline)
@@ -985,29 +985,31 @@ private struct DeviceDetailSheet: View {
                         }
                         .buttonStyle(.bordered)
 
-                        Button {
-                            if participant.isAdmin {
-                                model.dispatch(
-                                    NativeActions.removeAdmin(networkId: network.id, npub: participant.npub),
-                                    status: "Removing admin"
-                                )
-                            } else {
-                                model.dispatch(
-                                    NativeActions.addAdmin(networkId: network.id, npub: participant.npub),
-                                    status: "Granting admin"
-                                )
+                        if !isMe {
+                            Button {
+                                if participant.isAdmin {
+                                    model.dispatch(
+                                        NativeActions.removeAdmin(networkId: network.id, npub: participant.npub),
+                                        status: "Removing admin"
+                                    )
+                                } else {
+                                    model.dispatch(
+                                        NativeActions.addAdmin(networkId: network.id, npub: participant.npub),
+                                        status: "Granting admin"
+                                    )
+                                }
+                            } label: {
+                                Label(participant.isAdmin ? "Remove admin" : "Make admin", systemImage: participant.isAdmin ? "person.fill.badge.minus" : "person.fill.badge.plus")
                             }
-                        } label: {
-                            Label(participant.isAdmin ? "Remove admin" : "Make admin", systemImage: participant.isAdmin ? "person.fill.badge.minus" : "person.fill.badge.plus")
-                        }
-                        .buttonStyle(.bordered)
+                            .buttonStyle(.bordered)
 
-                        Button(role: .destructive) {
-                            pendingRemove = true
-                        } label: {
-                            Label("Remove from network", systemImage: "trash")
+                            Button(role: .destructive) {
+                                pendingRemove = true
+                            } label: {
+                                Label("Remove from network", systemImage: "trash")
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.bordered)
                     }
                     .confirmationDialog(
                         "Remove \(deviceName(participant, state: model.state))?",

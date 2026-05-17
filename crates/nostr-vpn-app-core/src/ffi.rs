@@ -966,6 +966,7 @@ impl NativeAppRuntime {
             return Ok(false);
         }
 
+        let _ = self.config.ensure_temporary_self_magic_dns_alias();
         let network = self
             .config
             .network_by_id_mut(network_id)
@@ -2771,6 +2772,120 @@ mod tests {
                 && participant.state == "off"
                 && participant.mesh_state == "off"
         }));
+    }
+
+    #[test]
+    fn self_admin_alias_action_updates_network_state_for_ui_shells() {
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("nvpn-app-core-self-alias-{nonce}"));
+        fs::create_dir_all(&dir).expect("create test dir");
+
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.last_error.clear();
+        runtime.mobile_runtime = true;
+        runtime.config_path = dir.join("config.toml");
+        create_test_network(&mut runtime, "Home");
+        let own_pubkey = runtime
+            .config
+            .own_nostr_pubkey_hex()
+            .expect("generated config should have own pubkey");
+        runtime.config.networks[0].admins = vec![own_pubkey.clone()];
+        runtime.config.networks[0].participants = Vec::new();
+
+        runtime.dispatch(NativeAppAction::SetParticipantAlias {
+            npub: to_npub(&own_pubkey),
+            alias: "My iPhone".to_string(),
+        });
+
+        assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
+        let state = runtime.state();
+        let network = &state.networks[0];
+        assert!(network.local_is_admin);
+        let self_participant = network
+            .participants
+            .iter()
+            .find(|participant| participant.pubkey_hex == own_pubkey)
+            .expect("self participant");
+        assert_eq!(self_participant.magic_dns_alias, "my-iphone");
+        assert_eq!(self_participant.magic_dns_name, "my-iphone.nvpn");
+        assert_eq!(state.self_magic_dns_name, "my-iphone.nvpn");
+
+        let roster = runtime
+            .config
+            .shared_network_roster(&network.id)
+            .expect("shared roster");
+        assert_eq!(
+            roster.aliases.get(&own_pubkey).map(String::as_str),
+            Some("my-iphone")
+        );
+
+        let saved = AppConfig::load(&runtime.config_path).expect("load persisted config");
+        assert_eq!(saved.peer_alias(&own_pubkey).as_deref(), Some("my-iphone"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn join_request_seeds_working_temporary_magic_dns_names() {
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("nvpn-app-core-join-dns-{nonce}"));
+        fs::create_dir_all(&dir).expect("create test dir");
+
+        let admin = Keys::generate();
+        let admin_hex = admin.public_key().to_hex();
+        let admin_npub = admin.public_key().to_bech32().expect("admin npub");
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.last_error.clear();
+        runtime.mobile_runtime = true;
+        runtime.config_path = dir.join("config.toml");
+
+        runtime.dispatch(NativeAppAction::ManualAddNetwork {
+            admin_npub,
+            mesh_network_id: "mesh-home".to_string(),
+        });
+        let network_id = runtime.config.networks[0].id.clone();
+        runtime.dispatch(NativeAppAction::RequestNetworkJoin { network_id });
+
+        assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
+        assert_eq!(
+            runtime.config.peer_alias(&admin_hex).as_deref(),
+            Some("admin")
+        );
+        let own_pubkey = runtime
+            .config
+            .own_nostr_pubkey_hex()
+            .expect("generated config should have own pubkey");
+        let self_alias = runtime
+            .config
+            .peer_alias(&own_pubkey)
+            .expect("join request seeds local alias");
+        assert_eq!(self_alias, "self");
+
+        let records = nostr_vpn_core::magic_dns::build_magic_dns_records(&runtime.config);
+        let admin_ip = derive_mesh_tunnel_ip("mesh-home", &admin_hex)
+            .expect("admin tunnel ip")
+            .trim_end_matches("/32")
+            .parse()
+            .expect("admin ipv4");
+        let own_ip = derive_mesh_tunnel_ip("mesh-home", &own_pubkey)
+            .expect("own tunnel ip")
+            .trim_end_matches("/32")
+            .parse()
+            .expect("own ipv4");
+        assert_eq!(records.get("admin.nvpn").copied(), Some(admin_ip));
+        assert_eq!(records.get("self.nvpn").copied(), Some(own_ip));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -47,8 +47,14 @@ pub(crate) fn apply_network_invite_to_active_network(
         merge_invite_membership(network, &prepared, own_pubkey.as_deref(), reset_membership);
     }
 
-    if !inviter_already_configured && !invite.inviter_node_name.trim().is_empty() {
-        let _ = config.set_peer_alias(&prepared.inviter_pubkey, &invite.inviter_node_name);
+    if !inviter_already_configured {
+        let inviter_alias = invite.inviter_node_name.trim();
+        let inviter_alias = if inviter_alias.is_empty() {
+            "admin"
+        } else {
+            inviter_alias
+        };
+        let _ = config.set_peer_alias(&prepared.inviter_pubkey, inviter_alias);
     }
 
     if should_adopt_name

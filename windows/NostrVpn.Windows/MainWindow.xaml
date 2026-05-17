@@ -253,7 +253,7 @@
                       </StackPanel>
                     </DockPanel>
 
-                    <Grid Margin="0,20,0,0" Visibility="{Binding SelectedParticipantCanManage, Converter={StaticResource BoolToVisibility}}">
+                    <Grid Margin="0,20,0,0" Visibility="{Binding SelectedParticipantCanRename, Converter={StaticResource BoolToVisibility}}">
                       <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="80" />
                         <ColumnDefinition Width="*" />
@@ -264,8 +264,8 @@
                       <TextBlock Text="Name" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" />
                       <TextBox x:Name="AliasInput" Grid.Column="1" Text="{Binding SelectedParticipant.MagicDnsAlias, Mode=OneWay}" Margin="0,0,8,0" />
                       <Button Grid.Column="2" Content="Save" Tag="{Binding SelectedParticipant}" Click="SetParticipantAlias_Click" Margin="0,0,8,0" />
-                      <Button Grid.Column="3" Content="Admin" Tag="{Binding SelectedParticipant}" Click="ToggleAdmin_Click" Margin="0,0,8,0" />
-                      <Button Grid.Column="4" Content="Remove" Tag="{Binding SelectedParticipant}" Click="RemoveParticipant_Click" />
+                      <Button Grid.Column="3" Content="Admin" Tag="{Binding SelectedParticipant}" Click="ToggleAdmin_Click" Margin="0,0,8,0" Visibility="{Binding SelectedParticipantCanManage, Converter={StaticResource BoolToVisibility}}" />
+                      <Button Grid.Column="4" Content="Remove" Tag="{Binding SelectedParticipant}" Click="RemoveParticipant_Click" Visibility="{Binding SelectedParticipantCanManage, Converter={StaticResource BoolToVisibility}}" />
                     </Grid>
 
                     <Border BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Margin="0,20,0,0" Padding="0,18,0,0">

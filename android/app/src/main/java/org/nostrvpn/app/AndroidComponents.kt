@@ -112,7 +112,7 @@ private fun DeviceDetailDialog(
     onDismiss: () -> Unit,
 ) {
     val isSelf = participant.isSelf(state)
-    val manageNetwork = network?.takeIf { it.localIsAdmin && !isSelf }
+    val manageNetwork = network?.takeIf { it.localIsAdmin }
     val manageDispatch = dispatch
     var aliasDraft by remember { mutableStateOf(participant.magicDnsAlias) }
     var pendingRemove by remember { mutableStateOf(false) }
@@ -153,15 +153,17 @@ private fun DeviceDetailDialog(
                         manageDispatch(JSONObject().put("type", "set_participant_alias")
                             .put("npub", participant.npub).put("alias", aliasDraft))
                     }) { Text("Save alias") }
-                    OutlinedButton(onClick = {
-                        val type = if (participant.isAdmin) "remove_admin" else "add_admin"
-                        manageDispatch(JSONObject().put("type", type)
-                            .put("networkId", manageNetwork.id).put("npub", participant.npub))
-                    }) {
-                        Text(if (participant.isAdmin) "Remove admin" else "Make admin")
-                    }
-                    OutlinedButton(onClick = { pendingRemove = true }) {
-                        Text("Remove from network")
+                    if (!isSelf) {
+                        OutlinedButton(onClick = {
+                            val type = if (participant.isAdmin) "remove_admin" else "add_admin"
+                            manageDispatch(JSONObject().put("type", type)
+                                .put("networkId", manageNetwork.id).put("npub", participant.npub))
+                        }) {
+                            Text(if (participant.isAdmin) "Remove admin" else "Make admin")
+                        }
+                        OutlinedButton(onClick = { pendingRemove = true }) {
+                            Text("Remove from network")
+                        }
                     }
                 }
             }
@@ -170,7 +172,7 @@ private fun DeviceDetailDialog(
             TextButton(onClick = onDismiss) { Text("Done") }
         },
     )
-    if (pendingRemove && manageNetwork != null && manageDispatch != null) {
+    if (pendingRemove && manageNetwork != null && manageDispatch != null && !isSelf) {
         AlertDialog(
             onDismissRequest = { pendingRemove = false },
             title = { Text("Remove ${participant.displayName(state)}?") },

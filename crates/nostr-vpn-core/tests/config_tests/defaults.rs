@@ -400,9 +400,11 @@ fn apply_admin_signed_shared_roster_applies_aliases_for_members() {
     config.networks[0].network_id = "mesh-home".to_string();
     config.networks[0].admins = vec![current_admin_hex.clone()];
     config.networks[0].participants = vec![current_admin_hex.clone()];
-    config.peer_aliases.insert(own_npub, "snail".to_string());
+    config
+        .peer_aliases
+        .insert(own_npub, "old-local".to_string());
     config.ensure_defaults();
-    assert_eq!(config.self_magic_dns_label().as_deref(), Some("snail"));
+    assert_eq!(config.self_magic_dns_label().as_deref(), Some("old-local"));
 
     let changed = config
         .apply_admin_signed_shared_roster(
