@@ -927,6 +927,7 @@ impl NativeAppRuntime {
             network_id: mesh_id.to_string(),
             inviter_npub: admin.to_string(),
             inviter_node_name: String::new(),
+            inviter_endpoints: Vec::new(),
             admins: vec![admin.to_string()],
             participants: Vec::new(),
             relays: Vec::new(),
@@ -3006,6 +3007,7 @@ mod tests {
         let invite = serde_json::json!({
             "v": 3,
             "networkId": "8d4f34f5425bc50e",
+            "inviterEndpoints": ["192.168.50.20:51820"],
             "admins": [admin_npub],
             "relays": ["wss://temp.iris.to"]
         })
@@ -3028,6 +3030,10 @@ mod tests {
             .expect("join request should be queued");
         assert_eq!(pending.recipient, admin_hex);
         assert!(network.participants.is_empty());
+        assert_eq!(
+            runtime.config.fips_peer_endpoints.get(&admin_npub),
+            Some(&vec!["192.168.50.20:51820".to_string()])
+        );
         let state = runtime.state();
         assert_eq!(state.networks.len(), 1);
         assert_eq!(state.networks[0].network_id, "8d4f34f5425bc50e");

@@ -1562,6 +1562,23 @@ impl AppConfig {
             .any(|endpoints| endpoints.iter().any(|endpoint| !endpoint.trim().is_empty()))
     }
 
+    pub fn add_fips_peer_endpoint_hints(&mut self, peer: &str, endpoints: &[String]) -> Result<()> {
+        let peer_pubkey = normalize_nostr_pubkey(peer)?;
+        let peer_npub = npub_for_pubkey_hex(&peer_pubkey);
+        let entry = self.fips_peer_endpoints.entry(peer_npub).or_default();
+        entry.extend(
+            endpoints
+                .iter()
+                .map(|endpoint| endpoint.trim())
+                .filter(|endpoint| !endpoint.is_empty())
+                .map(ToString::to_string),
+        );
+        entry.sort();
+        entry.dedup();
+        self.normalize_fips_peer_endpoints();
+        Ok(())
+    }
+
     fn ensure_single_active_network(&mut self) {
         let mut first_active_index = None;
         for (index, network) in self.networks.iter_mut().enumerate() {

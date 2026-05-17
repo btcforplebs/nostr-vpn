@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.30 - 2026-05-18
+
+### Fixed
+
+- Invites now carry the inviter's current FIPS endpoint hint and import stores
+  that hint for the admin peer, so join requests do not depend only on stale
+  overlay endpoint discovery.
+- Placeholder/documentation endpoints such as `198.51.100.10:51820` now trigger
+  endpoint autoconfiguration instead of being advertised as real peer addresses.
+
 ## 4.0.29 - 2026-05-17
 
 ### Changed

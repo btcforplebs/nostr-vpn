@@ -203,7 +203,8 @@ fn tunnel_ip_stays_stable_when_roster_changes_if_network_id_is_fixed() {
 fn endpoint_and_tunnel_autoconfig_detection_works() {
     assert!(needs_endpoint_autoconfig("127.0.0.1:51820"));
     assert!(needs_endpoint_autoconfig("0.0.0.0:51820"));
-    assert!(!needs_endpoint_autoconfig("198.51.100.10:51820"));
+    assert!(needs_endpoint_autoconfig("198.51.100.10:51820"));
+    assert!(!needs_endpoint_autoconfig("192.168.1.10:51820"));
 
     assert!(needs_tunnel_ip_autoconfig("10.44.0.1/32"));
     assert!(!needs_tunnel_ip_autoconfig("10.44.0.15/32"));
