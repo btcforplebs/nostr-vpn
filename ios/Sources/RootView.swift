@@ -488,7 +488,7 @@ private struct JoinNetworkCard: View {
 
             DisclosureGroup("Add manually", isExpanded: $manualExpanded) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Both sides have to add each other. Get the admin's Device ID and the network ID from them, paste below, then send a join request. The admin must also add your Device ID via their Add device page before the pairing completes.")
+                    Text("Both sides add each other. Enter their Device ID and network ID here, then have them add your Device ID.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     TextField("Admin Device ID", text: $manualAdminId)
@@ -508,15 +508,16 @@ private struct JoinNetworkCard: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .textFieldStyle(.roundedBorder)
-                    Button("Send join request") {
+                    Button("Add") {
                         let admin = manualAdminId.trimmingCharacters(in: .whitespacesAndNewlines)
                         let mesh = manualNetworkId.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if let invite = manualInviteJSON(adminNpub: admin, meshId: mesh) {
-                            model.importInvite(invite)
-                            manualAdminId = ""
-                            manualNetworkId = ""
-                            manualExpanded = false
-                        }
+                        model.dispatch(
+                            NativeActions.manualAddNetwork(adminNpub: admin, meshNetworkId: mesh),
+                            status: "Adding network"
+                        )
+                        manualAdminId = ""
+                        manualNetworkId = ""
+                        manualExpanded = false
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!canSubmitManual)
@@ -548,29 +549,6 @@ private struct JoinNetworkCard: View {
             }
         }
     }
-}
-
-/// Build a synthetic invite from an admin's Device ID + a mesh network ID,
-/// for the manual-join flow. The Rust core's `parse_network_invite`
-/// accepts a bare-JSON invite (no `nvpn://invite/` prefix needed) as long
-/// as it has v3, a non-empty network_id, and at least one admin. This
-/// gives the same result as importing the equivalent invite link: the
-/// network is added locally with the admin's npub, and a join request is
-/// queued so the admin can accept and propagate the roster.
-func manualInviteJSON(adminNpub: String, meshId: String) -> String? {
-    guard isValidDeviceId(adminNpub), !meshId.isEmpty else { return nil }
-    // NetworkInvite is serde(rename_all = "camelCase") on the Rust side.
-    let payload: [String: Any] = [
-        "v": 3,
-        "networkId": meshId,
-        "inviterNpub": adminNpub,
-        "admins": [adminNpub],
-        "participants": [],
-    ]
-    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
-        return nil
-    }
-    return String(data: data, encoding: .utf8)
 }
 
 /// Admin-only sheet for adding a device to YOUR network. Two paths:
@@ -608,7 +586,7 @@ private struct AddDeviceSheet: View {
 /// manually: the admin's own Device ID + the network ID. The other
 /// device pastes both into Join Network → Add manually. Both sides
 /// then have to add each other's Device IDs for the pairing to
-/// complete — same flow as scanning an invite, just typed by hand.
+/// complete.
 private struct ManualPairingInfoCard: View {
     @ObservedObject var model: AppModel
     let network: NetworkState

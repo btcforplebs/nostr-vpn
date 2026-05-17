@@ -520,10 +520,8 @@ private fun NetworkSetupCard(
             }
 
             // Manual join: hand off admin device id + mesh network id directly
-            // to the core's `manual_add_network` action. The core builds a
-            // synthetic NetworkInvite and runs it through the same parse +
-            // apply path as a regular invite — the network shows up locally
-            // with admin seeded and a join request is queued for them.
+            // to the core's `manual_add_network` action. Both sides add each
+            // other's Device ID out-of-band; no join request is queued here.
             var manualExpanded by remember { mutableStateOf(false) }
             var manualAdminId by remember { mutableStateOf("") }
             var manualNetworkId by remember { mutableStateOf("") }
