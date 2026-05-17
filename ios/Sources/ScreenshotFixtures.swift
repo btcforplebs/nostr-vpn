@@ -11,7 +11,7 @@ enum ScreenshotFixtures {
 
         var state = AppState()
         state.rev = 1
-        state.appVersion = "4.0.28"
+        state.appVersion = appVersion
         state.platform = "iOS Simulator"
         state.mobile = true
         state.vpnControlSupported = true
@@ -77,6 +77,10 @@ enum ScreenshotFixtures {
             lanPeer(name: "iPadOS nearby", network: "Home Mesh", invite: "nvpn://invite/demo-ipad")
         ]
         return state
+    }
+
+    private static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
     }
 
     static func dispatch(_ action: [String: Any], state original: AppState) -> AppState {
