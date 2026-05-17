@@ -11,6 +11,7 @@ umbrel/.data
 *.log
 *.swp
 artifacts/
+test-results/
 .env.release.local
 .env.zapstore.local
 

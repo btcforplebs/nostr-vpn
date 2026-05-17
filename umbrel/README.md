@@ -26,6 +26,15 @@ curl -X POST http://localhost:38080/api/tick
 The image builds the responsive Svelte control panel from
 `web/control-panel` and serves it from `/usr/share/nostr-vpn/web`.
 
+To run the Docker-backed web parity smoke test:
+
+```sh
+just e2e-umbrel-web
+```
+
+That test exercises the bundled UI plus config-level `nvpn-web` actions. Mesh
+packet-path behavior stays covered by the existing backend Docker e2es.
+
 ## Release bundle
 
 Umbrel app submissions need a pinned remote image reference, not a local build

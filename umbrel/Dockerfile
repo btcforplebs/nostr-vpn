@@ -12,6 +12,14 @@ RUN pnpm run build
 FROM rust:1.94-bookworm AS rust-builder
 WORKDIR /work
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      clang \
+      libclang-dev \
+      libdbus-1-dev \
+      pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
@@ -24,6 +32,7 @@ RUN apt-get update \
       iproute2 \
       iptables \
       iputils-ping \
+      libdbus-1-3 \
       procps \
       wireguard-tools \
     && rm -rf /var/lib/apt/lists/*
