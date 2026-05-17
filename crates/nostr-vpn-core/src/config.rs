@@ -27,11 +27,11 @@ use crate::config_defaults::{
     default_listen_for_join_requests, default_listen_port, default_nat_discovery_timeout_secs,
     default_nat_enabled, default_nat_stun_servers, default_network_enabled, default_network_id,
     default_node_id, default_relays, default_tunnel_ip, generate_nostr_identity, is_true, is_zero,
-    npub_for_pubkey_hex, uses_default_network_id,
+    needs_generated_network_id, npub_for_pubkey_hex,
 };
 pub use crate::config_defaults::{
-    derive_network_id_from_participants, maybe_autoconfigure_node, needs_endpoint_autoconfig,
-    needs_tunnel_ip_autoconfig, normalize_nostr_pubkey, normalize_runtime_network_id,
+    maybe_autoconfigure_node, needs_endpoint_autoconfig, needs_tunnel_ip_autoconfig,
+    normalize_nostr_pubkey, normalize_runtime_network_id,
 };
 use crate::config_magic_dns::{
     default_magic_dns_suffix, default_network_entry_id, default_network_name, default_node_name,
@@ -98,7 +98,10 @@ pub struct AppConfig {
     pub mesh_tunnel_mtu: u16,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub exit_node: String,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default = "default_exit_node_leak_protection",
+        skip_serializing_if = "is_true"
+    )]
     pub exit_node_leak_protection: bool,
     #[serde(default = "default_close_to_tray_on_close")]
     pub close_to_tray_on_close: bool,
@@ -490,6 +493,10 @@ fn wireguard_exit_persistent_keepalive_secs_is_default(value: &u16) -> bool {
     *value == default_wireguard_exit_persistent_keepalive_secs()
 }
 
+fn default_exit_node_leak_protection() -> bool {
+    true
+}
+
 fn is_zero_u16(value: &u16) -> bool {
     *value == 0
 }
@@ -633,7 +640,7 @@ impl Default for AppConfig {
             mesh_underlay_udp_mtu: 0,
             mesh_tunnel_mtu: 0,
             exit_node: String::new(),
-            exit_node_leak_protection: false,
+            exit_node_leak_protection: default_exit_node_leak_protection(),
             close_to_tray_on_close: default_close_to_tray_on_close(),
             magic_dns_suffix: default_magic_dns_suffix(),
             wireguard_exit: WireGuardExitConfig::default(),
@@ -694,6 +701,7 @@ impl AppConfig {
     pub fn generated_without_networks() -> Self {
         let mut config = Self::default();
         config.networks.clear();
+        config.peer_aliases.clear();
         config
     }
 
@@ -834,7 +842,7 @@ impl AppConfig {
         }
 
         self.ensure_single_active_network();
-        self.derive_default_network_ids();
+        self.generate_placeholder_network_ids();
         self.normalize_selected_exit_node();
         self.normalize_fips_peer_endpoints();
         self.normalize_peer_aliases();
@@ -986,6 +994,11 @@ impl AppConfig {
             .find(|network| network.id == network_id)
     }
 
+    pub fn add_owned_network(&mut self, name: &str) -> String {
+        self.seed_self_magic_dns_alias_for_first_owned_network();
+        self.add_network(name)
+    }
+
     pub fn add_network(&mut self, name: &str) -> String {
         let ordinal = self.networks.len() + 1;
         let mut used_ids = self
@@ -1019,6 +1032,21 @@ impl AppConfig {
         id
     }
 
+    fn seed_self_magic_dns_alias_for_first_owned_network(&mut self) {
+        if !self.networks.is_empty() {
+            return;
+        }
+
+        let Some(label) = normalize_magic_dns_label(&self.node_name) else {
+            return;
+        };
+        let Ok(own_pubkey_hex) = self.own_nostr_pubkey_hex() else {
+            return;
+        };
+        let own_npub = npub_for_pubkey_hex(&own_pubkey_hex);
+        self.peer_aliases.insert(own_npub, label);
+    }
+
     pub fn rename_network(&mut self, network_id: &str, name: &str) -> Result<()> {
         let normalized = name.trim();
         if normalized.is_empty() {
@@ -1035,10 +1063,6 @@ impl AppConfig {
     }
 
     pub fn remove_network(&mut self, network_id: &str) -> Result<()> {
-        if self.networks.len() <= 1 {
-            return Err(anyhow::anyhow!("at least one network is required"));
-        }
-
         let previous_len = self.networks.len();
         self.networks.retain(|network| network.id != network_id);
         if self.networks.len() == previous_len {
@@ -1072,7 +1096,7 @@ impl AppConfig {
 
         if self.networks[index].enabled {
             return Err(anyhow::anyhow!(
-                "at least one active network is required; activate another network first"
+                "activate another network before disabling this one"
             ));
         }
 
@@ -1599,29 +1623,13 @@ impl AppConfig {
         self.fips_peer_endpoints = normalized;
     }
 
-    fn derive_default_network_ids(&mut self) {
-        let own_pubkey = self.own_nostr_pubkey_hex().ok();
-
+    fn generate_placeholder_network_ids(&mut self) {
         for network in &mut self.networks {
-            if !uses_default_network_id(&network.network_id) {
+            if !needs_generated_network_id(&network.network_id) {
                 continue;
             }
 
-            let Some(own_pubkey) = own_pubkey.as_ref() else {
-                network.network_id = default_network_id();
-                continue;
-            };
-
-            if network.participants.is_empty() {
-                network.network_id = default_network_id();
-                continue;
-            }
-
-            let mut mesh_members = network.participants.clone();
-            mesh_members.push(own_pubkey.clone());
-            mesh_members.sort();
-            mesh_members.dedup();
-            network.network_id = derive_network_id_from_participants(&mesh_members);
+            network.network_id = default_network_id();
         }
     }
 
@@ -1676,11 +1684,17 @@ impl AppConfig {
         }
 
         let mut used_aliases = HashSet::new();
-        if let Some(self_alias) = self.preferred_self_magic_dns_label() {
-            used_aliases.insert(self_alias);
-        }
         let mut final_aliases = HashMap::new();
-        for participant in &self.all_network_member_pubkeys_hex() {
+        let mut members = self.all_network_member_pubkeys_hex();
+        if let Ok(own_pubkey_hex) = self.own_nostr_pubkey_hex()
+            && let Some(index) = members
+                .iter()
+                .position(|participant| participant == &own_pubkey_hex)
+        {
+            let own = members.remove(index);
+            members.insert(0, own);
+        }
+        for participant in &members {
             let participant_npub = npub_for_pubkey_hex(participant);
             let preferred = normalized_aliases
                 .remove(&participant_npub)
@@ -1705,18 +1719,9 @@ impl AppConfig {
         }
     }
 
-    fn preferred_self_magic_dns_label(&self) -> Option<String> {
-        normalize_magic_dns_label(&self.node_name)
-    }
-
     pub fn self_magic_dns_label(&self) -> Option<String> {
-        let preferred = self.preferred_self_magic_dns_label()?;
-        let mut used_aliases = self
-            .peer_aliases
-            .values()
-            .cloned()
-            .collect::<HashSet<String>>();
-        Some(uniquify_magic_dns_label(preferred, &mut used_aliases))
+        let own_pubkey_hex = self.own_nostr_pubkey_hex().ok()?;
+        self.peer_alias(&own_pubkey_hex)
     }
 
     pub fn self_magic_dns_name(&self) -> Option<String> {

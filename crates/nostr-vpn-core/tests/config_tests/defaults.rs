@@ -7,24 +7,6 @@ fn default_relays_match_hashtree_defaults() {
 }
 
 #[test]
-fn network_id_derivation_is_order_independent() {
-    let left =
-        derive_network_id_from_participants(&["b".to_string(), "a".to_string(), "c".to_string()]);
-    let right =
-        derive_network_id_from_participants(&["c".to_string(), "b".to_string(), "a".to_string()]);
-
-    assert_eq!(left, right);
-    assert!(!left.contains(':'));
-}
-
-#[test]
-fn derived_network_id_is_short_hex_disambiguator() {
-    let id = derive_network_id_from_participants(&["a".to_string(), "b".to_string()]);
-    assert_eq!(id.len(), 8);
-    assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
-}
-
-#[test]
 fn generated_config_auto_populates_keys() {
     let config = AppConfig::generated();
 
@@ -40,9 +22,31 @@ fn generated_config_auto_populates_keys() {
     assert!(config.nat.enabled);
     assert!(!config.nat.stun_servers.is_empty());
     assert!(config.exit_node.is_empty());
+    assert!(config.exit_node_leak_protection);
     assert!(!config.node.advertise_exit_node);
     assert!(config.node.advertised_routes.is_empty());
     assert!(config.effective_advertised_routes().is_empty());
+}
+
+#[test]
+fn exit_node_leak_protection_defaults_on_when_missing() {
+    let config: AppConfig = toml::from_str("").expect("parse empty config");
+
+    assert!(config.exit_node_leak_protection);
+}
+
+#[test]
+fn exit_node_leak_protection_off_is_preserved() {
+    let config = AppConfig {
+        exit_node_leak_protection: false,
+        ..AppConfig::default()
+    };
+
+    let encoded = toml::to_string(&config).expect("serialize config");
+    assert!(encoded.contains("exit_node_leak_protection = false"));
+
+    let decoded: AppConfig = toml::from_str(&encoded).expect("parse config");
+    assert!(!decoded.exit_node_leak_protection);
 }
 
 #[test]
@@ -170,7 +174,7 @@ fn maybe_autoconfigure_node_assigns_tunnel_ip_from_participants() {
 }
 
 #[test]
-fn active_network_network_id_takes_precedence_over_participant_hash() {
+fn explicit_active_network_id_is_preserved() {
     let keys = Keys::generate();
     let peer = Keys::generate();
     let own_hex = keys.public_key().to_hex();
@@ -355,6 +359,9 @@ fn shared_network_roster_includes_network_aliases() {
     config.networks[0].admins = vec![own_hex.clone()];
     config.networks[0].participants = vec![peer_hex.clone()];
     config.ensure_defaults();
+    config
+        .set_peer_alias(&own_hex, "helios-admin")
+        .expect("own alias");
     config
         .set_peer_alias(&peer_hex, "garden-node")
         .expect("peer alias");

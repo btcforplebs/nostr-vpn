@@ -39,8 +39,7 @@ public partial class App : System.Windows.Application
 
         HandleLaunchArgs(e.Args, forceShow: false);
 
-        if (!e.Args.Contains("--autostart", StringComparer.OrdinalIgnoreCase)
-            && !e.Args.Contains("--hidden", StringComparer.OrdinalIgnoreCase))
+        if (!e.Args.Contains("--hidden", StringComparer.OrdinalIgnoreCase))
         {
             ShowMainWindow();
         }
@@ -129,7 +128,6 @@ public partial class App : System.Windows.Application
         }
 
         if (forceShow
-            && !launchArgs.Contains("--autostart", StringComparer.OrdinalIgnoreCase)
             && !launchArgs.Contains("--hidden", StringComparer.OrdinalIgnoreCase))
         {
             ShowMainWindow();

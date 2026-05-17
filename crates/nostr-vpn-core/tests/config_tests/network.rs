@@ -37,6 +37,12 @@ fn default_node_name_from_hostname_ignores_localhost_placeholders() {
 }
 
 #[test]
+fn default_node_name_from_hostname_ignores_container_hex_names() {
+    assert_eq!(default_node_name_from_hostname("2ce2e39b4cf9"), None);
+    assert_eq!(default_node_name_from_hostname("2ce2e39b4cf9.local"), None);
+}
+
+#[test]
 fn default_node_name_resolution_prefers_hostname_over_petname() {
     let keys = Keys::generate();
     let own_hex = keys.public_key().to_hex();
@@ -73,6 +79,25 @@ fn legacy_default_node_name_migrates_to_non_generic_default() {
 }
 
 #[test]
+fn legacy_hex_default_node_name_migrates_to_non_hex_default() {
+    let keys = Keys::generate();
+    let mut config = AppConfig::generated();
+    config.nostr.secret_key = keys.secret_key().to_secret_hex();
+    config.nostr.public_key = keys.public_key().to_hex();
+    config.node_name = "b637a4dc34b5".to_string();
+
+    config.ensure_defaults();
+
+    assert!(!config.node_name.trim().is_empty());
+    assert_ne!(config.node_name, "b637a4dc34b5");
+    assert!(
+        !(config.node_name.len() >= 12
+            && config.node_name.chars().all(|ch| ch.is_ascii_hexdigit())),
+        "node name should not remain a generated hex label"
+    );
+}
+
+#[test]
 fn custom_node_name_is_preserved() {
     let keys = Keys::generate();
     let own_hex = keys.public_key().to_hex();
@@ -87,13 +112,16 @@ fn custom_node_name_is_preserved() {
 }
 
 #[test]
-fn default_network_id_stays_placeholder_without_participants() {
+fn generated_network_id_is_random_not_legacy_placeholder() {
     let mut config = AppConfig::generated();
+    let second = AppConfig::generated();
     keep_endpoint_autoconfig_off(&mut config);
 
     maybe_autoconfigure_node(&mut config);
 
-    assert_eq!(config.effective_network_id(), "nostr-vpn");
+    assert_generated_network_id(&config.effective_network_id());
+    assert_generated_network_id(&second.effective_network_id());
+    assert_ne!(config.effective_network_id(), second.effective_network_id());
 }
 
 #[test]
@@ -102,8 +130,6 @@ fn legacy_top_level_network_id_is_ignored_when_loading_current_config_schema() {
     let peer = Keys::generate();
     let own_hex = own.public_key().to_hex();
     let peer_hex = peer.public_key().to_hex();
-    let expected_network_id =
-        derive_network_id_from_participants(&[own_hex.clone(), peer_hex.clone()]);
     let raw = format!(
         r#"
 network_id = "mesh-legacy"
@@ -140,7 +166,8 @@ listen_port = 51820
     let mut config: AppConfig = toml::from_str(&raw).expect("parse config");
     config.ensure_defaults();
 
-    assert_eq!(config.effective_network_id(), expected_network_id);
+    assert_generated_network_id(&config.effective_network_id());
+    assert_ne!(config.effective_network_id(), "mesh-legacy");
 }
 
 #[test]
@@ -413,7 +440,7 @@ listen_port = 51820
 }
 
 #[test]
-fn reciprocal_participant_configs_share_effective_network_id() {
+fn participant_configs_keep_their_generated_network_ids() {
     let alice = Keys::generate();
     let bob = Keys::generate();
     let alice_hex = alice.public_key().to_hex();
@@ -433,11 +460,11 @@ fn reciprocal_participant_configs_share_effective_network_id() {
     keep_endpoint_autoconfig_off(&mut bob_config);
     maybe_autoconfigure_node(&mut bob_config);
 
-    assert_ne!(alice_config.effective_network_id(), "nostr-vpn");
-    assert_ne!(bob_config.effective_network_id(), "nostr-vpn");
+    assert_generated_network_id(&alice_config.effective_network_id());
+    assert_generated_network_id(&bob_config.effective_network_id());
     assert!(!alice_config.effective_network_id().contains(':'));
     assert!(!bob_config.effective_network_id().contains(':'));
-    assert_eq!(
+    assert_ne!(
         alice_config.effective_network_id(),
         bob_config.effective_network_id()
     );
@@ -544,6 +571,24 @@ fn activating_one_network_disables_the_others() {
 }
 
 #[test]
+fn removing_the_last_network_leaves_setup_empty() {
+    let mut config = AppConfig::generated();
+    let network_id = config.networks[0].id.clone();
+    config.exit_node = Keys::generate().public_key().to_hex();
+
+    config
+        .remove_network(&network_id)
+        .expect("last network can be removed");
+
+    assert!(config.networks.is_empty());
+    assert_eq!(config.enabled_network_count(), 0);
+    assert!(config.active_network_opt().is_none());
+    assert!(config.effective_network_id().is_empty());
+    assert!(config.participant_pubkeys_hex().is_empty());
+    assert!(config.exit_node.is_empty());
+}
+
+#[test]
 fn cannot_disable_the_last_active_network() {
     let mut config = AppConfig::generated();
     let active_id = config.networks[0].id.clone();
@@ -552,7 +597,7 @@ fn cannot_disable_the_last_active_network() {
         .set_network_enabled(&active_id, false)
         .expect_err("last active network should stay active");
 
-    assert!(error.to_string().contains("active network"));
+    assert!(error.to_string().contains("activate another network"));
     assert_eq!(config.enabled_network_count(), 1);
     assert!(
         config
@@ -566,6 +611,11 @@ fn cannot_disable_the_last_active_network() {
 fn added_networks_start_inactive_with_their_own_mesh_slot() {
     let mut config = AppConfig::generated();
     let original_active_id = config.networks[0].id.clone();
+    let original_network_id = config
+        .network_by_id(&original_active_id)
+        .expect("original network")
+        .network_id
+        .clone();
 
     let added_id = config.add_network("Work");
 
@@ -579,11 +629,12 @@ fn added_networks_start_inactive_with_their_own_mesh_slot() {
 
     let added = config.network_by_id(&added_id).expect("added network");
     assert!(!added.enabled);
-    assert_eq!(added.network_id, "nostr-vpn");
+    assert_generated_network_id(&added.network_id);
+    assert_ne!(added.network_id, original_network_id);
 }
 
 #[test]
-fn explicit_network_id_takes_precedence_over_participant_hash() {
+fn explicit_network_id_is_preserved() {
     let keys = Keys::generate();
     let peer = Keys::generate();
     let own_hex = keys.public_key().to_hex();
@@ -603,6 +654,11 @@ fn explicit_network_id_takes_precedence_over_participant_hash() {
 fn set_network_mesh_id_updates_the_selected_network() {
     let mut config = AppConfig::generated();
     let original_active_id = config.networks[0].id.clone();
+    let original_network_id = config
+        .network_by_id(&original_active_id)
+        .expect("active network")
+        .network_id
+        .clone();
     let added_id = config.add_network("Work");
 
     config
@@ -621,9 +677,9 @@ fn set_network_mesh_id_updates_the_selected_network() {
             .network_by_id(&original_active_id)
             .expect("active network")
             .network_id,
-        "nostr-vpn"
+        original_network_id
     );
-    assert_eq!(config.effective_network_id(), "nostr-vpn");
+    assert_eq!(config.effective_network_id(), original_network_id);
 }
 
 #[test]

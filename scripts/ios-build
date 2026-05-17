@@ -175,9 +175,9 @@ run_ios_attach_internal() {
   # NOT attach the resulting build to any TestFlight tester group. Without
   # this the build sits in "Builds" forever and never appears in the
   # internal-testers' TestFlight app — the entire reason we ran the upload.
-  # Polls until the latest build is VALID, then attaches it to the
+  # Polls for this release's exact build number, then attaches it to the
   # internal-testers group.
-  python3 "$ROOT/scripts/testflight-attach-internal.py"
+  "$ROOT/scripts/testflight-internal" put
 }
 
 run_ios_testflight() {

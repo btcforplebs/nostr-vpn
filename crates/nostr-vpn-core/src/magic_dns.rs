@@ -125,16 +125,13 @@ fn run_dns_loop(
 
 fn build_dns_response(request: &[u8], records: &HashMap<String, Ipv4Addr>) -> Option<Vec<u8>> {
     let message = Message::from_vec(request).ok()?;
-    let mut response = Message::new();
-    response.set_id(message.id());
-    response.set_message_type(MessageType::Response);
-    response.set_op_code(OpCode::Query);
-    response.set_recursion_desired(message.recursion_desired());
-    response.set_recursion_available(false);
-    response.set_authoritative(true);
+    let mut response = Message::new(message.id, MessageType::Response, OpCode::Query);
+    response.metadata.recursion_desired = message.recursion_desired;
+    response.metadata.recursion_available = false;
+    response.metadata.authoritative = true;
 
     let mut answered = false;
-    for query in message.queries() {
+    for query in &message.queries {
         response.add_query(query.clone());
         if query.query_type() != RecordType::A {
             continue;
@@ -155,11 +152,11 @@ fn build_dns_response(request: &[u8], records: &HashMap<String, Ipv4Addr>) -> Op
         answered = true;
     }
 
-    response.set_response_code(if answered {
+    response.metadata.response_code = if answered {
         ResponseCode::NoError
     } else {
         ResponseCode::NXDomain
-    });
+    };
 
     let mut bytes = Vec::with_capacity(512);
     let mut encoder = BinEncoder::new(&mut bytes);

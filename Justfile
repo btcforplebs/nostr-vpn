@@ -55,6 +55,7 @@ info:
     @echo "  just e2e"
     @echo "  just e2e-connect"
     @echo "  just e2e-active-network"
+    @echo "  just e2e-umbrel-web"
     @echo "  just e2e-exit-node"
     @echo "  just e2e-fips-routed-udp"
     @echo "  just e2e-lan-pairing"
@@ -179,6 +180,9 @@ e2e-connect:
 
 e2e-active-network:
     ./scripts/e2e-active-network-docker.sh
+
+e2e-umbrel-web:
+    ./scripts/e2e-umbrel-web-docker.sh
 
 e2e-divergent-roster:
     ./scripts/e2e-divergent-roster-docker.sh

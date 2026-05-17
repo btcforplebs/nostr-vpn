@@ -2,7 +2,10 @@ import SwiftUI
 
 struct RootView: View {
     @ObservedObject var model: AppModel
+    @AppStorage(AppModel.vpnDisclosureAcceptedKey) private var vpnDisclosureAccepted = false
     @State private var addNetworkPresented = false
+    @State private var vpnDisclosurePresented = false
+    @State private var startVpnAfterDisclosure = false
     @State private var shownNetworkId: String?
 
     private var shownNetwork: NetworkState? {
@@ -17,7 +20,12 @@ struct RootView: View {
         Group {
             if model.activeNetwork == nil {
                 NavigationStack {
-                    AddNetworkPage(model: model)
+                    AddNetworkPage(
+                        model: model,
+                        onReviewVpnDisclosure: {
+                            presentVpnDisclosure(startVpnAfterAccept: true)
+                        }
+                    )
                         .navigationTitle("Add Network")
                         .navigationBarTitleDisplayMode(.inline)
                 }
@@ -48,14 +56,42 @@ struct RootView: View {
         .tint(.purple)
         .sheet(isPresented: $addNetworkPresented) {
             NavigationStack {
-                AddNetworkPage(model: model, onCreated: { addNetworkPresented = false })
+                AddNetworkPage(
+                    model: model,
+                    onCreated: { addNetworkPresented = false },
+                    onReviewVpnDisclosure: {
+                        presentVpnDisclosure(startVpnAfterAccept: true)
+                    }
+                )
                     .navigationTitle("Add Network")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Cancel") { addNetworkPresented = false }
                         }
-                    }
+                }
+            }
+        }
+        .sheet(isPresented: $vpnDisclosurePresented) {
+            VpnDisclosureSheet {
+                let shouldStartVpn = startVpnAfterDisclosure
+                vpnDisclosureAccepted = true
+                startVpnAfterDisclosure = false
+                vpnDisclosurePresented = false
+                model.markVpnDisclosureAccepted()
+                if shouldStartVpn, !model.state.vpnEnabled {
+                    model.toggleVpn()
+                }
+            }
+        }
+        .onAppear {
+            if model.vpnDisclosurePromptVisible && !vpnDisclosureAccepted {
+                presentVpnDisclosure(startVpnAfterAccept: true)
+            }
+        }
+        .onChange(of: model.vpnDisclosurePromptVisible) { _, visible in
+            if visible && !vpnDisclosureAccepted {
+                presentVpnDisclosure(startVpnAfterAccept: true)
             }
         }
         .onChange(of: model.state.rev) { _, _ in
@@ -77,8 +113,19 @@ struct RootView: View {
             )
         }
         ToolbarItem(placement: .topBarTrailing) {
-            ToolbarVpnSwitch(model: model)
+            ToolbarVpnSwitch(
+                model: model,
+                vpnDisclosureAccepted: vpnDisclosureAccepted,
+                onReviewVpnDisclosure: {
+                    presentVpnDisclosure(startVpnAfterAccept: true)
+                }
+            )
         }
+    }
+
+    private func presentVpnDisclosure(startVpnAfterAccept: Bool) {
+        startVpnAfterDisclosure = startVpnAfterAccept
+        vpnDisclosurePresented = true
     }
 }
 
@@ -150,12 +197,17 @@ private struct AddNetworkPage: View {
     /// visible. The setup case (no active network) doesn't pass this:
     /// the root view's `if activeNetwork == nil` flips on its own.
     var onCreated: (() -> Void)? = nil
+    var onReviewVpnDisclosure: () -> Void = {}
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
                 if !model.state.error.isEmpty || !model.statusMessage.isEmpty {
-                    NoticeCard(text: model.state.error.isEmpty ? model.statusMessage : model.state.error)
+                    NoticeCard(
+                        text: model.state.error.isEmpty ? model.statusMessage : model.state.error,
+                        actionTitle: model.state.error.isEmpty && model.vpnDisclosurePromptVisible ? "Review" : nil,
+                        action: onReviewVpnDisclosure
+                    )
                 }
                 CreateNetworkCard(model: model, onCreated: onCreated)
                 JoinNetworkCard(model: model)
@@ -176,8 +228,12 @@ private struct DevicesPage: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
-                if !model.state.error.isEmpty || !model.statusMessage.isEmpty {
-                    NoticeCard(text: model.state.error.isEmpty ? model.statusMessage : model.state.error)
+                if !model.state.error.isEmpty || shouldShowStatusNotice(model.statusMessage) {
+                    NoticeCard(
+                        text: model.state.error.isEmpty ? model.statusMessage : model.state.error,
+                        actionTitle: nil,
+                        action: {}
+                    )
                 }
                 if let network {
                     if !network.enabled {
@@ -274,10 +330,16 @@ private struct DevicesPage: View {
         }
     }
 
+    private func shouldShowStatusNotice(_ message: String) -> Bool {
+        !message.isEmpty && message != AppModel.vpnDisclosurePromptMessage
+    }
+
 }
 
 private struct ToolbarVpnSwitch: View {
     @ObservedObject var model: AppModel
+    let vpnDisclosureAccepted: Bool
+    let onReviewVpnDisclosure: () -> Void
 
     private var enabled: Bool {
         !model.actionInFlight && model.state.vpnControlSupported && model.activeNetwork != nil
@@ -285,7 +347,12 @@ private struct ToolbarVpnSwitch: View {
 
     var body: some View {
         Button {
-            model.toggleVpn()
+            if !model.state.vpnEnabled && !vpnDisclosureAccepted {
+                model.requireVpnDisclosureReview()
+                onReviewVpnDisclosure()
+            } else {
+                model.toggleVpn()
+            }
         } label: {
             ZStack(alignment: model.state.vpnEnabled ? .trailing : .leading) {
                 Capsule()
@@ -308,19 +375,48 @@ private struct ToolbarVpnSwitch: View {
     }
 }
 
+private struct VpnDisclosureSheet: View {
+    let acknowledge: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Before Turning VPN On")
+                    .font(.title2.weight(.semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Nostr VPN is a private VPN and generic WireGuard exit-node utility. It is not a public VPN, anonymity, stealth, or consumer proxy service.")
+                Text("The app uses VPN data only to operate networks you configure: device identity, peer lists, routes, exit-node settings, endpoints, invite/join metadata, traffic counters, and connection health.")
+                Text("Packet traffic is encrypted. User-selected peers, relays, bridge paths, and exit nodes receive only the data needed to provide the connection you asked them to provide.")
+                Text("The developer does not sell VPN data, use it for ads or tracking, or disclose it to third parties.")
+                Spacer()
+            }
+            .font(.body)
+            .foregroundStyle(.primary)
+            .padding()
+            .navigationTitle("VPN Data Use")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Continue", action: acknowledge)
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
 private struct CreateNetworkCard: View {
     @ObservedObject var model: AppModel
     var onCreated: (() -> Void)? = nil
     @State private var networkName = "My Network"
 
     var body: some View {
-        AppCard {
-            Text("Create Network")
-                .font(.headline)
-            HStack {
+        SetupCard(title: "Create Network", systemImage: "plus.circle.fill", tint: AppColors.create) {
+            VStack(alignment: .leading, spacing: 10) {
                 TextField("Network name", text: $networkName)
                     .textFieldStyle(.roundedBorder)
-                Button("Create") {
+                Button {
                     let name = networkName.trimmingCharacters(in: .whitespacesAndNewlines)
                     model.dispatch(
                         NativeActions.addNetwork(name.isEmpty ? "My Network" : name),
@@ -328,6 +424,9 @@ private struct CreateNetworkCard: View {
                     )
                     networkName = "My Network"
                     onCreated?()
+                } label: {
+                    Label("Create", systemImage: "plus")
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.actionInFlight)
@@ -356,9 +455,7 @@ private struct JoinNetworkCard: View {
     }
 
     var body: some View {
-        AppCard {
-            Text("Join Network")
-                .font(.headline)
+        SetupCard(title: "Join Network", systemImage: "arrow.down.circle.fill", tint: AppColors.join) {
             TextField("nvpn://invite/…", text: $inviteInput)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -370,25 +467,29 @@ private struct JoinNetworkCard: View {
                         inviteInput = ""
                     }
                 }
-            HStack {
+            HStack(spacing: 10) {
                 Button {
                     if let text = UIPasteboard.general.string {
                         inviteInput = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     }
                 } label: {
                     Label("Paste", systemImage: "doc.on.clipboard")
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.bordered)
                 Button {
                     qrScannerPresented = true
                 } label: {
                     Label("Scan", systemImage: "camera.viewfinder")
+                        .frame(maxWidth: .infinity)
                 }
-                Spacer()
+                .buttonStyle(.bordered)
             }
+            .controlSize(.regular)
 
             DisclosureGroup("Add manually", isExpanded: $manualExpanded) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Both sides have to add each other. Get the admin's Device ID and the network ID from them, paste below, then send a join request. The admin must also add your Device ID via their Add device page before the pairing completes.")
+                    Text("Both sides add each other. Enter their Device ID and network ID here, then have them add your Device ID.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     TextField("Admin Device ID", text: $manualAdminId)
@@ -408,15 +509,16 @@ private struct JoinNetworkCard: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .textFieldStyle(.roundedBorder)
-                    Button("Send join request") {
+                    Button("Add") {
                         let admin = manualAdminId.trimmingCharacters(in: .whitespacesAndNewlines)
                         let mesh = manualNetworkId.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if let invite = manualInviteJSON(adminNpub: admin, meshId: mesh) {
-                            model.importInvite(invite)
-                            manualAdminId = ""
-                            manualNetworkId = ""
-                            manualExpanded = false
-                        }
+                        model.dispatch(
+                            NativeActions.manualAddNetwork(adminNpub: admin, meshNetworkId: mesh),
+                            status: "Adding network"
+                        )
+                        manualAdminId = ""
+                        manualNetworkId = ""
+                        manualExpanded = false
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!canSubmitManual)
@@ -448,29 +550,6 @@ private struct JoinNetworkCard: View {
             }
         }
     }
-}
-
-/// Build a synthetic invite from an admin's Device ID + a mesh network ID,
-/// for the manual-join flow. The Rust core's `parse_network_invite`
-/// accepts a bare-JSON invite (no `nvpn://invite/` prefix needed) as long
-/// as it has v3, a non-empty network_id, and at least one admin. This
-/// gives the same result as importing the equivalent invite link: the
-/// network is added locally with the admin's npub, and a join request is
-/// queued so the admin can accept and propagate the roster.
-func manualInviteJSON(adminNpub: String, meshId: String) -> String? {
-    guard isValidDeviceId(adminNpub), !meshId.isEmpty else { return nil }
-    // NetworkInvite is serde(rename_all = "camelCase") on the Rust side.
-    let payload: [String: Any] = [
-        "v": 3,
-        "networkId": meshId,
-        "inviterNpub": adminNpub,
-        "admins": [adminNpub],
-        "participants": [],
-    ]
-    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
-        return nil
-    }
-    return String(data: data, encoding: .utf8)
 }
 
 /// Admin-only sheet for adding a device to YOUR network. Two paths:
@@ -508,7 +587,7 @@ private struct AddDeviceSheet: View {
 /// manually: the admin's own Device ID + the network ID. The other
 /// device pastes both into Join Network → Add manually. Both sides
 /// then have to add each other's Device IDs for the pairing to
-/// complete — same flow as scanning an invite, just typed by hand.
+/// complete.
 private struct ManualPairingInfoCard: View {
     @ObservedObject var model: AppModel
     let network: NetworkState
@@ -833,7 +912,7 @@ private struct DeviceDetailSheet: View {
                         Circle()
                             .fill(connectivityTint(participant, state: model.state))
                             .frame(width: 12, height: 12)
-                        Text(deviceStatus(participant, state: model.state))
+                        Text(deviceDetailStatus(participant, state: model.state))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -1230,13 +1309,59 @@ private struct AppCard<Content: View>: View {
     }
 }
 
+private struct SetupCard<Content: View>: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let content: Content
+
+    init(title: String, systemImage: String, tint: Color, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.systemImage = systemImage
+        self.tint = tint
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: systemImage)
+                .font(.headline)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tint)
+            content
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(tint)
+                .frame(width: 4)
+                .padding(.vertical, 14)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(tint.opacity(0.24), lineWidth: 1)
+        }
+        .tint(tint)
+    }
+}
+
 private struct NoticeCard: View {
     let text: String
+    var actionTitle: String? = nil
+    var action: () -> Void = {}
 
     var body: some View {
         AppCard {
             Text(text)
                 .foregroundStyle(.brown)
+            if let actionTitle {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+            }
         }
     }
 }
@@ -1335,6 +1460,8 @@ private struct QrCodeView: View {
 private enum AppColors {
     static let background = Color(uiColor: .systemGroupedBackground)
     static let accent = Color.purple
+    static let create = Color.green
+    static let join = Color.blue
     static let ok = Color.green
 }
 
@@ -1361,11 +1488,11 @@ private func isSelf(_ participant: ParticipantState, state: AppState) -> Bool {
 }
 
 private func deviceName(_ participant: ParticipantState, state: AppState) -> String {
-    if isSelf(participant, state: state), !state.nodeName.isEmpty {
-        return state.nodeName
-    }
     if !participant.magicDnsName.isEmpty {
         return participant.magicDnsName
+    }
+    if isSelf(participant, state: state), !state.selfMagicDnsName.isEmpty {
+        return state.selfMagicDnsName
     }
     if !participant.alias.isEmpty {
         return participant.alias
@@ -1388,9 +1515,6 @@ private func deviceStatus(_ participant: ParticipantState, state: AppState) -> S
     if isSelf(participant, state: state) {
         return state.vpnEnabled ? "This device" : "Off"
     }
-    if !participant.statusText.isEmpty {
-        return participant.statusText
-    }
     switch participant.state {
     case "local", "online", "present":
         return "Online"
@@ -1399,8 +1523,18 @@ private func deviceStatus(_ participant: ParticipantState, state: AppState) -> S
     case "offline", "absent", "off":
         return "Offline"
     default:
-        return "Unknown"
+        return participant.reachable ? "Online" : "Unknown"
     }
+}
+
+private func deviceDetailStatus(_ participant: ParticipantState, state: AppState) -> String {
+    if isSelf(participant, state: state) {
+        return deviceStatus(participant, state: state)
+    }
+    if !participant.statusText.isEmpty {
+        return participant.statusText
+    }
+    return deviceStatus(participant, state: state)
 }
 
 private func connectivityTint(_ participant: ParticipantState, state: AppState) -> Color {

@@ -15,6 +15,9 @@ case "$ACTION" in
   attach)
     exec "$ROOT/scripts/testflight-internal" public-attach
     ;;
+  expire)
+    exec "$ROOT/scripts/testflight-internal" expire
+    ;;
   status)
     exec "$ROOT/scripts/testflight-internal" public-status
     ;;
@@ -23,12 +26,13 @@ case "$ACTION" in
     ;;
   -h|--help|help)
     cat <<'EOF'
-usage: ./scripts/testflight-public <put|submit|attach|status|groups>
+usage: ./scripts/testflight-public <put|submit|attach|expire|status|groups>
 
 Commands:
   put      wait, prepare metadata, submit Beta App Review, and attach external groups
   submit   submit the already-visible build for Beta App Review
   attach   attach the already-visible build to external TestFlight groups
+  expire   expire a build; set NVPN_TESTFLIGHT_BUILD_NUMBER to override current build
   status   print current public TestFlight status
   groups   list TestFlight groups for the app
 

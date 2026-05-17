@@ -60,15 +60,19 @@ fn set_peer_alias_normalizes_and_blank_resets_to_default() {
 }
 
 #[test]
-fn self_magic_dns_name_uses_node_name_and_resolves_to_own_pubkey() {
+fn self_magic_dns_name_uses_assigned_own_alias_and_resolves_to_own_pubkey() {
     let own = Keys::generate();
     let own_hex = own.public_key().to_hex();
 
-    let mut config = AppConfig::generated();
+    let mut config = AppConfig::generated_without_networks();
     config.nostr.secret_key = own.secret_key().to_secret_hex();
     config.nostr.public_key = own_hex.clone();
     config.node_name = "My Pocket Router".to_string();
+    config.add_network("Joined");
     config.ensure_defaults();
+    config
+        .set_peer_alias(&own_hex, "My Pocket Router")
+        .expect("set own alias");
 
     assert_eq!(
         config.self_magic_dns_label().as_deref(),
@@ -89,18 +93,69 @@ fn self_magic_dns_name_uses_node_name_and_resolves_to_own_pubkey() {
 }
 
 #[test]
-fn self_magic_dns_label_keeps_node_name_and_suffixes_colliding_peer_aliases() {
+fn generic_add_network_does_not_guess_self_magic_dns_from_node_name() {
+    let mut config = AppConfig::generated_without_networks();
+    config.node_name = "Sirius's iPhone".to_string();
+
+    config.add_network("Joined");
+    config.ensure_defaults();
+
+    assert_ne!(
+        config.self_magic_dns_name().as_deref(),
+        Some("sirius-s-iphone.nvpn")
+    );
+}
+
+#[test]
+fn add_owned_first_network_seeds_local_device_name_as_self_magic_dns_alias() {
+    let mut config = AppConfig::generated_without_networks();
+    config.node_name = "Sirius's Mac mini".to_string();
+
+    config.add_owned_network("Home");
+    config.ensure_defaults();
+
+    assert_eq!(config.node_name, "Sirius's Mac mini");
+    assert_eq!(
+        config.self_magic_dns_name().as_deref(),
+        Some("sirius-s-mac-mini.nvpn")
+    );
+}
+
+#[test]
+fn adding_later_network_preserves_configured_device_name() {
+    let mut config = AppConfig::generated_without_networks();
+    config.node_name = "Sirius's Mac mini".to_string();
+
+    config.add_owned_network("Home");
+    config.node_name = "My Pocket Router".to_string();
+    config.add_owned_network("Work");
+    config.ensure_defaults();
+
+    assert_eq!(config.node_name, "My Pocket Router");
+    assert_eq!(
+        config.self_magic_dns_name().as_deref(),
+        Some("sirius-s-mac-mini.nvpn")
+    );
+}
+
+#[test]
+fn self_magic_dns_label_keeps_assigned_own_alias_and_suffixes_colliding_peer_aliases() {
     let own = Keys::generate();
     let peer = Keys::generate();
     let own_hex = own.public_key().to_hex();
     let peer_hex = peer.public_key().to_hex();
 
-    let mut config = AppConfig::generated();
+    let mut config = AppConfig::generated_without_networks();
     config.nostr.secret_key = own.secret_key().to_secret_hex();
     config.nostr.public_key = own_hex;
     config.node_name = "Home Server".to_string();
+    config.add_network("Joined");
     set_default_network_participants(&mut config, vec![peer_hex.clone()]);
     config.ensure_defaults();
+    let own_pubkey = config.own_nostr_pubkey_hex().expect("own pubkey");
+    config
+        .set_peer_alias(&own_pubkey, "home-server")
+        .expect("set own alias");
 
     let assigned_peer_alias = config
         .set_peer_alias(&peer_hex, "home-server")
@@ -115,6 +170,23 @@ fn self_magic_dns_label_keeps_node_name_and_suffixes_colliding_peer_aliases() {
         config.peer_alias(&peer_hex).as_deref(),
         Some("home-server-2")
     );
+}
+
+#[test]
+fn self_magic_dns_label_uses_assigned_own_peer_alias() {
+    let own = Keys::generate();
+    let own_hex = own.public_key().to_hex();
+    let own_npub = own.public_key().to_bech32().expect("own npub");
+
+    let mut config = AppConfig::generated_without_networks();
+    config.nostr.secret_key = own.secret_key().to_secret_hex();
+    config.nostr.public_key = own_hex;
+    config.node_name = "Sirius's iPhone".to_string();
+    config.peer_aliases.insert(own_npub, "iphone1".to_string());
+    config.add_network("Joined");
+    config.ensure_defaults();
+
+    assert_eq!(config.self_magic_dns_label().as_deref(), Some("iphone1"));
 }
 
 #[test]

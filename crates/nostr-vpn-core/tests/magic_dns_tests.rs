@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::time::Duration;
 
-use hickory_proto::op::{Message, MessageType, Query, ResponseCode};
+use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::rdata::A;
 use hickory_proto::rr::{Name, RData, RecordType};
 use hickory_proto::serialize::binary::{BinEncodable, BinEncoder};
@@ -103,16 +103,16 @@ fn magic_dns_server_answers_a_and_nxdomain() {
         .expect("set timeout");
 
     let response = send_dns_query(&socket, server_addr, "home-server.nvpn.", RecordType::A);
-    assert_eq!(response.response_code(), ResponseCode::NoError);
-    let answer = response.answers().first().expect("expected answer");
-    match answer.data() {
+    assert_eq!(response.response_code, ResponseCode::NoError);
+    let answer = response.answers.first().expect("expected answer");
+    match &answer.data {
         RData::A(A(ip)) => assert_eq!(*ip, expected_ip),
         other => panic!("unexpected answer data: {other:?}"),
     }
 
     let nxdomain = send_dns_query(&socket, server_addr, "unknown.nvpn.", RecordType::A);
-    assert_eq!(nxdomain.response_code(), ResponseCode::NXDomain);
-    assert!(nxdomain.answers().is_empty());
+    assert_eq!(nxdomain.response_code, ResponseCode::NXDomain);
+    assert!(nxdomain.answers.is_empty());
 
     server.stop();
 }
@@ -144,7 +144,7 @@ fn magic_dns_server_update_records_reflects_newly_added_alias() {
         .expect("set timeout");
 
     let pre = send_dns_query(&socket, server_addr, "pi.nvpn.", RecordType::A);
-    assert_eq!(pre.response_code(), ResponseCode::NXDomain);
+    assert_eq!(pre.response_code, ResponseCode::NXDomain);
 
     let new_ip = Ipv4Addr::new(10, 44, 1, 42);
     let mut updated = HashMap::new();
@@ -153,19 +153,16 @@ fn magic_dns_server_update_records_reflects_newly_added_alias() {
     server.update_records(updated);
 
     let post = send_dns_query(&socket, server_addr, "pi.nvpn.", RecordType::A);
-    assert_eq!(post.response_code(), ResponseCode::NoError);
-    let answer = post
-        .answers()
-        .first()
-        .expect("expected answer after refresh");
-    match answer.data() {
+    assert_eq!(post.response_code, ResponseCode::NoError);
+    let answer = post.answers.first().expect("expected answer after refresh");
+    match &answer.data {
         RData::A(A(ip)) => assert_eq!(*ip, new_ip),
         other => panic!("unexpected answer data: {other:?}"),
     }
 
     // The original record must still resolve — refresh swaps the whole map.
     let still = send_dns_query(&socket, server_addr, "home-server.nvpn.", RecordType::A);
-    assert_eq!(still.response_code(), ResponseCode::NoError);
+    assert_eq!(still.response_code, ResponseCode::NoError);
 
     server.stop();
 }
@@ -176,10 +173,8 @@ fn send_dns_query(
     name: &str,
     record_type: RecordType,
 ) -> Message {
-    let mut request = Message::new();
-    request.set_id(42);
-    request.set_message_type(MessageType::Query);
-    request.set_recursion_desired(true);
+    let mut request = Message::new(42, MessageType::Query, OpCode::Query);
+    request.metadata.recursion_desired = true;
     request.add_query(Query::query(
         Name::from_ascii(name).expect("dns name"),
         record_type,

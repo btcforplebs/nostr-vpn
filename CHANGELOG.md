@@ -4,6 +4,64 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- iOS now persists the generated Nostr identity when first-run device-name
+  seeding creates a partial config file, avoiding a fresh install that shows no
+  saved identity until another config write happens.
+
+## 4.0.26 - 2026-05-17
+
+### Added
+
+- iOS now bundles a privacy manifest declaring the app-local
+  UserDefaults, file metadata, and timer API reasons used by the app and
+  packet-tunnel extension.
+- TestFlight tooling can now expire a specific uploaded build before
+  submitting a replacement public beta.
+
+## 4.0.25 - 2026-05-17
+
+### Added
+
+- iOS now shows a VPN data-use disclosure before the first tunnel
+  activation, explaining private-network data use, user-selected
+  relays/exit nodes, and the no sale/tracking/third-party disclosure
+  policy.
+
+### Changed
+
+- Public TestFlight review metadata and the privacy policy now describe
+  Nostr VPN as a private VPN and generic WireGuard exit-node utility,
+  not a public VPN, anonymity, stealth, or consumer proxy service.
+
+### Fixed
+
+- FIPS peer config initializers compile against the current local FIPS
+  discovery fallback transit setting.
+
+## 4.0.24 - 2026-05-17
+
+### Added
+
+- Join requests can now be rejected from Android, iOS, Linux, macOS,
+  Windows, and the web UI, with app-core support for clearing stale
+  pending requests.
+- Saved inactive networks now expose contextual activation controls in
+  the Devices view: compact desktop controls on macOS and a full-width
+  `Activate Network` action on iOS, while the header network picker
+  remains a view switcher.
+- Added a reusable Linux musl daemon build helper and updated the ARMv6
+  helper so Raspberry Pi builds can apply a local FIPS patch cleanly.
+
+### Fixed
+
+- FIPS event refreshes no longer starve behind unrelated public discovery
+  events, keeping configured-peer refresh work moving under noisy overlay
+  conditions.
+- Add-device actions now use a plain plus icon instead of the add-person
+  symbol.
+
 ## 4.0.23 - 2026-05-16
 
 ### Added

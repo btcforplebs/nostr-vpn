@@ -5,12 +5,16 @@ services:
       context: ..
       dockerfile: umbrel/Dockerfile
     restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
     ports:
-      - ${NOSTR_VPN_WEB_PORT:-38080}:38080
+      - 127.0.0.1:${NOSTR_VPN_WEB_PORT:-38080}:38080
     environment:
       HOME: /data/home
       XDG_CONFIG_HOME: /data/config
       NVPN_CLI_PATH: /usr/local/bin/nvpn
       RUST_LOG: info
     volumes:
-      - ./.data:/data
+      - ${NOSTR_VPN_DATA_DIR:-./.data}:/data
