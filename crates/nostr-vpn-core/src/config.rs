@@ -1474,22 +1474,24 @@ impl AppConfig {
             ));
         }
 
-        let Some(network) = self.networks.iter_mut().find(|network| {
+        let Some(network_index) = self.networks.iter().position(|network| {
             normalize_runtime_network_id(&network.network_id) == normalized_network_id
         }) else {
             return Ok(false);
         };
 
-        if !network
-            .admins
-            .iter()
-            .any(|admin| admin == &normalized_signed_by)
         {
-            return Ok(false);
-        }
-
-        if signed_at <= network.shared_roster_updated_at {
-            return Ok(false);
+            let network = &self.networks[network_index];
+            if !network
+                .admins
+                .iter()
+                .any(|admin| admin == &normalized_signed_by)
+            {
+                return Ok(false);
+            }
+            if signed_at <= network.shared_roster_updated_at {
+                return Ok(false);
+            }
         }
 
         let own_in_shared_roster = own_pubkey.as_deref().is_none_or(|own_pubkey| {
@@ -1499,12 +1501,37 @@ impl AppConfig {
                 .filter_map(|member| normalize_nostr_pubkey(member).ok())
                 .any(|member| member == own_pubkey)
         });
+        let own_in_previous_roster = own_pubkey.as_deref().is_some_and(|own_pubkey| {
+            let network = &self.networks[network_index];
+            network
+                .participants
+                .iter()
+                .chain(network.admins.iter())
+                .filter_map(|member| normalize_nostr_pubkey(member).ok())
+                .any(|member| member == own_pubkey)
+        });
+
+        if own_pubkey.is_some() && own_in_previous_roster && !own_in_shared_roster {
+            let was_enabled = self.networks[network_index].enabled;
+            self.networks.remove(network_index);
+            if was_enabled
+                && !self.networks.iter().any(|network| network.enabled)
+                && let Some(first) = self.networks.first_mut()
+            {
+                first.enabled = true;
+            }
+            self.normalize_selected_exit_node();
+            self.normalize_peer_aliases();
+            return Ok(true);
+        }
+
         let own_join_completed = own_pubkey.is_some() && own_in_shared_roster;
         let participants = if own_in_shared_roster {
             normalize_shared_roster_participants(participants, own_pubkey.as_deref())?
         } else {
             Vec::new()
         };
+        let network = &mut self.networks[network_index];
         let admins =
             normalize_network_admins(admins, own_pubkey.as_deref(), &network.invite_inviter);
         if admins.is_empty() {
