@@ -622,6 +622,9 @@ private fun AddNetworkDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                if (state.error.isNotBlank()) {
+                    Notice(state.error)
+                }
                 NetworkSetupCard(state, scanQr, dispatch, onCreated = onCreated)
                 NearbyCard(state, dispatch)
             }

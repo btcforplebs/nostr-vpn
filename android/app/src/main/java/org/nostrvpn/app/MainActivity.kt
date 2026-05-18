@@ -1,6 +1,8 @@
 package org.nostrvpn.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
@@ -18,6 +20,7 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 import org.nostrvpn.app.core.AppCoreClient
+import org.nostrvpn.app.core.AppState
 import org.nostrvpn.app.core.NativeActions
 import org.nostrvpn.app.vpn.NostrVpnService
 import java.io.File
@@ -39,7 +42,18 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var state by remember { mutableStateOf(core.state()) }
+            var androidError by remember { mutableStateOf("") }
             var pendingVpnStart by remember { mutableStateOf(false) }
+            fun showAndroidError(message: String, fallback: String = "Android action failed") {
+                androidError = message.trim().ifBlank { fallback }
+            }
+            fun showAndroidError(error: Throwable, fallback: String) {
+                showAndroidError(error.message.orEmpty(), fallback)
+            }
+            fun applyUserActionState(nextState: AppState) {
+                state = nextState
+                androidError = ""
+            }
             fun startVpnTunnel() {
                 startVpnService(
                     Intent(this, NostrVpnService::class.java)
@@ -56,10 +70,10 @@ class MainActivity : ComponentActivity() {
                 if (result.resultCode == RESULT_OK && state.vpnEnabled) {
                     startVpnTunnel()
                 } else if (pendingVpnStart && state.vpnEnabled) {
-                    state = try {
-                        core.dispatch(NativeActions.disconnectVpn())
+                    try {
+                        applyUserActionState(core.dispatch(NativeActions.disconnectVpn()))
                     } catch (error: Exception) {
-                        state.copy(error = error.message ?: "Android action failed")
+                        showAndroidError(error, "Android action failed")
                     }
                 }
                 pendingVpnStart = false
@@ -75,10 +89,10 @@ class MainActivity : ComponentActivity() {
             }
             val dispatch: (JSONObject) -> Unit = { action ->
                 val wasEnabled = state.vpnEnabled
-                state = try {
-                    core.dispatch(action)
+                try {
+                    applyUserActionState(core.dispatch(action))
                 } catch (error: Exception) {
-                    state.copy(error = error.message ?: "Android action failed")
+                    showAndroidError(error, "Android action failed")
                 }
                 if (!wasEnabled && state.vpnEnabled) {
                     requestVpnTunnel()
@@ -104,12 +118,42 @@ class MainActivity : ComponentActivity() {
                     val error = result.optString("error")
                     val value = result.optString("value").trim()
                     if (error.isNotBlank()) {
-                        state = state.copy(error = error)
+                        showAndroidError(error, "QR scan failed")
                     } else if (value.isNotBlank()) {
                         dispatch(NativeActions.importInvite(value))
                     }
                 } catch (error: Exception) {
-                    state = state.copy(error = error.message ?: "QR scan failed")
+                    showAndroidError(error, "QR scan failed")
+                }
+            }
+            fun launchQrScan() {
+                runCatching { qrScanLauncher.launch(null) }
+                    .onFailure { error ->
+                        if (error is SecurityException) {
+                            showAndroidError("Camera permission is needed to scan invites.")
+                        } else {
+                            showAndroidError("Could not open the camera.")
+                        }
+                    }
+            }
+            val cameraPermissionLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission(),
+            ) { granted ->
+                if (granted) {
+                    launchQrScan()
+                } else {
+                    showAndroidError("Camera permission is needed to scan invites.")
+                }
+            }
+            fun requestQrScan() {
+                androidError = ""
+                if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                    launchQrScan()
+                } else {
+                    runCatching { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
+                        .onFailure {
+                            showAndroidError("Camera permission is needed to scan invites.")
+                        }
                 }
             }
 
@@ -120,9 +164,14 @@ class MainActivity : ComponentActivity() {
                 while (true) {
                     delay(2_000)
                     state = try {
-                        core.refresh()
+                        val nextState = core.refresh()
+                        if (nextState.error.isNotBlank()) {
+                            androidError = ""
+                        }
+                        nextState
                     } catch (error: Exception) {
-                        state.copy(error = error.message ?: "Android refresh failed")
+                        showAndroidError(error, "Android refresh failed")
+                        state
                     }
                 }
             }
@@ -153,15 +202,15 @@ class MainActivity : ComponentActivity() {
             }
 
             NostrVpnTheme {
+                val displayState = if (state.error.isBlank() && androidError.isNotBlank()) {
+                    state.copy(error = androidError)
+                } else {
+                    state
+                }
                 NostrVpnApp(
-                    state = state,
+                    state = displayState,
                     qrJson = { invite -> core.qrMatrix(invite) },
-                    scanQr = {
-                        runCatching { qrScanLauncher.launch(null) }
-                            .onFailure { error ->
-                                state = state.copy(error = error.message ?: "QR scan failed")
-                            }
-                    },
+                    scanQr = { requestQrScan() },
                     dispatch = dispatch,
                 )
             }
