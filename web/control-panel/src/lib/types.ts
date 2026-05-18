@@ -126,6 +126,7 @@ export type UiState = {
   endpoint: string;
   tunnelIp: string;
   listenPort: number;
+  relays: RelayView[];
   exitNode: string;
   advertiseExitNode: boolean;
   advertisedRoutes: string[];
@@ -147,6 +148,11 @@ export type UiState = {
   portMapping: PortMappingStatus;
   networks: NetworkView[];
   lanPeers: LanPeer[];
+};
+
+export type RelayView = {
+  url: string;
+  status: string;
 };
 
 export type QrMatrix = {

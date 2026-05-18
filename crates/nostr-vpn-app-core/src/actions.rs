@@ -126,13 +126,14 @@ mod tests {
 
     #[test]
     fn update_settings_action_round_trips() {
-        let encoded = r#"{"type":"update_settings","patch":{"nodeName":"office","listenPort":51821,"exitNodeLeakProtection":true,"advertiseExitNode":true,"wireguardExitEnabled":true,"wireguardExitEndpoint":"198.51.100.20:51830","wireguardExitConfig":"[Interface]\nPrivateKey = client\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = peer\nAllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.test:51820"}}"#;
+        let encoded = r#"{"type":"update_settings","patch":{"nodeName":"office","listenPort":51821,"relays":["wss://relay.example"],"exitNodeLeakProtection":true,"advertiseExitNode":true,"wireguardExitEnabled":true,"wireguardExitEndpoint":"198.51.100.20:51830","wireguardExitConfig":"[Interface]\nPrivateKey = client\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = peer\nAllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.test:51820"}}"#;
 
         let action = serde_json::from_str::<NativeAppAction>(encoded).expect("parse action");
         match action {
             NativeAppAction::UpdateSettings { patch } => {
                 assert_eq!(patch.node_name.as_deref(), Some("office"));
                 assert_eq!(patch.listen_port, Some(51821));
+                assert_eq!(patch.relays, Some(vec!["wss://relay.example".to_string()]));
                 assert_eq!(patch.exit_node_leak_protection, Some(true));
                 assert_eq!(patch.advertise_exit_node, Some(true));
                 assert_eq!(patch.wireguard_exit_enabled, Some(true));

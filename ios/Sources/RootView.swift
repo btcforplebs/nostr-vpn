@@ -879,6 +879,7 @@ private struct SettingsPage: View {
         ScrollView {
             LazyVStack(spacing: 14) {
                 DeviceSettingsCard(model: model)
+                RelaySettingsCard(model: model)
                 DiagnosticsCard(state: model.state)
             }
             .padding()
@@ -1276,6 +1277,51 @@ private struct DeviceSettingsCard: View {
             endpoint = model.state.endpoint
             port = String(model.state.listenPort)
         }
+    }
+}
+
+private struct RelaySettingsCard: View {
+    @ObservedObject var model: AppModel
+    @State private var relays = ""
+
+    var body: some View {
+        AppCard {
+            Text("Relays")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(model.state.relays) { relay in
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(relay.connected ? AppColors.ok : Color.secondary.opacity(0.65))
+                            .frame(width: 10, height: 10)
+                        Text(relay.url)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+            TextEditor(text: $relays)
+                .frame(minHeight: 90)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .padding(6)
+                .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
+            Button("Save") {
+                let values = relays
+                    .split(whereSeparator: { $0.isWhitespace || $0 == "," })
+                    .map(String.init)
+                model.dispatch(NativeActions.updateSettings(["relays": values]), status: "Saving")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .onAppear { syncRelays() }
+        .onChange(of: model.state.relays.map(\.url).joined(separator: "\n")) { _, _ in
+            syncRelays()
+        }
+    }
+
+    private func syncRelays() {
+        relays = model.state.relays.map(\.url).joined(separator: "\n")
     }
 }
 

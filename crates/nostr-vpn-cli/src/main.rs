@@ -1963,7 +1963,15 @@ struct DaemonRuntimeState {
     #[serde(default)]
     port_mapping: PortMappingStatus,
     #[serde(default)]
+    relays: Vec<DaemonRelayState>,
+    #[serde(default)]
     peers: Vec<DaemonPeerState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+struct DaemonRelayState {
+    url: String,
+    status: String,
 }
 
 #[cfg(any(target_os = "macos", test))]

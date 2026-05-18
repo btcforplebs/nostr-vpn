@@ -339,6 +339,13 @@ final class AppManager: ObservableObject {
         )), status: "Saving device settings")
     }
 
+    func saveRelays(_ relaysText: String) {
+        let relays = relaysText
+            .split { $0.isWhitespace || $0 == "," }
+            .map(String.init)
+        dispatch(.updateSettings(patch: settingsPatch(relays: relays)), status: "Saving relays")
+    }
+
     func setAdvertiseExitNode(_ enabled: Bool) {
         dispatch(.updateSettings(patch: settingsPatch(advertiseExitNode: enabled)), status: "Saving routing")
     }
@@ -1036,6 +1043,10 @@ final class AppManager: ObservableObject {
             endpoint: "203.0.113.8:51820",
             tunnelIp: "10.44.195.20",
             listenPort: 51820,
+            relays: [
+                NativeRelayState(url: "wss://relay.damus.io", status: "connected"),
+                NativeRelayState(url: "wss://relay.nostr.band", status: "unknown")
+            ],
             networkId: networkId,
             activeNetworkInvite: "nvpn://invite/demo-mesh",
             exitNode: "",
@@ -1542,6 +1553,7 @@ func settingsPatch(
     endpoint: String? = nil,
     tunnelIp: String? = nil,
     listenPort: UInt16? = nil,
+    relays: [String]? = nil,
     exitNode: String? = nil,
     exitNodeLeakProtection: Bool? = nil,
     advertiseExitNode: Bool? = nil,
@@ -1568,6 +1580,7 @@ func settingsPatch(
         endpoint: endpoint,
         tunnelIp: tunnelIp,
         listenPort: listenPort,
+        relays: relays,
         exitNode: exitNode,
         exitNodeLeakProtection: exitNodeLeakProtection,
         advertiseExitNode: advertiseExitNode,

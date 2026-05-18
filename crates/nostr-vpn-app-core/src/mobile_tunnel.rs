@@ -19,7 +19,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 use fips_endpoint::{
     Config as FipsConfig, ConnectPolicy, FipsEndpoint, FipsEndpointMessage, FipsEndpointPeer,
-    NostrDiscoveryPolicy, PeerAddress, PeerConfig as FipsPeerConfig, TransportInstances, UdpConfig,
+    FipsEndpointRelayStatus, NostrDiscoveryPolicy, PeerAddress, PeerConfig as FipsPeerConfig,
+    TransportInstances, UdpConfig,
 };
 use nostr_vpn_core::config::{
     AppConfig, MESH_TUNNEL_IPV4_CIDR, WireGuardExitConfig, derive_mesh_tunnel_ip,
@@ -772,6 +773,10 @@ impl MobileTunnel {
                 .peers()
                 .await
                 .context("mobile FIPS peer snapshot")?;
+            let relay_statuses = endpoint
+                .relay_statuses()
+                .await
+                .context("mobile FIPS relay snapshot")?;
             let state = {
                 let mesh = mesh
                     .read()
@@ -779,7 +784,14 @@ impl MobileTunnel {
                 let presence = presence
                     .read()
                     .map_err(|_| anyhow!("mobile FIPS presence lock poisoned"))?;
-                mobile_runtime_state(&config, &mesh, &presence, endpoint_peers, unix_timestamp())
+                mobile_runtime_state(
+                    &config,
+                    &mesh,
+                    &presence,
+                    endpoint_peers,
+                    relay_statuses,
+                    unix_timestamp(),
+                )
             };
             serde_json::to_string(&state).context("serialize mobile runtime state")
         })
@@ -1216,6 +1228,10 @@ async fn persist_mobile_runtime_state(
         .peers()
         .await
         .context("mobile FIPS peer snapshot")?;
+    let relay_statuses = endpoint
+        .relay_statuses()
+        .await
+        .context("mobile FIPS relay snapshot")?;
     let config = config
         .read()
         .map_err(|_| anyhow!("mobile FIPS config lock poisoned"))?
@@ -1227,7 +1243,14 @@ async fn persist_mobile_runtime_state(
         let presence = presence
             .read()
             .map_err(|_| anyhow!("mobile FIPS presence lock poisoned"))?;
-        mobile_runtime_state(&config, &mesh, &presence, endpoint_peers, unix_timestamp())
+        mobile_runtime_state(
+            &config,
+            &mesh,
+            &presence,
+            endpoint_peers,
+            relay_statuses,
+            unix_timestamp(),
+        )
     };
     write_mobile_runtime_state(path, &state)
 }
@@ -1237,6 +1260,7 @@ fn mobile_runtime_state(
     mesh: &FipsMeshRuntime,
     presence: &HashMap<String, MobilePeerPresence>,
     endpoint_peers: Vec<FipsEndpointPeer>,
+    relay_statuses: Vec<FipsEndpointRelayStatus>,
     now: u64,
 ) -> DaemonRuntimeState {
     let link_by_participant = endpoint_peers
@@ -1330,6 +1354,13 @@ fn mobile_runtime_state(
         expected_peer_count,
         connected_peer_count,
         mesh_ready: connected_peer_count == expected_peer_count,
+        relays: relay_statuses
+            .into_iter()
+            .map(|relay| crate::state::RelayView {
+                url: relay.url,
+                status: relay.status,
+            })
+            .collect(),
         peers,
         ..DaemonRuntimeState::default()
     }
@@ -2299,7 +2330,7 @@ mod tests {
         assert!(config.node.discovery.nostr.advertise);
         assert_eq!(
             config.node.discovery.nostr.policy,
-            NostrDiscoveryPolicy::Open
+            NostrDiscoveryPolicy::ConfiguredOnly
         );
         assert!(config.peers.is_empty());
     }
@@ -2740,6 +2771,7 @@ mod tests {
             &mesh,
             &HashMap::new(),
             vec![endpoint_peer],
+            Vec::new(),
             1_778_998_000,
         );
 
@@ -2787,7 +2819,7 @@ mod tests {
             },
         );
 
-        let state = mobile_runtime_state(&config, &mesh, &presence, Vec::new(), now);
+        let state = mobile_runtime_state(&config, &mesh, &presence, Vec::new(), Vec::new(), now);
 
         assert_eq!(state.expected_peer_count, 1);
         assert_eq!(state.connected_peer_count, 1);
@@ -3130,7 +3162,7 @@ mod tests {
         assert!(config.node.discovery.nostr.advertise);
         assert_eq!(
             config.node.discovery.nostr.policy,
-            NostrDiscoveryPolicy::Open
+            NostrDiscoveryPolicy::ConfiguredOnly
         );
         assert!(config.peers.is_empty());
     }

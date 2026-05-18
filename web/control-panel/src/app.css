@@ -740,6 +740,28 @@ textarea:focus {
   gap: 12px;
 }
 
+.relay-list {
+  display: grid;
+  gap: 7px;
+  margin: 14px 0 12px;
+}
+
+.relay-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #d8d0bd;
+  font-size: 0.9rem;
+}
+
+.relay-row span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .switch-row {
   display: flex;
   align-items: center;

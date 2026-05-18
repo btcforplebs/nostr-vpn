@@ -34,6 +34,8 @@ pub struct DaemonRuntimeState {
     pub network: NetworkSummary,
     #[serde(default, alias = "port_mapping")]
     pub port_mapping: PortMappingStatus,
+    #[serde(default)]
+    pub relays: Vec<RelayView>,
     pub peers: Vec<DaemonPeerState>,
 }
 
@@ -195,6 +197,7 @@ pub struct UiState {
     pub endpoint: String,
     pub tunnel_ip: String,
     pub listen_port: u16,
+    pub relays: Vec<RelayView>,
     pub exit_node: String,
     pub exit_node_leak_protection: bool,
     pub exit_node_active: bool,
@@ -235,6 +238,13 @@ pub struct UiState {
     pub lan_peers: Vec<LanPeerView>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayView {
+    pub url: String,
+    pub status: String,
+}
+
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsPatch {
@@ -242,6 +252,7 @@ pub struct SettingsPatch {
     pub endpoint: Option<String>,
     pub tunnel_ip: Option<String>,
     pub listen_port: Option<u16>,
+    pub relays: Option<Vec<String>>,
     pub exit_node: Option<String>,
     pub exit_node_leak_protection: Option<bool>,
     pub advertise_exit_node: Option<bool>,

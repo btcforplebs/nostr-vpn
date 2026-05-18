@@ -849,6 +849,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settingsPage(
     dispatch: (JSONObject) -> Unit,
 ) {
     item { DeviceSettingsCard(state, dispatch) }
+    item { RelaySettingsCard(state, dispatch) }
     item {
         AppCard {
             Row(verticalAlignment = Alignment.CenterVertically) {

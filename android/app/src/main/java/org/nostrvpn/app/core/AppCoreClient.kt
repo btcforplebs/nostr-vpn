@@ -1,6 +1,7 @@
 package org.nostrvpn.app.core
 
 import org.json.JSONObject
+import org.json.JSONArray
 
 class AppCoreClient(private val dataDir: String, appVersion: String) : AutoCloseable {
     private var handle: Long = NativeCore.appNew(dataDir, appVersion)
@@ -64,7 +65,9 @@ object NativeActions {
             .put(
                 "patch",
                 JSONObject().apply {
-                    settings.forEach { (key, value) -> put(key, value) }
+                    settings.forEach { (key, value) ->
+                        put(key, if (value is List<*>) JSONArray(value) else value)
+                    }
                 },
             )
 

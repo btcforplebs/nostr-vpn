@@ -33,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -331,6 +332,47 @@ internal fun DeviceSettingsCard(state: AppState, dispatch: (JSONObject) -> Unit)
                     "endpoint" to endpoint,
                     "tunnelIp" to tunnelIp,
                     "listenPort" to port.toIntOrNull(),
+                ),
+            )
+        }) {
+            Text("Save")
+        }
+    }
+}
+
+@Composable
+internal fun RelaySettingsCard(state: AppState, dispatch: (JSONObject) -> Unit) {
+    val stateRelayText = state.relays.joinToString("\n") { it.url }
+    var relayDraft by remember { mutableStateOf(stateRelayText) }
+    var lastSyncedRelayText by remember { mutableStateOf(stateRelayText) }
+    LaunchedEffect(stateRelayText) {
+        if (stateRelayText != lastSyncedRelayText) {
+            relayDraft = stateRelayText
+            lastSyncedRelayText = stateRelayText
+        }
+    }
+    AppCard {
+        Text("Relays", style = MaterialTheme.typography.titleMedium)
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            state.relays.forEach { relay ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Dot(selected = relay.status == "connected")
+                    Spacer(Modifier.width(8.dp))
+                    Text(relay.url, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+        OutlinedTextField(
+            relayDraft,
+            { relayDraft = it },
+            Modifier.fillMaxWidth(),
+            minLines = 3,
+            label = { Text("Relay URLs") },
+        )
+        Button(onClick = {
+            dispatch(
+                NativeActions.updateSettings(
+                    "relays" to relayDraft.lines().map { it.trim() }.filter { it.isNotEmpty() },
                 ),
             )
         }) {

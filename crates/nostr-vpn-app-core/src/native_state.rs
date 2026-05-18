@@ -117,6 +117,13 @@ pub struct NativePortMappingStatus {
     pub good_until: u64,
 }
 
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeRelayState {
+    pub url: String,
+    pub status: String,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,6 +161,7 @@ pub struct NativeAppState {
     pub endpoint: String,
     pub tunnel_ip: String,
     pub listen_port: u32,
+    pub relays: Vec<NativeRelayState>,
     pub network_id: String,
     pub active_network_invite: String,
     pub exit_node: String,

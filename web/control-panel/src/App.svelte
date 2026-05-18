@@ -52,6 +52,7 @@
     endpoint: '',
     tunnelIp: '',
     listenPort: '',
+    relays: '',
     advertisedRoutes: '',
     magicDnsSuffix: '',
     autoconnect: false,
@@ -139,6 +140,7 @@
       endpoint: next.endpoint,
       tunnelIp: next.tunnelIp,
       listenPort: String(next.listenPort || ''),
+      relays: next.relays.map((relay) => relay.url).join('\n'),
       advertisedRoutes: next.advertisedRoutes.join(', '),
       magicDnsSuffix: next.magicDnsSuffix,
       autoconnect: next.autoconnect,
@@ -668,6 +670,10 @@
         endpoint: settingsDraft.endpoint,
         tunnelIp: settingsDraft.tunnelIp,
         listenPort,
+        relays: settingsDraft.relays
+          .split(/[\s,]+/)
+          .map((relay) => relay.trim())
+          .filter(Boolean),
         advertisedRoutes: settingsDraft.advertisedRoutes,
         magicDnsSuffix: settingsDraft.magicDnsSuffix,
         autoconnect: settingsDraft.autoconnect,
@@ -1431,6 +1437,20 @@
                 <input bind:value={settingsDraft.advertisedRoutes} on:input={() => (settingsDirty = true)} />
               </label>
             </div>
+
+            <div class="relay-list">
+              {#each state.relays as relay}
+                <div class="relay-row">
+                  <span class="status-dot {relay.status === 'connected' ? 'ok' : 'muted'}"></span>
+                  <span>{relay.url}</span>
+                </div>
+              {/each}
+            </div>
+
+            <label>
+              <span>Relays</span>
+              <textarea bind:value={settingsDraft.relays} on:input={() => (settingsDirty = true)} rows="4"></textarea>
+            </label>
 
             <label class="switch-row">
               <span>Autoconnect</span>

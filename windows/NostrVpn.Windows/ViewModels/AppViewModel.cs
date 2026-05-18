@@ -45,6 +45,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     private string _endpoint = "";
     private string _tunnelIp = "";
     private string _listenPort = "";
+    private string _relaysDraft = "";
     private string _magicDnsSuffix = "";
     private string _advertisedRoutes = "";
     private string _wireguardExitConfig = "";
@@ -94,6 +95,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         ToggleNearbyDiscoveryCommand = new AsyncRelayCommand(_ => DispatchAsync(State.NearbyDiscoveryActive ? NativeActions.StopNearbyDiscovery() : NativeActions.StartNearbyDiscovery(), "Looking for nearby"));
         AddParticipantCommand = new AsyncRelayCommand(_ => AddParticipantAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(ParticipantInput) && !ParticipantInputInvalid);
         SaveNodeCommand = new AsyncRelayCommand(_ => SaveNodeAsync(), _ => !ActionInFlight);
+        SaveRelaysCommand = new AsyncRelayCommand(_ => SaveRelaysAsync(), _ => !ActionInFlight);
         SaveWireGuardExitCommand = new AsyncRelayCommand(_ => SaveWireGuardExitAsync(), _ => !ActionInFlight);
         CreateNetworkCommand = new AsyncRelayCommand(_ => CreateNetworkAsync(), _ => !ActionInFlight);
         AddNetworkCommand = new AsyncRelayCommand(_ => AddNetworkAsync(), _ => !ActionInFlight && !string.IsNullOrWhiteSpace(NetworkNameInput));
@@ -310,6 +312,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public string Endpoint { get => _endpoint; set => SetField(ref _endpoint, value); }
     public string TunnelIp { get => _tunnelIp; set => SetField(ref _tunnelIp, value); }
     public string ListenPort { get => _listenPort; set => SetField(ref _listenPort, value); }
+    public string RelaysDraft { get => _relaysDraft; set => SetField(ref _relaysDraft, value); }
     public string MagicDnsSuffix { get => _magicDnsSuffix; set => SetField(ref _magicDnsSuffix, value); }
     public string AdvertisedRoutes { get => _advertisedRoutes; set => SetField(ref _advertisedRoutes, value); }
     public string WireguardExitConfig { get => _wireguardExitConfig; set => SetField(ref _wireguardExitConfig, value); }
@@ -578,6 +581,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public ICommand ToggleNearbyDiscoveryCommand { get; }
     public ICommand AddParticipantCommand { get; }
     public ICommand SaveNodeCommand { get; }
+    public ICommand SaveRelaysCommand { get; }
     public ICommand SaveWireGuardExitCommand { get; }
     public ICommand CreateNetworkCommand { get; }
     public ICommand AddNetworkCommand { get; }
@@ -1084,6 +1088,17 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         }), "Saving device");
     }
 
+    private Task SaveRelaysAsync()
+    {
+        var relays = RelaysDraft
+            .Split(new[] { '\r', '\n', ',', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+        return DispatchAsync(NativeActions.UpdateSettings(new SettingsPatch
+        {
+            Relays = relays,
+        }), "Saving relays");
+    }
+
     private Task SaveWireGuardExitAsync()
     {
         return DispatchAsync(NativeActions.UpdateSettings(new SettingsPatch
@@ -1128,6 +1143,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         Endpoint = state.Endpoint;
         TunnelIp = state.TunnelIp;
         ListenPort = state.ListenPort.ToString();
+        RelaysDraft = string.Join(Environment.NewLine, state.Relays.Select(relay => relay.Url));
         MagicDnsSuffix = state.MagicDnsSuffix;
         WireguardExitConfig = state.WireguardExitConfig;
         NetworkNameDraft = active?.Name ?? "";

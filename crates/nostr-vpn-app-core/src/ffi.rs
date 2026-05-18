@@ -32,7 +32,7 @@ use crate::lan_pairing::{LanPairingWorker, spawn_lan_pairing_worker};
 use crate::native_state::{
     NativeAppState, NativeHealthIssue, NativeInboundJoinRequestState, NativeLanPeerState,
     NativeNetworkState, NativeNetworkSummary, NativeOutboundJoinRequestState,
-    NativeParticipantState, NativePortMappingStatus, NativeProbeStatus,
+    NativeParticipantState, NativePortMappingStatus, NativeProbeStatus, NativeRelayState,
 };
 use crate::platform::current_runtime_capabilities;
 use crate::state::{
@@ -556,6 +556,11 @@ impl NativeAppRuntime {
             } else {
                 u32::from(listen_port)
             },
+            relays: if config_unavailable {
+                Vec::new()
+            } else {
+                self.relay_views()
+            },
             network_id: if config_unavailable || network_setup_required {
                 String::new()
             } else {
@@ -703,11 +708,12 @@ impl NativeAppRuntime {
 
         match action {
             NativeAppAction::GetState | NativeAppAction::Tick => {
-                if self.mobile_runtime {
+                let result = if self.mobile_runtime {
                     self.refresh_mobile_status()
                 } else {
                     self.refresh_status()
-                }
+                };
+                result
             }
             NativeAppAction::ConnectVpn => self.connect_vpn(),
             NativeAppAction::DisconnectVpn => self.disconnect_vpn(),
@@ -1245,6 +1251,9 @@ impl NativeAppRuntime {
         if let Some(value) = patch.listen_port {
             self.config.node.listen_port = value;
         }
+        if let Some(value) = patch.relays {
+            self.config.nostr.relays = normalize_relay_urls(value);
+        }
         // Exit-node selection is mutually exclusive: at most one of
         // (peer exit_node, WireGuard upstream) can be active at a
         // time. The daemon enforces this so every UI / CLI client
@@ -1530,14 +1539,38 @@ impl NativeAppRuntime {
 
     fn save_reload_and_refresh(&mut self) -> Result<()> {
         self.save_config()?;
-        if self.mobile_runtime {
-            return self.refresh_mobile_status();
+        let result = if self.mobile_runtime {
+            self.refresh_mobile_status()
+        } else {
+            if self.daemon_running {
+                let output = self.run_nvpn(["reload", "--config", self.config_path_str()?])?;
+                ensure_success("nvpn reload", &output)?;
+            }
+            self.refresh_status()
+        };
+        result
+    }
+
+    fn relay_views(&self) -> Vec<NativeRelayState> {
+        if let Some(daemon_state) = self.daemon_state.as_ref()
+            && !daemon_state.relays.is_empty()
+        {
+            return daemon_state
+                .relays
+                .iter()
+                .map(|relay| NativeRelayState {
+                    url: relay.url.clone(),
+                    status: relay.status.clone(),
+                })
+                .collect();
         }
-        if self.daemon_running {
-            let output = self.run_nvpn(["reload", "--config", self.config_path_str()?])?;
-            ensure_success("nvpn reload", &output)?;
-        }
-        self.refresh_status()
+        effective_config_relays(&self.config)
+            .into_iter()
+            .map(|url| NativeRelayState {
+                url,
+                status: "unknown".to_string(),
+            })
+            .collect()
     }
 
     fn save_reload_refresh_and_maybe_connect_for_join_requests(
@@ -2507,6 +2540,36 @@ fn parse_csv_values(input: &str) -> Vec<String> {
     values
 }
 
+fn normalize_relay_urls(values: Vec<String>) -> Vec<String> {
+    let mut relays = values
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split([',', '\n', ' ', '\t'])
+                .map(str::trim)
+                .filter(|relay| !relay.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    relays.sort();
+    relays.dedup();
+    relays
+}
+
+fn effective_config_relays(config: &AppConfig) -> Vec<String> {
+    if !config.nostr.relays.is_empty() {
+        return normalize_relay_urls(config.nostr.relays.clone());
+    }
+    let fips = fips_endpoint::NostrDiscoveryConfig::default();
+    normalize_relay_urls(
+        fips.advert_relays
+            .into_iter()
+            .chain(fips.dm_relays)
+            .collect(),
+    )
+}
+
 fn short_pubkey(pubkey_hex: &str) -> String {
     if pubkey_hex.len() <= 12 {
         pubkey_hex.to_string()
@@ -2595,6 +2658,32 @@ mod tests {
             parse_advertised_routes(" 10.0.0.0/8,10.0.0.0/8\n::/0 "),
             vec!["10.0.0.0/8".to_string(), "::/0".to_string()]
         );
+    }
+
+    #[test]
+    fn relay_urls_are_normalized_and_deduplicated() {
+        assert_eq!(
+            normalize_relay_urls(vec![
+                " wss://relay.example\nwss://b.example ".to_string(),
+                "wss://relay.example,wss://a.example".to_string(),
+            ]),
+            vec![
+                "wss://a.example".to_string(),
+                "wss://b.example".to_string(),
+                "wss://relay.example".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_app_relay_config_exposes_fips_defaults() {
+        let mut config = AppConfig::generated();
+        config.nostr.relays.clear();
+
+        let relays = effective_config_relays(&config);
+
+        assert!(!relays.is_empty());
+        assert!(relays.iter().all(|relay| relay.starts_with("wss://")));
     }
 
     #[test]

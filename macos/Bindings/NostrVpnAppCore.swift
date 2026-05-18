@@ -921,6 +921,7 @@ public struct NativeAppState {
     public var endpoint: String
     public var tunnelIp: String
     public var listenPort: UInt32
+    public var relays: [NativeRelayState]
     public var networkId: String
     public var activeNetworkInvite: String
     public var exitNode: String
@@ -964,7 +965,7 @@ public struct NativeAppState {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(rev: UInt64, platform: String, mobile: Bool, vpnControlSupported: Bool, cliInstallSupported: Bool, startupSettingsSupported: Bool, trayBehaviorSupported: Bool, runtimeStatusDetail: String, appVersion: String, configPath: String, error: String, cliInstalled: Bool, serviceSupported: Bool, serviceEnablementSupported: Bool, serviceInstalled: Bool, serviceDisabled: Bool, serviceRunning: Bool, serviceStatusDetail: String, daemonRunning: Bool, vpnEnabled: Bool, vpnActive: Bool, vpnStatus: String, daemonBinaryVersion: String, serviceBinaryVersion: String, expectedServiceBinaryVersion: String, ownNpub: String, ownPubkeyHex: String, nodeId: String, nodeName: String, selfMagicDnsName: String, endpoint: String, tunnelIp: String, listenPort: UInt32, networkId: String, activeNetworkInvite: String, exitNode: String, exitNodeLeakProtection: Bool, exitNodeActive: Bool, exitNodeBlocked: Bool, exitNodeStatusText: String, advertiseExitNode: Bool, advertisedRoutes: [String], effectiveAdvertisedRoutes: [String], wireguardExitEnabled: Bool, wireguardExitConfigured: Bool, wireguardExitInterface: String, wireguardExitAddress: String, wireguardExitPrivateKey: String, wireguardExitPeerPublicKey: String, wireguardExitPeerPresharedKey: String, wireguardExitEndpoint: String, wireguardExitAllowedIps: String, wireguardExitDns: String, wireguardExitMtu: UInt16, wireguardExitPersistentKeepaliveSecs: UInt16, wireguardExitConfig: String, magicDnsSuffix: String, magicDnsStatus: String, autoconnect: Bool, inviteBroadcastActive: Bool, inviteBroadcastRemainingSecs: UInt64, nearbyDiscoveryActive: Bool, nearbyDiscoveryRemainingSecs: UInt64, launchOnStartup: Bool, closeToTrayOnClose: Bool, connectedPeerCount: UInt64, expectedPeerCount: UInt64, meshReady: Bool, health: [NativeHealthIssue], network: NativeNetworkSummary, portMapping: NativePortMappingStatus, networks: [NativeNetworkState], lanPeers: [NativeLanPeerState]) {
+    public init(rev: UInt64, platform: String, mobile: Bool, vpnControlSupported: Bool, cliInstallSupported: Bool, startupSettingsSupported: Bool, trayBehaviorSupported: Bool, runtimeStatusDetail: String, appVersion: String, configPath: String, error: String, cliInstalled: Bool, serviceSupported: Bool, serviceEnablementSupported: Bool, serviceInstalled: Bool, serviceDisabled: Bool, serviceRunning: Bool, serviceStatusDetail: String, daemonRunning: Bool, vpnEnabled: Bool, vpnActive: Bool, vpnStatus: String, daemonBinaryVersion: String, serviceBinaryVersion: String, expectedServiceBinaryVersion: String, ownNpub: String, ownPubkeyHex: String, nodeId: String, nodeName: String, selfMagicDnsName: String, endpoint: String, tunnelIp: String, listenPort: UInt32, relays: [NativeRelayState], networkId: String, activeNetworkInvite: String, exitNode: String, exitNodeLeakProtection: Bool, exitNodeActive: Bool, exitNodeBlocked: Bool, exitNodeStatusText: String, advertiseExitNode: Bool, advertisedRoutes: [String], effectiveAdvertisedRoutes: [String], wireguardExitEnabled: Bool, wireguardExitConfigured: Bool, wireguardExitInterface: String, wireguardExitAddress: String, wireguardExitPrivateKey: String, wireguardExitPeerPublicKey: String, wireguardExitPeerPresharedKey: String, wireguardExitEndpoint: String, wireguardExitAllowedIps: String, wireguardExitDns: String, wireguardExitMtu: UInt16, wireguardExitPersistentKeepaliveSecs: UInt16, wireguardExitConfig: String, magicDnsSuffix: String, magicDnsStatus: String, autoconnect: Bool, inviteBroadcastActive: Bool, inviteBroadcastRemainingSecs: UInt64, nearbyDiscoveryActive: Bool, nearbyDiscoveryRemainingSecs: UInt64, launchOnStartup: Bool, closeToTrayOnClose: Bool, connectedPeerCount: UInt64, expectedPeerCount: UInt64, meshReady: Bool, health: [NativeHealthIssue], network: NativeNetworkSummary, portMapping: NativePortMappingStatus, networks: [NativeNetworkState], lanPeers: [NativeLanPeerState]) {
         self.rev = rev
         self.platform = platform
         self.mobile = mobile
@@ -998,6 +999,7 @@ public struct NativeAppState {
         self.endpoint = endpoint
         self.tunnelIp = tunnelIp
         self.listenPort = listenPort
+        self.relays = relays
         self.networkId = networkId
         self.activeNetworkInvite = activeNetworkInvite
         self.exitNode = exitNode
@@ -1145,6 +1147,9 @@ extension NativeAppState: Equatable, Hashable {
             return false
         }
         if lhs.listenPort != rhs.listenPort {
+            return false
+        }
+        if lhs.relays != rhs.relays {
             return false
         }
         if lhs.networkId != rhs.networkId {
@@ -1304,6 +1309,7 @@ extension NativeAppState: Equatable, Hashable {
         hasher.combine(endpoint)
         hasher.combine(tunnelIp)
         hasher.combine(listenPort)
+        hasher.combine(relays)
         hasher.combine(networkId)
         hasher.combine(activeNetworkInvite)
         hasher.combine(exitNode)
@@ -1389,6 +1395,7 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
                 endpoint: FfiConverterString.read(from: &buf),
                 tunnelIp: FfiConverterString.read(from: &buf),
                 listenPort: FfiConverterUInt32.read(from: &buf),
+                relays: FfiConverterSequenceTypeNativeRelayState.read(from: &buf),
                 networkId: FfiConverterString.read(from: &buf),
                 activeNetworkInvite: FfiConverterString.read(from: &buf),
                 exitNode: FfiConverterString.read(from: &buf),
@@ -1466,6 +1473,7 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
         FfiConverterString.write(value.endpoint, into: &buf)
         FfiConverterString.write(value.tunnelIp, into: &buf)
         FfiConverterUInt32.write(value.listenPort, into: &buf)
+        FfiConverterSequenceTypeNativeRelayState.write(value.relays, into: &buf)
         FfiConverterString.write(value.networkId, into: &buf)
         FfiConverterString.write(value.activeNetworkInvite, into: &buf)
         FfiConverterString.write(value.exitNode, into: &buf)
@@ -2587,6 +2595,76 @@ public func FfiConverterTypeNativeProbeStatus_lower(_ value: NativeProbeStatus) 
 }
 
 
+public struct NativeRelayState {
+    public var url: String
+    public var status: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(url: String, status: String) {
+        self.url = url
+        self.status = status
+    }
+}
+
+#if compiler(>=6)
+extension NativeRelayState: Sendable {}
+#endif
+
+
+extension NativeRelayState: Equatable, Hashable {
+    public static func ==(lhs: NativeRelayState, rhs: NativeRelayState) -> Bool {
+        if lhs.url != rhs.url {
+            return false
+        }
+        if lhs.status != rhs.status {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(url)
+        hasher.combine(status)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeRelayState: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeRelayState {
+        return
+            try NativeRelayState(
+                url: FfiConverterString.read(from: &buf),
+                status: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NativeRelayState, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.url, into: &buf)
+        FfiConverterString.write(value.status, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRelayState_lift(_ buf: RustBuffer) throws -> NativeRelayState {
+    return try FfiConverterTypeNativeRelayState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRelayState_lower(_ value: NativeRelayState) -> RustBuffer {
+    return FfiConverterTypeNativeRelayState.lower(value)
+}
+
+
 public struct NativeRuntimeCapabilities {
     public var platform: String
     public var mobile: Bool
@@ -2795,6 +2873,7 @@ public struct SettingsPatch {
     public var endpoint: String?
     public var tunnelIp: String?
     public var listenPort: UInt16?
+    public var relays: [String]?
     public var exitNode: String?
     public var exitNodeLeakProtection: Bool?
     public var advertiseExitNode: Bool?
@@ -2818,11 +2897,12 @@ public struct SettingsPatch {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(nodeName: String?, endpoint: String?, tunnelIp: String?, listenPort: UInt16?, exitNode: String?, exitNodeLeakProtection: Bool?, advertiseExitNode: Bool?, advertisedRoutes: String?, wireguardExitEnabled: Bool?, wireguardExitInterface: String?, wireguardExitAddress: String?, wireguardExitPrivateKey: String?, wireguardExitPeerPublicKey: String?, wireguardExitPeerPresharedKey: String?, wireguardExitEndpoint: String?, wireguardExitAllowedIps: String?, wireguardExitDns: String?, wireguardExitMtu: UInt16?, wireguardExitPersistentKeepaliveSecs: UInt16?, wireguardExitConfig: String?, magicDnsSuffix: String?, autoconnect: Bool?, launchOnStartup: Bool?, closeToTrayOnClose: Bool?) {
+    public init(nodeName: String?, endpoint: String?, tunnelIp: String?, listenPort: UInt16?, relays: [String]?, exitNode: String?, exitNodeLeakProtection: Bool?, advertiseExitNode: Bool?, advertisedRoutes: String?, wireguardExitEnabled: Bool?, wireguardExitInterface: String?, wireguardExitAddress: String?, wireguardExitPrivateKey: String?, wireguardExitPeerPublicKey: String?, wireguardExitPeerPresharedKey: String?, wireguardExitEndpoint: String?, wireguardExitAllowedIps: String?, wireguardExitDns: String?, wireguardExitMtu: UInt16?, wireguardExitPersistentKeepaliveSecs: UInt16?, wireguardExitConfig: String?, magicDnsSuffix: String?, autoconnect: Bool?, launchOnStartup: Bool?, closeToTrayOnClose: Bool?) {
         self.nodeName = nodeName
         self.endpoint = endpoint
         self.tunnelIp = tunnelIp
         self.listenPort = listenPort
+        self.relays = relays
         self.exitNode = exitNode
         self.exitNodeLeakProtection = exitNodeLeakProtection
         self.advertiseExitNode = advertiseExitNode
@@ -2863,6 +2943,9 @@ extension SettingsPatch: Equatable, Hashable {
             return false
         }
         if lhs.listenPort != rhs.listenPort {
+            return false
+        }
+        if lhs.relays != rhs.relays {
             return false
         }
         if lhs.exitNode != rhs.exitNode {
@@ -2933,6 +3016,7 @@ extension SettingsPatch: Equatable, Hashable {
         hasher.combine(endpoint)
         hasher.combine(tunnelIp)
         hasher.combine(listenPort)
+        hasher.combine(relays)
         hasher.combine(exitNode)
         hasher.combine(exitNodeLeakProtection)
         hasher.combine(advertiseExitNode)
@@ -2969,6 +3053,7 @@ public struct FfiConverterTypeSettingsPatch: FfiConverterRustBuffer {
                 endpoint: FfiConverterOptionString.read(from: &buf),
                 tunnelIp: FfiConverterOptionString.read(from: &buf),
                 listenPort: FfiConverterOptionUInt16.read(from: &buf),
+                relays: FfiConverterOptionSequenceString.read(from: &buf),
                 exitNode: FfiConverterOptionString.read(from: &buf),
                 exitNodeLeakProtection: FfiConverterOptionBool.read(from: &buf),
                 advertiseExitNode: FfiConverterOptionBool.read(from: &buf),
@@ -2997,6 +3082,7 @@ public struct FfiConverterTypeSettingsPatch: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.endpoint, into: &buf)
         FfiConverterOptionString.write(value.tunnelIp, into: &buf)
         FfiConverterOptionUInt16.write(value.listenPort, into: &buf)
+        FfiConverterOptionSequenceString.write(value.relays, into: &buf)
         FfiConverterOptionString.write(value.exitNode, into: &buf)
         FfiConverterOptionBool.write(value.exitNodeLeakProtection, into: &buf)
         FfiConverterOptionBool.write(value.advertiseExitNode, into: &buf)
@@ -3561,6 +3647,30 @@ fileprivate struct FfiConverterOptionTypeNativeOutboundJoinRequestState: FfiConv
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterSequenceString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterSequenceString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -3703,6 +3813,31 @@ fileprivate struct FfiConverterSequenceTypeNativeParticipantState: FfiConverterR
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeNativeParticipantState.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeNativeRelayState: FfiConverterRustBuffer {
+    typealias SwiftType = [NativeRelayState]
+
+    public static func write(_ value: [NativeRelayState], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeNativeRelayState.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [NativeRelayState] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [NativeRelayState]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeNativeRelayState.read(from: &buf))
         }
         return seq
     }

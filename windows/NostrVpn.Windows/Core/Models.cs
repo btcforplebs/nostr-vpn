@@ -34,6 +34,7 @@ public sealed class NativeAppState
     public string Endpoint { get; set; } = "";
     public string TunnelIp { get; set; } = "";
     public uint ListenPort { get; set; }
+    public List<NativeRelayState> Relays { get; set; } = [];
     public string NetworkId { get; set; } = "";
     public string ActiveNetworkInvite { get; set; } = "";
     public string ExitNode { get; set; } = "";
@@ -74,6 +75,13 @@ public sealed class NativeAppState
     public NativePortMappingStatus PortMapping { get; set; } = new();
     public List<NativeNetworkState> Networks { get; set; } = [];
     public List<NativeLanPeerState> LanPeers { get; set; } = [];
+}
+
+public sealed class NativeRelayState
+{
+    public string Url { get; set; } = "";
+    public string Status { get; set; } = "";
+    public bool Connected => string.Equals(Status, "connected", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class NativeNetworkState

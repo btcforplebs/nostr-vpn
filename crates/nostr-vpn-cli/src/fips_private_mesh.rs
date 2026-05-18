@@ -3,8 +3,8 @@
 use anyhow::{Context, Result, anyhow};
 use fips_endpoint::{
     Config, ConnectPolicy, FipsEndpoint, FipsEndpointError, FipsEndpointMessage, FipsEndpointPeer,
-    NostrDiscoveryPolicy, PeerAddress, PeerConfig as FipsPeerConfig, RoutingMode,
-    TransportInstances, UdpConfig,
+    FipsEndpointRelayStatus, NostrDiscoveryPolicy, PeerAddress, PeerConfig as FipsPeerConfig,
+    RoutingMode, TransportInstances, UdpConfig,
 };
 use nostr_sdk::prelude::{PublicKey, ToBech32};
 use nostr_vpn_core::config::{
@@ -745,6 +745,13 @@ impl FipsPrivateMeshRuntime {
             .write()
             .map_err(|_| anyhow!("FIPS mesh link status lock poisoned"))? = link_status;
         Ok(())
+    }
+
+    pub(crate) async fn relay_statuses(&self) -> Result<Vec<FipsEndpointRelayStatus>> {
+        self.endpoint
+            .relay_statuses()
+            .await
+            .context("failed to snapshot FIPS relay statuses")
     }
 
     pub(crate) fn peer_pubkeys(&self) -> Vec<String> {
@@ -1744,6 +1751,10 @@ impl FipsPrivateTunnelRuntime {
 
     pub(crate) fn peer_statuses(&self) -> Vec<MeshPeerStatus> {
         self.mesh.peer_statuses()
+    }
+
+    pub(crate) async fn relay_statuses(&self) -> Result<Vec<FipsEndpointRelayStatus>> {
+        self.mesh.relay_statuses().await
     }
 
     pub(crate) fn peer_pubkeys(&self) -> Vec<String> {
@@ -2880,6 +2891,10 @@ impl FipsPrivateTunnelRuntime {
         self.mesh.peer_statuses()
     }
 
+    pub(crate) async fn relay_statuses(&self) -> Result<Vec<FipsEndpointRelayStatus>> {
+        self.mesh.relay_statuses().await
+    }
+
     pub(crate) fn peer_pubkeys(&self) -> Vec<String> {
         self.mesh.peer_pubkeys()
     }
@@ -3255,6 +3270,12 @@ impl FipsPrivateTunnelRuntime {
 
     pub(crate) fn peer_statuses(&self) -> Vec<MeshPeerStatus> {
         Vec::new()
+    }
+
+    pub(crate) async fn relay_statuses(
+        &self,
+    ) -> Result<Vec<fips_endpoint::FipsEndpointRelayStatus>> {
+        Ok(Vec::new())
     }
 
     pub(crate) fn peer_pubkeys(&self) -> Vec<String> {

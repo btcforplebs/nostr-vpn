@@ -274,6 +274,10 @@ fn persist_daemon_runtime_state_marks_vpn_on_as_active() {
         1,
         &tunnel_runtime,
         &[],
+        &[crate::DaemonRelayState {
+            url: "wss://relay.example".to_string(),
+            status: "connected".to_string(),
+        }],
         &std::collections::HashMap::new(),
         "VPN on",
         &nostr_vpn_core::diagnostics::NetworkSummary::default(),
@@ -286,6 +290,8 @@ fn persist_daemon_runtime_state_marks_vpn_on_as_active() {
         .expect("daemon state should exist");
     assert!(state.vpn_active);
     assert_eq!(state.vpn_status, "VPN on");
+    assert_eq!(state.relays.len(), 1);
+    assert_eq!(state.relays[0].status, "connected");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -302,6 +308,7 @@ fn fips_runtime_state_is_ready_without_waiting_for_every_peer() {
         true,
         2,
         &tunnel_runtime,
+        &[],
         &[],
         &std::collections::HashMap::new(),
         "VPN on",
@@ -345,6 +352,7 @@ fn daemon_runtime_state_marks_peers_unreachable_when_vpn_is_off() {
         1,
         &tunnel_runtime,
         &[peer_status],
+        &[],
         &std::collections::HashMap::new(),
         "Paused",
         &nostr_vpn_core::diagnostics::NetworkSummary::default(),
@@ -549,6 +557,7 @@ fn daemon_runtime_state_tracks_live_endpoint_and_listen_port() {
         true,
         0,
         &tunnel_runtime,
+        &[],
         &[],
         &std::collections::HashMap::new(),
         "Connected",

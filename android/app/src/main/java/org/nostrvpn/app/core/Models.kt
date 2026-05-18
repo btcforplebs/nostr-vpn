@@ -21,6 +21,7 @@ data class AppState(
     val tunnelIp: String = "",
     val endpoint: String = "",
     val listenPort: Int = 0,
+    val relays: List<RelayState> = emptyList(),
     val activeNetworkInvite: String = "",
     val connectedPeerCount: Long = 0,
     val expectedPeerCount: Long = 0,
@@ -55,6 +56,11 @@ data class AppState(
     val networks: List<NetworkState> = emptyList(),
     val lanPeers: List<LanPeerState> = emptyList(),
     val health: List<HealthIssue> = emptyList(),
+)
+
+data class RelayState(
+    val url: String = "",
+    val status: String = "unknown",
 )
 
 data class NetworkState(
@@ -138,6 +144,7 @@ fun parseAppState(jsonText: String): AppState {
         tunnelIp = json.optString("tunnelIp"),
         endpoint = json.optString("endpoint"),
         listenPort = json.optInt("listenPort"),
+        relays = json.optJSONArray("relays").toRelayList(),
         activeNetworkInvite = json.optString("activeNetworkInvite"),
         connectedPeerCount = json.optLong("connectedPeerCount"),
         expectedPeerCount = json.optLong("expectedPeerCount"),
@@ -172,6 +179,13 @@ fun parseAppState(jsonText: String): AppState {
         networks = json.optJSONArray("networks").toNetworkList(),
         lanPeers = json.optJSONArray("lanPeers").toLanPeerList(),
         health = json.optJSONArray("health").toHealthList(),
+    )
+}
+
+private fun JSONArray?.toRelayList(): List<RelayState> = mapObjects { item ->
+    RelayState(
+        url = item.optString("url"),
+        status = item.optString("status", "unknown"),
     )
 }
 

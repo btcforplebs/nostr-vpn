@@ -18,6 +18,7 @@ struct AppState: Decodable {
     var tunnelIp = ""
     var endpoint = ""
     var listenPort: Int = 0
+    var relays: [RelayState] = []
     var activeNetworkInvite = ""
     var connectedPeerCount: UInt64 = 0
     var expectedPeerCount: UInt64 = 0
@@ -61,7 +62,7 @@ struct AppState: Decodable {
     enum CodingKeys: String, CodingKey {
         case rev, error, appVersion, platform, mobile, vpnControlSupported
         case runtimeStatusDetail, vpnEnabled, vpnActive, vpnStatus, daemonRunning
-        case ownNpub, nodeName, selfMagicDnsName, tunnelIp, endpoint, listenPort, activeNetworkInvite
+        case ownNpub, nodeName, selfMagicDnsName, tunnelIp, endpoint, listenPort, relays, activeNetworkInvite
         case connectedPeerCount, expectedPeerCount, meshReady, exitNode, exitNodeLeakProtection
         case exitNodeActive, exitNodeBlocked, exitNodeStatusText, advertiseExitNode
         case advertisedRoutes
@@ -96,6 +97,7 @@ struct AppState: Decodable {
         tunnelIp = container.string(.tunnelIp)
         endpoint = container.string(.endpoint)
         listenPort = container.int(.listenPort)
+        relays = container.array(.relays)
         activeNetworkInvite = container.string(.activeNetworkInvite)
         connectedPeerCount = container.uint64(.connectedPeerCount)
         expectedPeerCount = container.uint64(.expectedPeerCount)
@@ -132,6 +134,13 @@ struct AppState: Decodable {
         lanPeers = container.array(.lanPeers)
         health = container.array(.health)
     }
+}
+
+struct RelayState: Decodable, Identifiable {
+    var url = ""
+    var status = "unknown"
+    var id: String { url }
+    var connected: Bool { status == "connected" }
 }
 
 struct NetworkState: Decodable, Identifiable {

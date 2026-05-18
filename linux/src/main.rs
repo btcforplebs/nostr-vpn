@@ -49,6 +49,7 @@ struct Drafts {
     endpoint: String,
     tunnel_ip: String,
     listen_port: String,
+    relays: String,
     magic_dns_suffix: String,
     advertised_routes: String,
     exit_search: String,
@@ -61,6 +62,12 @@ impl Drafts {
         self.endpoint = state.endpoint.clone();
         self.tunnel_ip = state.tunnel_ip.clone();
         self.listen_port = state.listen_port.to_string();
+        self.relays = state
+            .relays
+            .iter()
+            .map(|relay| relay.url.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
         self.magic_dns_suffix = state.magic_dns_suffix.clone();
         self.advertised_routes = state.advertised_routes.join(", ");
         self.wireguard_exit_config = state.wireguard_exit_config.clone();
@@ -2224,6 +2231,45 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     device.append(&save);
     page.append(&device);
 
+    let relays = card();
+    section_header(&relays, "Relays", "");
+    for relay in &state.relays {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.set_valign(gtk::Align::Center);
+        let dot = gtk::Label::new(Some("●"));
+        dot.add_css_class(if relay.status == "connected" {
+            "success"
+        } else {
+            "dim-label"
+        });
+        row.append(&dot);
+        let url = gtk::Label::new(Some(&relay.url));
+        url.set_xalign(0.0);
+        url.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        row.append(&url);
+        relays.append(&row);
+    }
+    let relay_text = gtk::TextView::new();
+    relay_text.set_monospace(true);
+    relay_text.buffer().set_text(&app.borrow().drafts.relays);
+    {
+        let app = app.clone();
+        relay_text.buffer().connect_changed(move |buffer| {
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+            app.borrow_mut().drafts.relays = text.to_string();
+        });
+    }
+    relays.append(&relay_text);
+    let save_relays = icon_text_button("Save", "");
+    save_relays.add_css_class("suggested-action");
+    save_relays.set_halign(gtk::Align::Start);
+    {
+        let app = app.clone();
+        save_relays.connect_clicked(move |_| save_relay_settings(&app));
+    }
+    relays.append(&save_relays);
+    page.append(&relays);
+
     let network = card();
     let network_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     section_header(&network_header, "Networks", "");
@@ -2741,6 +2787,27 @@ fn save_device_settings(app: &AppRef) {
                 tunnel_ip: Some(drafts.tunnel_ip),
                 listen_port,
                 magic_dns_suffix: Some(drafts.magic_dns_suffix),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+}
+
+fn save_relay_settings(app: &AppRef) {
+    let relays = app
+        .borrow()
+        .drafts
+        .relays
+        .split([',', '\n', ' ', '\t'])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    dispatch(
+        app,
+        NativeAppAction::UpdateSettings {
+            patch: SettingsPatch {
+                relays: Some(relays),
                 ..SettingsPatch::default()
             },
         },

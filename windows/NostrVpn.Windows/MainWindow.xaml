@@ -585,6 +585,38 @@
 
             <Border Style="{StaticResource Card}">
               <StackPanel>
+                <TextBlock Text="Relays" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
+                <ItemsControl ItemsSource="{Binding State.Relays}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <DockPanel Margin="0,0,0,6">
+                        <Ellipse DockPanel.Dock="Left" Width="9" Height="9" Margin="0,5,8,0">
+                          <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                              <Setter Property="Fill" Value="#9CA3AF" />
+                              <Style.Triggers>
+                                <DataTrigger Binding="{Binding Connected}" Value="True">
+                                  <Setter Property="Fill" Value="#16A34A" />
+                                </DataTrigger>
+                              </Style.Triggers>
+                            </Style>
+                          </Ellipse.Style>
+                        </Ellipse>
+                        <TextBlock Text="{Binding Url}" TextTrimming="CharacterEllipsis" />
+                      </DockPanel>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <TextBox Text="{Binding RelaysDraft, UpdateSourceTrigger=PropertyChanged}"
+                         AcceptsReturn="True"
+                         MinHeight="70"
+                         VerticalScrollBarVisibility="Auto" />
+                <Button Content="Save" Command="{Binding SaveRelaysCommand}" HorizontalAlignment="Left" Margin="0,8,0,0" />
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+              <StackPanel>
                 <CheckBox Content="Offer this device as an exit node" IsChecked="{Binding State.AdvertiseExitNode, Mode=OneWay}" Click="AdvertiseExit_Click" />
                 <CheckBox Content="Block internet if exit node disconnects" IsChecked="{Binding State.ExitNodeLeakProtection, Mode=OneWay}" Click="ExitLeakProtection_Click" Margin="0,10,0,0" />
                 <TextBlock Text="WireGuard Upstream" FontSize="18" FontWeight="SemiBold" Margin="0,16,0,10" />
