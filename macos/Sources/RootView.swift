@@ -606,7 +606,7 @@ struct RootView: View {
             if let participant = selectedParticipant(in: network) {
                 VStack(alignment: .leading, spacing: 22) {
                     deviceDetailHeader(participant, network: network)
-                    if network.localIsAdmin && !isSelf(participant) {
+                    if network.localIsAdmin {
                         deviceAdminSection(participant, network: network)
                     }
                     deviceAddressesSection(participant)
@@ -685,7 +685,9 @@ struct RootView: View {
                 .disabled(manager.actionInFlight)
             }
 
-            deviceActionButtons(participant, network: network)
+            if !isSelf(participant) {
+                deviceActionButtons(participant, network: network)
+            }
         }
     }
 

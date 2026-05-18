@@ -1179,7 +1179,7 @@
                   </div>
                 </header>
 
-                {#if shownNetwork.localIsAdmin && !isSelf(selectedParticipant)}
+                {#if shownNetwork.localIsAdmin}
                   <form class="detail-surface" on:submit|preventDefault={() => saveAlias(selectedParticipant)}>
                     <div class="section-heading">
                       <div>
@@ -1197,22 +1197,24 @@
                         Save
                       </button>
                     </div>
-                    <div class="button-row">
-                      <button
-                        type="button"
-                        class="small-button"
-                        on:click={() => toggleAdmin(shownNetwork, selectedParticipant)}
-                      >
-                        {selectedParticipant.isAdmin ? 'Remove admin' : 'Make admin'}
-                      </button>
-                      <button
-                        type="button"
-                        class="small-button danger"
-                        on:click={() => removeParticipant(shownNetwork, selectedParticipant)}
-                      >
-                        Remove
-                      </button>
-                    </div>
+                    {#if !isSelf(selectedParticipant)}
+                      <div class="button-row">
+                        <button
+                          type="button"
+                          class="small-button"
+                          on:click={() => toggleAdmin(shownNetwork, selectedParticipant)}
+                        >
+                          {selectedParticipant.isAdmin ? 'Remove admin' : 'Make admin'}
+                        </button>
+                        <button
+                          type="button"
+                          class="small-button danger"
+                          on:click={() => removeParticipant(shownNetwork, selectedParticipant)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    {/if}
                   </form>
                 {/if}
 
