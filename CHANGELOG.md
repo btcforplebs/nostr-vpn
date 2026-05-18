@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.37 - 2026-05-19
+
+### Changed
+
+- Daemon now persists runtime state at most once every 5 seconds and refreshes
+  recent-peer summaries on the mesh refresh cadence instead of on every 1-second
+  status tick, cutting redundant disk writes and FIPS snapshot work on idle
+  devices. Persistence failures are now surfaced via stderr instead of silently
+  swallowed.
+- `nostr-vpn-cli` now treats Nostr relay list changes as a configuration delta
+  for the FIPS private tunnel runtime, so relay edits hot-apply through the
+  existing reconfigure path instead of waiting for the next process restart.
+
 ## 4.0.36 - 2026-05-18
 
 ### Changed
