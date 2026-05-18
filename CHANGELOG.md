@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.32 - 2026-05-18
+
+### Changed
+
+- Updated the embedded FIPS endpoint stack to `fips-endpoint` 0.3.12.
+
 ## 4.0.31 - 2026-05-18
 
 ### Changed

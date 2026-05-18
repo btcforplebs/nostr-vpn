@@ -707,6 +707,42 @@ mod tests {
         assert_eq!(value["error"], "");
     }
 
+    #[test]
+    fn decode_qr_image_reads_generated_invite() {
+        let invite = "nvpn://invite/example";
+        let code = QrCode::new(invite.as_bytes()).expect("QR code");
+        let module_count = u32::try_from(code.width()).expect("QR width fits u32");
+        let scale = 8;
+        let quiet_zone = 4;
+        let image_width = (module_count + quiet_zone * 2) * scale;
+        let mut image = image::GrayImage::from_pixel(image_width, image_width, image::Luma([255]));
+
+        for (index, color) in code.to_colors().into_iter().enumerate() {
+            if !matches!(color, qrcode::Color::Dark) {
+                continue;
+            }
+            let x = u32::try_from(index % code.width()).expect("QR x fits u32");
+            let y = u32::try_from(index / code.width()).expect("QR y fits u32");
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    image.put_pixel(
+                        (x + quiet_zone) * scale + dx,
+                        (y + quiet_zone) * scale + dy,
+                        image::Luma([0]),
+                    );
+                }
+            }
+        }
+
+        let dir = temp_data_dir();
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("invite.png");
+        image.save(&path).expect("save QR image");
+
+        let decoded = decode_qr_image(path.to_str().expect("UTF-8 path")).expect("decode QR");
+        assert_eq!(decoded, invite);
+    }
+
     fn temp_data_dir() -> std::path::PathBuf {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
