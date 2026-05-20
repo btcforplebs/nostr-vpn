@@ -9,6 +9,7 @@ const dict = {
   'The web interface is not ready': 5,
   'Web UI': 6,
   'Open the Nostr VPN control panel': 7,
+  'The mesh daemon is not running': 8,
 } as const
 
 export type I18nKey = keyof typeof dict

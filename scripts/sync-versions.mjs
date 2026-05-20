@@ -88,6 +88,12 @@ const targets = [
       (_, prefix, suffix) => `${prefix}${versionTag(version)}${suffix}`,
     ),
   ),
+  makeTarget('startos/versions/current.ts', (text, version) =>
+    text.replace(
+      /^(  version:\s*')[^'\n]+(')/m,
+      (_, prefix, suffix) => `${prefix}${version}:0${suffix}`,
+    ),
+  ),
 ]
 
 function main() {

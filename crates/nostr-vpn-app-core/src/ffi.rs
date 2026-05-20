@@ -11,8 +11,8 @@ use anyhow::{Context, Result, anyhow};
 use nostr_vpn_core::config::{
     AppConfig, NetworkConfig, PendingInboundJoinRequest, PendingOutboundJoinRequest,
     derive_mesh_tunnel_ip, maybe_autoconfigure_node, normalize_advertised_route,
-    normalize_nostr_pubkey, normalize_relay_urls, normalize_runtime_network_id,
-    parse_wireguard_exit_config, wireguard_exit_config_text,
+    normalize_magic_dns_label, normalize_nostr_pubkey, normalize_relay_urls,
+    normalize_runtime_network_id, parse_wireguard_exit_config, wireguard_exit_config_text,
 };
 use nostr_vpn_core::diagnostics::ProbeStatus;
 use nostr_vpn_core::process_ext::CommandWindowExt;
@@ -539,7 +539,7 @@ impl NativeAppRuntime {
             self_magic_dns_name: if config_unavailable {
                 String::new()
             } else {
-                self.config.self_magic_dns_name().unwrap_or_default()
+                self.self_magic_dns_name_for_display()
             },
             endpoint: if config_unavailable {
                 String::new()
@@ -1846,7 +1846,7 @@ impl NativeAppRuntime {
             .magic_dns_name_for_participant(participant)
             .unwrap_or_default();
         let magic_dns_name = if assigned_magic_dns_name.is_empty() && is_local {
-            self.config.self_magic_dns_name().unwrap_or_default()
+            self.self_magic_dns_name_for_display()
         } else {
             assigned_magic_dns_name
         };
@@ -2038,6 +2038,32 @@ impl NativeAppRuntime {
             format!("Serving .{} names", self.config.magic_dns_suffix)
         } else {
             "DNS disabled (VPN off)".to_string()
+        }
+    }
+
+    fn self_magic_dns_label_for_display(&self) -> Option<String> {
+        self.config.self_magic_dns_label().or_else(|| {
+            let own_pubkey = self.config.own_nostr_pubkey_hex().ok()?;
+            if !self
+                .config
+                .active_network_signal_pubkeys_hex()
+                .iter()
+                .any(|member| member == &own_pubkey)
+            {
+                return None;
+            }
+            normalize_magic_dns_label(&self.config.node_name).or_else(|| Some("self".to_string()))
+        })
+    }
+
+    fn self_magic_dns_name_for_display(&self) -> String {
+        let Some(alias) = self.self_magic_dns_label_for_display() else {
+            return String::new();
+        };
+        if self.config.magic_dns_suffix.is_empty() {
+            alias
+        } else {
+            format!("{alias}.{}", self.config.magic_dns_suffix)
         }
     }
 
@@ -2960,6 +2986,32 @@ mod tests {
                 && participant.state == "off"
                 && participant.mesh_state == "off"
         }));
+    }
+
+    #[test]
+    fn state_displays_default_self_magic_dns_name_without_persisting_alias() {
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.config.node_name = "Umbrel Box".to_string();
+        let own_pubkey = runtime
+            .config
+            .own_nostr_pubkey_hex()
+            .expect("generated config should have own pubkey");
+        create_test_network(&mut runtime, "Home");
+        runtime.config.networks[0].admins = vec![own_pubkey.clone()];
+
+        let state = runtime.state();
+        let network = &state.networks[0];
+        let self_participant = network
+            .participants
+            .iter()
+            .find(|participant| participant.pubkey_hex == own_pubkey)
+            .expect("self participant");
+
+        assert_eq!(state.self_magic_dns_name, "umbrel-box.nvpn");
+        assert_eq!(self_participant.magic_dns_name, "umbrel-box.nvpn");
+        assert_eq!(runtime.config.peer_alias(&own_pubkey), None);
     }
 
     #[test]

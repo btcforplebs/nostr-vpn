@@ -432,6 +432,7 @@ fn umbrel_state_value(state: NativeAppState) -> ApiResult<Value> {
             || vpn_status == "Disconnected"
             || vpn_status == "Daemon running"
             || vpn_status == "Daemon not running"
+            || vpn_status == "Listening for join requests"
             || vpn_status == "Paused")
     {
         object.insert("vpnStatus".to_string(), json!("VPN off"));
@@ -612,5 +613,19 @@ mod tests {
             value["serviceStatusDetail"],
             "Managed directly by the Umbrel app"
         );
+    }
+
+    #[test]
+    fn umbrel_state_shows_vpn_off_while_join_listener_is_idle() {
+        let state = NativeAppState {
+            vpn_enabled: false,
+            vpn_active: false,
+            vpn_status: "Listening for join requests".to_string(),
+            ..NativeAppState::default()
+        };
+
+        let value = umbrel_state_value(state).expect("state value");
+
+        assert_eq!(value["vpnStatus"], "VPN off");
     }
 }

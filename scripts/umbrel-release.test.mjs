@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   buildPinnedImageRef,
@@ -8,6 +11,8 @@ import {
   renderUmbrelManifest,
   validatePinnedImageRef,
 } from './umbrel-release.mjs'
+
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 
 test('buildPinnedImageRef renders a pinned tag plus digest', () => {
   const digest = `sha256:${'a'.repeat(64)}`
@@ -46,6 +51,7 @@ test('renderUmbrelCompose includes the pinned image and tunnel access', () => {
   assert.match(compose, /app_proxy:/)
   assert.match(compose, /APP_HOST: nostr-vpn_web_1/)
   assert.match(compose, /daemon:/)
+  assert.doesNotMatch(compose, /^version:/m)
   assert.match(compose, /network_mode: "host"/)
   assert.match(compose, /\/dev\/net\/tun:\/dev\/net\/tun/)
   assert.match(compose, /NVPN_DAEMON_STATUS_MODE: state-file/)
@@ -57,6 +63,7 @@ test('renderUmbrelManifest syncs version and release notes', () => {
     `manifestVersion: 1
 version: "v0.3.4"
 releaseNotes: ""
+submission: ""
 `,
     {
       tag: '0.3.5',
@@ -66,4 +73,10 @@ releaseNotes: ""
 
   assert.match(manifest, /^version: "v0\.3\.5"$/m)
   assert.match(manifest, /^releaseNotes: "https:\/\/example\.test\/releases\/v0\.3\.5"$/m)
+  assert.doesNotMatch(manifest, /^submission: ""$/m)
+})
+
+test('base Umbrel manifest does not ship a blank submission URL', () => {
+  const manifest = readFileSync(join(repoRoot, 'umbrel/umbrel-app.yml'), 'utf8')
+  assert.doesNotMatch(manifest, /^submission:\s*""$/m)
 })

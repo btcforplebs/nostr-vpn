@@ -78,10 +78,10 @@ if [[ -z "$PEER_NPUB" ]]; then
   exit 1
 fi
 
-pnpm --dir "$ROOT_DIR/web/control-panel" exec playwright install chromium
+env -u NO_COLOR pnpm --dir "$ROOT_DIR/web/control-panel" exec playwright install chromium
 
 NVPN_UMBREL_WEB_BASE_URL="http://127.0.0.1:$PORT" \
 NVPN_UMBREL_WEB_PEER_NPUB="$PEER_NPUB" \
-  pnpm --dir "$ROOT_DIR/web/control-panel" exec playwright test "$@"
+  env -u NO_COLOR pnpm --dir "$ROOT_DIR/web/control-panel" exec playwright test "$@"
 
 echo "umbrel web docker e2e passed: bundled UI loaded and API config actions matched the expected web control surface"

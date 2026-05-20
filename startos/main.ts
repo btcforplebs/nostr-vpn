@@ -13,7 +13,7 @@ export const main = sdk.setupMain(async ({ effects }) => {
 
   const daemonSub = await sdk.SubContainer.of(
     effects,
-    { imageId: 'app', sharedRun: true },
+    { imageId: 'app' },
     dataMount,
     'nostr-vpn-daemon',
   )
@@ -47,10 +47,11 @@ export const main = sdk.setupMain(async ({ effects }) => {
       },
       ready: {
         display: i18n('Mesh daemon'),
-        fn: async () => ({
-          result: 'success' as const,
-          message: i18n('The mesh daemon is running'),
-        }),
+        fn: () =>
+          sdk.healthCheck.runHealthScript(['pgrep', '-x', 'nvpn'], daemonSub, {
+            message: () => i18n('The mesh daemon is running'),
+            errorMessage: i18n('The mesh daemon is not running'),
+          }),
       },
       requires: ['prepare-data'],
     })

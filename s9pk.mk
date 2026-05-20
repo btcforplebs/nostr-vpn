@@ -3,6 +3,8 @@
 
 PACKAGE_ID := $(shell awk -F"'" '/id:/ {print $$2}' startos/manifest/index.ts)
 INGREDIENTS := $(shell start-cli s9pk list-ingredients 2>/dev/null)
+DOCKER_CONTEXT_DEPS := $(shell git ls-files -- .dockerignore Cargo.toml Cargo.lock crates web/control-panel umbrel/Dockerfile 2>/dev/null)
+PACKAGE_DEPS := $(sort $(INGREDIENTS) $(DOCKER_CONTEXT_DEPS))
 GIT_DIR := $(shell git rev-parse --git-dir 2>/dev/null)
 GIT_DEPS := $(if $(GIT_DIR),$(GIT_DIR)/HEAD $(GIT_DIR)/index)
 ARCHES ?= x86 arm riscv
@@ -30,7 +32,7 @@ define SUMMARY
 	printf "\033[1;32mBuild complete\033[0m\n"; \
 	printf "\n"; \
 	printf "\033[1;37m$$title\033[0m   \033[36mv$$version\033[0m\n"; \
-	printf "------------------------------\n"; \
+	printf "%s\n" "------------------------------"; \
 	printf "Filename:   %s\n" "$(1)"; \
 	printf "Size:       %s\n" "$$size"; \
 	printf "Arch:       %s\n" "$$arches"; \
@@ -56,12 +58,12 @@ x86 x86_64: arch/x86_64
 arm arm64 aarch64: arch/aarch64
 riscv riscv64: arch/riscv64
 
-$(BASE_NAME).s9pk: $(INGREDIENTS) $(GIT_DEPS)
+$(BASE_NAME).s9pk: $(PACKAGE_DEPS) $(GIT_DEPS)
 	@$(MAKE) --no-print-directory ingredients
 	@echo "   Packing '$@'..."
 	start-cli s9pk pack -o $@
 
-$(BASE_NAME)_%.s9pk: $(INGREDIENTS) $(GIT_DEPS)
+$(BASE_NAME)_%.s9pk: $(PACKAGE_DEPS) $(GIT_DEPS)
 	@$(MAKE) --no-print-directory ingredients
 	@echo "   Packing '$@'..."
 	start-cli s9pk pack --arch=$* -o $@

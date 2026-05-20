@@ -209,9 +209,7 @@ docker compose -f umbrel/docker-compose.local.yml config
 
 export function renderUmbrelCompose(imageRef) {
   const pinnedRef = validatePinnedImageRef(imageRef)
-  return `version: "3.7"
-
-services:
+  return `services:
   app_proxy:
     environment:
       APP_HOST: nostr-vpn_web_1
@@ -264,6 +262,7 @@ export function renderUmbrelManifest(templateText, { tag, releaseNotes } = {}) {
   if (releaseNotes) {
     manifest = manifest.replace(/^releaseNotes: .*$/m, `releaseNotes: "${releaseNotes}"`)
   }
+  manifest = manifest.replace(/^submission:\s*""\s*\r?\n/m, '')
   return manifest.endsWith('\n') ? manifest : `${manifest}\n`
 }
 

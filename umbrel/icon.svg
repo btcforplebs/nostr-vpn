@@ -15,7 +15,7 @@
     </radialGradient>
   </defs>
 
-  <rect x="0" y="0" width="1024" height="1024" rx="226" fill="url(#bg)" />
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#bg)" />
 
   <g stroke="url(#edge)" stroke-linecap="round" stroke-linejoin="round" fill="none">
     <polyline points="300,740 300,280 724,740 724,280" stroke-width="60" />
