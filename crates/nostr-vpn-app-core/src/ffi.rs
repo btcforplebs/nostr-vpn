@@ -20,7 +20,7 @@ use serde::Deserialize;
 
 use crate::actions::NativeAppAction;
 use crate::invite::{
-    NETWORK_INVITE_VERSION, NetworkInvite, active_network_invite_code,
+    NETWORK_INVITE_VERSION, NetworkInvite, active_network_invite_code_with_endpoints,
     apply_network_invite_to_active_network, parse_network_invite, preferred_join_request_recipient,
     to_npub,
 };
@@ -569,7 +569,11 @@ impl NativeAppRuntime {
             active_network_invite: if config_unavailable || network_setup_required {
                 String::new()
             } else {
-                active_network_invite_code(&self.config).unwrap_or_default()
+                active_network_invite_code_with_endpoints(
+                    &self.config,
+                    &self.live_inviter_endpoints(),
+                )
+                .unwrap_or_default()
             },
             exit_node: if self.config.exit_node.trim().is_empty() {
                 String::new()
@@ -1107,7 +1111,9 @@ impl NativeAppRuntime {
 
     fn build_lan_pairing_announcement(&self) -> Result<LanPairingAnnouncement> {
         let own_npub = to_npub(&self.config.own_nostr_pubkey_hex()?);
-        let invite = active_network_invite_code(&self.config).unwrap_or_default();
+        let invite =
+            active_network_invite_code_with_endpoints(&self.config, &self.live_inviter_endpoints())
+                .unwrap_or_default();
         let endpoint = self
             .daemon_state
             .as_ref()
@@ -1119,6 +1125,19 @@ impl NativeAppRuntime {
             endpoint,
             invite,
         })
+    }
+
+    fn live_inviter_endpoints(&self) -> Vec<String> {
+        let Some(state) = self.daemon_state.as_ref() else {
+            return Vec::new();
+        };
+        let mut endpoints = Vec::new();
+        endpoints.push(state.local_endpoint.clone());
+        endpoints.push(state.advertised_endpoint.clone());
+        if let Some(external_endpoint) = state.port_mapping.external_endpoint.as_ref() {
+            endpoints.push(external_endpoint.clone());
+        }
+        endpoints
     }
 
     fn refresh_lan_pairing(&mut self) {

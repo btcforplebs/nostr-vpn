@@ -7,7 +7,10 @@ pub(crate) use nostr_vpn_core::invite::{
     NETWORK_INVITE_VERSION, NetworkInvite, encode_network_invite, parse_network_invite, to_npub,
 };
 
-pub(crate) fn active_network_invite_code(config: &AppConfig) -> Result<String> {
+pub(crate) fn active_network_invite_code_with_endpoints(
+    config: &AppConfig,
+    extra_inviter_endpoints: &[String],
+) -> Result<String> {
     let active_network = config
         .active_network_opt()
         .ok_or_else(|| anyhow!("create or join a network first"))?;
@@ -21,7 +24,7 @@ pub(crate) fn active_network_invite_code(config: &AppConfig) -> Result<String> {
         network_id: roster.network_id,
         inviter_npub: String::new(),
         inviter_node_name: String::new(),
-        inviter_endpoints: active_inviter_endpoints(config),
+        inviter_endpoints: active_inviter_endpoints(config, extra_inviter_endpoints),
         admins: roster.admins.iter().map(|admin| to_npub(admin)).collect(),
         participants: Vec::new(),
         relays: Vec::new(),
@@ -70,13 +73,20 @@ pub(crate) fn apply_network_invite_to_active_network(
     Ok(())
 }
 
-fn active_inviter_endpoints(config: &AppConfig) -> Vec<String> {
+fn active_inviter_endpoints(config: &AppConfig, extra_inviter_endpoints: &[String]) -> Vec<String> {
     let mut configured = config.clone();
     maybe_autoconfigure_node(&mut configured);
-    let endpoint = configured.node.endpoint.trim();
-    normalize_fips_peer_endpoint_hint(endpoint)
+    let mut endpoints = normalize_fips_peer_endpoint_hint(configured.node.endpoint.trim())
         .into_iter()
-        .collect()
+        .collect::<Vec<_>>();
+    endpoints.extend(
+        extra_inviter_endpoints
+            .iter()
+            .filter_map(|endpoint| normalize_fips_peer_endpoint_hint(endpoint)),
+    );
+    endpoints.sort();
+    endpoints.dedup();
+    endpoints
 }
 
 struct PreparedNetworkInvite {
@@ -214,4 +224,57 @@ pub(crate) fn preferred_join_request_recipient(network: &NetworkConfig) -> Optio
 fn network_should_adopt_invite(network: &NetworkConfig) -> bool {
     let trimmed = network.name.trim();
     network.participants.is_empty() && (trimmed.is_empty() || trimmed.starts_with("Network "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostr_sdk::prelude::{Keys, ToBech32};
+    use nostr_vpn_core::config::NetworkConfig;
+
+    #[test]
+    fn active_invite_includes_live_inviter_endpoints() {
+        let keys = Keys::generate();
+        let admin_hex = keys.public_key().to_hex();
+        let admin_npub = keys.public_key().to_bech32().expect("admin npub");
+        let mut config = AppConfig::generated_without_networks();
+        config.nostr.secret_key = keys.secret_key().to_secret_hex();
+        config.nostr.public_key = admin_npub;
+        config.node.endpoint = "172.20.10.2:51821".to_string();
+        config.networks.push(NetworkConfig {
+            id: "network-1".to_string(),
+            name: "Network 1".to_string(),
+            enabled: true,
+            network_id: "8d4f34f5425bc50e".to_string(),
+            participants: Vec::new(),
+            admins: vec![admin_hex],
+            listen_for_join_requests: true,
+            invite_inviter: String::new(),
+            outbound_join_request: None,
+            inbound_join_requests: Vec::new(),
+            shared_roster_updated_at: 0,
+            shared_roster_signed_by: String::new(),
+        });
+
+        let code = active_network_invite_code_with_endpoints(
+            &config,
+            &[
+                "192.168.1.5:51821".to_string(),
+                "10.68.114.105:51821".to_string(),
+                "192.168.1.5:51821".to_string(),
+                "not an endpoint".to_string(),
+            ],
+        )
+        .expect("invite code");
+        let invite = parse_network_invite(&code).expect("invite parses");
+
+        assert_eq!(
+            invite.inviter_endpoints,
+            vec![
+                "10.68.114.105:51821".to_string(),
+                "172.20.10.2:51821".to_string(),
+                "192.168.1.5:51821".to_string(),
+            ]
+        );
+    }
 }
