@@ -1753,11 +1753,11 @@ fn build_network_setup(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     header.append(&spacer);
     let nearby_label = if state.nearby_discovery_active {
         format!(
-            "Listening · {}",
+            "Finding nearby · {}",
             remaining_text(state.nearby_discovery_remaining_secs)
         )
     } else {
-        "Look for nearby".to_string()
+        "Find nearby".to_string()
     };
     let lan = icon_text_button(
         &nearby_label,
@@ -1849,11 +1849,11 @@ fn build_share_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     invite_row.append(&copy);
     let broadcast_label = if state.invite_broadcast_active {
         format!(
-            "Broadcasting · {}",
+            "Sharing nearby · {}",
             remaining_text(state.invite_broadcast_remaining_secs)
         )
     } else {
-        "Broadcast invite".to_string()
+        "Share invite nearby".to_string()
     };
     let broadcast = icon_text_button(
         &broadcast_label,
@@ -1977,11 +1977,11 @@ fn build_share_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     header.append(&spacer);
     let nearby_label = if state.nearby_discovery_active {
         format!(
-            "Listening · {}",
+            "Finding nearby · {}",
             remaining_text(state.nearby_discovery_remaining_secs)
         )
     } else {
-        "Look for nearby".to_string()
+        "Find nearby".to_string()
     };
     let lan = icon_text_button(
         &nearby_label,

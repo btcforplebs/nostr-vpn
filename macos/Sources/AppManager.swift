@@ -601,15 +601,15 @@ final class AppManager: ObservableObject {
     }
 
     func startInviteBroadcast() {
-        dispatch(.startInviteBroadcast, status: "Broadcasting invite")
+        dispatch(.startInviteBroadcast, status: "Sharing nearby")
     }
 
     func stopInviteBroadcast() {
-        dispatch(.stopInviteBroadcast, status: "Stopped broadcasting")
+        dispatch(.stopInviteBroadcast, status: "Stopped nearby sharing")
     }
 
     func startNearbyDiscovery() {
-        dispatch(.startNearbyDiscovery, status: "Looking for nearby")
+        dispatch(.startNearbyDiscovery, status: "Finding nearby")
     }
 
     func stopNearbyDiscovery() {

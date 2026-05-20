@@ -129,10 +129,16 @@ export type UiState = {
   listenPort: number;
   relays: RelayView[];
   exitNode: string;
+  exitNodeLeakProtection: boolean;
   exitNodeActive: boolean;
+  exitNodeStatusText: string;
   advertiseExitNode: boolean;
   advertisedRoutes: string[];
   effectiveAdvertisedRoutes: string[];
+  wireguardExitEnabled: boolean;
+  wireguardExitConfigured: boolean;
+  wireguardExitEndpoint: string;
+  wireguardExitConfig: string;
   magicDnsSuffix: string;
   magicDnsStatus: string;
   autoconnect: boolean;

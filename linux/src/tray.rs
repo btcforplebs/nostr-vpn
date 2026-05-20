@@ -484,7 +484,7 @@ fn build_menu(state: &NativeAppState) -> MenuNode {
             network
                 .participants
                 .iter()
-                .filter(|participant| participant.offers_exit_node)
+                .filter(|participant| participant.offers_exit_node && !is_self(participant, state))
                 .enumerate()
                 .map(|(index, participant)| {
                     radio_item(
@@ -521,6 +521,12 @@ fn build_menu(state: &NativeAppState) -> MenuNode {
         command: None,
         children,
     }
+}
+
+fn is_self(participant: &NativeParticipantState, state: &NativeAppState) -> bool {
+    (!state.own_npub.is_empty() && participant.npub == state.own_npub)
+        || (!state.own_pubkey_hex.is_empty() && participant.pubkey_hex == state.own_pubkey_hex)
+        || participant.mesh_state == "local"
 }
 
 fn item(id: i32, label: &str, enabled: bool, command: TrayCommand) -> MenuNode {

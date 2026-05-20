@@ -568,7 +568,7 @@
                     <TextBlock Text="WireGuard upstream" FontWeight="SemiBold" />
                   </DockPanel>
                 </Button>
-                <ItemsControl ItemsSource="{Binding ActiveNetwork.Participants}">
+                <ItemsControl ItemsSource="{Binding ExitNodeParticipants}">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
                       <Button Tag="{Binding Npub}" Click="SetExitNode_Click" Margin="0,0,0,8" HorizontalContentAlignment="Stretch">

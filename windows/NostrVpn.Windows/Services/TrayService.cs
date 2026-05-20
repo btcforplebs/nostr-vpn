@@ -109,7 +109,7 @@ public sealed class TrayService : IDisposable
             var noExit = Item("No exit node", async (_, _) => await viewModel.SetExitNodeAsync(""));
             noExit.Checked = string.IsNullOrWhiteSpace(viewModel.State.ExitNode);
             exitNodes.DropDownItems.Add(noExit);
-            foreach (var participant in network.Participants.Where(participant => participant.OffersExitNode))
+            foreach (var participant in network.Participants.Where(participant => participant.OffersExitNode && !participant.IsSelf))
             {
                 var item = Item(DeviceName(participant), async (_, _) => await viewModel.SetExitNodeAsync(participant.Npub));
                 item.Checked = viewModel.State.ExitNode == participant.Npub;

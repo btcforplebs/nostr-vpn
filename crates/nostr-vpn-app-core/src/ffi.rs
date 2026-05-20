@@ -1750,8 +1750,7 @@ impl NativeAppRuntime {
             };
         }
 
-        let wireguard_exit_selected =
-            self.config.node.advertise_exit_node && self.config.wireguard_exit.enabled;
+        let wireguard_exit_selected = self.config.wireguard_exit.enabled;
         if wireguard_exit_selected {
             let wireguard_exit_active = vpn_active && self.config.wireguard_exit.configured();
             let blocked =
@@ -3235,6 +3234,47 @@ mod tests {
         assert!(!state.exit_node_blocked);
         assert!(state.exit_node_active);
         assert_eq!(state.exit_node_status_text, "Exit: lab-exit.nvpn");
+    }
+
+    #[test]
+    fn native_state_flags_wireguard_exit_blocking_without_advertising_exit() {
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.daemon_running = true;
+        runtime.vpn_enabled = true;
+        runtime.vpn_active = false;
+        let own_pubkey = runtime
+            .config
+            .own_nostr_pubkey_hex()
+            .expect("generated config should have own pubkey");
+        create_test_network(&mut runtime, "Home");
+        runtime.config.networks[0].admins = vec![own_pubkey];
+        runtime.config.exit_node_leak_protection = true;
+        runtime.config.node.advertise_exit_node = false;
+        runtime.config.wireguard_exit.enabled = true;
+        runtime.config.wireguard_exit.address = "10.64.70.195/32".to_string();
+        runtime.config.wireguard_exit.private_key = "client-private".to_string();
+        runtime.config.wireguard_exit.peer_public_key = "provider-public".to_string();
+        runtime.config.wireguard_exit.endpoint = "vpn.example.test:51820".to_string();
+        runtime.config.wireguard_exit.allowed_ips = vec!["0.0.0.0/0".to_string()];
+
+        let state = runtime.state();
+        assert!(state.wireguard_exit_enabled);
+        assert!(state.wireguard_exit_configured);
+        assert!(!state.advertise_exit_node);
+        assert!(state.exit_node_blocked);
+        assert!(!state.exit_node_active);
+        assert_eq!(
+            state.exit_node_status_text,
+            "Internet blocked: waiting for WireGuard exit"
+        );
+
+        runtime.vpn_active = true;
+        let state = runtime.state();
+        assert!(!state.exit_node_blocked);
+        assert!(state.exit_node_active);
+        assert_eq!(state.exit_node_status_text, "Exit: WireGuard upstream");
     }
 
     #[test]

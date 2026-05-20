@@ -40,6 +40,7 @@ It currently ships:
 | `linux` | GTK/libadwaita native shell over the shared app core |
 | `windows` | WPF native shell and installer over the shared app core |
 | `android` / `ios` | Native mobile shells with shared Rust state/action and packet-tunnel scaffolding |
+| `umbrel` | Umbrel app package with a web control panel and daemon container |
 
 ## Getting Started
 
@@ -96,6 +97,7 @@ Private mesh traffic defaults to [FIPS]. `nvpn` uses the configured VPN particip
 | Windows x64 | Native WPF desktop app installer, batched WinTun tunnel path, native WireGuard-upstream routing, CLI zip |
 | Android arm64 | Native app-core UI, signed APK/AAB release artifacts when signing is configured, VPN runtime still being hardened |
 | iOS | Native SwiftUI app builds/runs from source and simulator, NetworkExtension target exists, [TestFlight link](https://testflight.apple.com/join/jPRVxbSv) exists but public beta access is pending |
+| Umbrel | Web control panel and daemon package tested on umbrelOS; app-store submission bundle generated from a pinned multi-arch container image |
 | Intel macOS | Source-only |
 
 ## What the project does today
@@ -171,6 +173,28 @@ make
 
 `make` requires the StartOS `start-cli` tooling and emits architecture-specific
 `.s9pk` files for x86_64 and aarch64.
+
+### Umbrel app
+
+The Umbrel package lives in [`umbrel`](umbrel). It runs a web control panel
+behind Umbrel's app proxy and a separate daemon container with host networking
+and `/dev/net/tun`.
+
+```bash
+docker compose -f umbrel/docker-compose.local.yml up --build
+just e2e-umbrel-web
+```
+
+Official Umbrel App Store submissions require a remote, pinned multi-arch
+container image. Generate the app-store bundle with:
+
+```bash
+node scripts/umbrel-release.mjs \
+  --push \
+  --image-repo ghcr.io/mmalmi/nostr-vpn-umbrel
+```
+
+The added Umbrel screenshots are in [`docs/images`](docs/images).
 
 ### Local release
 

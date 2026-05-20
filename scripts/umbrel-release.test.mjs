@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -51,6 +51,7 @@ test('renderUmbrelCompose includes the pinned image and tunnel access', () => {
   assert.match(compose, /app_proxy:/)
   assert.match(compose, /APP_HOST: nostr-vpn_web_1/)
   assert.match(compose, /daemon:/)
+  assert.equal(compose.match(/restart: unless-stopped/g)?.length, 3)
   assert.doesNotMatch(compose, /^version:/m)
   assert.match(compose, /network_mode: "host"/)
   assert.match(compose, /\/dev\/net\/tun:\/dev\/net\/tun/)
@@ -80,4 +81,8 @@ submission: ""
 test('base Umbrel manifest does not ship a blank submission URL', () => {
   const manifest = readFileSync(join(repoRoot, 'umbrel/umbrel-app.yml'), 'utf8')
   assert.doesNotMatch(manifest, /^submission:\s*""$/m)
+})
+
+test('base Umbrel app includes an exports file', () => {
+  assert.equal(existsSync(join(repoRoot, 'umbrel/exports.sh')), true)
 })

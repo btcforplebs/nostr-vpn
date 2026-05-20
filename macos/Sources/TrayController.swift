@@ -310,7 +310,12 @@ private struct MenuSnapshot: Equatable {
                     payload: NetworkRow(pubkeyHex: p.pubkeyHex)
                 )
             }
-            exitNodeItems = activeNetwork.participants.filter { $0.offersExitNode }
+            exitNodeItems = activeNetwork.participants.filter { p in
+                p.offersExitNode
+                    && p.npub != state.ownNpub
+                    && p.pubkeyHex != state.ownPubkeyHex
+                    && p.meshState != "local"
+            }
                 .map { p in
                     SubmenuItem<ExitNodeRow>(
                         title: p.magicDnsName.isEmpty ? p.alias : p.magicDnsName,

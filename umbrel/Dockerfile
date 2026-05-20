@@ -13,6 +13,7 @@ COPY web/control-panel ./
 RUN pnpm run build
 
 FROM rust:1.94-bookworm AS rust-builder
+ARG TARGETPLATFORM
 WORKDIR /work
 
 RUN apt-get update \
@@ -28,13 +29,17 @@ COPY crates ./crates
 
 RUN --mount=type=cache,id=nostr-vpn-umbrel-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=nostr-vpn-umbrel-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=nostr-vpn-umbrel-cargo-target,target=/work/target \
+    --mount=type=cache,id=nostr-vpn-umbrel-cargo-target-${TARGETPLATFORM},target=/work/target \
     cargo build --release -p nvpn -p nostr-vpn-web \
     && mkdir -p /out \
     && cp /work/target/release/nvpn /out/nvpn \
     && cp /work/target/release/nostr-vpn-web /out/nvpn-web
 
 FROM debian:bookworm-slim AS runtime
+LABEL org.opencontainers.image.source="https://github.com/mmalmi/nostr-vpn" \
+      org.opencontainers.image.description="Nostr VPN Umbrel app image" \
+      org.opencontainers.image.licenses="MIT"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates \

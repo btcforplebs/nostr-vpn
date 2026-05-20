@@ -1,16 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import './app.css';
-  import { qrMatrix, runAction, tick } from './lib/api';
+  import { runAction, tick } from './lib/api';
   import CopyButton from './lib/CopyButton.svelte';
-  import { formatBytes, nonEmpty, remainingText, routeList, shortMiddle } from './lib/format';
+  import Modal from './lib/Modal.svelte';
+  import QRCode from './lib/QRCode.svelte';
+  import { formatBytes, nonEmpty, remainingText, shortMiddle } from './lib/format';
   import nostrVpnIcon from './lib/nostr-vpn-icon.svg';
   import type {
     HealthIssue,
     InboundJoinRequestView,
     NetworkView,
     ParticipantView,
-    QrMatrix,
     UiState,
   } from './lib/types';
 
@@ -31,7 +32,6 @@
   let busyAction = '';
   let error = '';
   let notice = '';
-  let qr: QrMatrix | null = null;
   let qrInvite = '';
   let settingsDirty = false;
   let participantNpub = '';
@@ -47,6 +47,8 @@
   let aliasDrafts: Record<string, string> = {};
   let networkNameDrafts: Record<string, string> = {};
   let meshIdDrafts: Record<string, string> = {};
+  let wireguardExitConfigDraft = '';
+  let wireguardDirty = false;
   let noticeTimer: number | undefined;
 
   let settingsDraft = {
@@ -68,25 +70,27 @@
     ? state.networks.reduce((count, network) => count + network.inboundJoinRequests.length, 0)
     : 0;
   $: participants = shownNetwork?.participants ?? [];
-  $: visibleParticipants = participants.filter((participant) => {
-    const query = deviceSearch.trim().toLowerCase();
-    if (!query) {
-      return true;
-    }
-    return (
-      participantName(participant).toLowerCase().includes(query) ||
-      participant.alias.toLowerCase().includes(query) ||
-      participant.npub.toLowerCase().includes(query) ||
-      participant.tunnelIp.toLowerCase().includes(query) ||
-      deviceMagicDnsName(participant).toLowerCase().includes(query)
-    );
-  });
+  $: visibleParticipants = participants
+    .filter((participant) => {
+      const query = deviceSearch.trim().toLowerCase();
+      if (!query) {
+        return true;
+      }
+      return (
+        participantName(participant).toLowerCase().includes(query) ||
+        participant.alias.toLowerCase().includes(query) ||
+        participant.npub.toLowerCase().includes(query) ||
+        participant.tunnelIp.toLowerCase().includes(query) ||
+        deviceMagicDnsName(participant).toLowerCase().includes(query)
+      );
+    })
+    .sort((a, b) => Number(isSelf(b)) - Number(isSelf(a)));
   $: selectedParticipant = selectedParticipantFrom(visibleParticipants, selectedParticipantKey);
   $: if (devicePane === 'detail' && !selectedParticipant) {
     devicePane = 'list';
   }
   $: exitCandidates = participants.filter((participant) => {
-    if (!participant.offersExitNode) {
+    if (!participant.offersExitNode || isSelf(participant)) {
       return false;
     }
     const query = exitSearch.trim().toLowerCase();
@@ -100,15 +104,9 @@
       participant.tunnelIp.toLowerCase().includes(query)
     );
   });
-  $: {
-    const invite = state?.activeNetworkInvite ?? '';
-    if (invite !== qrInvite) {
-      qrInvite = invite;
-      qr = null;
-      if (invite) {
-        void loadQr(invite);
-      }
-    }
+  $: qrInvite = state?.activeNetworkInvite ?? '';
+  $: if (addDeviceOpen && !shownNetwork?.enabled) {
+    addDeviceOpen = false;
   }
 
   onMount(() => {
@@ -128,6 +126,9 @@
     if (firstState || !settingsDirty) {
       syncSettings(next);
     }
+    if (firstState || !wireguardDirty) {
+      syncWireGuard(next);
+    }
     syncNetworkDrafts(next);
     syncAliasDrafts(next);
   }
@@ -140,16 +141,21 @@
   }
 
   function syncSettings(next: UiState) {
+    const relays = next.relays ?? [];
     settingsDraft = {
       nodeName: next.nodeName,
       endpoint: next.endpoint,
       tunnelIp: next.tunnelIp,
       listenPort: String(next.listenPort || ''),
-      relays: next.relays.map((relay) => relay.url).join('\n'),
+      relays: relays.map((relay) => relay.url).join('\n'),
       advertisedRoutes: next.advertisedRoutes.join(', '),
       magicDnsSuffix: next.magicDnsSuffix,
       autoconnect: next.autoconnect,
     };
+  }
+
+  function syncWireGuard(next: UiState) {
+    wireguardExitConfigDraft = next.wireguardExitConfig;
   }
 
   function syncNetworkDrafts(next: UiState) {
@@ -214,19 +220,6 @@
     return Boolean(await runState(endpoint, payload, label));
   }
 
-  async function loadQr(invite: string) {
-    try {
-      const matrix = await qrMatrix(invite);
-      if (qrInvite === invite) {
-        qr = matrix;
-      }
-    } catch {
-      if (qrInvite === invite) {
-        qr = { width: 0, cells: [] };
-      }
-    }
-  }
-
   function setNotice(value: string) {
     notice = value;
     window.clearTimeout(noticeTimer);
@@ -263,8 +256,13 @@
     if (stateText.includes('online') || stateText.includes('present') || stateText.includes('local')) {
       return 'ok';
     }
-    if (stateText.includes('offline') || stateText.includes('absent')) {
-      return 'bad';
+    if (
+      stateText.includes('offline') ||
+      stateText.includes('absent') ||
+      stateText.includes('off') ||
+      stateText.includes('disconnected')
+    ) {
+      return 'muted';
     }
     return 'warn';
   }
@@ -397,16 +395,41 @@
   }
 
   function fipsPathText(participant: ParticipantView): string {
-    if (participant.fipsTransportAddr || participant.fipsTransportType) {
-      const transport = participant.fipsTransportType || 'fips';
+    if (isSelf(participant)) {
+      return 'This device';
+    }
+    if (isDirectFipsPeer(participant)) {
+      const transport = participant.fipsTransportType.trim();
+      const transportText = transport ? ` (${transport.toUpperCase()})` : '';
       return participant.fipsSrttMs
-        ? `${transport} ${participant.fipsSrttMs} ms`
-        : transport;
+        ? `Direct connection${transportText}, ${participant.fipsSrttMs} ms`
+        : `Direct connection${transportText}`;
     }
     if (participant.reachable) {
       return participant.fipsSrttMs ? `Via mesh, ${participant.fipsSrttMs} ms` : 'Via mesh';
     }
-    return participant.meshState || participant.state || '-';
+    if (participant.state === 'pending') {
+      return 'Connecting';
+    }
+    return 'Offline';
+  }
+
+  function isDirectFipsPeer(participant: ParticipantView): boolean {
+    return !isSelf(participant) && participant.reachable && participant.fipsTransportAddr.trim() !== '';
+  }
+
+  function isFipsRouted(participant: ParticipantView): boolean {
+    return !isSelf(participant) && participant.reachable && participant.fipsTransportAddr.trim() === '';
+  }
+
+  function fipsPathBadgeText(participant: ParticipantView): string {
+    if (isDirectFipsPeer(participant)) {
+      return 'direct connection';
+    }
+    if (isFipsRouted(participant)) {
+      return 'via mesh';
+    }
+    return '';
   }
 
   function deviceStatusText(participant: ParticipantView): string {
@@ -432,10 +455,12 @@
   }
 
   function deviceDetailStatusText(participant: ParticipantView): string {
-    if (isSelf(participant) || participant.state === 'local' || participant.meshState === 'local') {
-      return deviceStatusText(participant);
-    }
-    return nonEmpty(participant.statusText || participant.state, 'Unknown');
+    return deviceStatusText(participant);
+  }
+
+  function exitNodeStatusText(participant: ParticipantView): string {
+    const status = deviceStatusText(participant);
+    return status === 'Unknown' ? 'exit node' : status.toLowerCase();
   }
 
   function isSelf(participant: ParticipantView): boolean {
@@ -554,10 +579,6 @@
     );
   }
 
-  async function requestJoin(network: NetworkView) {
-    await run('/api/request_network_join', { networkId: network.id }, 'Requesting');
-  }
-
   async function importInvite() {
     const invite = inviteDraft.trim();
     if (!invite) {
@@ -578,7 +599,7 @@
     await run(
       state.inviteBroadcastActive ? '/api/stop_invite_broadcast' : '/api/start_invite_broadcast',
       undefined,
-      'Broadcast',
+      state.inviteBroadcastActive ? 'Stopping nearby sharing' : 'Sharing nearby',
     );
   }
 
@@ -589,7 +610,7 @@
     await run(
       state.nearbyDiscoveryActive ? '/api/stop_nearby_discovery' : '/api/start_nearby_discovery',
       undefined,
-      'Nearby',
+      state.nearbyDiscoveryActive ? 'Stopping nearby lookup' : 'Finding nearby',
     );
   }
 
@@ -680,13 +701,59 @@
     }
   }
 
+  async function setDirectExit() {
+    await run(
+      '/api/update_settings',
+      { exitNode: '', wireguardExitEnabled: false },
+      'Updating route',
+    );
+  }
+
   async function setExitNode(npub: string) {
     await run('/api/update_settings', { exitNode: npub }, 'Updating route');
+  }
+
+  async function setWireGuardExitEnabled(enabled: boolean) {
+    await run('/api/update_settings', { wireguardExitEnabled: enabled }, 'Updating route');
   }
 
   async function setAdvertiseExitNode(enabled: boolean) {
     await run('/api/update_settings', { advertiseExitNode: enabled }, 'Updating exit');
   }
+
+  async function setExitNodeLeakProtection(enabled: boolean) {
+    await run('/api/update_settings', { exitNodeLeakProtection: enabled }, 'Updating exit');
+  }
+
+  async function saveWireGuardExitConfig() {
+    const ok = await run(
+      '/api/update_settings',
+      { wireguardExitConfig: wireguardExitConfigDraft },
+      'Saving WireGuard',
+    );
+    if (ok && state) {
+      wireguardDirty = false;
+      syncWireGuard(state);
+    }
+  }
+
+  function routeSummary(value: UiState): string {
+    if (value.wireguardExitEnabled) {
+      return 'WireGuard upstream';
+    }
+    if (value.exitNode) {
+      return 'Peer exit';
+    }
+    return 'Direct';
+  }
+
+  function wireGuardExitSubtitle(value: UiState): string {
+    if (!value.wireguardExitConfigured) {
+      return 'No config';
+    }
+    return value.wireguardExitEndpoint || 'Configured';
+  }
+
 </script>
 
 <svelte:head>
@@ -770,8 +837,8 @@
           <div>
             <strong>{state.vpnEnabled ? 'VPN on' : 'VPN off'}</strong>
             <span>
-              {shownNetwork
-                ? `${shownNetwork.onlineCount}/${shownNetwork.expectedCount} online`
+              {activeNetwork
+                ? `${activeNetwork.onlineCount}/${activeNetwork.expectedCount} online`
                 : `${state.connectedPeerCount}/${state.expectedPeerCount} online`}
             </span>
           </div>
@@ -800,244 +867,208 @@
       {/if}
 
       {#if addDeviceOpen && shownNetwork}
-        <div class="modal-backdrop" role="presentation">
-          <div
-            class="modal-card"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="add-device-title"
-          >
-            <div class="modal-header">
-              <h3 id="add-device-title">Add Device</h3>
-              <button type="button" class="small-button" on:click={() => (addDeviceOpen = false)}>
-                Done
-              </button>
-            </div>
-
-            <div class="modal-body">
-              <div class="modal-section invite-section">
-                <div class="qr-frame compact">
-                  {#if shownNetwork.enabled && qr && qr.width > 0}
-                    <div class="qr-grid" style={`--qr-width: ${qr.width}`}>
-                      {#each qr.cells as cell, index (index)}
-                        <span class:dark={cell}></span>
-                      {/each}
-                    </div>
-                  {:else}
-                    <div class="qr-empty">QR</div>
-                  {/if}
-                </div>
-                <div class="share-copy">
-                  <div class="section-heading">
-                    <div>
-                      <h3>Invite Devices</h3>
-                      <p>{shownNetwork.name}</p>
-                    </div>
-                  </div>
-                  <textarea
-                    readonly
-                    value={shownNetwork.enabled ? state.activeNetworkInvite : ''}
-                    aria-label="Invite"
-                  ></textarea>
-                  <div class="button-row">
-                    <CopyButton
-                      variant="secondary"
-                      value={state.activeNetworkInvite}
-                      label="Invite"
-                      disabled={!shownNetwork.enabled}
-                      on:copied={handleCopied}
-                    />
-                    <button
-                      type="button"
-                      class="secondary-button"
-                      disabled={!shownNetwork.enabled}
-                      on:click={toggleInviteBroadcast}
-                    >
-                      {state.inviteBroadcastActive
-                        ? `Broadcasting ${remainingText(state.inviteBroadcastRemainingSecs)}`
-                        : 'Broadcast invite'}
-                    </button>
-                    <label class="switch-row inline-switch">
-                      <span>Allow requests</span>
-                      <input
-                        type="checkbox"
-                        checked={shownNetwork.joinRequestsEnabled}
-                        disabled={!shownNetwork.localIsAdmin || Boolean(busyAction)}
-                        on:change={(event) =>
-                          setJoinRequests(shownNetwork, (event.currentTarget as HTMLInputElement).checked)}
-                      />
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              {#if shownNetwork.inboundJoinRequests.length > 0}
-                <div class="modal-section join-requests-list">
-                  <div class="section-heading compact">
-                    <div>
-                      <h3>Requests</h3>
-                      <p>{shownNetwork.inboundJoinRequests.length}</p>
-                    </div>
-                  </div>
-                  <div class="stack">
-                    {#each shownNetwork.inboundJoinRequests as request (request.requesterPubkeyHex || request.requesterNpub)}
-                      <div class="request-row">
-                        <div>
-                          <strong>{nonEmpty(request.requesterNodeName, shortMiddle(request.requesterNpub, 20))}</strong>
-                          <span>{request.requestedAtText}</span>
-                        </div>
-                        <div class="row-actions">
-                          <button type="button" class="small-button" on:click={() => acceptJoinRequest(shownNetwork, request)}>
-                            Accept
-                          </button>
-                          <button type="button" class="small-button danger" on:click={() => rejectJoinRequest(shownNetwork, request)}>
-                            Reject
-                          </button>
-                        </div>
-                      </div>
-                    {/each}
-                  </div>
-                </div>
+        <Modal title="Add Device" titleId="add-device-title" on:close={() => (addDeviceOpen = false)}>
+          <div class="modal-section invite-section">
+            <div class="qr-frame compact">
+              {#if qrInvite}
+                <QRCode data={qrInvite} />
+              {:else}
+                <div class="qr-empty">QR</div>
               {/if}
-
-              <div class="modal-section">
-                <div class="section-heading">
-                  <div>
-                    <h3>For Manual Join</h3>
-                    <p>{shownNetwork.name}</p>
-                  </div>
-                </div>
-                <div class="detail-list two-column">
-                  <div>
-                    <span>Your Device ID</span>
-                    <strong>{shortMiddle(state.ownNpub, 36)}</strong>
-                    <CopyButton value={state.ownNpub} label="Device ID" on:copied={handleCopied} />
-                  </div>
-                  <div>
-                    <span>Network ID</span>
-                    <strong>{shownNetwork.networkId}</strong>
-                    <CopyButton value={shownNetwork.networkId} label="Network ID" on:copied={handleCopied} />
-                  </div>
+            </div>
+            <div class="share-copy">
+              <div class="section-heading">
+                <div>
+                  <h3>Invite Devices</h3>
+                  <p>{shownNetwork.name}</p>
                 </div>
               </div>
-
-              <form class="modal-section" on:submit|preventDefault={addParticipant}>
-                <div class="section-heading">
-                  <div>
-                    <h3>Add by Device ID</h3>
-                    <p>{shownNetwork.name}</p>
-                  </div>
-                </div>
-                <div class="form-grid">
-                  <label>
-                    <span>Device ID</span>
-                    <input bind:value={participantNpub} autocomplete="off" />
-                  </label>
-                  <label>
-                    <span>Name</span>
-                    <input bind:value={participantAlias} autocomplete="off" />
-                  </label>
-                </div>
-                <button class="secondary-button" type="submit" disabled={Boolean(busyAction)}>
-                  Add
+              <textarea
+                readonly
+                value={qrInvite}
+                aria-label="Invite"
+              ></textarea>
+              <div class="button-row">
+                <CopyButton
+                  variant="secondary"
+                  value={qrInvite}
+                  label="Invite"
+                  disabled={!qrInvite}
+                  on:copied={handleCopied}
+                />
+                <button
+                  type="button"
+                  class="secondary-button"
+                  disabled={!shownNetwork.enabled}
+                  on:click={toggleInviteBroadcast}
+                >
+                  {state.inviteBroadcastActive
+                    ? `Sharing nearby · ${remainingText(state.inviteBroadcastRemainingSecs)}`
+                    : 'Share invite nearby'}
                 </button>
-              </form>
+                <label class="switch-row inline-switch">
+                  <span>Allow requests</span>
+                  <input
+                    type="checkbox"
+                    checked={shownNetwork.joinRequestsEnabled}
+                    disabled={!shownNetwork.localIsAdmin || Boolean(busyAction)}
+                    on:change={(event) =>
+                      setJoinRequests(shownNetwork, (event.currentTarget as HTMLInputElement).checked)}
+                  />
+                </label>
+              </div>
             </div>
           </div>
-        </div>
+
+          {#if shownNetwork.inboundJoinRequests.length > 0}
+            <div class="modal-section join-requests-list">
+              <div class="section-heading compact">
+                <div>
+                  <h3>Requests</h3>
+                  <p>{shownNetwork.inboundJoinRequests.length}</p>
+                </div>
+              </div>
+              <div class="stack">
+                {#each shownNetwork.inboundJoinRequests as request (request.requesterPubkeyHex || request.requesterNpub)}
+                  <div class="request-row">
+                    <div>
+                      <strong>{nonEmpty(request.requesterNodeName, shortMiddle(request.requesterNpub, 20))}</strong>
+                      <span>{request.requestedAtText}</span>
+                    </div>
+                    <div class="row-actions">
+                      <button type="button" class="small-button" on:click={() => acceptJoinRequest(shownNetwork, request)}>
+                        Accept
+                      </button>
+                      <button type="button" class="small-button danger" on:click={() => rejectJoinRequest(shownNetwork, request)}>
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
+
+          <div class="modal-section">
+            <div class="section-heading">
+              <div>
+                <h3>For Manual Join</h3>
+                <p>{shownNetwork.name}</p>
+              </div>
+            </div>
+            <div class="detail-list two-column">
+              <div>
+                <span>Your Device ID</span>
+                <strong>{shortMiddle(state.ownNpub, 36)}</strong>
+                <CopyButton value={state.ownNpub} label="Device ID" on:copied={handleCopied} />
+              </div>
+              <div>
+                <span>Network ID</span>
+                <strong>{shownNetwork.networkId}</strong>
+                <CopyButton value={shownNetwork.networkId} label="Network ID" on:copied={handleCopied} />
+              </div>
+            </div>
+          </div>
+
+          <form class="modal-section" on:submit|preventDefault={addParticipant}>
+            <div class="section-heading">
+              <div>
+                <h3>Add by Device ID</h3>
+                <p>{shownNetwork.name}</p>
+              </div>
+            </div>
+            <div class="form-grid">
+              <label>
+                <span>Device ID</span>
+                <input bind:value={participantNpub} autocomplete="off" />
+              </label>
+              <label>
+                <span>Name</span>
+                <input bind:value={participantAlias} autocomplete="off" />
+              </label>
+            </div>
+            <button class="secondary-button" type="submit" disabled={Boolean(busyAction)}>
+              Add
+            </button>
+          </form>
+        </Modal>
       {/if}
 
       {#if addNetworkOpen}
-        <div class="modal-backdrop" role="presentation">
-          <div
-            class="modal-card"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="add-network-title"
-          >
-            <div class="modal-header">
-              <h3 id="add-network-title">Add Network</h3>
-              <button type="button" class="small-button" on:click={() => (addNetworkOpen = false)}>
-                Done
-              </button>
-            </div>
-
-            <div class="modal-body">
-              <form class="modal-section" on:submit|preventDefault={addNetwork}>
-                <div class="section-heading">
-                  <div>
-                    <h3>Create Network</h3>
-                    <p>New local roster</p>
-                  </div>
-                </div>
-                <div class="inline-form">
-                  <input bind:value={newNetworkName} autocomplete="off" aria-label="Network name" placeholder="Network name" />
-                  <button type="submit" class="small-button" disabled={Boolean(busyAction) || !newNetworkName.trim()}>
-                    Create
-                  </button>
-                </div>
-              </form>
-
-              <form class="modal-section" on:submit|preventDefault={importInvite}>
-                <div class="section-heading">
-                  <div>
-                    <h3>Join Network</h3>
-                    <p>Paste an invite</p>
-                  </div>
-                </div>
-                <label>
-                  <span>Invite</span>
-                  <textarea bind:value={inviteDraft} rows="6"></textarea>
-                </label>
-                <div class="button-row">
-                  <button class="secondary-button" type="submit" disabled={Boolean(busyAction) || !inviteDraft.trim()}>
-                    Join
-                  </button>
-                  <button class="small-button" type="button" on:click={pasteInviteFromClipboard}>
-                    Paste
-                  </button>
-                </div>
-              </form>
-
-              <div class="modal-section">
-                <div class="section-heading">
-                  <div>
-                    <h3>Nearby Invites</h3>
-                    <p>{state.lanPeers.length}</p>
-                  </div>
-                  <button
-                    type="button"
-                    class="small-button"
-                    on:click={toggleNearbyDiscovery}
-                  >
-                    {state.nearbyDiscoveryActive
-                      ? `Listening ${remainingText(state.nearbyDiscoveryRemainingSecs)}`
-                      : 'Look nearby'}
-                  </button>
-                </div>
-                {#if state.lanPeers.length === 0}
-                  <div class="empty-state">No nearby invites yet</div>
-                {:else}
-                  <div class="stack">
-                    {#each state.lanPeers as peer, index (index)}
-                      <div class="request-row">
-                        <div>
-                          <strong>{peer.nodeName || peer.networkName || 'Nearby device'}</strong>
-                          <span>{peer.lastSeenText ?? ''}</span>
-                        </div>
-                        {#if peer.invite}
-                          <button type="button" class="small-button" on:click={() => run('/api/import_network_invite', { invite: peer.invite }, 'Joining')}>
-                            Join
-                          </button>
-                        {/if}
-                      </div>
-                    {/each}
-                  </div>
-                {/if}
+        <Modal title="Add Network" titleId="add-network-title" on:close={() => (addNetworkOpen = false)}>
+          <form class="modal-section" on:submit|preventDefault={addNetwork}>
+            <div class="section-heading">
+              <div>
+                <h3>Create Network</h3>
+                <p>New local roster</p>
               </div>
             </div>
+            <div class="inline-form">
+              <input bind:value={newNetworkName} autocomplete="off" aria-label="Network name" placeholder="Network name" />
+              <button type="submit" class="small-button" disabled={Boolean(busyAction) || !newNetworkName.trim()}>
+                Create
+              </button>
+            </div>
+          </form>
+
+          <form class="modal-section" on:submit|preventDefault={importInvite}>
+            <div class="section-heading">
+              <div>
+                <h3>Join Network</h3>
+                <p>Paste an invite</p>
+              </div>
+            </div>
+            <label>
+              <span>Invite</span>
+              <textarea bind:value={inviteDraft} rows="6"></textarea>
+            </label>
+            <div class="button-row">
+              <button class="secondary-button" type="submit" disabled={Boolean(busyAction) || !inviteDraft.trim()}>
+                Join
+              </button>
+              <button class="small-button" type="button" on:click={pasteInviteFromClipboard}>
+                Paste
+              </button>
+            </div>
+          </form>
+
+          <div class="modal-section">
+            <div class="section-heading">
+              <div>
+                <h3>Nearby Invites</h3>
+                <p>{state.lanPeers.length}</p>
+              </div>
+              <button
+                type="button"
+                class="small-button"
+                on:click={toggleNearbyDiscovery}
+              >
+                {state.nearbyDiscoveryActive
+                  ? `Finding nearby · ${remainingText(state.nearbyDiscoveryRemainingSecs)}`
+                  : 'Find nearby'}
+              </button>
+            </div>
+            {#if state.lanPeers.length === 0}
+              <div class="empty-state">No nearby invites yet</div>
+            {:else}
+              <div class="stack">
+                {#each state.lanPeers as peer, index (index)}
+                  <div class="request-row">
+                    <div>
+                      <strong>{peer.nodeName || peer.networkName || 'Nearby device'}</strong>
+                      <span>{peer.lastSeenText ?? ''}</span>
+                    </div>
+                    {#if peer.invite}
+                      <button type="button" class="small-button" on:click={() => run('/api/import_network_invite', { invite: peer.invite }, 'Joining')}>
+                        Join
+                      </button>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
           </div>
-        </div>
+        </Modal>
       {/if}
 
       {#if tab === 'devices'}
@@ -1059,7 +1090,14 @@
                     </button>
                   {/if}
                   {#if shownNetwork.localIsAdmin}
-                    <button type="button" class="small-button" on:click={() => (addDeviceOpen = true)}>
+                    <button
+                      type="button"
+                      class="small-button"
+                      disabled={!shownNetwork.enabled}
+                      aria-label={shownNetwork.enabled ? 'Add Device' : 'Activate network before adding a device'}
+                      title={shownNetwork.enabled ? 'Add Device' : 'Activate network first'}
+                      on:click={() => (addDeviceOpen = true)}
+                    >
                       Add Device
                     </button>
                   {/if}
@@ -1086,9 +1124,9 @@
                     class:active={participantSelected(participant)}
                     on:click={() => openParticipant(participant)}
                   >
-                    <span class="status-dot {participantTone(participant)}"></span>
                     <span class="device-list-main">
                       <span class="device-title">
+                        <span class="status-dot {participantTone(participant)}"></span>
                         <strong>{participantName(participant)}</strong>
                         {#if isSelf(participant)}
                           <span class="badge active">Self</span>
@@ -1105,9 +1143,11 @@
                             {exitNodeBadgeText(participant)}
                           </span>
                         {/if}
+                        {#if isFipsRouted(participant)}
+                          <span class="badge muted">via mesh</span>
+                        {/if}
                       </span>
                       <span class="device-meta">
-                        <span>{deviceStatusText(participant)}</span>
                         <span>{nonEmpty(participant.tunnelIp)}</span>
                       </span>
                     </span>
@@ -1165,23 +1205,34 @@
                   </button>
                   <div>
                     <h2>{participantName(selectedParticipant)}</h2>
-                    <div class="badge-row">
-                      {#if isSelf(selectedParticipant)}
-                        <span class="badge active">Self</span>
-                      {/if}
-                      {#if selectedParticipant.isAdmin}
-                        <span class="badge muted">Admin</span>
-                      {/if}
-                      {#if exitNodeBadgeText(selectedParticipant)}
-                        <span
-                          class="badge"
-                          class:active={isActiveExitParticipant(selectedParticipant)}
-                          class:warn={!isActiveExitParticipant(selectedParticipant)}
-                        >
-                          {exitNodeBadgeText(selectedParticipant)}
-                        </span>
-                      {/if}
-                    </div>
+                    {#if isSelf(selectedParticipant) || selectedParticipant.isAdmin || exitNodeBadgeText(selectedParticipant) || fipsPathBadgeText(selectedParticipant)}
+                      <div class="badge-row">
+                        {#if isSelf(selectedParticipant)}
+                          <span class="badge active">Self</span>
+                        {/if}
+                        {#if selectedParticipant.isAdmin}
+                          <span class="badge muted">Admin</span>
+                        {/if}
+                        {#if exitNodeBadgeText(selectedParticipant)}
+                          <span
+                            class="badge"
+                            class:active={isActiveExitParticipant(selectedParticipant)}
+                            class:warn={!isActiveExitParticipant(selectedParticipant)}
+                          >
+                            {exitNodeBadgeText(selectedParticipant)}
+                          </span>
+                        {/if}
+                        {#if fipsPathBadgeText(selectedParticipant)}
+                          <span
+                            class="badge"
+                            class:active={isDirectFipsPeer(selectedParticipant)}
+                            class:muted={isFipsRouted(selectedParticipant)}
+                          >
+                            {fipsPathBadgeText(selectedParticipant)}
+                          </span>
+                        {/if}
+                      </div>
+                    {/if}
                   </div>
                   <div class="detail-status">
                     <span class="status-dot {participantTone(selectedParticipant)}"></span>
@@ -1246,8 +1297,8 @@
                     </div>
                     <div class="detail-copy-row">
                       <div>
-                        <span>Device</span>
-                        <strong>{participantName(selectedParticipant)}</strong>
+                        <span>Device ID</span>
+                        <strong>{selectedParticipant.npub}</strong>
                       </div>
                       <CopyButton value={selectedParticipant.npub} label="Device ID" on:copied={handleCopied} />
                     </div>
@@ -1258,7 +1309,6 @@
                   <div class="section-heading">
                     <div>
                       <h3>Connectivity</h3>
-                      <p>{fipsPathText(selectedParticipant)}</p>
                     </div>
                   </div>
                   <div class="metric-grid">
@@ -1268,8 +1318,18 @@
                     </div>
                     <div>
                       <span>State</span>
-                      <strong>{nonEmpty(selectedParticipant.meshState || selectedParticipant.state)}</strong>
+                      <strong>{deviceStatusText(selectedParticipant)}</strong>
                     </div>
+                    <div>
+                      <span>FIPS path</span>
+                      <strong>{fipsPathText(selectedParticipant)}</strong>
+                    </div>
+                    {#if selectedParticipant.fipsTransportAddr.trim()}
+                      <div class="metric-wide">
+                        <span>Endpoint</span>
+                        <strong>{selectedParticipant.fipsTransportAddr}</strong>
+                      </div>
+                    {/if}
                     <div>
                       <span>Last seen</span>
                       <strong>{nonEmpty(selectedParticipant.lastSeenText)}</strong>
@@ -1289,39 +1349,6 @@
                   </div>
                 </div>
 
-                <div class="detail-surface">
-                  <div class="section-heading">
-                    <div>
-                      <h3>Network</h3>
-                      <p>{shownNetwork.networkId}</p>
-                    </div>
-                    <CopyButton value={shownNetwork.networkId} label="Network ID" on:copied={handleCopied} />
-                  </div>
-                  <div class="detail-list">
-                    <div>
-                      <span>Admins</span>
-                      <strong>{shownNetwork.adminNpubs.length}</strong>
-                    </div>
-                    <div>
-                      <span>Join requests</span>
-                      <strong>{shownNetwork.joinRequestsEnabled ? 'On' : 'Off'}</strong>
-                    </div>
-                    <div>
-                      <span>Routes</span>
-                      <strong>{routeList(state.effectiveAdvertisedRoutes)}</strong>
-                    </div>
-                  </div>
-                  {#if shownNetwork.outboundJoinRequest}
-                    <div class="callout">
-                      <strong>Request pending</strong>
-                      <span>{shownNetwork.outboundJoinRequest.requestedAtText}</span>
-                    </div>
-                  {:else if !shownNetwork.localIsAdmin && shownNetwork.adminNpubs.length > 0}
-                    <button type="button" class="secondary-button" on:click={() => requestJoin(shownNetwork)}>
-                      Request access
-                    </button>
-                  {/if}
-                </div>
               </div>
             {:else}
               <div class="detail-empty">
@@ -1332,12 +1359,12 @@
           </div>
         </section>
       {:else if tab === 'exit'}
-        <section class="page-grid">
+        <section class="exit-page-grid">
           <div class="panel wide">
             <div class="section-heading">
               <div>
                 <h3>Route</h3>
-                <p>{state.exitNode ? 'Peer exit' : 'Direct'}</p>
+                <p>{routeSummary(state)}</p>
               </div>
             </div>
             <label>
@@ -1348,9 +1375,9 @@
             <div class="choice-list">
               <button
                 type="button"
-                class:active={!state.exitNode}
+                class:active={!state.exitNode && !state.wireguardExitEnabled}
                 class="choice-row"
-                on:click={() => setExitNode('')}
+                on:click={setDirectExit}
               >
                 <span class="radio-dot"></span>
                 <div>
@@ -1359,17 +1386,31 @@
                 </div>
               </button>
 
+              <button
+                type="button"
+                class:active={state.wireguardExitEnabled}
+                class="choice-row"
+                disabled={!state.wireguardExitConfigured}
+                on:click={() => setWireGuardExitEnabled(true)}
+              >
+                <span class="radio-dot"></span>
+                <div>
+                  <strong>WireGuard upstream</strong>
+                  <span>{wireGuardExitSubtitle(state)}</span>
+                </div>
+              </button>
+
               {#each exitCandidates as participant (participant.pubkeyHex || participant.npub)}
                 <button
                   type="button"
-                  class:active={state.exitNode === participant.npub}
+                  class:active={!state.wireguardExitEnabled && state.exitNode === participant.npub}
                   class="choice-row"
                   on:click={() => setExitNode(participant.npub)}
                 >
                   <span class="radio-dot"></span>
                   <div>
                     <strong>{participantName(participant)}</strong>
-                    <span>{nonEmpty(participant.statusText, 'Exit node')}</span>
+                    <span>{exitNodeStatusText(participant)}</span>
                   </div>
                 </button>
               {:else}
@@ -1378,26 +1419,71 @@
             </div>
           </div>
 
-          <div class="panel">
-            <div class="section-heading">
-              <div>
-                <h3>This Device</h3>
-                <p>Exit node</p>
+          <div class="panel-stack">
+            <div class="panel">
+              <div class="section-heading">
+                <div>
+                  <h3>This Device</h3>
+                  <p>Exit node</p>
+                </div>
               </div>
+              <label class="switch-row">
+                <span>Offer exit</span>
+                <input
+                  type="checkbox"
+                  checked={state.advertiseExitNode}
+                  on:change={(event) =>
+                    setAdvertiseExitNode((event.currentTarget as HTMLInputElement).checked)}
+                />
+              </label>
+              <label class="switch-row">
+                <span>Block internet if exit node disconnects</span>
+                <input
+                  type="checkbox"
+                  checked={state.exitNodeLeakProtection}
+                  on:change={(event) =>
+                    setExitNodeLeakProtection((event.currentTarget as HTMLInputElement).checked)}
+                />
+              </label>
             </div>
-            <label class="switch-row">
-              <span>Offer exit</span>
-              <input
-                type="checkbox"
-                checked={state.advertiseExitNode}
-                on:change={(event) =>
-                  setAdvertiseExitNode((event.currentTarget as HTMLInputElement).checked)}
-              />
-            </label>
+
+            <form class="panel wide" on:submit|preventDefault={saveWireGuardExitConfig}>
+              <div class="section-heading">
+                <div>
+                  <h3>WireGuard Upstream</h3>
+                  <p>{wireGuardExitSubtitle(state)}</p>
+                </div>
+              </div>
+              <label class="switch-row">
+                <span>Enabled</span>
+                <input
+                  type="checkbox"
+                  checked={state.wireguardExitEnabled}
+                  disabled={!state.wireguardExitConfigured}
+                  on:change={(event) =>
+                    setWireGuardExitEnabled((event.currentTarget as HTMLInputElement).checked)}
+                />
+              </label>
+              <label>
+                <span>Config</span>
+                <textarea
+                  class="code-textarea"
+                  bind:value={wireguardExitConfigDraft}
+                  on:input={() => (wireguardDirty = true)}
+                  rows="10"
+                ></textarea>
+              </label>
+              <div class="button-row">
+                <button type="submit" class="secondary-button" disabled={Boolean(busyAction)}>
+                  Save
+                </button>
+                <span class="form-status">{state.exitNodeStatusText}</span>
+              </div>
+            </form>
           </div>
         </section>
       {:else if tab === 'settings'}
-        <section class="page-grid">
+        <section class="page-grid settings-grid">
           <form class="panel wide" on:submit|preventDefault={saveSettings}>
             <div class="section-heading">
               <div>
@@ -1434,7 +1520,7 @@
             </div>
 
             <div class="relay-list">
-              {#each state.relays as relay}
+              {#each state.relays ?? [] as relay}
                 <div class="relay-row">
                   <span class="status-dot {relay.status === 'connected' ? 'ok' : 'muted'}"></span>
                   <span>{relay.url}</span>

@@ -5,6 +5,8 @@ This directory contains:
 - `docker-compose.yml`: template for the real Umbrel app. The browser-facing
   web service sits behind Umbrel's app proxy while a separate daemon service
   uses host networking and `/dev/net/tun`.
+- `exports.sh`: empty exports file for Umbrel's app skeleton; Nostr VPN does
+  not expose variables to dependent apps.
 - `docker-compose.local.yml`: local-only Compose file that builds the same image
   with the same web/daemon split in an ordinary bridged Docker network for
   safer UI and API testing

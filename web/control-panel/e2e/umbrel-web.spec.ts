@@ -28,6 +28,10 @@ type UiState = {
   serviceStatusDetail: string;
   vpnStatus: string;
   activeNetworkInvite: string;
+  exitNodeLeakProtection: boolean;
+  wireguardExitEnabled: boolean;
+  wireguardExitConfigured: boolean;
+  wireguardExitConfig: string;
   nodeName: string;
   selfMagicDnsName: string;
   magicDnsSuffix: string;
@@ -88,6 +92,25 @@ async function expectNoConsoleErrors(page: Page, action: () => Promise<void>) {
   expect(errors).toEqual([]);
 }
 
+async function expectModalClosesWithEscape(page: Page, openerName: string, modalName: string) {
+  await page.getByRole('button', { name: openerName }).click();
+  const modal = page.getByRole('dialog', { name: modalName });
+  await expect(modal).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(modal).toBeHidden();
+}
+
+async function expectModalClosesOnBackdrop(page: Page, openerName: string, modalName: string) {
+  await page.getByRole('button', { name: openerName }).click();
+  const modal = page.getByRole('dialog', { name: modalName });
+  await expect(modal).toBeVisible();
+  const backdrop = page.locator('.modal-backdrop');
+  const box = await backdrop.boundingBox();
+  expect(box, 'expected modal backdrop').toBeTruthy();
+  await page.mouse.click(box!.x + 8, box!.y + 8);
+  await expect(modal).toBeHidden();
+}
+
 test('bundled UI loads, navigates, renders QR, and stays responsive', async ({ page, request }) => {
   await expectNoConsoleErrors(page, async () => {
     const initialState = await postJson<UiState>(request, '/api/tick');
@@ -116,22 +139,30 @@ test('bundled UI loads, navigates, renders QR, and stays responsive', async ({ p
     await expect(page.locator('.device-list-row').first()).toContainText(
       initialState.selfMagicDnsName,
     );
-    await expect(page.locator('.device-list-row').first()).toContainText('Off');
+    await expect(page.locator('.device-list-row').first()).toContainText('Self');
 
     await page.getByRole('button', { name: 'Add Device' }).click();
     await expect(page.getByRole('heading', { name: 'Add Device' })).toBeVisible();
     await expect(page.locator('.qr-frame')).toBeVisible();
-    expect(await page.locator('.qr-grid span.dark').count()).toBeGreaterThan(0);
+    await expect(page.locator('.qr-frame img[alt="Invite QR code"]')).toBeVisible();
     await page.getByRole('button', { name: 'Done' }).click();
+    await expectModalClosesWithEscape(page, 'Add Device', 'Add Device');
+    await expectModalClosesOnBackdrop(page, 'Add Device', 'Add Device');
 
     await page.getByRole('button', { name: 'Add Network' }).click();
     await expect(page.getByRole('heading', { name: 'Add Network' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Join Network' })).toBeVisible();
     await page.getByRole('button', { name: 'Done' }).click();
+    await expectModalClosesWithEscape(page, 'Add Network', 'Add Network');
+    await expectModalClosesOnBackdrop(page, 'Add Network', 'Add Network');
 
     await page.getByRole('button', { name: 'Exit Nodes' }).click();
     await expect(page.getByRole('heading', { name: 'Route' })).toBeVisible();
-    const exitToggleBox = await page.locator('.switch-row input[type="checkbox"]').boundingBox();
+    await expect(page.locator('.choice-row').filter({ hasText: 'WireGuard upstream' })).toBeVisible();
+    await expect(page.getByLabel('Block internet if exit node disconnects')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'WireGuard Upstream' })).toBeVisible();
+    await expect(page.getByLabel('Config')).toBeVisible();
+    const exitToggleBox = await page.getByRole('checkbox', { name: 'Offer exit' }).boundingBox();
     expect(exitToggleBox?.width).toBeLessThanOrEqual(22);
     expect(exitToggleBox?.height).toBeLessThanOrEqual(22);
 
@@ -193,10 +224,17 @@ test('API supports the Umbrel web config action surface', async ({ request }) =>
     nodeName: 'Umbrel Web E2E',
     magicDnsSuffix: 'e2e.nvpn',
     autoconnect: true,
+    exitNodeLeakProtection: false,
   });
   expect(state.nodeName).toBe('Umbrel Web E2E');
   expect(state.magicDnsSuffix).toBe('e2e.nvpn');
   expect(state.autoconnect).toBeTruthy();
+  expect(state.exitNodeLeakProtection).toBeFalsy();
+
+  state = await postJson<UiState>(request, '/api/update_settings', {
+    exitNodeLeakProtection: true,
+  });
+  expect(state.exitNodeLeakProtection).toBeTruthy();
 
   state = await postJson<UiState>(request, '/api/add_network', { name: 'E2E Work' });
   let workNetwork = byName(state, 'E2E Work');

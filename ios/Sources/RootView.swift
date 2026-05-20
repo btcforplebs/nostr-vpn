@@ -286,6 +286,7 @@ private struct DevicesPage: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
+                        .disabled(!network.enabled)
                     }
                     ForEach(sortedParticipants(network.participants, state: model.state)) { participant in
                         ParticipantRow(model: model, network: network, participant: participant)
@@ -702,15 +703,15 @@ private struct InviteToMyNetworkCard: View {
                     .disabled(!network.localIsAdmin || model.actionInFlight)
                     Button {
                         if model.state.inviteBroadcastActive {
-                            model.dispatch(NativeActions.stopInviteBroadcast(), status: "Stopped broadcasting")
+                            model.dispatch(NativeActions.stopInviteBroadcast(), status: "Stopped nearby sharing")
                         } else {
-                            model.dispatch(NativeActions.startInviteBroadcast(), status: "Broadcasting invite")
+                            model.dispatch(NativeActions.startInviteBroadcast(), status: "Sharing nearby")
                         }
                     } label: {
                         Label(
                             model.state.inviteBroadcastActive
-                                ? "Broadcasting · \(formatRemaining(model.state.inviteBroadcastRemainingSecs))"
-                                : "Broadcast invite",
+                                ? "Sharing nearby · \(formatRemaining(model.state.inviteBroadcastRemainingSecs))"
+                                : "Share invite nearby",
                             systemImage: model.state.inviteBroadcastActive ? "stop.circle" : "dot.radiowaves.left.and.right"
                         )
                     }
@@ -750,7 +751,9 @@ private struct ExitNodesPage: View {
     }
 
     private var exitParticipants: [ParticipantState] {
-        network?.participants.filter(\.offersExitNode) ?? []
+        network?.participants.filter { participant in
+            participant.offersExitNode && !isSelf(participant, state: model.state)
+        } ?? []
     }
 
     // The daemon clears the *other* side automatically when there
@@ -1192,20 +1195,20 @@ private struct NearbyCard: View {
                 Button {
                     model.dispatch(
                         model.state.nearbyDiscoveryActive ? NativeActions.stopNearbyDiscovery() : NativeActions.startNearbyDiscovery(),
-                        status: "Looking for nearby"
+                        status: "Finding nearby"
                     )
                 } label: {
                     Label(
                         model.state.nearbyDiscoveryActive
-                            ? "Listening · \(formatRemaining(model.state.nearbyDiscoveryRemainingSecs))"
-                            : "Look for nearby",
+                            ? "Finding nearby · \(formatRemaining(model.state.nearbyDiscoveryRemainingSecs))"
+                            : "Find nearby",
                         systemImage: model.state.nearbyDiscoveryActive ? "stop.circle" : "dot.radiowaves.left.and.right"
                     )
                 }
                 .buttonStyle(.bordered)
             }
             if model.state.lanPeers.isEmpty {
-                Text(model.state.nearbyDiscoveryActive ? "No nearby invites yet" : "Tap above to look for nearby devices")
+                Text(model.state.nearbyDiscoveryActive ? "No nearby invites yet" : "Tap above to find nearby")
                     .foregroundStyle(.secondary)
                     .font(.footnote)
             } else {

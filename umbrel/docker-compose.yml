@@ -1,12 +1,13 @@
 services:
   app_proxy:
+    restart: unless-stopped
     environment:
       APP_HOST: nostr-vpn_web_1
       APP_PORT: 38080
 
   daemon:
     image: nostr-vpn-umbrel:local
-    restart: on-failure
+    restart: unless-stopped
     stop_grace_period: 1m
     network_mode: "host"
     cap_add:
@@ -17,7 +18,6 @@ services:
       - /usr/local/bin/nvpn
     command:
       - daemon
-      - --paused
       - --config
       - /data/config/nvpn/config.toml
     environment:
@@ -29,7 +29,7 @@ services:
 
   web:
     image: nostr-vpn-umbrel:local
-    restart: on-failure
+    restart: unless-stopped
     stop_grace_period: 1m
     depends_on:
       - daemon

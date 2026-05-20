@@ -22,6 +22,7 @@ const rootCargoToml = join(repoRoot, 'Cargo.toml')
 const umbrelDir = join(repoRoot, 'umbrel')
 const baseManifestPath = join(umbrelDir, 'umbrel-app.yml')
 const baseIconPath = join(umbrelDir, 'icon.svg')
+const baseExportsPath = join(umbrelDir, 'exports.sh')
 
 function usage() {
   console.log(`Usage: node scripts/umbrel-release.mjs [options]
@@ -194,6 +195,7 @@ Files:
 
 - \`docker-compose.yml\`: Umbrel app service definition
 - \`umbrel-app.yml\`: Umbrel metadata with synced version and release notes
+- \`exports.sh\`: empty app exports file
 - \`icon.svg\`: app icon
 - \`IMAGE.txt\`: pinned container image reference used for this bundle
 
@@ -211,13 +213,14 @@ export function renderUmbrelCompose(imageRef) {
   const pinnedRef = validatePinnedImageRef(imageRef)
   return `services:
   app_proxy:
+    restart: unless-stopped
     environment:
       APP_HOST: nostr-vpn_web_1
       APP_PORT: 38080
 
   daemon:
     image: ${pinnedRef}
-    restart: on-failure
+    restart: unless-stopped
     stop_grace_period: 1m
     network_mode: "host"
     cap_add:
@@ -228,7 +231,6 @@ export function renderUmbrelCompose(imageRef) {
       - /usr/local/bin/nvpn
     command:
       - daemon
-      - --paused
       - --config
       - /data/config/nvpn/config.toml
     environment:
@@ -240,7 +242,7 @@ export function renderUmbrelCompose(imageRef) {
 
   web:
     image: ${pinnedRef}
-    restart: on-failure
+    restart: unless-stopped
     stop_grace_period: 1m
     depends_on:
       - daemon
@@ -271,6 +273,7 @@ function writeBundle({ imageRef, outputDir, tag }) {
   mkdirSync(outputDir, { recursive: true })
 
   copyFileSync(baseIconPath, join(outputDir, 'icon.svg'))
+  copyFileSync(baseExportsPath, join(outputDir, 'exports.sh'))
   writeFileSync(join(outputDir, 'README.md'), renderBundleReadme({ imageRef, tag }))
   writeFileSync(join(outputDir, 'docker-compose.yml'), renderUmbrelCompose(imageRef))
   writeFileSync(

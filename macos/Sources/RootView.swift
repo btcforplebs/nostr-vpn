@@ -84,6 +84,11 @@ struct RootView: View {
         .onChange(of: state.rev) { _, _ in
             syncDrafts()
         }
+        .onChange(of: shownNetwork?.enabled) { _, enabled in
+            if addDevicePresented && enabled != true {
+                addDevicePresented = false
+            }
+        }
         .sheet(isPresented: $showingQrScanner) {
             QRCodeScannerSheet { code in
                 manager.importInvite(code)
@@ -94,7 +99,7 @@ struct RootView: View {
             addNetworkSheetContent
         }
         .sheet(isPresented: $addDevicePresented) {
-            if let network = shownNetwork {
+            if let network = shownNetwork, network.enabled {
                 addDeviceSheetContent(network)
             }
         }
@@ -547,7 +552,8 @@ struct RootView: View {
                 }
             }
             .controlSize(.small)
-            .help("Add device to this network")
+            .disabled(!network.enabled)
+            .help(network.enabled ? "Add device to this network" : "Activate this network first")
         }
     }
 
@@ -872,8 +878,8 @@ struct RootView: View {
                         } label: {
                             Label(
                                 state.inviteBroadcastActive
-                                    ? "Broadcasting · \(formatRemaining(state.inviteBroadcastRemainingSecs))"
-                                    : "Broadcast invite",
+                                    ? "Sharing nearby · \(formatRemaining(state.inviteBroadcastRemainingSecs))"
+                                    : "Share invite nearby",
                                 systemImage: state.inviteBroadcastActive ? "stop.circle" : "dot.radiowaves.left.and.right"
                             )
                         }
@@ -1010,8 +1016,8 @@ struct RootView: View {
                 } label: {
                     Label(
                         state.nearbyDiscoveryActive
-                            ? "Listening · \(formatRemaining(state.nearbyDiscoveryRemainingSecs))"
-                            : "Look for nearby",
+                            ? "Finding nearby · \(formatRemaining(state.nearbyDiscoveryRemainingSecs))"
+                            : "Find nearby",
                         systemImage: state.nearbyDiscoveryActive ? "stop.circle" : "dot.radiowaves.left.and.right"
                     )
                 }

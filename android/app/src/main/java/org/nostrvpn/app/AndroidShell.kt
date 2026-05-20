@@ -39,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -111,6 +112,11 @@ internal fun NostrVpnApp(
     val activeNetwork = state.activeNetwork
     val network = state.networks.firstOrNull { it.id == shownNetworkId } ?: activeNetwork
     val hasIncomingJoinRequests = state.networks.any { it.inboundJoinRequests.isNotEmpty() }
+    LaunchedEffect(showAddDevice, network?.enabled) {
+        if (showAddDevice && network?.enabled != true) {
+            showAddDevice = false
+        }
+    }
     Scaffold(
         containerColor = Color(0xFFF6F7F8),
         topBar = {
@@ -174,7 +180,7 @@ internal fun NostrVpnApp(
             }
         }
     }
-    if (showAddDevice && network != null) {
+    if (showAddDevice && network?.enabled == true) {
         AddDevicesDialog(
             state = state,
             network = network,
@@ -391,10 +397,21 @@ private fun androidx.compose.foundation.lazy.LazyListScope.devicesPage(
     onAddDevice: () -> Unit,
     onDeleteNetwork: () -> Unit,
 ) {
+    if (!network.enabled) {
+        item {
+            Button(
+                onClick = { dispatch(NativeActions.setNetworkEnabled(network.id, true)) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Activate network")
+            }
+        }
+    }
     if (network.localIsAdmin) {
         item {
             Button(
                 onClick = onAddDevice,
+                enabled = network.enabled,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Add device")
@@ -693,9 +710,9 @@ private fun AddDevicesDialog(
                     }) {
                         Text(
                             if (state.inviteBroadcastActive) {
-                                "Broadcasting · ${formatDialogRemaining(state.inviteBroadcastRemainingSecs)}"
+                                "Sharing nearby · ${formatDialogRemaining(state.inviteBroadcastRemainingSecs)}"
                             } else {
-                                "Broadcast invite"
+                                "Share invite nearby"
                             },
                         )
                     }
@@ -825,7 +842,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.exitNodesPage(
                 },
             )
 
-            val exitParticipants = network?.participants.orEmpty().filter { it.offersExitNode }
+            val exitParticipants = network?.participants.orEmpty()
+                .filter { it.offersExitNode && !it.isSelf(state) }
             if (exitParticipants.isEmpty()) {
                 Text("No exit nodes offered", color = Muted, style = MaterialTheme.typography.bodySmall)
             } else {

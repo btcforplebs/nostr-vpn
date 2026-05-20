@@ -278,16 +278,16 @@ internal fun NearbyCard(state: AppState, dispatch: (JSONObject) -> Unit) {
             }) {
                 Text(
                     if (state.nearbyDiscoveryActive) {
-                        "Listening · ${formatRemaining(state.nearbyDiscoveryRemainingSecs)}"
+                        "Finding nearby · ${formatRemaining(state.nearbyDiscoveryRemainingSecs)}"
                     } else {
-                        "Look for nearby"
+                        "Find nearby"
                     },
                 )
             }
         }
         if (state.lanPeers.isEmpty()) {
             Text(
-                if (state.nearbyDiscoveryActive) "No nearby invites yet" else "Tap above to look for nearby devices",
+                if (state.nearbyDiscoveryActive) "No nearby invites yet" else "Tap above to find nearby",
                 color = Muted,
             )
         } else {

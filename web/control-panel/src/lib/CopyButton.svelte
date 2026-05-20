@@ -81,8 +81,8 @@
     flex: 0 0 auto;
     border: 0;
     border-radius: 8px;
-    color: #11140f;
-    background: #d7b46a;
+    color: var(--text-on-accent, #ffffff);
+    background: var(--accent, #0a84ff);
     font-weight: 700;
   }
 
@@ -97,7 +97,7 @@
   }
 
   .copy-button:hover {
-    filter: brightness(1.06);
+    background: var(--accent-hover, #2997ff);
   }
 
   .copy-button svg {

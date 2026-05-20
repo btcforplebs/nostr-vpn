@@ -81,7 +81,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         ShowAddNetworkCommand = new RelayCommand(_ => Page = AppPage.AddNetwork);
         ShowAddDeviceCommand = new RelayCommand(
             _ => Page = AppPage.AddDevice,
-            _ => ActiveNetwork?.LocalIsAdmin == true);
+            _ => ActiveNetwork is { LocalIsAdmin: true, Enabled: true });
         ShowExitNodesCommand = new RelayCommand(_ => Page = AppPage.ExitNodes);
         ShowSettingsCommand = new RelayCommand(_ => Page = AppPage.Settings);
         RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !ActionInFlight);
@@ -92,9 +92,9 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         ImportInviteCommand = new AsyncRelayCommand(_ => ImportInviteAsync(InviteInput), _ => !ActionInFlight && !string.IsNullOrWhiteSpace(InviteInput));
         PasteInviteCommand = new RelayCommand(_ => PasteInviteFromClipboard(), _ => !ActionInFlight);
         ImportQrImageCommand = new AsyncRelayCommand(_ => ImportQrImageAsync(), _ => !ActionInFlight);
-        ToggleInviteBroadcastCommand = new AsyncRelayCommand(_ => DispatchAsync(State.InviteBroadcastActive ? NativeActions.StopInviteBroadcast() : NativeActions.StartInviteBroadcast(), "Broadcasting invite"));
-        ToggleNearbyDiscoveryCommand = new AsyncRelayCommand(_ => DispatchAsync(State.NearbyDiscoveryActive ? NativeActions.StopNearbyDiscovery() : NativeActions.StartNearbyDiscovery(), "Looking for nearby"));
-        AddParticipantCommand = new AsyncRelayCommand(_ => AddParticipantAsync(), _ => !ActionInFlight && ActiveNetwork?.LocalIsAdmin == true && !string.IsNullOrWhiteSpace(ParticipantInput) && !ParticipantInputInvalid);
+        ToggleInviteBroadcastCommand = new AsyncRelayCommand(_ => DispatchAsync(State.InviteBroadcastActive ? NativeActions.StopInviteBroadcast() : NativeActions.StartInviteBroadcast(), "Sharing nearby"));
+        ToggleNearbyDiscoveryCommand = new AsyncRelayCommand(_ => DispatchAsync(State.NearbyDiscoveryActive ? NativeActions.StopNearbyDiscovery() : NativeActions.StartNearbyDiscovery(), "Finding nearby"));
+        AddParticipantCommand = new AsyncRelayCommand(_ => AddParticipantAsync(), _ => !ActionInFlight && ActiveNetwork is { LocalIsAdmin: true, Enabled: true } && !string.IsNullOrWhiteSpace(ParticipantInput) && !ParticipantInputInvalid);
         SaveNodeCommand = new AsyncRelayCommand(_ => SaveNodeAsync(), _ => !ActionInFlight);
         AddRelayCommand = new AsyncRelayCommand(_ => AddRelayAsync(), _ => !ActionInFlight && !string.IsNullOrWhiteSpace(RelayInput));
         SaveRelaysCommand = new AsyncRelayCommand(_ => SaveRelaysAsync(), _ => !ActionInFlight);
@@ -336,6 +336,12 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
 
     public string WireguardExitMarker => State.WireguardExitEnabled ? "●" : "○";
 
+    public IEnumerable<NativeParticipantState> ExitNodeParticipants =>
+        ActiveNetwork?.Participants
+            .Where(participant => participant.OffersExitNode && !participant.IsSelf)
+            .OrderBy(participant => participant.DisplayName, StringComparer.OrdinalIgnoreCase)
+        ?? [];
+
     public string WireguardExitSubtitle
     {
         get
@@ -519,11 +525,11 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         ? Visibility.Visible
         : Visibility.Collapsed;
     public string InviteBroadcastButtonText => State.InviteBroadcastActive
-        ? $"Broadcasting · {FormatRemaining(State.InviteBroadcastRemainingSecs)}"
-        : "Broadcast invite";
+        ? $"Sharing nearby · {FormatRemaining(State.InviteBroadcastRemainingSecs)}"
+        : "Share invite nearby";
     public string NearbyDiscoveryButtonText => State.NearbyDiscoveryActive
-        ? $"Listening · {FormatRemaining(State.NearbyDiscoveryRemainingSecs)}"
-        : "Look for nearby";
+        ? $"Finding nearby · {FormatRemaining(State.NearbyDiscoveryRemainingSecs)}"
+        : "Find nearby";
 
     private static string FormatRemaining(ulong seconds)
     {
@@ -1263,6 +1269,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             _shownNetworkId = "";
         }
         OnPropertyChanged(nameof(ActiveNetwork));
+        OnPropertyChanged(nameof(ExitNodeParticipants));
         OnPropertyChanged(nameof(HasActiveNetwork));
         OnPropertyChanged(nameof(OfferExitNodeLabel));
         OnPropertyChanged(nameof(InactiveNetworks));
