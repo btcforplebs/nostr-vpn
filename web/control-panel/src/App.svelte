@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import './app.css';
   import { qrMatrix, runAction, tick } from './lib/api';
+  import CopyButton from './lib/CopyButton.svelte';
   import { formatBytes, nonEmpty, remainingText, routeList, shortMiddle } from './lib/format';
   import nostrVpnIcon from './lib/nostr-vpn-icon.svg';
   import type {
@@ -449,35 +450,8 @@
     return network.localIsAdmin;
   }
 
-  async function copyText(value: string, label: string) {
-    if (!value) {
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(value);
-    } catch {
-      const area = document.createElement('textarea');
-      area.value = value;
-      area.style.position = 'fixed';
-      area.style.opacity = '0';
-      document.body.append(area);
-      area.select();
-      document.execCommand('copy');
-      area.remove();
-    }
-    setNotice(`${label} copied`);
-  }
-
-  async function copyOwnNpub() {
-    if (state?.ownNpub) {
-      await copyText(state.ownNpub, 'Device ID');
-    }
-  }
-
-  async function copyInvite() {
-    if (state?.activeNetworkInvite) {
-      await copyText(state.activeNetworkInvite, 'Invite');
-    }
+  function handleCopied(event: CustomEvent<{ label: string }>) {
+    setNotice(`${event.detail.label} copied`);
   }
 
   async function toggleVpn() {
@@ -866,14 +840,13 @@
                     aria-label="Invite"
                   ></textarea>
                   <div class="button-row">
-                    <button
-                      type="button"
-                      class="secondary-button"
-                      disabled={!shownNetwork.enabled || !state.activeNetworkInvite}
-                      on:click={copyInvite}
-                    >
-                      Copy
-                    </button>
+                    <CopyButton
+                      variant="secondary"
+                      value={state.activeNetworkInvite}
+                      label="Invite"
+                      disabled={!shownNetwork.enabled}
+                      on:copied={handleCopied}
+                    />
                     <button
                       type="button"
                       class="secondary-button"
@@ -938,14 +911,12 @@
                   <div>
                     <span>Your Device ID</span>
                     <strong>{shortMiddle(state.ownNpub, 36)}</strong>
-                    <button type="button" class="small-button" on:click={copyOwnNpub}>Copy</button>
+                    <CopyButton value={state.ownNpub} label="Device ID" on:copied={handleCopied} />
                   </div>
                   <div>
                     <span>Network ID</span>
                     <strong>{shownNetwork.networkId}</strong>
-                    <button type="button" class="small-button" on:click={() => copyText(shownNetwork.networkId, 'Network ID')}>
-                      Copy
-                    </button>
+                    <CopyButton value={shownNetwork.networkId} label="Network ID" on:copied={handleCopied} />
                   </div>
                 </div>
               </div>
@@ -1278,13 +1249,7 @@
                         <span>Device</span>
                         <strong>{participantName(selectedParticipant)}</strong>
                       </div>
-                      <button
-                        type="button"
-                        class="small-button"
-                        on:click={() => copyText(selectedParticipant.npub, 'Device ID')}
-                      >
-                        Copy
-                      </button>
+                      <CopyButton value={selectedParticipant.npub} label="Device ID" on:copied={handleCopied} />
                     </div>
                   </div>
                 </div>
@@ -1330,9 +1295,7 @@
                       <h3>Network</h3>
                       <p>{shownNetwork.networkId}</p>
                     </div>
-                    <button type="button" class="small-button" on:click={() => copyText(shownNetwork.networkId, 'Network ID')}>
-                      Copy
-                    </button>
+                    <CopyButton value={shownNetwork.networkId} label="Network ID" on:copied={handleCopied} />
                   </div>
                   <div class="detail-list">
                     <div>
