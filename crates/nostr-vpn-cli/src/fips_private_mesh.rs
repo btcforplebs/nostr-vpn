@@ -1659,6 +1659,9 @@ pub(crate) struct FipsPrivateTunnelRuntime {
 impl FipsPrivateTunnelRuntime {
     pub(crate) async fn start(config: FipsPrivateTunnelConfig) -> Result<Self> {
         crate::pipeline_profile::maybe_spawn_reporter();
+        #[cfg(target_os = "linux")]
+        ensure_linux_tun_permissions(&config.iface)?;
+
         let scope = fips_lan_discovery_scope(&config.network_id);
         let transport = FipsEndpointTransportConfig {
             listen_port: config.listen_port,
@@ -1687,7 +1690,7 @@ impl FipsPrivateTunnelRuntime {
         );
         let tun = Arc::new(
             TunSocket::new(&config.iface)
-                .with_context(|| format!("failed to create FIPS tunnel {}", config.iface))?
+                .with_context(|| fips_tun_create_context(&config.iface))?
                 .set_non_blocking()
                 .context("failed to set FIPS tunnel nonblocking")?,
         );
@@ -2564,6 +2567,57 @@ impl FipsPrivateTunnelRuntime {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+const LINUX_CAP_NET_ADMIN_BIT: u32 = 12;
+
+#[cfg(target_os = "linux")]
+fn ensure_linux_tun_permissions(iface: &str) -> Result<()> {
+    if fs::metadata("/dev/net/tun").is_err() {
+        return Err(anyhow!(linux_tun_setup_error(
+            iface,
+            "missing /dev/net/tun device"
+        )));
+    }
+
+    if let Ok(status) = fs::read_to_string("/proc/self/status")
+        && linux_cap_eff_has_net_admin(&status) == Some(false)
+    {
+        return Err(anyhow!(linux_tun_setup_error(
+            iface,
+            "current process lacks CAP_NET_ADMIN"
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_cap_eff_has_net_admin(status: &str) -> Option<bool> {
+    let value = status
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("CapEff:"))?
+        .trim();
+    let caps = u64::from_str_radix(value, 16).ok()?;
+    Some((caps & (1_u64 << LINUX_CAP_NET_ADMIN_BIT)) != 0)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_tun_setup_error(iface: &str, reason: &str) -> String {
+    format!(
+        "Linux tunnel setup requires CAP_NET_ADMIN and /dev/net/tun before FIPS can create {iface}: {reason}. For a foreground session run `sudo nvpn start --connect` or `sudo nvpn connect`; for unattended use install/start the system service. In Docker add `--cap-add NET_ADMIN --device /dev/net/tun`."
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn fips_tun_create_context(iface: &str) -> String {
+    linux_tun_setup_error(iface, "kernel rejected TUN creation")
+}
+
+#[cfg(target_os = "macos")]
+fn fips_tun_create_context(iface: &str) -> String {
+    format!("failed to create FIPS tunnel {iface}")
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn spawn_tun_read_task(
     tun: Arc<TunSocket>,
@@ -3406,7 +3460,8 @@ mod tests {
         FipsEndpointTransportConfig, FipsPrivateMeshEvent, FipsPrivateMeshRuntime,
         FipsPrivateTunnelConfig, control_frame_destination_npub, control_frame_source_pubkey,
         drain_event_batch, fips_endpoint_config, fips_endpoint_peers_from_mesh,
-        fips_lan_discovery_scope, parse_fips_nostr_discovery_policy, strip_cidr,
+        fips_lan_discovery_scope, linux_cap_eff_has_net_admin, linux_tun_setup_error,
+        parse_fips_nostr_discovery_policy, strip_cidr,
     };
     use fips_endpoint::{
         Config, ConnectPolicy, NostrDiscoveryPolicy, PeerConfig as FipsPeerConfig, RoutingMode,
@@ -3444,6 +3499,31 @@ mod tests {
             Some(fips_endpoint::NostrDiscoveryPolicy::Disabled)
         );
         assert_eq!(parse_fips_nostr_discovery_policy("wat"), None);
+    }
+
+    #[test]
+    fn linux_cap_eff_parsing_detects_net_admin() {
+        assert_eq!(
+            linux_cap_eff_has_net_admin("CapEff:\t0000000000000000\n"),
+            Some(false)
+        );
+        assert_eq!(
+            linux_cap_eff_has_net_admin("CapEff:\t0000000000001000\n"),
+            Some(true)
+        );
+        assert_eq!(linux_cap_eff_has_net_admin("Name:\tnvpn\n"), None);
+    }
+
+    #[test]
+    fn linux_tun_setup_error_points_to_root_service_or_docker_flags() {
+        let message = linux_tun_setup_error("utun100", "current process lacks CAP_NET_ADMIN");
+
+        assert!(message.contains("CAP_NET_ADMIN"));
+        assert!(message.contains("/dev/net/tun"));
+        assert!(message.contains("utun100"));
+        assert!(message.contains("sudo nvpn start --connect"));
+        assert!(message.contains("system service"));
+        assert!(message.contains("--cap-add NET_ADMIN --device /dev/net/tun"));
     }
 
     fn ipv4_packet(source: Ipv4Addr, destination: Ipv4Addr) -> Vec<u8> {
