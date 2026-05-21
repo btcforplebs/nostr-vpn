@@ -2,6 +2,8 @@ import AppKit
 import CoreImage
 import SwiftUI
 
+private let searchVisibilityThreshold = 7
+
 struct RootView: View {
     @ObservedObject var manager: AppManager
 
@@ -462,7 +464,8 @@ struct RootView: View {
     }
 
     private func deviceListColumn(_ network: NativeNetworkState, search: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let showSearch = sortedParticipants(network).count > searchVisibilityThreshold
+        return VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -476,8 +479,10 @@ struct RootView: View {
                     Spacer()
                     deviceHeaderActions(network)
                 }
-                TextField("Search", text: search)
-                    .textFieldStyle(.roundedBorder)
+                if showSearch {
+                    TextField("Search", text: search)
+                        .textFieldStyle(.roundedBorder)
+                }
             }
             .padding(.horizontal, 20)
             .padding(.top, 24)
@@ -485,10 +490,16 @@ struct RootView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    let participants = visibleParticipants(network, search: search.wrappedValue)
+                    let activeSearch = showSearch ? search.wrappedValue : ""
+                    let participants = visibleParticipants(network, search: activeSearch)
                     let selectedPubkeyHex = selectedParticipant(in: network)?.pubkeyHex
                     if participants.isEmpty {
-                        emptyRow("No matching devices", systemImage: "circle.dotted")
+                        emptyRow(
+                            activeSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? "No devices"
+                                : "No matching devices",
+                            systemImage: "circle.dotted"
+                        )
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(displayName(network))
@@ -1130,11 +1141,15 @@ struct RootView: View {
     }
 
     private func routingSection(_ network: NativeNetworkState, search: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let allPeerExitCandidates = exitNodeCandidates(network, search: "")
+        let showSearch = allPeerExitCandidates.count > searchVisibilityThreshold
+        return VStack(alignment: .leading, spacing: 14) {
             surface {
                 sectionHeader("Exit Nodes", systemImage: "arrow.triangle.branch")
-                TextField("Search devices", text: search)
-                    .textFieldStyle(.roundedBorder)
+                if showSearch {
+                    TextField("Search devices", text: search)
+                        .textFieldStyle(.roundedBorder)
+                }
 
                 VStack(spacing: 8) {
                     routeChoice(
@@ -1155,10 +1170,11 @@ struct RootView: View {
                         manager.selectWireGuardUpstreamExit()
                     }
 
-                    let peerExitCandidates = exitNodeCandidates(network, search: search.wrappedValue)
+                    let activeSearch = showSearch ? search.wrappedValue : ""
+                    let peerExitCandidates = exitNodeCandidates(network, search: activeSearch)
                     if peerExitCandidates.isEmpty {
                         emptyRow(
-                            search.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            activeSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                 ? "No exit nodes offered"
                                 : "No exit nodes found",
                             systemImage: "tray"

@@ -23,6 +23,7 @@
     { id: 'exit', label: 'Exit Nodes' },
     { id: 'settings', label: 'Settings' },
   ];
+  const SEARCH_VISIBILITY_THRESHOLD = 7;
 
   let state: UiState | null = null;
   let tab: Tab = 'devices';
@@ -71,9 +72,11 @@
     ? state.networks.reduce((count, network) => count + network.inboundJoinRequests.length, 0)
     : 0;
   $: participants = shownNetwork?.participants ?? [];
+  $: showDeviceSearch = participants.length > SEARCH_VISIBILITY_THRESHOLD;
+  $: deviceSearchQuery = showDeviceSearch ? deviceSearch.trim().toLowerCase() : '';
   $: visibleParticipants = participants
     .filter((participant) => {
-      const query = deviceSearch.trim().toLowerCase();
+      const query = deviceSearchQuery;
       if (!query) {
         return true;
       }
@@ -90,11 +93,14 @@
   $: if (devicePane === 'detail' && !selectedParticipant) {
     devicePane = 'list';
   }
-  $: exitCandidates = participants.filter((participant) => {
+  $: allExitCandidates = participants.filter((participant) => participant.offersExitNode && !isSelf(participant));
+  $: showExitSearch = allExitCandidates.length > SEARCH_VISIBILITY_THRESHOLD;
+  $: exitSearchQuery = showExitSearch ? exitSearch.trim().toLowerCase() : '';
+  $: exitCandidates = allExitCandidates.filter((participant) => {
     if (!participant.offersExitNode || isSelf(participant)) {
       return false;
     }
-    const query = exitSearch.trim().toLowerCase();
+    const query = exitSearchQuery;
     if (!query) {
       return true;
     }
@@ -1161,16 +1167,18 @@
               {/if}
             </div>
 
-            <label class="search-field">
-              <span>Search</span>
-              <input bind:value={deviceSearch} autocomplete="off" />
-            </label>
+            {#if showDeviceSearch}
+              <label class="search-field">
+                <span>Search</span>
+                <input bind:value={deviceSearch} autocomplete="off" />
+              </label>
+            {/if}
 
             <div class="device-list">
               {#if !shownNetwork}
                 <div class="empty-state">No network</div>
               {:else if visibleParticipants.length === 0}
-                <div class="empty-state">No devices</div>
+                <div class="empty-state">{deviceSearchQuery ? 'No matching devices' : 'No devices'}</div>
               {:else}
                 <div class="network-label">{shownNetwork.name}</div>
                 {#each visibleParticipants as participant (participant.pubkeyHex || participant.npub)}
@@ -1450,10 +1458,12 @@
                 <p>{routeSummary(state)}</p>
               </div>
             </div>
-            <label>
-              <span>Search</span>
-              <input bind:value={exitSearch} autocomplete="off" />
-            </label>
+            {#if showExitSearch}
+              <label>
+                <span>Search</span>
+                <input bind:value={exitSearch} autocomplete="off" />
+              </label>
+            {/if}
 
             <div class="choice-list">
               <button
@@ -1497,7 +1507,7 @@
                   </div>
                 </button>
               {:else}
-                <div class="empty-state">{exitSearch.trim() ? 'No exit nodes found' : 'No exit nodes offered'}</div>
+                <div class="empty-state">{exitSearchQuery ? 'No exit nodes found' : 'No exit nodes offered'}</div>
               {/each}
             </div>
           </div>

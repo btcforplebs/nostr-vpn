@@ -20,6 +20,7 @@ use nostr_vpn_app_core::{
 
 const APP_ID: &str = "to.iris.nvpn";
 const DEFAULT_UPDATE_POLL_INTERVAL_SECS: u32 = 6 * 60 * 60;
+const SEARCH_VISIBILITY_THRESHOLD: usize = 7;
 
 type AppRef = Rc<RefCell<AppModel>>;
 
@@ -2141,14 +2142,18 @@ fn build_exit_nodes_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) 
     let exit = card();
     section_header(&exit, "Exit Node", "");
 
-    let search = entry("Search devices", &app.borrow().drafts.exit_search);
-    {
-        let app = app.clone();
-        search.connect_changed(move |entry| {
-            app.borrow_mut().drafts.exit_search = entry.text().to_string();
-        });
+    let all_exit_candidates = exit_node_candidates(&network, state);
+    let show_search = all_exit_candidates.len() > SEARCH_VISIBILITY_THRESHOLD;
+    if show_search {
+        let search = entry("Search devices", &app.borrow().drafts.exit_search);
+        {
+            let app = app.clone();
+            search.connect_changed(move |entry| {
+                app.borrow_mut().drafts.exit_search = entry.text().to_string();
+            });
+        }
+        exit.append(&search);
     }
-    exit.append(&search);
 
     let direct_selected = !state.wireguard_exit_enabled && state.exit_node.is_empty();
     route_choice(
@@ -2178,8 +2183,12 @@ fn build_exit_nodes_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) 
         ExitChoice::WireGuard,
     );
 
-    let query = app.borrow().drafts.exit_search.to_ascii_lowercase();
-    let exit_candidates = exit_node_candidates(&network, state)
+    let query = if show_search {
+        app.borrow().drafts.exit_search.trim().to_ascii_lowercase()
+    } else {
+        String::new()
+    };
+    let exit_candidates = all_exit_candidates
         .into_iter()
         .filter(|participant| {
             query.is_empty()
