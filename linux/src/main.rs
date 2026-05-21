@@ -129,6 +129,7 @@ struct AppModel {
     update_receiver: Receiver<updater::UpdateEvent>,
     allow_close: bool,
     service_settling: bool,
+    diagnostics_expanded: bool,
 }
 
 impl AppModel {
@@ -149,6 +150,7 @@ impl AppModel {
         let mut drafts = Drafts::default();
         drafts.sync_from_state(&state);
         let tray = tray::TrayRuntime::start(&state);
+        let diagnostics_expanded = !state.health.is_empty();
         let (update_sender, update_receiver) = mpsc::channel();
         let update = updater::UpdateState {
             auto_install: load_auto_install_updates(),
@@ -179,6 +181,7 @@ impl AppModel {
             update_receiver,
             allow_close: false,
             service_settling: false,
+            diagnostics_expanded,
         }
     }
 }
@@ -518,6 +521,9 @@ fn dispatch(app: &AppRef, action: NativeAppAction) -> NativeAppState {
 
 fn set_state(app: &AppRef, state: NativeAppState) {
     let mut model = app.borrow_mut();
+    if state.health.len() > model.state.health.len() {
+        model.diagnostics_expanded = true;
+    }
     model.tray.update(&state);
     model.state = state;
 }
@@ -2409,6 +2415,10 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
             app.borrow_mut().drafts.relay_input = entry.text().to_string();
         });
     }
+    {
+        let app = app.clone();
+        relay_input.connect_activate(move |_| add_relay_setting(&app));
+    }
     add_row.append(&relay_input);
     let add_relay = gtk::Button::from_icon_name("list-add-symbolic");
     add_relay.set_tooltip_text(Some("Add relay"));
@@ -2471,19 +2481,16 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
             app.borrow_mut().drafts.new_network_name = entry.text().to_string();
         });
     }
+    {
+        let app = app.clone();
+        new_name.connect_activate(move |_| add_network_from_draft(&app));
+    }
     network_header.append(&new_name);
     let add = gtk::Button::from_icon_name("list-add-symbolic");
     add.set_tooltip_text(Some("Add network"));
     {
         let app = app.clone();
-        add.connect_clicked(move |_| {
-            let name = app.borrow().drafts.new_network_name.trim().to_string();
-            if name.is_empty() {
-                return;
-            }
-            app.borrow_mut().drafts.new_network_name.clear();
-            dispatch(&app, NativeAppAction::AddNetwork { name });
-        });
+        add.connect_clicked(move |_| add_network_from_draft(&app));
     }
     network_header.append(&add);
     network.append(&network_header);
@@ -2502,22 +2509,16 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
                 app.borrow_mut().drafts.network_name = entry.text().to_string();
             });
         }
+        {
+            let app = app.clone();
+            let network_id = active.id.clone();
+            input.connect_activate(move |_| save_active_network_name(&app, &network_id));
+        }
         let save = gtk::Button::with_label("Save");
         {
             let app = app.clone();
             let network_id = active.id.clone();
-            save.connect_clicked(move |_| {
-                let name = app.borrow().drafts.network_name.trim().to_string();
-                if !name.is_empty() {
-                    dispatch(
-                        &app,
-                        NativeAppAction::RenameNetwork {
-                            network_id: network_id.clone(),
-                            name,
-                        },
-                    );
-                }
-            });
+            save.connect_clicked(move |_| save_active_network_name(&app, &network_id));
         }
         rename.append(&input);
         rename.append(&save);
@@ -2536,6 +2537,11 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
                 app.borrow_mut().drafts.mesh_id = entry.text().to_string();
             });
         }
+        {
+            let app = app.clone();
+            let network_id = active.id.clone();
+            mesh_id.connect_activate(move |_| save_active_network_mesh_id(&app, &network_id));
+        }
         mesh.append(&mesh_id);
         let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
         copy.set_tooltip_text(Some("Copy network ID"));
@@ -2549,18 +2555,7 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
         {
             let app = app.clone();
             let network_id = active.id.clone();
-            save.connect_clicked(move |_| {
-                let mesh_id = normalize_network_id_input(&app.borrow().drafts.mesh_id);
-                if !mesh_id.is_empty() {
-                    dispatch(
-                        &app,
-                        NativeAppAction::SetNetworkMeshId {
-                            network_id: network_id.clone(),
-                            mesh_id,
-                        },
-                    );
-                }
-            });
+            save.connect_clicked(move |_| save_active_network_mesh_id(&app, &network_id));
         }
         mesh.append(&save);
         network.append(&mesh);
@@ -2579,6 +2574,19 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
                 }
             },
         );
+
+        let delete_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        delete_row.set_halign(gtk::Align::Start);
+        let delete = icon_text_button("Delete network", "edit-delete-symbolic");
+        delete.add_css_class("destructive-action");
+        connect_remove_network_confirmation(
+            &delete,
+            app,
+            active.id.clone(),
+            display_network_name(&active),
+        );
+        delete_row.append(&delete);
+        network.append(&delete_row);
     }
 
     let saved = gtk::Expander::new(Some("Saved Networks"));
@@ -2594,7 +2602,7 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
         empty_row(&saved_body, "No saved networks");
     } else {
         for saved_network in inactive {
-            saved_network_row(app, &saved_body, &saved_network, state.networks.len() > 1);
+            saved_network_row(app, &saved_body, &saved_network, state);
         }
     }
     saved.set_child(Some(&saved_body));
@@ -2850,6 +2858,13 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     page.append(&system);
 
     let advanced = gtk::Expander::new(Some("Advanced"));
+    advanced.set_expanded(app.borrow().diagnostics_expanded);
+    {
+        let app = app.clone();
+        advanced.connect_expanded_notify(move |advanced| {
+            app.borrow_mut().diagnostics_expanded = advanced.is_expanded();
+        });
+    }
     let advanced_body = gtk::Box::new(gtk::Orientation::Vertical, 14);
     advanced_body.set_margin_top(10);
     build_diagnostics(&advanced_body, state);
@@ -2958,8 +2973,49 @@ fn setting_entry(app: &AppRef, parent: &gtk::Box, title: &str, key: &'static str
             }
         });
     }
+    {
+        let app = app.clone();
+        input.connect_activate(move |_| save_device_settings(&app));
+    }
     row.append(&input);
     parent.append(&row);
+}
+
+fn add_network_from_draft(app: &AppRef) {
+    let name = app.borrow().drafts.new_network_name.trim().to_string();
+    if name.is_empty() {
+        return;
+    }
+    app.borrow_mut().drafts.new_network_name.clear();
+    dispatch(app, NativeAppAction::AddNetwork { name });
+}
+
+fn save_active_network_name(app: &AppRef, network_id: &str) {
+    let name = app.borrow().drafts.network_name.trim().to_string();
+    if name.is_empty() {
+        return;
+    }
+    dispatch(
+        app,
+        NativeAppAction::RenameNetwork {
+            network_id: network_id.to_string(),
+            name,
+        },
+    );
+}
+
+fn save_active_network_mesh_id(app: &AppRef, network_id: &str) {
+    let mesh_id = normalize_network_id_input(&app.borrow().drafts.mesh_id);
+    if mesh_id.is_empty() {
+        return;
+    }
+    dispatch(
+        app,
+        NativeAppAction::SetNetworkMeshId {
+            network_id: network_id.to_string(),
+            mesh_id,
+        },
+    );
 }
 
 fn save_device_settings(app: &AppRef) {
@@ -3199,11 +3255,13 @@ fn saved_network_row(
     app: &AppRef,
     parent: &gtk::Box,
     network: &NativeNetworkState,
-    can_remove: bool,
+    state: &NativeAppState,
 ) {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    row.add_css_class("nvpn-route-choice");
-    row.set_valign(gtk::Align::Center);
+    let expander = gtk::Expander::new(None::<&str>);
+    expander.add_css_class("nvpn-route-choice");
+
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    header.set_valign(gtk::Align::Center);
 
     let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
     text.set_hexpand(true);
@@ -3222,7 +3280,7 @@ fn saved_network_row(
     subtitle.add_css_class("dim-label");
     subtitle.set_xalign(0.0);
     text.append(&subtitle);
-    row.append(&text);
+    header.append(&text);
 
     let activate = icon_text_button("Activate", "go-next-symbolic");
     {
@@ -3238,25 +3296,255 @@ fn saved_network_row(
             );
         });
     }
-    row.append(&activate);
+    header.append(&activate);
 
     let remove = gtk::Button::from_icon_name("edit-delete-symbolic");
     remove.set_tooltip_text(Some("Remove network"));
-    remove.set_sensitive(can_remove);
     remove.add_css_class("destructive-action");
+    connect_remove_network_confirmation(
+        &remove,
+        app,
+        network.id.clone(),
+        display_network_name(network),
+    );
+    header.append(&remove);
+    expander.set_label_widget(Some(&header));
+
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    body.set_margin_top(10);
+
+    let rename = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    rename.set_valign(gtk::Align::Center);
+    let label = gtk::Label::new(Some("Name"));
+    label.set_width_chars(10);
+    label.set_xalign(0.0);
+    label.add_css_class("dim-label");
+    rename.append(&label);
+    let input = entry("Network name", &display_network_name(network));
+    input.set_sensitive(network.local_is_admin);
+    rename.append(&input);
+    let save = gtk::Button::with_label("Save");
+    save.set_sensitive(network.local_is_admin);
     {
         let app = app.clone();
         let network_id = network.id.clone();
-        remove.connect_clicked(move |_| {
-            dispatch(
-                &app,
-                NativeAppAction::RemoveNetwork {
-                    network_id: network_id.clone(),
-                },
-            );
-        });
+        let input = input.clone();
+        save.connect_clicked(move |_| save_saved_network_name(&app, &network_id, &input));
     }
-    row.append(&remove);
+    {
+        let app = app.clone();
+        let network_id = network.id.clone();
+        input.connect_activate(move |input| save_saved_network_name(&app, &network_id, input));
+    }
+    rename.append(&save);
+    body.append(&rename);
+
+    let mesh = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    mesh.set_valign(gtk::Align::Center);
+    let label = gtk::Label::new(Some("Network ID"));
+    label.set_width_chars(10);
+    label.set_xalign(0.0);
+    label.add_css_class("dim-label");
+    mesh.append(&label);
+    let mesh_id = gtk::Label::new(Some(&display_network_id(&network.network_id)));
+    mesh_id.set_xalign(0.0);
+    mesh_id.set_selectable(true);
+    mesh_id.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    mesh_id.set_hexpand(true);
+    mesh.append(&mesh_id);
+    let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
+    copy.set_tooltip_text(Some("Copy network ID"));
+    {
+        let network_id = network.network_id.clone();
+        copy.connect_clicked(move |_| copy_text(&network_id));
+    }
+    mesh.append(&copy);
+    body.append(&mesh);
+
+    switch_row_enabled(
+        app,
+        &body,
+        "Allow join requests",
+        network.join_requests_enabled,
+        network.local_is_admin,
+        {
+            let network_id = network.id.clone();
+            move |enabled| NativeAppAction::SetNetworkJoinRequestsEnabled {
+                network_id: network_id.clone(),
+                enabled,
+            }
+        },
+    );
+
+    section_header(&body, "Devices", "");
+    let participants = sorted_participants(network, state);
+    if participants.is_empty() {
+        empty_row(&body, "No devices in this network");
+    } else {
+        for participant in participants {
+            saved_network_participant_row(app, &body, network, &participant, state);
+        }
+    }
+
+    expander.set_child(Some(&body));
+    parent.append(&expander);
+}
+
+fn save_saved_network_name(app: &AppRef, network_id: &str, input: &gtk::Entry) {
+    let name = input.text().trim().to_string();
+    if name.is_empty() {
+        return;
+    }
+    dispatch(
+        app,
+        NativeAppAction::RenameNetwork {
+            network_id: network_id.to_string(),
+            name,
+        },
+    );
+}
+
+fn saved_network_participant_row(
+    app: &AppRef,
+    parent: &gtk::Box,
+    network: &NativeNetworkState,
+    participant: &NativeParticipantState,
+    state: &NativeAppState,
+) {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.set_valign(gtk::Align::Center);
+
+    let dot = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    dot.add_css_class(if participant.reachable {
+        "nvpn-peer-online"
+    } else {
+        "nvpn-peer-offline"
+    });
+    row.append(&dot);
+
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    text.set_hexpand(true);
+    let name = gtk::Label::new(Some(&device_name(participant)));
+    name.add_css_class("heading");
+    name.set_xalign(0.0);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    text.append(&name);
+    let subtitle = gtk::Label::new(Some(&device_subtitle(participant)));
+    subtitle.add_css_class("caption");
+    subtitle.add_css_class("dim-label");
+    subtitle.set_xalign(0.0);
+    subtitle.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    text.append(&subtitle);
+    row.append(&text);
+
+    row.append(&badge(
+        &device_status_text(participant),
+        if participant.reachable { "ok" } else { "muted" },
+    ));
+    if participant.is_admin {
+        row.append(&badge("Admin", "muted"));
+    }
+    if participant.offers_exit_node {
+        row.append(&badge(
+            exit_node_badge_text(participant, state),
+            exit_node_badge_style(participant, state),
+        ));
+    }
+
+    let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
+    copy.set_tooltip_text(Some("Copy npub"));
+    {
+        let npub = participant.npub.clone();
+        copy.connect_clicked(move |_| copy_text(&npub));
+    }
+    row.append(&copy);
+
+    if network.local_is_admin {
+        let alias = entry("Name", &participant.magic_dns_alias);
+        alias.set_width_chars(14);
+        alias.set_hexpand(false);
+        row.append(&alias);
+
+        let save_alias = gtk::Button::from_icon_name("object-select-symbolic");
+        save_alias.set_tooltip_text(Some("Save name"));
+        {
+            let app = app.clone();
+            let npub = participant.npub.clone();
+            let alias = alias.clone();
+            save_alias.connect_clicked(move |_| {
+                dispatch(
+                    &app,
+                    NativeAppAction::SetParticipantAlias {
+                        npub: npub.clone(),
+                        alias: alias.text().trim().to_string(),
+                    },
+                );
+            });
+        }
+        {
+            let app = app.clone();
+            let npub = participant.npub.clone();
+            alias.connect_activate(move |alias| {
+                dispatch(
+                    &app,
+                    NativeAppAction::SetParticipantAlias {
+                        npub: npub.clone(),
+                        alias: alias.text().trim().to_string(),
+                    },
+                );
+            });
+        }
+        row.append(&save_alias);
+
+        if !is_self(participant, state) {
+            let admin = gtk::Button::from_icon_name(if participant.is_admin {
+                "starred-symbolic"
+            } else {
+                "non-starred-symbolic"
+            });
+            admin.set_tooltip_text(Some(if participant.is_admin {
+                "Remove admin"
+            } else {
+                "Make admin"
+            }));
+            {
+                let app = app.clone();
+                let network_id = network.id.clone();
+                let npub = participant.npub.clone();
+                let is_admin = participant.is_admin;
+                admin.connect_clicked(move |_| {
+                    dispatch(
+                        &app,
+                        if is_admin {
+                            NativeAppAction::RemoveAdmin {
+                                network_id: network_id.clone(),
+                                npub: npub.clone(),
+                            }
+                        } else {
+                            NativeAppAction::AddAdmin {
+                                network_id: network_id.clone(),
+                                npub: npub.clone(),
+                            }
+                        },
+                    );
+                });
+            }
+            row.append(&admin);
+
+            let remove = gtk::Button::from_icon_name("edit-delete-symbolic");
+            remove.set_tooltip_text(Some("Remove device"));
+            remove.add_css_class("destructive-action");
+            connect_remove_participant_confirmation(
+                &remove,
+                app,
+                network.id.clone(),
+                participant.npub.clone(),
+                device_name(participant),
+            );
+            row.append(&remove);
+        }
+    }
+
     parent.append(&row);
 }
 
@@ -3479,6 +3767,42 @@ fn connect_remove_participant_confirmation(
     button.connect_clicked(move |_| {
         confirm_remove_participant(&app, network_id.clone(), npub.clone(), device_name.clone());
     });
+}
+
+fn connect_remove_network_confirmation(
+    button: &gtk::Button,
+    app: &AppRef,
+    network_id: String,
+    network_name: String,
+) {
+    let app = app.clone();
+    button.connect_clicked(move |_| {
+        confirm_remove_network(&app, network_id.clone(), network_name.clone());
+    });
+}
+
+fn confirm_remove_network(app: &AppRef, network_id: String, network_name: String) {
+    let dialog = adw::AlertDialog::new(
+        Some(&format!("Remove {network_name}?")),
+        Some("This deletes the network from this device."),
+    );
+    dialog.add_responses(&[("cancel", "Cancel"), ("remove", "Remove")]);
+    dialog.set_close_response("cancel");
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+    {
+        let app = app.clone();
+        dialog.connect_response(Some("remove"), move |_, _| {
+            dispatch(
+                &app,
+                NativeAppAction::RemoveNetwork {
+                    network_id: network_id.clone(),
+                },
+            );
+        });
+    }
+    let window = app.borrow().window.clone();
+    dialog.present(Some(&window));
 }
 
 fn confirm_remove_participant(app: &AppRef, network_id: String, npub: String, device_name: String) {
