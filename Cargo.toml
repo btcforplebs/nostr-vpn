@@ -26,6 +26,7 @@ boringtun = "0.7"
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
 fips-endpoint = "0.3.15"
+fips-core = "0.3.15"
 futures = "0.3"
 hex = "0.4"
 hickory-proto = "0.26"

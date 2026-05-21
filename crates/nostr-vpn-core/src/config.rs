@@ -24,12 +24,12 @@ pub use crate::network_routes::{
 
 use crate::config_defaults::{
     current_unix_timestamp, default_autoconnect, default_close_to_tray_on_close, default_endpoint,
-    default_fips_advertise_endpoint, default_invite_secret, default_lan_discovery_enabled,
-    default_launch_on_startup, default_listen_for_join_requests, default_listen_port,
-    default_nat_discovery_timeout_secs, default_nat_enabled, default_nat_stun_servers,
-    default_network_enabled, default_network_id, default_node_id, default_relays,
-    default_tunnel_ip, generate_nostr_identity, is_true, is_zero, needs_generated_network_id,
-    npub_for_pubkey_hex,
+    default_fips_advertise_endpoint, default_fips_host_tunnel_enabled, default_invite_secret,
+    default_lan_discovery_enabled, default_launch_on_startup, default_listen_for_join_requests,
+    default_listen_port, default_nat_discovery_timeout_secs, default_nat_enabled,
+    default_nat_stun_servers, default_network_enabled, default_network_id, default_node_id,
+    default_relays, default_tunnel_ip, generate_nostr_identity, is_true, is_zero,
+    needs_generated_network_id, npub_for_pubkey_hex,
 };
 pub use crate::config_defaults::{
     maybe_autoconfigure_node, needs_endpoint_autoconfig, needs_tunnel_ip_autoconfig,
@@ -140,6 +140,13 @@ pub struct AppConfig {
         skip_serializing_if = "is_true"
     )]
     pub fips_advertise_endpoint: bool,
+    #[serde(
+        default = "default_fips_host_tunnel_enabled",
+        skip_serializing_if = "is_true"
+    )]
+    pub fips_host_tunnel_enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fips_host_inbound_tcp_ports: Vec<u16>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub mesh_mtu_profile: String,
     #[serde(default, skip_serializing_if = "is_zero_u16")]
@@ -704,6 +711,8 @@ impl Default for AppConfig {
             autoconnect: default_autoconnect(),
             fips_peer_endpoints: HashMap::new(),
             fips_advertise_endpoint: default_fips_advertise_endpoint(),
+            fips_host_tunnel_enabled: default_fips_host_tunnel_enabled(),
+            fips_host_inbound_tcp_ports: Vec::new(),
             mesh_mtu_profile: String::new(),
             mesh_underlay_udp_mtu: 0,
             mesh_tunnel_mtu: 0,
@@ -819,6 +828,8 @@ impl AppConfig {
 
         self.mesh_mtu_profile = self.mesh_mtu_profile.trim().to_ascii_lowercase();
         self.magic_dns_suffix = normalize_magic_dns_suffix(&self.magic_dns_suffix);
+        self.fips_host_inbound_tcp_ports.sort_unstable();
+        self.fips_host_inbound_tcp_ports.dedup();
         normalize_wireguard_exit_config(&mut self.wireguard_exit);
         self.nostr.relays = normalize_relay_urls(std::mem::take(&mut self.nostr.relays));
         self.nostr.disabled_relays =

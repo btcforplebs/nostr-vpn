@@ -653,6 +653,17 @@ impl NativeAppRuntime {
             } else {
                 wireguard_exit_config_text(&self.config.wireguard_exit)
             },
+            fips_host_tunnel_enabled: !config_unavailable && self.config.fips_host_tunnel_enabled,
+            fips_host_inbound_tcp_ports: if config_unavailable {
+                String::new()
+            } else {
+                self.config
+                    .fips_host_inbound_tcp_ports
+                    .iter()
+                    .map(u16::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
             magic_dns_suffix: if config_unavailable {
                 String::new()
             } else {
@@ -1369,6 +1380,12 @@ impl NativeAppRuntime {
             let enabled = self.config.wireguard_exit.enabled;
             parsed.enabled = enabled;
             self.config.wireguard_exit = parsed;
+        }
+        if let Some(value) = patch.fips_host_tunnel_enabled {
+            self.config.fips_host_tunnel_enabled = value;
+        }
+        if let Some(value) = patch.fips_host_inbound_tcp_ports {
+            self.config.fips_host_inbound_tcp_ports = parse_tcp_ports(&value);
         }
         if let Some(value) = patch.magic_dns_suffix {
             self.config.magic_dns_suffix = value.trim().trim_matches('.').to_ascii_lowercase();
@@ -2651,6 +2668,19 @@ fn parse_csv_values(input: &str) -> Vec<String> {
     values.sort();
     values.dedup();
     values
+}
+
+fn parse_tcp_ports(input: &str) -> Vec<u16> {
+    let mut ports = input
+        .split([',', '\n', ' ', '\t'])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter_map(|value| value.parse::<u16>().ok())
+        .filter(|port| *port > 0)
+        .collect::<Vec<_>>();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
 }
 
 fn effective_config_relays(config: &AppConfig) -> Vec<String> {
@@ -4521,6 +4551,41 @@ exit 0
         assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
         assert!(runtime.config.wireguard_exit.enabled);
         assert_eq!(runtime.config.exit_node, "");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_patch_persists_fips_host_controls() {
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("nvpn-app-core-fips-host-{nonce}"));
+        fs::create_dir_all(&dir).expect("create test dir");
+
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.mobile_runtime = true;
+        runtime.config_path = dir.join("config.toml");
+
+        runtime.dispatch(NativeAppAction::UpdateSettings {
+            patch: SettingsPatch {
+                fips_host_tunnel_enabled: Some(false),
+                fips_host_inbound_tcp_ports: Some("443, 22, 22".to_string()),
+                ..SettingsPatch::default()
+            },
+        });
+
+        assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
+        let saved = AppConfig::load(&runtime.config_path).expect("load persisted config");
+        assert!(!saved.fips_host_tunnel_enabled);
+        assert_eq!(saved.fips_host_inbound_tcp_ports, vec![22, 443]);
+
+        let state = runtime.state();
+        assert!(!state.fips_host_tunnel_enabled);
+        assert_eq!(state.fips_host_inbound_tcp_ports, "22, 443");
 
         let _ = fs::remove_dir_all(&dir);
     }

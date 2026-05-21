@@ -219,6 +219,14 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void FipsHostTunnel_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is CheckBox checkBox)
+        {
+            await ViewModel.SetFipsHostTunnelAsync(checkBox.IsChecked == true);
+        }
+    }
+
     private async void LaunchOnStartup_Click(object sender, RoutedEventArgs e)
     {
         if (sender is CheckBox checkBox)

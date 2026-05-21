@@ -13,6 +13,7 @@ struct RootView: View {
     @State private var listenPort = ""
     @State private var relayInput = ""
     @State private var magicDnsSuffix = ""
+    @State private var fipsHostInboundTcpPorts = ""
     @State private var wireguardExitConfig = ""
     @State private var networkNameInput = ""
     @State private var selectedDevicePubkeyHex: String?
@@ -36,6 +37,7 @@ struct RootView: View {
     @State private var lastSyncedTunnelIp = ""
     @State private var lastSyncedListenPort: UInt32 = 0
     @State private var lastSyncedMagicDnsSuffix = ""
+    @State private var lastSyncedFipsHostInboundTcpPorts = ""
     @State private var lastSyncedWireguardExitConfig: String? = nil
 
     private var state: NativeAppState {
@@ -1344,11 +1346,19 @@ struct RootView: View {
                     label("Tunnel IP")
                     TextField("Tunnel IP", text: $tunnelIp)
                 }
+                GridRow {
+                    label("FIPS TCP Ports")
+                    TextField("FIPS TCP Ports", text: $fipsHostInboundTcpPorts)
+                }
             }
             HStack(spacing: 14) {
                 Toggle("Autoconnect", isOn: Binding(
                     get: { state.autoconnect },
                     set: { manager.setAutoconnect($0) }
+                ))
+                Toggle("FIPS Hosts", isOn: Binding(
+                    get: { state.fipsHostTunnelEnabled },
+                    set: { manager.setFipsHostTunnel($0) }
                 ))
                 Toggle("Launch on startup", isOn: Binding(
                     get: { state.launchOnStartup },
@@ -1372,7 +1382,8 @@ struct RootView: View {
                     endpoint: endpoint,
                     tunnelIp: tunnelIp,
                     listenPort: listenPort,
-                    magicDnsSuffix: magicDnsSuffix
+                    magicDnsSuffix: magicDnsSuffix,
+                    fipsHostInboundTcpPorts: fipsHostInboundTcpPorts
                 )
             } label: {
                 Label("Save", systemImage: "checkmark")
@@ -1810,6 +1821,10 @@ struct RootView: View {
         if state.magicDnsSuffix != lastSyncedMagicDnsSuffix {
             magicDnsSuffix = state.magicDnsSuffix
             lastSyncedMagicDnsSuffix = state.magicDnsSuffix
+        }
+        if state.fipsHostInboundTcpPorts != lastSyncedFipsHostInboundTcpPorts {
+            fipsHostInboundTcpPorts = state.fipsHostInboundTcpPorts
+            lastSyncedFipsHostInboundTcpPorts = state.fipsHostInboundTcpPorts
         }
         if lastSyncedWireguardExitConfig != state.wireguardExitConfig {
             wireguardExitConfig = state.wireguardExitConfig

@@ -24,6 +24,8 @@ fn generated_config_auto_populates_keys() {
     assert!(!config.nat.stun_servers.is_empty());
     assert!(config.exit_node.is_empty());
     assert!(config.exit_node_leak_protection);
+    assert!(config.fips_host_tunnel_enabled);
+    assert!(config.fips_host_inbound_tcp_ports.is_empty());
     assert!(!config.node.advertise_exit_node);
     assert!(config.node.advertised_routes.is_empty());
     assert!(config.effective_advertised_routes().is_empty());
@@ -35,6 +37,18 @@ fn generated_config_auto_populates_keys() {
             .all(|ch| ch.is_ascii_hexdigit())
     );
     assert!(!config.networks[0].invite_secret.is_empty());
+}
+
+#[test]
+fn fips_host_inbound_ports_are_normalized() {
+    let mut config = AppConfig {
+        fips_host_inbound_tcp_ports: vec![443, 22, 22],
+        ..AppConfig::default()
+    };
+
+    config.ensure_defaults();
+
+    assert_eq!(config.fips_host_inbound_tcp_ports, vec![22, 443]);
 }
 
 #[test]

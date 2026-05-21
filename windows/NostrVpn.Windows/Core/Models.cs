@@ -58,6 +58,8 @@ public sealed class NativeAppState
     public ushort WireguardExitMtu { get; set; }
     public ushort WireguardExitPersistentKeepaliveSecs { get; set; }
     public string WireguardExitConfig { get; set; } = "";
+    public bool FipsHostTunnelEnabled { get; set; }
+    public string FipsHostInboundTcpPorts { get; set; } = "";
     public string MagicDnsSuffix { get; set; } = "";
     public string MagicDnsStatus { get; set; } = "";
     public bool Autoconnect { get; set; }

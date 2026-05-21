@@ -134,7 +134,14 @@ pub(crate) fn apply_network_invite_to_active_network(
             network.outbound_join_request = None;
         }
     }
-    config.add_fips_peer_endpoint_hints(&normalized_inviter_pubkey, &invite.inviter_endpoints)?;
+    let inviter_transport_endpoints = invite
+        .inviter_endpoints
+        .iter()
+        .filter(|endpoint| !endpoint.trim().eq_ignore_ascii_case("fips"))
+        .cloned()
+        .collect::<Vec<_>>();
+    config
+        .add_fips_peer_endpoint_hints(&normalized_inviter_pubkey, &inviter_transport_endpoints)?;
 
     if !inviter_already_configured && !invite.inviter_node_name.trim().is_empty() {
         let _ = config.set_peer_alias(&normalized_inviter_pubkey, &invite.inviter_node_name);
@@ -272,6 +279,9 @@ fn active_inviter_endpoints(config: &AppConfig) -> Vec<String> {
     let mut configured = config.clone();
     maybe_autoconfigure_node(&mut configured);
     let endpoint = configured.node.endpoint.trim();
+    if endpoint.eq_ignore_ascii_case("fips") {
+        return Vec::new();
+    }
     normalize_fips_peer_endpoint_hint(endpoint)
         .into_iter()
         .collect()

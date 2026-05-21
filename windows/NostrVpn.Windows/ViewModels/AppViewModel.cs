@@ -49,6 +49,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     private string _relayInput = "";
     private string _relaysDraft = "";
     private string _magicDnsSuffix = "";
+    private string _fipsHostInboundTcpPorts = "";
     private string _advertisedRoutes = "";
     private string _wireguardExitConfig = "";
     private string _manualJoinAdminId = "";
@@ -330,6 +331,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     }
     public string RelaysDraft { get => _relaysDraft; set => SetField(ref _relaysDraft, value); }
     public string MagicDnsSuffix { get => _magicDnsSuffix; set => SetField(ref _magicDnsSuffix, value); }
+    public string FipsHostInboundTcpPorts { get => _fipsHostInboundTcpPorts; set => SetField(ref _fipsHostInboundTcpPorts, value); }
     public string AdvertisedRoutes { get => _advertisedRoutes; set => SetField(ref _advertisedRoutes, value); }
     public string WireguardExitConfig { get => _wireguardExitConfig; set => SetField(ref _wireguardExitConfig, value); }
 
@@ -742,6 +744,13 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         return DispatchAsync(
             NativeActions.UpdateSettings(new SettingsPatch { Autoconnect = enabled }),
             "Saving VPN option");
+    }
+
+    public Task SetFipsHostTunnelAsync(bool enabled)
+    {
+        return DispatchAsync(
+            NativeActions.UpdateSettings(new SettingsPatch { FipsHostTunnelEnabled = enabled }),
+            "Saving FIPS option");
     }
 
     public Task RemoveParticipantAsync(NativeParticipantState participant)
@@ -1162,6 +1171,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             TunnelIp = TunnelIp,
             ListenPort = port,
             MagicDnsSuffix = MagicDnsSuffix,
+            FipsHostInboundTcpPorts = FipsHostInboundTcpPorts,
         }), "Saving device");
     }
 
@@ -1304,6 +1314,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         ListenPort = state.ListenPort.ToString();
         RelaysDraft = string.Join(Environment.NewLine, state.Relays.Select(relay => relay.Url));
         MagicDnsSuffix = state.MagicDnsSuffix;
+        FipsHostInboundTcpPorts = state.FipsHostInboundTcpPorts;
         WireguardExitConfig = state.WireguardExitConfig;
         NetworkNameDraft = active?.Name ?? "";
         NetworkMeshIdDraft = DisplayNetworkId(active?.NetworkId ?? "");

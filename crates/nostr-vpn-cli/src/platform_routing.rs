@@ -4,7 +4,7 @@ use std::fs;
 use std::net::IpAddr;
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 use std::net::Ipv4Addr;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 use std::net::Ipv6Addr;
 #[cfg(target_os = "linux")]
 use std::net::ToSocketAddrs;
@@ -849,9 +849,26 @@ pub(crate) fn linux_iptables_delete_rule(
 
 #[cfg(any(test, not(target_os = "windows")))]
 #[cfg_attr(all(test, target_os = "windows"), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) fn apply_local_interface_network_with_mtu(
     iface: &str,
     address: &str,
+    route_targets: &[String],
+    mtu: u16,
+) -> Result<()> {
+    apply_local_interface_network_with_mtu_and_addresses(
+        iface,
+        &[address.to_string()],
+        route_targets,
+        mtu,
+    )
+}
+
+#[cfg(any(test, not(target_os = "windows")))]
+#[cfg_attr(all(test, target_os = "windows"), allow(dead_code))]
+pub(crate) fn apply_local_interface_network_with_mtu_and_addresses(
+    iface: &str,
+    addresses: &[String],
     route_targets: &[String],
     mtu: u16,
 ) -> Result<()> {
@@ -861,17 +878,25 @@ pub(crate) fn apply_local_interface_network_with_mtu(
     let mtu = mtu.as_str();
     #[cfg(target_os = "linux")]
     {
-        let ipv4_route_source = linux_ipv4_route_source(address);
-        let local_has_ipv4 = linux_tunnel_address_is_ipv4(address);
-        let local_has_ipv6 = linux_tunnel_address_is_ipv6(address);
-        run_checked(
-            ProcessCommand::new("ip")
-                .arg("address")
-                .arg("replace")
-                .arg(address)
-                .arg("dev")
-                .arg(iface),
-        )?;
+        let ipv4_route_source = addresses
+            .iter()
+            .find_map(|address| linux_ipv4_route_source(address));
+        let local_has_ipv4 = addresses
+            .iter()
+            .any(|address| linux_tunnel_address_is_ipv4(address));
+        let local_has_ipv6 = addresses
+            .iter()
+            .any(|address| linux_tunnel_address_is_ipv6(address));
+        for address in addresses {
+            run_checked(
+                ProcessCommand::new("ip")
+                    .arg("address")
+                    .arg("replace")
+                    .arg(address)
+                    .arg("dev")
+                    .arg(iface),
+            )?;
+        }
         run_checked(
             ProcessCommand::new("ip")
                 .arg("link")
@@ -917,13 +942,31 @@ pub(crate) fn apply_local_interface_network_with_mtu(
                 command.arg("src").arg(source);
             }
             run_checked(&mut command)?;
+            if target == "fd00::/8" {
+                let _ = ProcessCommand::new("ip")
+                    .arg("-6")
+                    .arg("rule")
+                    .arg("add")
+                    .arg("to")
+                    .arg(target)
+                    .arg("table")
+                    .arg("main")
+                    .arg("priority")
+                    .arg("5265")
+                    .status();
+            }
         }
         return Ok(());
     }
 
     #[cfg(target_os = "macos")]
     {
-        let ip = strip_cidr(address).to_string();
+        let primary_address = addresses
+            .iter()
+            .find(|address| linux_tunnel_address_is_ipv4(address))
+            .or_else(|| addresses.first())
+            .ok_or_else(|| anyhow!("no tunnel interface address configured"))?;
+        let ip = strip_cidr(primary_address).to_string();
         run_checked(
             ProcessCommand::new("ifconfig")
                 .arg(iface)
@@ -936,6 +979,21 @@ pub(crate) fn apply_local_interface_network_with_mtu(
                 .arg(mtu)
                 .arg("up"),
         )?;
+        for address in addresses {
+            if !linux_tunnel_address_is_ipv6(address) {
+                continue;
+            }
+            let (ip, prefix) = split_cidr(address, "128");
+            run_checked(
+                ProcessCommand::new("ifconfig")
+                    .arg(iface)
+                    .arg("inet6")
+                    .arg(ip)
+                    .arg("prefixlen")
+                    .arg(prefix)
+                    .arg("alias"),
+            )?;
+        }
         eprintln!(
             "tunnel: applying macOS interface {} with routes [{}]",
             iface,
@@ -948,12 +1006,17 @@ pub(crate) fn apply_local_interface_network_with_mtu(
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let _ = (iface, address, route_targets, mtu);
+    let _ = (iface, addresses, route_targets, mtu);
 
     #[allow(unreachable_code)]
     Err(anyhow!(
         "interface setup is not implemented for this platform"
     ))
+}
+
+#[cfg(target_os = "macos")]
+fn split_cidr<'a>(address: &'a str, default_prefix: &'a str) -> (&'a str, &'a str) {
+    address.split_once('/').unwrap_or((address, default_prefix))
 }
 
 #[cfg(target_os = "linux")]
@@ -964,12 +1027,12 @@ pub(crate) fn linux_ipv4_route_source(address: &str) -> Option<String> {
         .map(|ip| ip.to_string())
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn linux_tunnel_address_is_ipv4(address: &str) -> bool {
     strip_cidr(address).parse::<Ipv4Addr>().is_ok()
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn linux_tunnel_address_is_ipv6(address: &str) -> bool {
     strip_cidr(address).parse::<Ipv6Addr>().is_ok()
 }
@@ -979,13 +1042,35 @@ pub(crate) fn linux_route_target_is_ipv4(target: &str) -> bool {
     strip_cidr(target).parse::<Ipv4Addr>().is_ok()
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn linux_route_target_is_ipv6(target: &str) -> bool {
     strip_cidr(target).parse::<Ipv6Addr>().is_ok()
 }
 
 #[cfg(target_os = "macos")]
 fn apply_macos_route(iface: &str, target: &str) -> Result<()> {
+    if linux_route_target_is_ipv6(target) {
+        let (target_ip, prefix) = split_cidr(target, "128");
+        let _ = ProcessCommand::new("route")
+            .arg("delete")
+            .arg("-inet6")
+            .arg("-prefixlen")
+            .arg(prefix)
+            .arg(target_ip)
+            .arg("-interface")
+            .arg(iface)
+            .status();
+        return run_checked(
+            ProcessCommand::new("route")
+                .arg("add")
+                .arg("-inet6")
+                .arg("-prefixlen")
+                .arg(prefix)
+                .arg(target_ip)
+                .arg("-interface")
+                .arg(iface),
+        );
+    }
     if target == "0.0.0.0/0" {
         eprintln!("tunnel: applying macOS default route via interface {iface}");
         return apply_macos_default_route(None, Some(iface));

@@ -79,6 +79,10 @@ pub(crate) fn default_fips_advertise_endpoint() -> bool {
     true
 }
 
+pub(crate) fn default_fips_host_tunnel_enabled() -> bool {
+    true
+}
+
 pub(crate) fn default_close_to_tray_on_close() -> bool {
     true
 }

@@ -187,6 +187,8 @@ pub struct NativeAppState {
     pub wireguard_exit_mtu: u16,
     pub wireguard_exit_persistent_keepalive_secs: u16,
     pub wireguard_exit_config: String,
+    pub fips_host_tunnel_enabled: bool,
+    pub fips_host_inbound_tcp_ports: String,
     pub magic_dns_suffix: String,
     pub magic_dns_status: String,
     pub autoconnect: bool,

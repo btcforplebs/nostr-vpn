@@ -10,13 +10,14 @@ readme = "README.md"
 
 [features]
 default = ["embedded-fips"]
-embedded-fips = ["dep:fips-endpoint"]
+embedded-fips = ["dep:fips-endpoint", "dep:fips-core"]
 
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
 clap.workspace = true
 dirs.workspace = true
+fips-core = { workspace = true, optional = true }
 fips-endpoint = { workspace = true, optional = true }
 hex.workspace = true
 serde.workspace = true

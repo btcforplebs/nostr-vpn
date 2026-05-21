@@ -65,6 +65,8 @@
     relays: '',
     advertisedRoutes: '',
     magicDnsSuffix: '',
+    fipsHostTunnelEnabled: true,
+    fipsHostInboundTcpPorts: '',
     autoconnect: false,
   };
 
@@ -169,6 +171,8 @@
       relays: relays.map((relay) => relay.url).join('\n'),
       advertisedRoutes: next.advertisedRoutes.join(', '),
       magicDnsSuffix: next.magicDnsSuffix,
+      fipsHostTunnelEnabled: next.fipsHostTunnelEnabled,
+      fipsHostInboundTcpPorts: next.fipsHostInboundTcpPorts,
       autoconnect: next.autoconnect,
     };
   }
@@ -793,6 +797,8 @@
           .filter(Boolean),
         advertisedRoutes: settingsDraft.advertisedRoutes,
         magicDnsSuffix: settingsDraft.magicDnsSuffix,
+        fipsHostTunnelEnabled: settingsDraft.fipsHostTunnelEnabled,
+        fipsHostInboundTcpPorts: settingsDraft.fipsHostInboundTcpPorts,
         autoconnect: settingsDraft.autoconnect,
       },
       'Saving settings',
@@ -1724,6 +1730,10 @@
                 <span>Advertised Routes</span>
                 <input bind:value={settingsDraft.advertisedRoutes} on:input={() => (settingsDirty = true)} />
               </label>
+              <label>
+                <span>FIPS TCP Ports</span>
+                <input bind:value={settingsDraft.fipsHostInboundTcpPorts} on:input={() => (settingsDirty = true)} />
+              </label>
             </div>
 
             <div class="relay-list">
@@ -1745,6 +1755,15 @@
               <input
                 type="checkbox"
                 bind:checked={settingsDraft.autoconnect}
+                on:change={() => (settingsDirty = true)}
+              />
+            </label>
+
+            <label class="switch-row">
+              <span>FIPS Hosts</span>
+              <input
+                type="checkbox"
+                bind:checked={settingsDraft.fipsHostTunnelEnabled}
                 on:change={() => (settingsDirty = true)}
               />
             </label>

@@ -2705,6 +2705,7 @@ dependencies = [
  "clap",
  "crab_nat",
  "dirs",
+ "fips-core",
  "fips-endpoint",
  "hex",
  "igd-next",

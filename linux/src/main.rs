@@ -82,6 +82,7 @@ struct Drafts {
     listen_port: String,
     relay_input: String,
     magic_dns_suffix: String,
+    fips_host_inbound_tcp_ports: String,
     advertised_routes: String,
     exit_search: String,
     wireguard_exit_config: String,
@@ -94,6 +95,7 @@ impl Drafts {
         self.tunnel_ip = state.tunnel_ip.clone();
         self.listen_port = state.listen_port.to_string();
         self.magic_dns_suffix = state.magic_dns_suffix.clone();
+        self.fips_host_inbound_tcp_ports = state.fips_host_inbound_tcp_ports.clone();
         self.advertised_routes = state.advertised_routes.join(", ");
         self.wireguard_exit_config = state.wireguard_exit_config.clone();
         if let Some(network) = active_network(state) {
@@ -2393,6 +2395,7 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     setting_entry(app, &device, "Endpoint", "endpoint");
     setting_entry(app, &device, "Listen Port", "listen_port");
     setting_entry(app, &device, "DNS Suffix", "magic_dns_suffix");
+    setting_entry(app, &device, "FIPS TCP Ports", "fips_host_inbound_tcp_ports");
 
     let save = icon_text_button("Save", "");
     save.add_css_class("suggested-action");
@@ -2632,6 +2635,14 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
         NativeAppAction::UpdateSettings {
             patch: SettingsPatch {
                 autoconnect: Some(enabled),
+                ..SettingsPatch::default()
+            },
+        }
+    });
+    switch_row(app, &system, "FIPS Hosts", state.fips_host_tunnel_enabled, |enabled| {
+        NativeAppAction::UpdateSettings {
+            patch: SettingsPatch {
+                fips_host_tunnel_enabled: Some(enabled),
                 ..SettingsPatch::default()
             },
         }
@@ -2954,6 +2965,7 @@ fn setting_entry(app: &AppRef, parent: &gtk::Box, title: &str, key: &'static str
             "tunnel_ip" => model.drafts.tunnel_ip.clone(),
             "listen_port" => model.drafts.listen_port.clone(),
             "magic_dns_suffix" => model.drafts.magic_dns_suffix.clone(),
+            "fips_host_inbound_tcp_ports" => model.drafts.fips_host_inbound_tcp_ports.clone(),
             _ => String::new(),
         }
     };
@@ -2969,6 +2981,7 @@ fn setting_entry(app: &AppRef, parent: &gtk::Box, title: &str, key: &'static str
                 "tunnel_ip" => model.drafts.tunnel_ip = value,
                 "listen_port" => model.drafts.listen_port = value,
                 "magic_dns_suffix" => model.drafts.magic_dns_suffix = value,
+                "fips_host_inbound_tcp_ports" => model.drafts.fips_host_inbound_tcp_ports = value,
                 _ => {}
             }
         });
@@ -3030,6 +3043,7 @@ fn save_device_settings(app: &AppRef) {
                 tunnel_ip: Some(drafts.tunnel_ip),
                 listen_port,
                 magic_dns_suffix: Some(drafts.magic_dns_suffix),
+                fips_host_inbound_tcp_ports: Some(drafts.fips_host_inbound_tcp_ports),
                 ..SettingsPatch::default()
             },
         },

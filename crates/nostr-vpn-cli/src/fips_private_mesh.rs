@@ -98,6 +98,8 @@ use tokio::time::{Duration, sleep};
 #[cfg(target_os = "windows")]
 use wintun::{Adapter, MAX_RING_CAPACITY, Session};
 
+use crate::fips_host_tunnel::{FIPS_HOST_ROUTE_TARGET, FipsHostTunnelConfig};
+
 pub(crate) struct FipsPrivateMeshRuntime {
     endpoint: FipsEndpoint,
     mesh: RwLock<FipsMeshRuntime>,
@@ -1456,6 +1458,7 @@ pub(crate) struct FipsPrivateTunnelConfig {
     pub(crate) peers: Vec<FipsMeshPeerConfig>,
     pub(crate) endpoint_peers: Vec<FipsEndpointPeerTransportConfig>,
     pub(crate) route_targets: Vec<String>,
+    pub(crate) fips_host: Option<FipsHostTunnelConfig>,
     pub(crate) local_advertised_routes: Vec<String>,
     pub(crate) wireguard_exit: WireGuardExitConfig,
     pub(crate) exit_node_leak_protection: bool,
@@ -1563,6 +1566,7 @@ impl FipsPrivateTunnelConfig {
             fips_endpoint_peers_from_mesh(&peers, operator_static, recent_peer_endpoints);
         route_targets.sort();
         route_targets.dedup();
+        let fips_host = FipsHostTunnelConfig::from_app(app)?;
 
         Ok(Self {
             identity_nsec: app.nostr.secret_key.clone(),
@@ -1581,6 +1585,7 @@ impl FipsPrivateTunnelConfig {
             peers,
             endpoint_peers,
             route_targets,
+            fips_host,
             local_advertised_routes: crate::runtime_effective_advertised_routes(app),
             wireguard_exit: app.wireguard_exit.clone(),
             exit_node_leak_protection: app.exit_node_leak_protection,
@@ -1596,6 +1601,26 @@ impl FipsPrivateTunnelConfig {
         routes.sort();
         routes.dedup();
         routes
+    }
+
+    fn interface_addresses(&self) -> Vec<String> {
+        let mut addresses = vec![self.local_address.clone()];
+        if let Some(fips_host) = self.fips_host.as_ref() {
+            addresses.push(fips_host.interface_address());
+        }
+        addresses.sort();
+        addresses.dedup();
+        addresses
+    }
+
+    fn interface_route_targets(&self) -> Vec<String> {
+        let mut targets = self.route_targets.clone();
+        if self.fips_host.is_some() {
+            targets.push(FIPS_HOST_ROUTE_TARGET.to_string());
+        }
+        targets.sort();
+        targets.dedup();
+        targets
     }
 }
 
@@ -1632,9 +1657,13 @@ pub(crate) struct FipsPrivateTunnelRuntime {
     iface: String,
     mesh: Arc<FipsPrivateMeshRuntime>,
     config: FipsPrivateTunnelConfig,
+    tun_fd: Arc<AsyncFd<BorrowedTunFd>>,
+    fips_host_io: Arc<RwLock<Option<Arc<crate::fips_host_tunnel::FipsHostPacketIo>>>>,
+    fips_host: Option<crate::fips_host_tunnel::FipsHostTunnelRuntime>,
     tun_read_task: JoinHandle<()>,
     mesh_send_task: JoinHandle<()>,
     mesh_recv_task: JoinHandle<()>,
+    fips_host_recv_task: Option<JoinHandle<()>>,
     event_rx: mpsc::Receiver<FipsPrivateMeshEvent>,
     #[cfg(target_os = "linux")]
     endpoint_bypass_routes: Vec<String>,
@@ -1705,18 +1734,20 @@ impl FipsPrivateTunnelRuntime {
 
         let (packet_tx, mut packet_rx) = mpsc::channel::<TunPipelinePacket>(1024);
         let (event_tx, event_rx) = mpsc::channel::<FipsPrivateMeshEvent>(1024);
+        let fips_host_io = Arc::new(RwLock::new(None));
         let tun_read_task = spawn_tun_read_task(Arc::clone(&tun), Arc::clone(&tun_fd), packet_tx);
         let mesh_send_task = {
             let mesh = Arc::clone(&mesh);
+            let fips_host_io = Arc::clone(&fips_host_io);
             tokio::spawn(async move {
                 while let Some(packet) = packet_rx.recv().await {
-                    send_mesh_packet_or_log(&mesh, packet).await;
+                    send_tun_packet_or_log(&mesh, &fips_host_io, packet).await;
 
                     let mut drained = 1;
                     while drained < FIPS_MESH_SEND_BURST {
                         match packet_rx.try_recv() {
                             Ok(packet) => {
-                                send_mesh_packet_or_log(&mesh, packet).await;
+                                send_tun_packet_or_log(&mesh, &fips_host_io, packet).await;
                                 drained += 1;
                             }
                             Err(mpsc::error::TryRecvError::Empty) => break,
@@ -1730,15 +1761,19 @@ impl FipsPrivateTunnelRuntime {
                 }
             })
         };
-        let mesh_recv_task = spawn_mesh_recv_task(Arc::clone(&mesh), tun_fd, event_tx);
+        let mesh_recv_task = spawn_mesh_recv_task(Arc::clone(&mesh), Arc::clone(&tun_fd), event_tx);
 
         let mut runtime = Self {
             iface,
             mesh,
             config: config.clone(),
+            tun_fd,
+            fips_host_io,
+            fips_host: None,
             tun_read_task,
             mesh_send_task,
             mesh_recv_task,
+            fips_host_recv_task: None,
             event_rx,
             #[cfg(target_os = "linux")]
             endpoint_bypass_routes: Vec::new(),
@@ -1752,6 +1787,9 @@ impl FipsPrivateTunnelRuntime {
             wg_upstream: None,
         };
         runtime.apply_interface_config(&config).await?;
+        runtime
+            .reconcile_fips_host_runtime(config.fips_host.clone())
+            .await?;
         Ok(runtime)
     }
 
@@ -1829,6 +1867,8 @@ impl FipsPrivateTunnelRuntime {
             self.mesh.update_relays(&config.nostr_relays).await?;
         }
         self.apply_interface_config(&config).await?;
+        self.reconcile_fips_host_runtime(config.fips_host.clone())
+            .await?;
         self.config = config;
         Ok(())
     }
@@ -1918,9 +1958,14 @@ impl FipsPrivateTunnelRuntime {
         if let Some(handle) = runtime.wg_upstream.take() {
             handle.cleanup().await;
         }
+        runtime.stop_fips_host_runtime().await;
         runtime.tun_read_task.abort();
         runtime.mesh_send_task.abort();
         runtime.mesh_recv_task.abort();
+        if let Some(task) = runtime.fips_host_recv_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
         let _ = runtime.tun_read_task.await;
         let _ = runtime.mesh_send_task.await;
         let _ = runtime.mesh_recv_task.await;
@@ -1943,10 +1988,10 @@ impl FipsPrivateTunnelRuntime {
             // each peer's tunnel IP, so even when we swap the default
             // route to the WG tun below, mesh traffic still wins on
             // longest-prefix-match and stays inside the FIPS tunnel.
-            crate::apply_local_interface_network_with_mtu(
+            crate::apply_local_interface_network_with_mtu_and_addresses(
                 &self.iface,
-                &config.local_address,
-                &config.route_targets,
+                &config.interface_addresses(),
+                &config.interface_route_targets(),
                 config.mesh_mtu.tunnel,
             )
             .with_context(|| format!("failed to configure FIPS tunnel interface {}", self.iface))?;
@@ -1954,6 +1999,54 @@ impl FipsPrivateTunnelRuntime {
                 .await;
         }
         Ok(())
+    }
+
+    async fn reconcile_fips_host_runtime(
+        &mut self,
+        config: Option<FipsHostTunnelConfig>,
+    ) -> Result<()> {
+        let needs_restart = match (&self.fips_host, &config) {
+            (Some(runtime), Some(config)) => runtime.requires_restart(config),
+            (Some(_), None) => true,
+            (None, Some(_)) => true,
+            (None, None) => false,
+        };
+        if needs_restart {
+            self.stop_fips_host_runtime().await;
+        }
+
+        if let Some(config) = config
+            && self.fips_host.is_none()
+        {
+            let runtime =
+                crate::fips_host_tunnel::FipsHostTunnelRuntime::start(config, &self.iface).await?;
+            let packet_io = runtime.packet_io();
+            if let Ok(mut guard) = self.fips_host_io.write() {
+                *guard = Some(Arc::clone(&packet_io));
+            }
+            self.fips_host_recv_task = Some(spawn_fips_host_recv_task(
+                packet_io,
+                Arc::clone(&self.tun_fd),
+            ));
+            eprintln!("fips-host: .fips IPv6 resolver active on {}", self.iface);
+            self.fips_host = Some(runtime);
+        }
+        Ok(())
+    }
+
+    async fn stop_fips_host_runtime(&mut self) {
+        if let Ok(mut guard) = self.fips_host_io.write() {
+            *guard = None;
+        }
+        if let Some(task) = self.fips_host_recv_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        if let Some(runtime) = self.fips_host.take()
+            && let Err(error) = runtime.stop().await
+        {
+            eprintln!("fips-host: failed to stop .fips runtime: {error}");
+        }
     }
 
     /// Bring the WG upstream tunnel up / down to match `wireguard_exit`.
@@ -2077,10 +2170,16 @@ impl FipsPrivateTunnelRuntime {
         };
         self.reconcile_linux_endpoint_bypass_routes(&endpoint_bypass_specs);
 
-        crate::apply_local_interface_network_with_mtu(
+        let mut interface_route_targets = route_targets.clone();
+        if config.fips_host.is_some() {
+            interface_route_targets.push(FIPS_HOST_ROUTE_TARGET.to_string());
+        }
+        interface_route_targets.sort();
+        interface_route_targets.dedup();
+        crate::apply_local_interface_network_with_mtu_and_addresses(
             &self.iface,
-            &config.local_address,
-            &route_targets,
+            &config.interface_addresses(),
+            &interface_route_targets,
             config.mesh_mtu.tunnel,
         )
         .with_context(|| format!("failed to configure FIPS tunnel interface {}", self.iface))?;
@@ -2704,6 +2803,32 @@ fn spawn_tun_read_task(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn send_tun_packet_or_log(
+    mesh: &FipsPrivateMeshRuntime,
+    fips_host_io: &Arc<RwLock<Option<Arc<crate::fips_host_tunnel::FipsHostPacketIo>>>>,
+    packet: TunPipelinePacket,
+) {
+    if crate::fips_host_tunnel::packet_destination_is_fips(&packet.bytes) {
+        let host = fips_host_io
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(Arc::clone));
+        if let Some(host) = host {
+            crate::pipeline_profile::record_since(
+                crate::pipeline_profile::Stage::TunToMeshQueueWait,
+                packet.queued_at,
+            );
+            if let Err(error) = host.send_ip_packet(packet.bytes).await {
+                eprintln!("fips-host: failed to send .fips packet: {error}");
+            }
+            return;
+        }
+    }
+
+    send_mesh_packet_or_log(mesh, packet).await;
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn send_mesh_packet_or_log(mesh: &FipsPrivateMeshRuntime, packet: TunPipelinePacket) {
     crate::pipeline_profile::record_since(
         crate::pipeline_profile::Stage::TunToMeshQueueWait,
@@ -2713,6 +2838,18 @@ async fn send_mesh_packet_or_log(mesh: &FipsPrivateMeshRuntime, packet: TunPipel
     if let Err(error) = mesh.send_tunnel_packet_owned(packet.bytes).await {
         eprintln!("fips: failed to send tunnel packet: {error}");
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn spawn_fips_host_recv_task(
+    packet_io: Arc<crate::fips_host_tunnel::FipsHostPacketIo>,
+    tun_fd: Arc<AsyncFd<BorrowedTunFd>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(delivered) = packet_io.recv_ip_packet().await {
+            write_packet_to_tun(&tun_fd, &delivered.packet).await;
+        }
+    })
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -2,6 +2,8 @@ mod config_bootstrap;
 mod daemon_runtime;
 mod diagnostics;
 #[cfg(feature = "embedded-fips")]
+mod fips_host_tunnel;
+#[cfg(feature = "embedded-fips")]
 mod fips_private_mesh;
 #[cfg(any(target_os = "macos", test))]
 mod macos_network;
@@ -588,6 +590,10 @@ struct SetArgs {
     join_requests_enabled: Option<bool>,
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     fips_advertise_endpoint: Option<bool>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    fips_host_tunnel_enabled: Option<bool>,
+    #[arg(long)]
+    fips_host_inbound_tcp_ports: Option<String>,
     #[arg(long = "fips-peer-endpoint")]
     fips_peer_endpoints: Vec<String>,
     #[arg(long)]
@@ -903,6 +909,8 @@ async fn run_command(command: Command) -> Result<()> {
                         "advertise_exit_node": app.node.advertise_exit_node,
                         "advertised_routes": app.node.advertised_routes,
                         "effective_advertised_routes": runtime_effective_advertised_routes(&app),
+                        "fips_host_tunnel_enabled": app.fips_host_tunnel_enabled,
+                        "fips_host_inbound_tcp_ports": app.fips_host_inbound_tcp_ports,
                         "wireguard_exit": wireguard_exit_status_json(&app),
                         "daemon": daemon_status_json_value(&daemon),
                         "expected_peer_count": expected_peers,
@@ -937,6 +945,17 @@ async fn run_command(command: Command) -> Result<()> {
                     app.exit_node_leak_protection
                 );
                 println!("advertise_exit_node: {}", app.node.advertise_exit_node);
+                println!("fips_host_tunnel_enabled: {}", app.fips_host_tunnel_enabled);
+                if !app.fips_host_inbound_tcp_ports.is_empty() {
+                    println!(
+                        "fips_host_inbound_tcp_ports: {}",
+                        app.fips_host_inbound_tcp_ports
+                            .iter()
+                            .map(u16::to_string)
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    );
+                }
                 println!(
                     "wireguard_exit: {}",
                     if app.wireguard_exit.enabled {
@@ -1100,6 +1119,12 @@ async fn run_command(command: Command) -> Result<()> {
             }
             if let Some(value) = args.fips_advertise_endpoint {
                 app.fips_advertise_endpoint = value;
+            }
+            if let Some(value) = args.fips_host_tunnel_enabled {
+                app.fips_host_tunnel_enabled = value;
+            }
+            if let Some(value) = args.fips_host_inbound_tcp_ports {
+                app.fips_host_inbound_tcp_ports = parse_tcp_ports_arg(&value)?;
             }
             if !args.fips_peer_endpoints.is_empty() {
                 app.fips_peer_endpoints = parse_fips_peer_endpoint_args(&args.fips_peer_endpoints)?;
@@ -2431,8 +2456,21 @@ fn daemon_vpn_active(vpn_enabled: bool, expected_peers: usize) -> bool {
     vpn_enabled && expected_peers > 0
 }
 
+fn fips_host_runtime_active(app: &AppConfig, vpn_enabled: bool) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        vpn_enabled && app.fips_host_tunnel_enabled
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (app, vpn_enabled);
+        false
+    }
+}
+
 fn fips_private_runtime_active(app: &AppConfig, vpn_enabled: bool, expected_peers: usize) -> bool {
     daemon_vpn_active(vpn_enabled, expected_peers)
+        || fips_host_runtime_active(app, vpn_enabled)
         || app.join_requests_enabled()
         || app
             .active_network()
@@ -3877,6 +3915,32 @@ fn parse_csv_arg(value: &str) -> Vec<String> {
     values.sort();
     values.dedup();
     values
+}
+
+fn parse_tcp_ports_arg(value: &str) -> Result<Vec<u16>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut ports = Vec::new();
+    for raw in value.split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let port = raw
+            .parse::<u16>()
+            .with_context(|| format!("invalid TCP port '{raw}'"))?;
+        if port == 0 {
+            return Err(anyhow!("invalid TCP port '{raw}'"));
+        }
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+    ports.sort_unstable();
+    Ok(ports)
 }
 
 fn parse_fips_peer_endpoint_args(values: &[String]) -> Result<HashMap<String, Vec<String>>> {

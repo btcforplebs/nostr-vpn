@@ -667,6 +667,7 @@
                   <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                   </Grid.RowDefinitions>
                   <TextBlock Text="Name" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" />
                   <TextBox Grid.Column="1" Text="{Binding NodeName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,8" />
@@ -676,9 +677,12 @@
                   <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Endpoint, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0" />
                   <TextBlock Grid.Row="1" Grid.Column="2" Text="Port" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" />
                   <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding ListenPort, UpdateSourceTrigger=PropertyChanged}" />
+                  <TextBlock Grid.Row="2" Text="FIPS TCP Ports" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" />
+                  <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding FipsHostInboundTcpPorts, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,12,0" />
                 </Grid>
                 <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                   <CheckBox Content="Autoconnect" IsChecked="{Binding State.Autoconnect, Mode=OneWay}" Click="Autoconnect_Click" />
+                  <CheckBox Content="FIPS Hosts" IsChecked="{Binding State.FipsHostTunnelEnabled, Mode=OneWay}" Click="FipsHostTunnel_Click" />
                   <CheckBox Content="Launch on startup" IsChecked="{Binding State.LaunchOnStartup, Mode=OneWay}" Click="LaunchOnStartup_Click" />
                   <CheckBox Content="Tray on close" IsChecked="{Binding State.CloseToTrayOnClose, Mode=OneWay}" Click="CloseToTray_Click" />
                 </StackPanel>
