@@ -1,7 +1,6 @@
 use crate::*;
 #[cfg(feature = "embedded-fips")]
 use nostr_sdk::prelude::{Keys, ToBech32};
-use std::collections::HashSet;
 #[cfg(feature = "embedded-fips")]
 use std::net::Ipv4Addr;
 use std::path::Path;
@@ -30,14 +29,13 @@ fn daemon_vpn_idle_status_distinguishes_waiting_from_paused() {
 
 #[cfg(feature = "embedded-fips")]
 #[test]
-fn fips_roster_publish_keeps_disconnected_recipients_pending() {
-    let connected = HashSet::from(["alice".to_string()]);
+fn fips_roster_publish_attempts_disconnected_recipients() {
     let recipients = vec!["alice".to_string(), "bob".to_string()];
 
-    let (ready, pending) = split_ready_fips_roster_recipients(recipients, &connected);
+    let (ready, pending) = split_ready_fips_roster_recipients(recipients.clone());
 
-    assert_eq!(ready, vec!["alice".to_string()]);
-    assert_eq!(pending, HashSet::from(["bob".to_string()]));
+    assert_eq!(ready, recipients);
+    assert!(pending.is_empty());
 }
 
 #[cfg(feature = "embedded-fips")]

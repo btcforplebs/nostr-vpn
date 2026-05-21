@@ -3461,7 +3461,7 @@ mod tests {
         FipsPrivateTunnelConfig, control_frame_destination_npub, control_frame_source_pubkey,
         drain_event_batch, fips_endpoint_config, fips_endpoint_peers_from_mesh,
         fips_lan_discovery_scope, linux_cap_eff_has_net_admin, linux_tun_setup_error,
-        parse_fips_nostr_discovery_policy, strip_cidr,
+        parse_fips_nostr_discovery_policy, strip_cidr, unix_timestamp,
     };
     use fips_endpoint::{
         Config, ConnectPolicy, NostrDiscoveryPolicy, PeerConfig as FipsPeerConfig, RoutingMode,
@@ -3950,6 +3950,24 @@ mod tests {
         config
     }
 
+    fn direct_udp_endpoint_config_many(local_port: u16, peers: &[(&str, u16, bool)]) -> Config {
+        let mut config = Config::new();
+        config.node.routing.mode = RoutingMode::ReplyLearned;
+        config.transports.udp = TransportInstances::Single(UdpConfig {
+            bind_addr: Some(format!("127.0.0.1:{local_port}")),
+            accept_connections: Some(true),
+            ..UdpConfig::default()
+        });
+        for (peer_npub, peer_port, auto_connect) in peers {
+            let mut peer = FipsPeerConfig::new(*peer_npub, "udp", format!("127.0.0.1:{peer_port}"));
+            if !*auto_connect {
+                peer.connect_policy = ConnectPolicy::Manual;
+            }
+            config.peers.push(peer);
+        }
+        config
+    }
+
     async fn send_with_retry(runtime: &FipsPrivateMeshRuntime, packet: &[u8]) {
         let mut last_error = None;
         for _ in 0..50 {
@@ -4065,6 +4083,141 @@ mod tests {
 
         alice_runtime.shutdown().await.expect("shutdown alice");
         bob_runtime.shutdown().await.expect("shutdown bob");
+    }
+
+    #[tokio::test]
+    async fn relayed_control_ping_marks_peer_present_without_direct_link() {
+        let alice_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let carol_keys = Keys::generate();
+        let alice_nsec = alice_keys.secret_key().to_bech32().expect("alice nsec");
+        let bob_nsec = bob_keys.secret_key().to_bech32().expect("bob nsec");
+        let carol_nsec = carol_keys.secret_key().to_bech32().expect("carol nsec");
+        let alice_pubkey = alice_keys.public_key().to_hex();
+        let bob_pubkey = bob_keys.public_key().to_hex();
+        let carol_pubkey = carol_keys.public_key().to_hex();
+        let alice_npub = alice_keys.public_key().to_bech32().expect("alice npub");
+        let bob_npub = bob_keys.public_key().to_bech32().expect("bob npub");
+        let carol_npub = carol_keys.public_key().to_bech32().expect("carol npub");
+        let alice_port = available_udp_port();
+        let bob_port = available_udp_port();
+        let carol_port = available_udp_port();
+        let alice_ip = Ipv4Addr::new(10, 44, 21, 1);
+        let bob_ip = Ipv4Addr::new(10, 44, 21, 2);
+        let carol_ip = Ipv4Addr::new(10, 44, 21, 3);
+        let scope = "nostr-vpn:relayed-control-presence";
+
+        let alice_runtime = FipsPrivateMeshRuntime::bind_with_config(
+            alice_nsec,
+            scope,
+            vec![
+                FipsMeshPeerConfig {
+                    participant_pubkey: bob_pubkey.clone(),
+                    endpoint_npub: bob_npub.clone(),
+                    allowed_ips: vec![format!("{bob_ip}/32")],
+                },
+                FipsMeshPeerConfig {
+                    participant_pubkey: carol_pubkey.clone(),
+                    endpoint_npub: carol_npub.clone(),
+                    allowed_ips: vec![format!("{carol_ip}/32")],
+                },
+            ],
+            direct_udp_endpoint_config_many(alice_port, &[(&bob_npub, bob_port, true)]),
+            vec![format!("{alice_ip}/32")],
+        )
+        .await
+        .expect("alice endpoint should bind");
+        let bob_runtime = FipsPrivateMeshRuntime::bind_with_config(
+            bob_nsec,
+            scope,
+            vec![
+                FipsMeshPeerConfig {
+                    participant_pubkey: alice_pubkey.clone(),
+                    endpoint_npub: alice_npub.clone(),
+                    allowed_ips: vec![format!("{alice_ip}/32")],
+                },
+                FipsMeshPeerConfig {
+                    participant_pubkey: carol_pubkey.clone(),
+                    endpoint_npub: carol_npub.clone(),
+                    allowed_ips: vec![format!("{carol_ip}/32")],
+                },
+            ],
+            direct_udp_endpoint_config_many(
+                bob_port,
+                &[
+                    (&alice_npub, alice_port, true),
+                    (&carol_npub, carol_port, true),
+                ],
+            ),
+            vec![format!("{bob_ip}/32")],
+        )
+        .await
+        .expect("bob endpoint should bind");
+        let carol_runtime = FipsPrivateMeshRuntime::bind_with_config(
+            carol_nsec,
+            scope,
+            vec![
+                FipsMeshPeerConfig {
+                    participant_pubkey: alice_pubkey.clone(),
+                    endpoint_npub: alice_npub.clone(),
+                    allowed_ips: vec![format!("{alice_ip}/32")],
+                },
+                FipsMeshPeerConfig {
+                    participant_pubkey: bob_pubkey.clone(),
+                    endpoint_npub: bob_npub.clone(),
+                    allowed_ips: vec![format!("{bob_ip}/32")],
+                },
+            ],
+            direct_udp_endpoint_config_many(carol_port, &[(&bob_npub, bob_port, true)]),
+            vec![format!("{carol_ip}/32")],
+        )
+        .await
+        .expect("carol endpoint should bind");
+
+        wait_for_fips_peer(&alice_runtime, &bob_npub).await;
+        wait_for_fips_peer(&bob_runtime, &alice_npub).await;
+        wait_for_fips_peer(&bob_runtime, &carol_npub).await;
+        wait_for_fips_peer(&carol_runtime, &bob_npub).await;
+
+        let frame = FipsControlFrame::Ping {
+            network_id: "network".to_string(),
+            sent_at: unix_timestamp(),
+        };
+        let mut alice_saw_carol = false;
+        for _ in 0..80 {
+            let _ = alice_runtime
+                .send_control_frame(&carol_pubkey, &frame)
+                .await;
+
+            let _ =
+                tokio::time::timeout(Duration::from_millis(50), carol_runtime.recv_mesh_event())
+                    .await;
+
+            if let Ok(Ok(Some(FipsPrivateMeshEvent::Presence {
+                participant_pubkey, ..
+            }))) =
+                tokio::time::timeout(Duration::from_millis(50), alice_runtime.recv_mesh_event())
+                    .await
+            {
+                if participant_pubkey == carol_pubkey {
+                    alice_saw_carol = true;
+                    break;
+                }
+            }
+        }
+
+        assert!(alice_saw_carol, "Alice never received Carol's relayed Pong");
+        let carol_status = alice_runtime
+            .peer_statuses()
+            .into_iter()
+            .find(|status| status.pubkey == carol_pubkey)
+            .expect("Carol status");
+        assert!(carol_status.connected);
+        assert_eq!(carol_status.transport_addr, None);
+
+        alice_runtime.shutdown().await.expect("shutdown alice");
+        bob_runtime.shutdown().await.expect("shutdown bob");
+        carol_runtime.shutdown().await.expect("shutdown carol");
     }
 
     #[test]

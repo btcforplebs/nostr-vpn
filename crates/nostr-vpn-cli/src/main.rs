@@ -3045,8 +3045,7 @@ async fn publish_fips_active_network_roster_to(
     recipients.sort();
     recipients.dedup();
 
-    let connected = connected_fips_peer_pubkeys(runtime);
-    let (ready_recipients, mut retry) = split_ready_fips_roster_recipients(recipients, &connected);
+    let (ready_recipients, mut retry) = split_ready_fips_roster_recipients(recipients);
     let mut sent = 0usize;
     for recipient in ready_recipients {
         match runtime
@@ -3065,32 +3064,11 @@ async fn publish_fips_active_network_roster_to(
 }
 
 #[cfg(feature = "embedded-fips")]
-fn connected_fips_peer_pubkeys(
-    runtime: &crate::fips_private_mesh::FipsPrivateTunnelRuntime,
-) -> HashSet<String> {
-    runtime
-        .peer_statuses()
-        .into_iter()
-        .filter(|peer| peer.connected)
-        .map(|peer| peer.pubkey)
-        .collect()
-}
-
-#[cfg(feature = "embedded-fips")]
-fn split_ready_fips_roster_recipients(
-    recipients: Vec<String>,
-    connected: &HashSet<String>,
-) -> (Vec<String>, HashSet<String>) {
-    let mut ready = Vec::new();
-    let mut pending = HashSet::new();
-    for recipient in recipients {
-        if connected.contains(&recipient) {
-            ready.push(recipient);
-        } else {
-            pending.insert(recipient);
-        }
-    }
-    (ready, pending)
+fn split_ready_fips_roster_recipients(recipients: Vec<String>) -> (Vec<String>, HashSet<String>) {
+    // Do not gate roster sends on nvpn presence. A stale-roster peer may drop
+    // Ping/Pong from newly added peers as unknown until this signed roster
+    // reaches it, while FIPS can still route/discover the control message.
+    (recipients, HashSet::new())
 }
 
 fn ipv4_is_local_only(ip: Ipv4Addr) -> bool {

@@ -281,7 +281,7 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
         Ok(false) => {}
         Err(error) => eprintln!("connect: failed to ensure macOS underlay default route: {error}"),
     }
-    let (app, network_id) =
+    let (mut app, mut network_id) =
         load_config_with_overrides(&config_path, args.network_id, args.participants)?;
     let configured_participants = app.participant_pubkeys_hex();
     if configured_participants.is_empty() {
@@ -297,7 +297,7 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
     }
 
     let own_pubkey = app.own_nostr_pubkey_hex().ok();
-    let expected_peers = expected_peer_count(&app);
+    let mut expected_peers = expected_peer_count(&app);
     let iface = args.iface.clone();
     let network_snapshot = capture_network_snapshot();
     let mut port_mapping_runtime = PortMappingRuntime::default();
@@ -324,11 +324,7 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
         println!("connect: FIPS private mesh on {}", runtime.iface());
         Some(runtime)
     };
-    // Foreground `nvpn connect` does not consume FIPS roster events nor the
-    // daemon control channel, so the MagicDNS records can't change during
-    // its lifetime — the underscore prefix keeps the responder alive until
-    // session shutdown without triggering an unused-binding warning.
-    let _magic_dns_runtime = ConnectMagicDnsRuntime::start(&app);
+    let magic_dns_runtime = ConnectMagicDnsRuntime::start(&app);
 
     println!(
         "connect: network {network_id} using FIPS private mesh; waiting for {expected_peers} configured peer(s)"
@@ -341,6 +337,8 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
     tunnel_heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     #[cfg(feature = "embedded-fips")]
     let mut pending_fips_roster_recipients: HashSet<String> = HashSet::new();
+    #[cfg(feature = "embedded-fips")]
+    let mut connect_status = String::new();
 
     let mut last_mesh_count = 0_usize;
     loop {
@@ -364,7 +362,32 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
                         &mut pending_fips_roster_recipients,
                     )
                     .await;
-                    let _ = runtime.drain_events();
+                    match drain_fips_mesh_events(
+                        runtime,
+                        &mut app,
+                        &config_path,
+                        &mut connect_status,
+                    ) {
+                        Ok(true) => {
+                            network_id = app.effective_network_id();
+                            expected_peers = expected_peer_count(&app);
+                            if let Err(error) = refresh_fips_tunnel_config(
+                                runtime,
+                                &app,
+                                &network_id,
+                                own_pubkey.as_deref(),
+                            )
+                            .await
+                            {
+                                eprintln!("connect: roster applied, but FIPS reload failed: {error}");
+                            }
+                            if let Some(rt) = magic_dns_runtime.as_ref() {
+                                rt.refresh_records(&app);
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(error) => eprintln!("connect: FIPS event handling failed: {error}"),
+                    }
                     if let Err(error) = runtime.refresh_peer_dependent_routes().await {
                         eprintln!("fips: peer route refresh failed: {error}");
                     }
