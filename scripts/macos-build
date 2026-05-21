@@ -11,6 +11,7 @@ BUILD_DIR="$MACOS_DIR/.build"
 DIST_DIR="$ROOT/dist"
 MACOS_DIST_DIR="$DIST_DIR/macos"
 PROFILE="${NVPN_MACOS_RUST_PROFILE:-debug}"
+HOST_TARGET="${NVPN_MACOS_HOST_TARGET:-$(rustc -vV | awk '/host:/ {print $2}')}"
 TARGETS="${NVPN_MACOS_RUST_TARGETS:-$(rustc -vV | awk '/host:/ {print $2}')}"
 XCODE_CONFIGURATION="${NVPN_MACOS_XCODE_CONFIGURATION:-Debug}"
 PROJECT="$MACOS_DIR/NostrVpnMac.xcodeproj"
@@ -97,16 +98,17 @@ EOF
 }
 
 target_root() {
-  local dir="${CARGO_TARGET_DIR:-$ROOT/target}"
-  if [[ "$dir" = /* ]]; then
-    printf '%s\n' "$dir"
-  else
-    printf '%s/%s\n' "$ROOT" "$dir"
+  if [[ -z "${CARGO_TARGET_ROOT:-}" ]]; then
+    CARGO_TARGET_ROOT="$(
+      cargo metadata --no-deps --format-version 1 \
+        | node -e 'let input = ""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));'
+    )"
   fi
+  printf '%s\n' "$CARGO_TARGET_ROOT"
 }
 
 host_dynamic_lib() {
-  printf '%s/%s/libnostr_vpn_app_core.dylib\n' "$(target_root)" "$PROFILE"
+  printf '%s/%s/%s/libnostr_vpn_app_core.dylib\n' "$(target_root)" "$HOST_TARGET" "$PROFILE"
 }
 
 target_static_lib() {
@@ -115,22 +117,39 @@ target_static_lib() {
 }
 
 run_macos_gen_swift() {
+  local generated_bindings_dir
+
   if [[ "$PROFILE" == "release" ]]; then
-    cargo build -p nostr-vpn-app-core --release
+    cargo build -p nostr-vpn-app-core --release --target "$HOST_TARGET"
   else
-    cargo build -p nostr-vpn-app-core
+    cargo build -p nostr-vpn-app-core --target "$HOST_TARGET"
   fi
-  rm -rf "$BINDINGS_DIR"
-  mkdir -p "$BINDINGS_DIR"
-  cargo run -q --manifest-path "$CORE_DIR/uniffi-bindgen/Cargo.toml" -- generate \
-    --library "$(host_dynamic_lib)" \
-    --language swift \
-    --out-dir "$BINDINGS_DIR" \
-    --config "$CORE_DIR/uniffi.toml"
+
+  mkdir -p "$BUILD_DIR"
+  generated_bindings_dir="$(mktemp -d "$BUILD_DIR/bindings.XXXXXX")"
+  trap 'rm -rf "$generated_bindings_dir"' RETURN
+
+  if [[ "$PROFILE" == "release" ]]; then
+    cargo run -q --manifest-path "$CORE_DIR/uniffi-bindgen/Cargo.toml" --release --target "$HOST_TARGET" -- generate \
+      --library "$(host_dynamic_lib)" \
+      --language swift \
+      --out-dir "$generated_bindings_dir" \
+      --config "$CORE_DIR/uniffi.toml"
+  else
+    cargo run -q --manifest-path "$CORE_DIR/uniffi-bindgen/Cargo.toml" --target "$HOST_TARGET" -- generate \
+      --library "$(host_dynamic_lib)" \
+      --language swift \
+      --out-dir "$generated_bindings_dir" \
+      --config "$CORE_DIR/uniffi.toml"
+  fi
 
   while IFS= read -r -d '' generated_file; do
     perl -0777 -pi -e 's/[ \t]+$//mg; s/\n*\z/\n/' "$generated_file"
-  done < <(find "$BINDINGS_DIR" -type f \( -name '*.swift' -o -name '*.h' -o -name '*.modulemap' \) -print0)
+  done < <(find "$generated_bindings_dir" -type f \( -name '*.swift' -o -name '*.h' -o -name '*.modulemap' \) -print0)
+
+  rm -rf "$BINDINGS_DIR"
+  mv "$generated_bindings_dir" "$BINDINGS_DIR"
+  trap - RETURN
 }
 
 run_macos_rust() {
