@@ -410,6 +410,8 @@ struct RootView: View {
                 pageTitle("Exit Nodes", "arrow.triangle.branch")
                 if let shownNetwork {
                     routingSection(shownNetwork)
+                } else {
+                    wireGuardExitSettings
                 }
             }
         case .settings:

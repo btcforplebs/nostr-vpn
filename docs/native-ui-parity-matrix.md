@@ -109,7 +109,7 @@ Legend:
 | Endpoint/tunnel IP/listen port settings | `SystemPanel.svelte` | Settings patch + validation | Required | Required | Required | Required | Required | Mobile may constrain endpoint/listen port by OS VPN APIs. |
 | Launch on startup | Legacy autostart plugin | Native startup registration effect + config setting | Required | Required | Required | N/A | N/A | Android/iPhone use OS background/VPN behavior, not login startup. |
 | Close to tray/status item | `closeToTrayOnClose` | Config setting + native close behavior | Required | Required | Required | N/A | N/A | macOS menu bar item; Windows/Linux tray/status notifier. |
-| Desktop tray/status menu | `tray_runtime.rs` | Tray runtime projection and actions | Required | Required | Required | N/A | N/A | Menu: VPN status, toggle, this-device copy, network devices, exit nodes, settings, quit. |
+| Desktop tray/status menu | `tray_runtime.rs` | Tray runtime projection and actions | Required | Required | Required | N/A | N/A | Menu: VPN status, toggle, this-device copy, network devices, exit nodes, open, quit. Manual refresh is intentionally not user-facing. |
 | Tray left-click opens app | Legacy tray handler | Native shell action | Required | Required | Required | N/A | N/A | Keep menu/status item accessible. |
 | Autostart hidden launch | `--autostart`, hide to tray | Launch-mode detection | Required | Required | Required | N/A | N/A | Current code mainly handles macOS conflict/defer behavior; port intentionally. |
 | Single-instance handling | Legacy single-instance plugin | Native process/singleton coordination | Required | Required | Required | Mobile | Mobile | Mobile OS already single-instances app task but deep links must route to existing app. |
@@ -175,7 +175,7 @@ Status legend:
 | Background service panel | `ServiceActionPanel.svelte` | Ready | Native state queries `nvpn service status --json`; UI supports install/reinstall/enable/disable/uninstall, stale-version repair prompts, and settlement polling after service actions. | None. |
 | CLI install/uninstall | `install_cli`, `uninstall_cli` | Ready | Native UI shows CLI status and runs elevated install/reinstall/uninstall actions. | None. |
 | Launch on startup | Autostart plugin | Ready | Native UI persists the setting and writes/removes a per-user LaunchAgent with `--autostart`. | None. |
-| Close to tray/status item | Tray runtime | Ready | Native `MenuBarExtra` supports open, VPN toggle, exit toggle, copy this device, network devices, exit-node selection, refresh, and quit; close hides the main window when enabled. | None. |
+| Close to tray/status item | Tray runtime | Ready | Native menu bar item supports open, VPN toggle, exit toggle, copy this device, network devices, exit-node selection, and quit; close hides the main window when enabled. Manual refresh is intentionally not user-facing. | None. |
 | Autostart hidden launch | `--autostart` | Ready | LaunchAgent starts the app with `--autostart`, and the main window hides after startup unless a deep link is being handled. | None. |
 | Single-instance handling | Legacy singleton plugin | Ready | Native app holds a local lock and routes duplicate-process startup URLs into the existing instance through distributed notifications. | None. |
 | Debug automation deep links | `nvpn://debug/...` | Ready | Native handler supports `nvpn://debug/tick`, `request-join`, and `accept-join` with active-network fallbacks. | None. |
@@ -199,7 +199,7 @@ and Linux native shells.
 | Invite share/import | Ready | Renders invite QR through the shared Rust QR matrix, copies invite text, imports pasted invites, decodes QR image files, and shows LAN pairing rows. | Add live camera scanning if a native Windows camera API is selected. |
 | Exit Nodes | Ready | Direct route, exit-node candidate selection, exit-node offer toggle, and offer-exit toggle dispatch typed core actions. | Add search/filter polish like macOS. |
 | Settings/service/updater | Partial | Device settings, autoconnect/startup/tray toggles, service/CLI actions, diagnostics, and hashtree update check are present. | Add richer service settlement/repair UX and auto-update preferences. |
-| Tray/status area | Ready | Uses native `System.Windows.Forms.NotifyIcon` with open, VPN toggle, exit toggle, this-device copy, network devices, exit-node selection, refresh, and quit. | Add single-instance tray activation routing for already-running deep links. |
+| Tray/status area | Ready | Uses native `System.Windows.Forms.NotifyIcon` with open, VPN toggle, exit toggle, this-device copy, network devices, exit-node selection, and quit. | Add single-instance tray activation routing for already-running deep links. |
 | Deep links/startup | Partial | Registers `nvpn://` under HKCU, handles startup invite URLs, and writes HKCU Run startup entries. | Route deep links into an already-running instance. |
 | Build/run harness | Ready | `scripts/windows-build.ps1` builds Rust DLL/CLI plus WPF and `just run-windows` runs it on Windows. Verified in the Windows 11 Parallels VM with `dotnet build`, Rust build, and an app-window screenshot. | Add packaged installer/MSIX/NSIS target. |
 
@@ -243,23 +243,41 @@ This table tracks the GTK/libadwaita shell under `linux/` against the current
 macOS shell. Tauri remains the feature inventory above, but Linux should look and
 flow like the Swift app rather than the removed Svelte UI.
 
+### macOS/Linux Desktop Parity Snapshot
+
+| Feature area | macOS | Linux | Status / notes |
+| --- | --- | --- | --- |
+| Rust state/action boundary | UniFFI `FfiApp` state, refresh, typed actions | Direct Rust `FfiApp` state, refresh, typed actions | Matched. Keep future shell work behind the shared action/state contract. |
+| Header VPN control | Status text, optional status dot, compact switch | Status text, optional status dot, compact switch | Matched. Linux no longer exposes a toolbar refresh button or a second hero Off/On button. |
+| Devices and local identity | Device list/detail, status badges, npub copy, add-device sheet | Device list/detail, status badges, npub copy, add-device page | Feature matched; layout differs by toolkit. |
+| Invite/share flow | Invite QR, copy, reset, LAN broadcast, join requests, paste/import, live scan, file scan | Invite QR, copy, reset, LAN broadcast, join requests, paste/import, `zbarcam` live scan, file scan | Matched, with scanner implementation platform-specific. |
+| Manual network join | `Add manually` uses admin Device ID + normalized network ID | `Add manually` uses admin Device ID + normalized network ID | Matched. Linux exposes the shared `ManualAddNetwork` action. |
+| Exit-node routing | Direct, WireGuard upstream, peer exit candidates, offer-exit, leak protection | Direct, WireGuard upstream, peer exit candidates, offer-exit, leak protection | Matched. WireGuard config remains visible even before a network is active. |
+| WireGuard upstream config | Paste, import file, save, select as exit | Paste, import file, save, select as exit | Matched. |
+| Relays | Add, enable/disable, delete | Add, enable/disable, delete | Matched. |
+| Active network settings | Rename, edit/copy network ID, join-request toggle | Rename, edit/copy network ID, join-request toggle | Matched. |
+| Saved networks | Activate/delete plus active-network detail surface | Activate/delete inactive networks; active network detail surface | Mostly matched. Linux still lacks expanded inactive-network detail editing. |
+| Service/CLI/updater | CLI/service actions, update checks/install, auto-update prefs | CLI/service actions, update checks/download/open, auto-update prefs | Mostly matched. Linux package install policy remains manual/open-package. |
+| Diagnostics | Health, interfaces, IPs, gateway, mapping, paths | Health, interfaces, IPs, gateway, mapping, paths | Matched; Linux does not auto-open diagnostics on new health issues yet. |
+| Startup/tray/deep links | LaunchAgent, menu bar, single-instance URL routing | Desktop autostart, StatusNotifier tray, GApplication URL routing | Matched. |
+
 | Feature group | Linux status | Native Linux coverage | Remaining parity work |
 | --- | --- | --- | --- |
 | Typed Rust core boundary | Ready | `linux/src/main.rs` uses `FfiApp.state()`, `refresh()`, and typed `NativeAppAction` directly from Rust. | Keep additions typed and shared with macOS. |
-| Initial state and refresh | Ready | The GTK shell reads initial state synchronously and refreshes through `FfiApp.refresh()` on a two-second timer plus the toolbar refresh button. | Add a boot-ready automation hook if native e2e needs it. |
-| Main status hero | Ready | Matches the macOS hierarchy: active network title, admin badge, mesh/VPN/daemon/FIPS badges, identity copy, tunnel IP, exit indication, and connect/disconnect control. | Add richer service-repair prompt text if core exposes a shared helper. |
+| Initial state and refresh | Ready | The GTK shell reads initial state synchronously and refreshes through `FfiApp.refresh()` on a two-second timer. | Add a boot-ready automation hook if native e2e needs it. |
+| Main status hero | Ready | Matches the macOS hierarchy: active network title, admin badge, mesh/VPN/daemon/FIPS badges, identity copy, tunnel IP, and exit indication. The VPN toggle lives in the header like macOS. | Add richer service-repair prompt text if core exposes a shared helper. |
 | Device roster | Ready | Shows participant name, admin/exit badges, tunnel IP, npub copy, reachability, admin toggle, remove action, and a Manage Devices disclosure. | Add destructive confirmations if needed. |
 | Participant alias editing | Ready | Manage Devices includes per-participant alias save, admin toggle, and remove controls. | Add debounce if explicit save feels too heavy. |
 | Join requests | Ready | Inbound request rows show requester info, npub copy, and admin-gated accept action. | None. |
-| Invite share/import | Ready | Share page renders the core invite as a QR code, supports copy, paste/import, image QR import, optional `zbarcam` live QR scan, join request status, and LAN peer join. | Add share portal support only if desktop share-sheet behavior becomes important. |
+| Invite share/import | Ready | Share page renders the core invite as a QR code, supports copy, paste/import, image QR import, optional `zbarcam` live QR scan, manual network join, join request status, and LAN peer join. | Add share portal support only if desktop share-sheet behavior becomes important. |
 | LAN pairing | Ready | Start/stop pairing, countdown, nearby peer rows, and invite import are wired through app-core actions. | Mobile permission parity is out of scope for Linux. |
-| Exit Nodes | Ready | Direct route, searchable exit-node candidates, exit-node offer toggle, and offer-exit toggle mirror the macOS Exit Nodes page. | Add richer route helper text from core if added. |
+| Exit Nodes | Ready | Direct route, searchable exit-node candidates, WireGuard upstream config, exit-node offer toggle, and offer-exit toggle mirror the macOS Exit Nodes page. WireGuard settings are visible even before a network is active. | Add richer route helper text from core if added. |
 | Active network settings | Ready | Settings exposes active network name, editable/copyable network ID, and admin-gated join-request toggle. | Add blur/Enter commit polish. |
 | Saved networks | Ready | Saved Networks disclosure lists inactive networks with counts, activate action, and delete action. | Expand inactive profiles if Linux needs the full macOS saved-network detail surface. |
 | Device/system settings | Ready | Name, tunnel IP, endpoint, listen port, MagicDNS suffix, autoconnect, startup desktop-entry registration, and tray preferences dispatch typed settings patches. | None. |
 | CLI and service controls | Ready | Shows CLI/service status badges and install/reinstall/uninstall plus enable/disable service actions when supported; service actions show settlement progress and stale-version repair state. | Add a richer polkit prompt only if the CLI stops being launched through an already-elevated context. |
 | Diagnostics | Ready | Advanced diagnostics shows interface/IP/gateway/mapping metrics, identity/config/runtime fields, MagicDNS, and health issue rows. | Auto-open diagnostics on new health issues if users need parity with macOS. |
-| Tray/status menu | Ready | Native StatusNotifierItem + DBusMenu implementation exposes open, VPN toggle, exit toggle, this-device copy, network devices, exit-node selection, refresh, and quit; close-to-tray and autostart-hidden launch are wired. | Verify with installed desktop environments beyond the Docker Fluxbox harness. |
+| Tray/status menu | Ready | Native StatusNotifierItem + DBusMenu implementation exposes open, VPN toggle, exit toggle, this-device copy, network devices, exit-node selection, and quit; close-to-tray and autostart-hidden launch are wired. | Verify with installed desktop environments beyond the Docker Fluxbox harness. |
 | Deep links and single-instance | Ready | GApplication routes startup and already-running `nvpn://` URLs into the existing GTK app; the desktop entry registers `x-scheme-handler/nvpn`; invite and debug automation links dispatch typed core actions. | Add installed-package smoke coverage once Linux packaging tests exist. |
 | Updater | Ready | Linux checks the hashtree release manifest, shows current/update status, prefers Linux AppImage/deb assets, downloads with `curl`, marks AppImages executable, and opens the downloaded package with `xdg-open`. | Add automatic install only after Linux packaging policy is settled. |
 | Screenshot/dev harness | Ready | Docker Xvfb/Fluxbox dev environment runs the GTK app and supports window screenshots over VNC on `localhost:5902`. | Add automated screenshot fixture states. |

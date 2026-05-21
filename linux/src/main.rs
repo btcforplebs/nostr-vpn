@@ -73,6 +73,8 @@ struct Drafts {
     participant_alias: String,
     network_name: String,
     mesh_id: String,
+    manual_join_admin_id: String,
+    manual_join_network_id: String,
     new_network_name: String,
     node_name: String,
     endpoint: String,
@@ -348,10 +350,6 @@ fn build_ui(app: &adw::Application, runtime: &AppRuntime, present: bool) {
     title.set_halign(gtk::Align::Start);
     header.set_title_widget(Some(&title));
 
-    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
-    refresh_button.set_tooltip_text(Some("Refresh"));
-    header.pack_end(&refresh_button);
-
     let header_vpn_switch = gtk::Switch::new();
     header_vpn_switch.set_valign(gtk::Align::Center);
     header_vpn_switch.set_tooltip_text(Some("Toggle VPN"));
@@ -414,10 +412,6 @@ fn build_ui(app: &adw::Application, runtime: &AppRuntime, present: bool) {
     )));
     *runtime.model.borrow_mut() = Some(model.clone());
 
-    {
-        let model = model.clone();
-        refresh_button.connect_clicked(move |_| refresh_now(&model));
-    }
     {
         let model = model.clone();
         header_vpn_switch.connect_active_notify(move |sw| {
@@ -1000,7 +994,7 @@ fn build_sidebar(app: &AppRef, sidebar: &gtk::Box, state: &NativeAppState, page:
     for (target, title, icon) in [
         (Page::Devices, "Devices", ""),
         (Page::ExitNodes, "Exit Nodes", ""),
-        (Page::Settings, "Settings", "emblem-system-symbolic"),
+        (Page::Settings, "Settings", ""),
     ] {
         let button = nav_button(
             title,
@@ -1567,7 +1561,7 @@ fn device_detail_card(
     detail
 }
 
-fn build_network_hero(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
+fn build_network_hero(_app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     let hero = card();
     hero.add_css_class("nvpn-hero");
 
@@ -1584,6 +1578,7 @@ fn build_network_hero(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     } else {
         "nvpn-status-off"
     });
+    status.set_valign(gtk::Align::Center);
     top.append(&status);
 
     let text = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -1646,31 +1641,6 @@ fn build_network_hero(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     text.append(&badges);
     top.append(&text);
 
-    let connect = icon_text_button(
-        if state.vpn_enabled { "On" } else { "Off" },
-        if state.vpn_enabled {
-            "media-playback-stop-symbolic"
-        } else {
-            "media-playback-start-symbolic"
-        },
-    );
-    connect.add_css_class("suggested-action");
-    connect.set_sensitive(state.vpn_control_supported && active_network(state).is_some());
-    {
-        let app = app.clone();
-        let enabled = state.vpn_enabled;
-        connect.connect_clicked(move |_| {
-            dispatch(
-                &app,
-                if enabled {
-                    NativeAppAction::DisconnectVpn
-                } else {
-                    NativeAppAction::ConnectVpn
-                },
-            );
-        });
-    }
-    top.append(&connect);
     hero.append(&top);
 
     let identity = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -1782,6 +1752,8 @@ fn build_network_setup(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     import_row.append(&camera);
     import_row.append(&image);
     join_card.append(&import_row);
+    append_manual_join(app, &join_card);
+    append_notice(app, &join_card, "Join");
     page.append(&join_card);
 
     let nearby = card();
@@ -2009,11 +1981,8 @@ fn build_share_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     import_row.append(&camera);
     import_row.append(&image);
     join_card.append(&import_row);
-
-    let notice = app.borrow().notice.clone();
-    if !notice.trim().is_empty() {
-        row_label(&join_card, "Import", &notice, "dialog-warning-symbolic");
-    }
+    append_manual_join(app, &join_card);
+    append_notice(app, &join_card, "Import");
 
     page.append(&join_card);
 
@@ -2135,10 +2104,86 @@ fn scan_invite_qr(app: &AppRef, button: &gtk::Button) {
     );
 }
 
+fn append_notice(app: &AppRef, parent: &gtk::Box, title: &str) {
+    let notice = app.borrow().notice.clone();
+    if !notice.trim().is_empty() {
+        row_label(parent, title, &notice, "dialog-warning-symbolic");
+    }
+}
+
+fn append_manual_join(app: &AppRef, parent: &gtk::Box) {
+    let manual = gtk::Expander::new(Some("Add manually"));
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    body.set_margin_top(8);
+
+    let admin = entry("Admin Device ID", &app.borrow().drafts.manual_join_admin_id);
+    {
+        let app = app.clone();
+        admin.connect_changed(move |entry| {
+            app.borrow_mut().drafts.manual_join_admin_id = entry.text().to_string();
+        });
+    }
+    body.append(&admin);
+
+    let network = entry(
+        "Network ID",
+        &display_network_id(&app.borrow().drafts.manual_join_network_id),
+    );
+    {
+        let app = app.clone();
+        network.connect_changed(move |entry| {
+            app.borrow_mut().drafts.manual_join_network_id = entry.text().to_string();
+        });
+    }
+    body.append(&network);
+
+    let add = icon_text_button("Add", "list-add-symbolic");
+    add.set_halign(gtk::Align::Start);
+    {
+        let app = app.clone();
+        add.connect_clicked(move |_| manual_add_network(&app));
+    }
+    body.append(&add);
+
+    manual.set_child(Some(&body));
+    parent.append(&manual);
+}
+
+fn manual_add_network(app: &AppRef) {
+    let (admin_npub, mesh_network_id) = {
+        let model = app.borrow();
+        (
+            model.drafts.manual_join_admin_id.trim().to_string(),
+            normalize_network_id_input(&model.drafts.manual_join_network_id),
+        )
+    };
+    if admin_npub.is_empty() || mesh_network_id.is_empty() {
+        return;
+    }
+    if !is_valid_device_id(&admin_npub) {
+        set_notice(app, "Not a valid device ID");
+        return;
+    }
+    {
+        let mut model = app.borrow_mut();
+        model.drafts.manual_join_admin_id.clear();
+        model.drafts.manual_join_network_id.clear();
+        model.notice.clear();
+    }
+    dispatch(
+        app,
+        NativeAppAction::ManualAddNetwork {
+            admin_npub,
+            mesh_network_id,
+        },
+    );
+}
+
 fn build_exit_nodes_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     page_title(page, "Exit Nodes", "");
 
     let Some(network) = active_network(state).cloned() else {
+        build_wireguard_settings_card(app, page, state);
         return;
     };
 
@@ -3532,17 +3577,20 @@ fn nav_button(title: &str, icon_name: &str, active: bool, attention: bool) -> gt
     let button = gtk::Button::new();
     button.add_css_class("flat");
     button.add_css_class("nvpn-nav-button");
+    button.set_hexpand(true);
     if active {
         button.add_css_class("active");
     }
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 7);
     row.set_valign(gtk::Align::Center);
+    row.set_hexpand(true);
     if !icon_name.is_empty() {
         let icon = gtk::Image::from_icon_name(icon_name);
         row.append(&icon);
     }
     let label = gtk::Label::new(Some(title));
     label.set_xalign(0.0);
+    label.set_hexpand(true);
     row.append(&label);
     if attention {
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -4078,6 +4126,16 @@ fn normalize_network_id_input(value: &str) -> String {
     }
 }
 
+fn is_valid_device_id(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.len() != 63 || !trimmed.starts_with("npub1") {
+        return false;
+    }
+    trimmed[5..]
+        .chars()
+        .all(|ch| "qpzry9x8gf2tvdw0s3jn54khce6mua7l".contains(ch))
+}
+
 fn first_non_empty(values: &[&str]) -> Option<String> {
     values
         .iter()
@@ -4238,7 +4296,7 @@ const CSS: &str = r#"
 }
 
 .nvpn-nav-button.active {
-    background: alpha(#3584e4, 0.14);
+    background: alpha(@accent_color, 0.14);
     color: @window_fg_color;
 }
 
@@ -4246,7 +4304,7 @@ const CSS: &str = r#"
     min-width: 8px;
     min-height: 8px;
     border-radius: 999px;
-    background: #dc2626;
+    background: @error_color;
 }
 
 .nvpn-card {
@@ -4264,15 +4322,15 @@ const CSS: &str = r#"
 }
 
 .nvpn-header-dot.ok {
-    background: #16a34a;
+    background: @success_color;
 }
 
 .nvpn-header-dot.warn {
-    background: #d97706;
+    background: @warning_color;
 }
 
 .nvpn-header-dot.bad {
-    background: #dc2626;
+    background: @error_color;
 }
 
 .nvpn-header-status {
@@ -4305,31 +4363,31 @@ const CSS: &str = r#"
 }
 
 .nvpn-status-ready {
-    min-width: 48px;
-    min-height: 48px;
-    background: #16a34a;
+    min-width: 12px;
+    min-height: 12px;
+    background: @success_color;
 }
 
 .nvpn-status-active {
-    min-width: 48px;
-    min-height: 48px;
-    background: #d97706;
+    min-width: 12px;
+    min-height: 12px;
+    background: @accent_color;
 }
 
 .nvpn-status-off {
-    min-width: 48px;
-    min-height: 48px;
+    min-width: 12px;
+    min-height: 12px;
     background: alpha(@window_fg_color, 0.22);
 }
 
 .nvpn-status-blocked {
-    min-width: 48px;
-    min-height: 48px;
-    background: #dc2626;
+    min-width: 12px;
+    min-height: 12px;
+    background: @error_color;
 }
 
 .nvpn-peer-online {
-    background: #16a34a;
+    background: @success_color;
 }
 
 .nvpn-peer-offline {
@@ -4342,7 +4400,7 @@ const CSS: &str = r#"
 }
 
 .nvpn-device-row.selected {
-    background: alpha(#3584e4, 0.14);
+    background: alpha(@accent_color, 0.14);
 }
 
 .nvpn-route-choice {
@@ -4362,18 +4420,18 @@ const CSS: &str = r#"
 }
 
 .nvpn-badge.ok {
-    background: alpha(#16a34a, 0.16);
-    color: #15803d;
+    background: alpha(@success_color, 0.16);
+    color: @success_color;
 }
 
 .nvpn-badge.warn {
-    background: alpha(#d97706, 0.16);
-    color: #b45309;
+    background: alpha(@warning_color, 0.16);
+    color: @warning_color;
 }
 
 .nvpn-badge.bad {
-    background: alpha(#dc2626, 0.14);
-    color: #b91c1c;
+    background: alpha(@error_color, 0.14);
+    color: @error_color;
 }
 
 .nvpn-badge.muted {
@@ -4389,6 +4447,6 @@ const CSS: &str = r#"
 
 .success,
 .accent {
-    color: #15803d;
+    color: @success_color;
 }
 "#;
