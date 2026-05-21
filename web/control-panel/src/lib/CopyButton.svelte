@@ -58,6 +58,7 @@
   type="button"
   class="copy-button {variant}"
   class:with-text={Boolean(text)}
+  class:copied
   disabled={disabled || !value}
   aria-label={copied ? `${label} copied` : `Copy ${label}`}
   title={copied ? 'Copied' : `Copy ${label}`}
@@ -85,10 +86,10 @@
     justify-content: center;
     flex: 0 0 auto;
     gap: 7px;
-    border: 0;
+    border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
     border-radius: 8px;
-    color: var(--text-on-accent, #ffffff);
-    background: var(--accent, #0a84ff);
+    color: var(--text-primary, #f5f5f7);
+    background: var(--control, #2c2c2e);
     font-weight: 700;
   }
 
@@ -108,8 +109,14 @@
     padding: 0 12px;
   }
 
-  .copy-button:hover {
-    background: var(--accent-hover, #2997ff);
+  .copy-button:not(:disabled):hover {
+    background: var(--control-hover, #363638);
+  }
+
+  .copy-button.copied {
+    border-color: transparent;
+    color: var(--ok, #30d158);
+    background: var(--ok-soft, rgba(48, 209, 88, 0.16));
   }
 
   .copy-button svg {

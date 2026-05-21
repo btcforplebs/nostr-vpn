@@ -1223,7 +1223,7 @@
               {#if shownNetwork}
                 <div class="header-actions">
                   {#if !shownNetwork.enabled}
-                    <button type="button" class="small-button" on:click={() => activateNetwork(shownNetwork)}>
+                    <button type="button" class="small-button primary" on:click={() => activateNetwork(shownNetwork)}>
                       Activate
                     </button>
                   {/if}
@@ -1747,7 +1747,7 @@
                     {#if network.enabled}
                       <span class="badge ok">Active</span>
                     {:else}
-                      <button type="button" class="small-button" on:click={() => activateNetwork(network)}>
+                      <button type="button" class="small-button primary" on:click={() => activateNetwork(network)}>
                         Activate
                       </button>
                     {/if}

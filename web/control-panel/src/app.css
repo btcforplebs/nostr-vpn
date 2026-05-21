@@ -349,10 +349,10 @@ code {
 .secondary-button,
 .small-button,
 .header-icon-button {
-  border: 0;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  color: var(--text-on-accent);
-  background: var(--accent);
+  color: var(--text-primary);
+  background: var(--control);
   font-weight: 700;
 }
 
@@ -374,7 +374,6 @@ code {
   width: 34px;
   min-height: 34px;
   padding: 0;
-  background: var(--accent);
 }
 
 .header-icon-button svg {
@@ -386,25 +385,35 @@ code {
   stroke-linejoin: round;
 }
 
-.secondary-button,
-.small-button {
+.secondary-button.primary,
+.small-button.primary,
+.header-icon-button.primary {
+  border-color: transparent;
+  color: var(--text-on-accent);
   background: var(--accent);
 }
 
 .small-button.danger,
 .header-icon-button.danger {
+  border-color: transparent;
   color: var(--text-on-accent);
   background: var(--bad);
 }
 
-.secondary-button:hover,
-.small-button:hover,
-.header-icon-button:hover {
+.secondary-button:not(:disabled):hover,
+.small-button:not(:disabled):hover,
+.header-icon-button:not(:disabled):hover {
+  background: var(--control-hover);
+}
+
+.secondary-button.primary:not(:disabled):hover,
+.small-button.primary:not(:disabled):hover,
+.header-icon-button.primary:not(:disabled):hover {
   background: var(--accent-hover);
 }
 
-.small-button.danger:hover,
-.header-icon-button.danger:hover {
+.small-button.danger:not(:disabled):hover,
+.header-icon-button.danger:not(:disabled):hover {
   background: var(--bad);
   filter: brightness(1.08);
 }
