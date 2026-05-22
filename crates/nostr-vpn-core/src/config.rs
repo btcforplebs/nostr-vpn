@@ -23,13 +23,14 @@ pub use crate::network_routes::{
 };
 
 use crate::config_defaults::{
-    current_unix_timestamp, default_autoconnect, default_close_to_tray_on_close, default_endpoint,
-    default_fips_advertise_endpoint, default_fips_host_tunnel_enabled, default_invite_secret,
-    default_lan_discovery_enabled, default_launch_on_startup, default_listen_for_join_requests,
-    default_listen_port, default_nat_discovery_timeout_secs, default_nat_enabled,
-    default_nat_stun_servers, default_network_enabled, default_network_id, default_node_id,
-    default_relays, default_tunnel_ip, generate_nostr_identity, is_true, is_zero,
-    needs_generated_network_id, npub_for_pubkey_hex,
+    current_unix_timestamp, default_autoconnect, default_close_to_tray_on_close,
+    default_connect_to_non_roster_fips_peers, default_endpoint, default_fips_advertise_endpoint,
+    default_fips_host_tunnel_enabled, default_invite_secret, default_lan_discovery_enabled,
+    default_launch_on_startup, default_listen_for_join_requests, default_listen_port,
+    default_nat_discovery_timeout_secs, default_nat_enabled, default_nat_stun_servers,
+    default_network_enabled, default_network_id, default_node_id, default_relays,
+    default_tunnel_ip, generate_nostr_identity, is_true, is_zero, needs_generated_network_id,
+    npub_for_pubkey_hex,
 };
 pub use crate::config_defaults::{
     maybe_autoconfigure_node, needs_endpoint_autoconfig, needs_tunnel_ip_autoconfig,
@@ -145,6 +146,11 @@ pub struct AppConfig {
         skip_serializing_if = "is_true"
     )]
     pub fips_host_tunnel_enabled: bool,
+    #[serde(
+        default = "default_connect_to_non_roster_fips_peers",
+        skip_serializing_if = "is_true"
+    )]
+    pub connect_to_non_roster_fips_peers: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fips_host_inbound_tcp_ports: Vec<u16>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -162,7 +168,7 @@ pub struct AppConfig {
     pub exit_node_leak_protection: bool,
     #[serde(default = "default_close_to_tray_on_close")]
     pub close_to_tray_on_close: bool,
-    #[serde(default = "default_magic_dns_suffix")]
+    #[serde(default = "default_magic_dns_suffix", skip)]
     pub magic_dns_suffix: String,
     #[serde(default, skip_serializing_if = "WireGuardExitConfig::is_default")]
     pub wireguard_exit: WireGuardExitConfig,
@@ -712,6 +718,7 @@ impl Default for AppConfig {
             fips_peer_endpoints: HashMap::new(),
             fips_advertise_endpoint: default_fips_advertise_endpoint(),
             fips_host_tunnel_enabled: default_fips_host_tunnel_enabled(),
+            connect_to_non_roster_fips_peers: default_connect_to_non_roster_fips_peers(),
             fips_host_inbound_tcp_ports: Vec::new(),
             mesh_mtu_profile: String::new(),
             mesh_underlay_udp_mtu: 0,

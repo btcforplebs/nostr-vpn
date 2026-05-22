@@ -1,7 +1,10 @@
 mod config_bootstrap;
 mod daemon_runtime;
 mod diagnostics;
-#[cfg(feature = "embedded-fips")]
+#[cfg(all(
+    feature = "embedded-fips",
+    any(target_os = "linux", target_os = "macos")
+))]
 mod fips_host_tunnel;
 #[cfg(feature = "embedded-fips")]
 mod fips_private_mesh;
@@ -537,8 +540,6 @@ struct SetArgs {
     #[arg(long)]
     network_id: Option<String>,
     #[arg(long)]
-    magic_dns_suffix: Option<String>,
-    #[arg(long)]
     node_name: Option<String>,
     #[arg(long)]
     node_id: Option<String>,
@@ -592,6 +593,8 @@ struct SetArgs {
     fips_advertise_endpoint: Option<bool>,
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     fips_host_tunnel_enabled: Option<bool>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    connect_to_non_roster_fips_peers: Option<bool>,
     #[arg(long)]
     fips_host_inbound_tcp_ports: Option<String>,
     #[arg(long = "fips-peer-endpoint")]
@@ -910,6 +913,7 @@ async fn run_command(command: Command) -> Result<()> {
                         "advertised_routes": app.node.advertised_routes,
                         "effective_advertised_routes": runtime_effective_advertised_routes(&app),
                         "fips_host_tunnel_enabled": app.fips_host_tunnel_enabled,
+                        "connect_to_non_roster_fips_peers": app.connect_to_non_roster_fips_peers,
                         "fips_host_inbound_tcp_ports": app.fips_host_inbound_tcp_ports,
                         "wireguard_exit": wireguard_exit_status_json(&app),
                         "daemon": daemon_status_json_value(&daemon),
@@ -946,6 +950,10 @@ async fn run_command(command: Command) -> Result<()> {
                 );
                 println!("advertise_exit_node: {}", app.node.advertise_exit_node);
                 println!("fips_host_tunnel_enabled: {}", app.fips_host_tunnel_enabled);
+                println!(
+                    "connect_to_non_roster_fips_peers: {}",
+                    app.connect_to_non_roster_fips_peers
+                );
                 if !app.fips_host_inbound_tcp_ports.is_empty() {
                     println!(
                         "fips_host_inbound_tcp_ports: {}",
@@ -1026,9 +1034,6 @@ async fn run_command(command: Command) -> Result<()> {
 
             if let Some(value) = args.network_id {
                 app.set_active_network_id(&value)?;
-            }
-            if let Some(value) = args.magic_dns_suffix {
-                app.magic_dns_suffix = value;
             }
             if let Some(value) = args.node_name {
                 app.node_name = value;
@@ -1122,6 +1127,9 @@ async fn run_command(command: Command) -> Result<()> {
             }
             if let Some(value) = args.fips_host_tunnel_enabled {
                 app.fips_host_tunnel_enabled = value;
+            }
+            if let Some(value) = args.connect_to_non_roster_fips_peers {
+                app.connect_to_non_roster_fips_peers = value;
             }
             if let Some(value) = args.fips_host_inbound_tcp_ports {
                 app.fips_host_inbound_tcp_ports = parse_tcp_ports_arg(&value)?;

@@ -1340,13 +1340,19 @@ private struct DeviceSettingsCard: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
-            TextField("Port", text: $port)
+            TextField("Listen Port", text: $port)
                 .keyboardType(.numberPad)
                 .textFieldStyle(.roundedBorder)
-            Toggle("Autoconnect", isOn: Binding(
+            Toggle("Start VPN automatically", isOn: Binding(
                 get: { model.state.autoconnect },
                 set: { value in
                     model.dispatch(NativeActions.updateSettings(["autoconnect": value]), status: "Saving")
+                }
+            ))
+            Toggle("Connect to non-roster FIPS peers", isOn: Binding(
+                get: { model.state.connectToNonRosterFipsPeers },
+                set: { value in
+                    model.dispatch(NativeActions.updateSettings(["connectToNonRosterFipsPeers": value]), status: "Saving")
                 }
             ))
             Button("Save") {

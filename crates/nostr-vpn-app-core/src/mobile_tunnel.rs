@@ -103,6 +103,8 @@ pub(crate) struct MobileTunnelConfig {
     pub(crate) stun_servers: Vec<String>,
     #[serde(default)]
     pub(crate) share_local_candidates: bool,
+    #[serde(default = "default_true")]
+    pub(crate) connect_to_non_roster_fips_peers: bool,
     /// When the user has WG upstream enabled + configured, the OS-side
     /// (`NEPacketTunnelProvider` on iOS, `VpnService` on Android) is
     /// expected to:
@@ -137,6 +139,10 @@ pub(crate) struct MobileTunnelConfig {
     pub(crate) pending_join_requested_at: u64,
     #[serde(default)]
     pub(crate) error: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl MobileTunnelConfig {
@@ -283,6 +289,7 @@ impl MobileTunnelConfig {
             nostr_relays: app.nostr.relays.clone(),
             stun_servers: app.nat.stun_servers.clone(),
             share_local_candidates: app.lan_discovery_enabled,
+            connect_to_non_roster_fips_peers: app.connect_to_non_roster_fips_peers,
             excluded_routes,
             dns_servers,
             wireguard_exit,
@@ -1877,10 +1884,10 @@ fn fips_endpoint_config(scope: &str, mobile: &MobileTunnelConfig) -> FipsConfig 
     // not placed in that public advert; when enabled, they are carried inside
     // encrypted traversal signaling/control frames.
     config.node.discovery.nostr.advertise = nostr_enabled;
-    // Join-request mode needs Open discovery so unknown devices can reach the
-    // mobile admin/requester. Otherwise keep roster discovery scoped to
-    // configured peers.
-    config.node.discovery.nostr.policy = if mobile.join_requests_enabled || join_request_pending {
+    config.node.discovery.nostr.policy = if mobile.connect_to_non_roster_fips_peers
+        || mobile.join_requests_enabled
+        || join_request_pending
+    {
         NostrDiscoveryPolicy::Open
     } else {
         NostrDiscoveryPolicy::ConfiguredOnly
@@ -2159,6 +2166,7 @@ fn empty_config() -> MobileTunnelConfig {
         nostr_relays: Vec::new(),
         stun_servers: Vec::new(),
         share_local_candidates: false,
+        connect_to_non_roster_fips_peers: true,
         excluded_routes: Vec::new(),
         dns_servers: Vec::new(),
         wireguard_exit: None,
@@ -3012,7 +3020,7 @@ mod tests {
         assert!(config.node.discovery.lan.enabled);
         assert_eq!(
             config.node.discovery.nostr.policy,
-            NostrDiscoveryPolicy::ConfiguredOnly
+            NostrDiscoveryPolicy::Open
         );
         assert_eq!(
             config.node.discovery.nostr.open_discovery_max_pending,
@@ -3062,6 +3070,26 @@ mod tests {
         );
         assert_eq!(config.node.limits.max_links, MOBILE_MAX_FIPS_LINKS);
         assert!(config.peers[0].discovery_fallback_transit);
+    }
+
+    #[test]
+    fn mobile_fips_config_can_scope_discovery_to_roster_peers() {
+        let peer = FipsMeshPeerConfig::from_participant_pubkey(
+            "26525c442dd039de4e728b41ee8d7f717b267ab25b7c219d53a3249e1c9174cc",
+            vec!["10.44.22.44/32".to_string()],
+        )
+        .expect("peer");
+        let mobile = MobileTunnelConfig {
+            peers: vec![peer],
+            connect_to_non_roster_fips_peers: false,
+            ..empty_config()
+        };
+        let config = fips_endpoint_config("nostr-vpn:test", &mobile);
+
+        assert_eq!(
+            config.node.discovery.nostr.policy,
+            NostrDiscoveryPolicy::ConfiguredOnly
+        );
     }
 
     #[test]

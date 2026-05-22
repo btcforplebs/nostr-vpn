@@ -248,6 +248,7 @@ impl SystemResolverGuard {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Drop for SystemResolverGuard {
     fn drop(&mut self) {
         match &self.backend {

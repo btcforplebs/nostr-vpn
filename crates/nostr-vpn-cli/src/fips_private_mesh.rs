@@ -98,6 +98,7 @@ use tokio::time::{Duration, sleep};
 #[cfg(target_os = "windows")]
 use wintun::{Adapter, MAX_RING_CAPACITY, Session};
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::fips_host_tunnel::FipsHostTunnelConfig;
 
 pub(crate) struct FipsPrivateMeshRuntime {
@@ -105,6 +106,7 @@ pub(crate) struct FipsPrivateMeshRuntime {
     mesh: RwLock<FipsMeshRuntime>,
     presence: RwLock<HashMap<String, FipsPeerPresence>>,
     link_status: RwLock<HashMap<String, FipsEndpointPeer>>,
+    other_link_status: RwLock<HashMap<String, FipsEndpointPeer>>,
     peer_capabilities: RwLock<HashMap<String, PeerCapabilitiesEntry>>,
     control_fragments: Mutex<ControlFragmentBuffer>,
 }
@@ -223,6 +225,18 @@ fn fips_nostr_discovery_policy_from_env() -> NostrDiscoveryPolicy {
         .unwrap_or(NostrDiscoveryPolicy::Open)
 }
 
+fn fips_nostr_discovery_policy_from_app(app: &AppConfig) -> NostrDiscoveryPolicy {
+    std::env::var("NVPN_FIPS_NOSTR_DISCOVERY_POLICY")
+        .ok()
+        .as_deref()
+        .and_then(parse_fips_nostr_discovery_policy)
+        .unwrap_or(if app.connect_to_non_roster_fips_peers {
+            NostrDiscoveryPolicy::Open
+        } else {
+            NostrDiscoveryPolicy::ConfiguredOnly
+        })
+}
+
 fn parse_fips_nostr_discovery_policy(value: &str) -> Option<NostrDiscoveryPolicy> {
     match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
         "disabled" | "off" | "false" | "0" => Some(NostrDiscoveryPolicy::Disabled),
@@ -302,6 +316,49 @@ fn fips_peer_ping_due(
 ) -> bool {
     let interval = fips_peer_ping_interval_secs(last_seen_at, link_connected, now);
     last_ping_sent_at.is_none_or(|sent_at| now.saturating_sub(sent_at) >= interval)
+}
+
+fn mesh_status_from_endpoint_peer(
+    pubkey: String,
+    peer: &FipsEndpointPeer,
+    now: u64,
+) -> MeshPeerStatus {
+    MeshPeerStatus {
+        pubkey,
+        connected: true,
+        endpoint_npub: normalize_fips_endpoint_npub(&peer.npub),
+        transport_addr: peer.transport_addr.clone(),
+        transport_type: peer.transport_type.clone(),
+        srtt_ms: peer.srtt_ms,
+        link_packets_sent: peer.packets_sent,
+        link_packets_recv: peer.packets_recv,
+        link_bytes_sent: peer.bytes_sent,
+        link_bytes_recv: peer.bytes_recv,
+        last_seen_at: Some(now),
+        tx_bytes: 0,
+        rx_bytes: 0,
+        error: None,
+    }
+}
+
+fn endpoint_peer_status_pubkey(peer: &FipsEndpointPeer) -> Option<String> {
+    normalize_nostr_pubkey(&peer.npub).ok()
+}
+
+fn other_endpoint_peer_statuses(
+    other_link_status: &HashMap<String, FipsEndpointPeer>,
+    now: u64,
+) -> Vec<MeshPeerStatus> {
+    let mut statuses = other_link_status
+        .values()
+        .filter_map(|peer| {
+            endpoint_peer_status_pubkey(peer)
+                .map(|pubkey| mesh_status_from_endpoint_peer(pubkey, peer, now))
+        })
+        .collect::<Vec<_>>();
+    statuses.sort_by(|left, right| left.pubkey.cmp(&right.pubkey));
+    statuses.dedup_by(|left, right| left.pubkey == right.pubkey);
+    statuses
 }
 
 fn peer_endpoint_hint_addr(hint: &PeerEndpointHint) -> Option<String> {
@@ -479,6 +536,7 @@ impl FipsPrivateMeshRuntime {
             mesh: RwLock::new(FipsMeshRuntime::with_local_routes(peers, local_allowed_ips)),
             presence: RwLock::new(HashMap::new()),
             link_status: RwLock::new(HashMap::new()),
+            other_link_status: RwLock::new(HashMap::new()),
             peer_capabilities: RwLock::new(HashMap::new()),
             control_fragments: Mutex::new(ControlFragmentBuffer::default()),
         })
@@ -691,6 +749,7 @@ impl FipsPrivateMeshRuntime {
         let now = unix_timestamp();
         let presence = self.presence.read().ok();
         let link_status = self.link_status.read().ok();
+        let other_link_status = self.other_link_status.read().ok();
         let mut statuses = self
             .mesh
             .read()
@@ -729,6 +788,11 @@ impl FipsPrivateMeshRuntime {
             status.connected = connected;
             status.error = error;
         }
+        if let Some(other_link_status) = other_link_status {
+            statuses.extend(other_endpoint_peer_statuses(&other_link_status, now));
+        }
+        statuses.sort_by(|left, right| left.pubkey.cmp(&right.pubkey));
+        statuses.dedup_by(|left, right| left.pubkey == right.pubkey);
         statuses
     }
 
@@ -743,15 +807,22 @@ impl FipsPrivateMeshRuntime {
             .read()
             .map_err(|_| anyhow!("FIPS mesh route table lock poisoned"))?;
         let mut link_status = HashMap::new();
+        let mut other_link_status = HashMap::new();
         for peer in endpoint_peers {
             if let Some(participant) = mesh.participant_for_endpoint_npub(&peer.npub) {
                 link_status.insert(participant, peer);
+            } else if let Some(pubkey) = endpoint_peer_status_pubkey(&peer) {
+                other_link_status.insert(pubkey, peer);
             }
         }
         *self
             .link_status
             .write()
             .map_err(|_| anyhow!("FIPS mesh link status lock poisoned"))? = link_status;
+        *self
+            .other_link_status
+            .write()
+            .map_err(|_| anyhow!("FIPS mesh other link status lock poisoned"))? = other_link_status;
         Ok(())
     }
 
@@ -855,6 +926,10 @@ impl FipsPrivateMeshRuntime {
             .write()
             .map_err(|_| anyhow!("FIPS mesh link status lock poisoned"))?
             .retain(|participant, _| configured.iter().any(|value| value == participant));
+        self.other_link_status
+            .write()
+            .map_err(|_| anyhow!("FIPS mesh other link status lock poisoned"))?
+            .clear();
         self.peer_capabilities
             .write()
             .map_err(|_| anyhow!("FIPS mesh peer capabilities lock poisoned"))?
@@ -1253,11 +1328,12 @@ fn fips_endpoint_config(
     let nostr_enabled = advertise_udp || !peers.is_empty();
     config.node.discovery.nostr.enabled = nostr_enabled;
     config.node.discovery.nostr.advertise = advertise_udp;
-    // Open discovery by default so we can FIPS-handshake with any nvpn node we see on
-    // relays, not just configured roster peers. This is what lets us route
-    // app-mesh traffic through transit hops that aren't in our network roster
-    // (a friend-of-a-friend nvpn node can ferry our packets when direct
-    // traversal fails). Security boundary: the FIPS handshake is open; the
+    // Open discovery by default (unless the user opts into configured-only
+    // discovery) so we can FIPS-handshake with any nvpn node we see on relays,
+    // not just configured roster peers. This is what lets us route app-mesh
+    // traffic through transit hops that aren't in our network roster (a
+    // friend-of-a-friend nvpn node can ferry our packets when direct
+    // traversal fails). Security boundary: the FIPS handshake can be open; the
     // per-network data plane is NOT. `FipsMeshRuntime::receive_endpoint_data*`
     // drops every inbound packet whose source npub doesn't own the inner
     // source IP per our roster, so a non-roster transit peer can carry frames
@@ -1458,10 +1534,12 @@ pub(crate) struct FipsPrivateTunnelConfig {
     pub(crate) peers: Vec<FipsMeshPeerConfig>,
     pub(crate) endpoint_peers: Vec<FipsEndpointPeerTransportConfig>,
     pub(crate) route_targets: Vec<String>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fips_host: Option<FipsHostTunnelConfig>,
     pub(crate) local_advertised_routes: Vec<String>,
     pub(crate) wireguard_exit: WireGuardExitConfig,
     pub(crate) exit_node_leak_protection: bool,
+    nostr_discovery_policy: NostrDiscoveryPolicy,
     mesh_mtu: MeshMtu,
     #[cfg(target_os = "linux")]
     pub(crate) control_plane_bypass_hosts: Vec<Ipv4Addr>,
@@ -1566,6 +1644,7 @@ impl FipsPrivateTunnelConfig {
             fips_endpoint_peers_from_mesh(&peers, operator_static, recent_peer_endpoints);
         route_targets.sort();
         route_targets.dedup();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let fips_host = FipsHostTunnelConfig::from_app(app)?;
 
         Ok(Self {
@@ -1585,10 +1664,12 @@ impl FipsPrivateTunnelConfig {
             peers,
             endpoint_peers,
             route_targets,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             fips_host,
             local_advertised_routes: crate::runtime_effective_advertised_routes(app),
             wireguard_exit: app.wireguard_exit.clone(),
             exit_node_leak_protection: app.exit_node_leak_protection,
+            nostr_discovery_policy: fips_nostr_discovery_policy_from_app(app),
             mesh_mtu: private_mesh_mtu_from_app(Some(app)),
             #[cfg(target_os = "linux")]
             control_plane_bypass_hosts: crate::control_plane_bypass_ipv4_hosts(app),
@@ -1697,7 +1778,7 @@ impl FipsPrivateTunnelRuntime {
             &config.endpoint_peers,
             Some(&transport),
             config.mesh_mtu,
-            fips_nostr_discovery_policy_from_env(),
+            config.nostr_discovery_policy,
         );
         let local_allowed_ips = config.local_allowed_ips();
         let mesh = Arc::new(
@@ -1844,6 +1925,7 @@ impl FipsPrivateTunnelRuntime {
             || self.config.stun_servers != config.stun_servers
             || self.config.nostr_relays != config.nostr_relays
             || self.config.share_local_candidates != config.share_local_candidates
+            || self.config.nostr_discovery_policy != config.nostr_discovery_policy
             || self.config.mesh_mtu.underlay_udp != config.mesh_mtu.underlay_udp
     }
 
@@ -2946,7 +3028,7 @@ impl FipsPrivateTunnelRuntime {
             &config.endpoint_peers,
             Some(&transport),
             config.mesh_mtu,
-            fips_nostr_discovery_policy_from_env(),
+            config.nostr_discovery_policy,
         );
         let mesh = Arc::new(
             FipsPrivateMeshRuntime::bind_with_config(
@@ -3075,6 +3157,7 @@ impl FipsPrivateTunnelRuntime {
             || self.config.advertise_endpoint != config.advertise_endpoint
             || self.config.stun_servers != config.stun_servers
             || self.config.nostr_relays != config.nostr_relays
+            || self.config.nostr_discovery_policy != config.nostr_discovery_policy
             || self.config.mesh_mtu.underlay_udp != config.mesh_mtu.underlay_udp
     }
 
@@ -3532,11 +3615,12 @@ mod tests {
         FipsPrivateTunnelConfig, control_frame_destination_npub, control_frame_source_pubkey,
         drain_event_batch, fips_endpoint_config, fips_endpoint_peers_from_mesh,
         fips_lan_discovery_scope, linux_cap_eff_has_net_admin, linux_tun_setup_error,
-        parse_fips_nostr_discovery_policy, strip_cidr, unix_timestamp,
+        other_endpoint_peer_statuses, parse_fips_nostr_discovery_policy, strip_cidr,
+        unix_timestamp,
     };
     use fips_endpoint::{
-        Config, ConnectPolicy, NostrDiscoveryPolicy, PeerConfig as FipsPeerConfig, RoutingMode,
-        TransportInstances, UdpConfig,
+        Config, ConnectPolicy, FipsEndpointPeer, NostrDiscoveryPolicy,
+        PeerConfig as FipsPeerConfig, RoutingMode, TransportInstances, UdpConfig,
     };
     use nostr_sdk::prelude::{Keys, ToBech32};
     use nostr_vpn_core::config::{AppConfig, PendingOutboundJoinRequest, derive_mesh_tunnel_ip};
@@ -3570,6 +3654,43 @@ mod tests {
             Some(fips_endpoint::NostrDiscoveryPolicy::Disabled)
         );
         assert_eq!(parse_fips_nostr_discovery_policy("wat"), None);
+    }
+
+    #[test]
+    fn fips_private_tunnel_config_uses_non_roster_peer_setting_for_discovery_policy() {
+        if std::env::var("NVPN_FIPS_NOSTR_DISCOVERY_POLICY").is_ok() {
+            return;
+        }
+
+        let mut app = AppConfig::generated();
+        app.fips_host_tunnel_enabled = false;
+        app.connect_to_non_roster_fips_peers = false;
+        let network_id = app.effective_network_id();
+        let config = FipsPrivateTunnelConfig::from_app(
+            &app,
+            &network_id,
+            "utun100",
+            app.own_nostr_pubkey_hex().ok().as_deref(),
+            None,
+            &[],
+        )
+        .expect("configured-only tunnel config");
+        assert_eq!(
+            config.nostr_discovery_policy,
+            NostrDiscoveryPolicy::ConfiguredOnly
+        );
+
+        app.connect_to_non_roster_fips_peers = true;
+        let config = FipsPrivateTunnelConfig::from_app(
+            &app,
+            &network_id,
+            "utun100",
+            app.own_nostr_pubkey_hex().ok().as_deref(),
+            None,
+            &[],
+        )
+        .expect("open tunnel config");
+        assert_eq!(config.nostr_discovery_policy, NostrDiscoveryPolicy::Open);
     }
 
     #[test]
@@ -3653,6 +3774,47 @@ mod tests {
             rx_bytes: 0,
             error: None,
         }
+    }
+
+    #[test]
+    fn non_roster_endpoint_peers_surface_as_mesh_statuses() {
+        let keys = Keys::generate();
+        let pubkey = keys.public_key().to_hex();
+        let npub = keys.public_key().to_bech32().expect("npub");
+        let mut peers = HashMap::new();
+        peers.insert(
+            pubkey.clone(),
+            FipsEndpointPeer {
+                npub: npub.clone(),
+                transport_addr: Some("203.0.113.9:9000".to_string()),
+                transport_type: Some("udp".to_string()),
+                link_id: 42,
+                srtt_ms: Some(7),
+                packets_sent: 11,
+                packets_recv: 12,
+                bytes_sent: 1300,
+                bytes_recv: 1400,
+            },
+        );
+
+        let statuses = other_endpoint_peer_statuses(&peers, 123);
+
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].pubkey, pubkey);
+        assert_eq!(statuses[0].endpoint_npub, npub);
+        assert!(statuses[0].connected);
+        assert_eq!(
+            statuses[0].transport_addr.as_deref(),
+            Some("203.0.113.9:9000")
+        );
+        assert_eq!(statuses[0].transport_type.as_deref(), Some("udp"));
+        assert_eq!(statuses[0].srtt_ms, Some(7));
+        assert_eq!(statuses[0].link_packets_sent, 11);
+        assert_eq!(statuses[0].link_packets_recv, 12);
+        assert_eq!(statuses[0].link_bytes_sent, 1300);
+        assert_eq!(statuses[0].link_bytes_recv, 1400);
+        assert_eq!(statuses[0].last_seen_at, Some(123));
+        assert_eq!(statuses[0].error, None);
     }
 
     #[test]

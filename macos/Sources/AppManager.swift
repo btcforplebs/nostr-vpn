@@ -362,7 +362,6 @@ final class AppManager: ObservableObject {
         endpoint: String,
         tunnelIp: String,
         listenPort: String,
-        magicDnsSuffix: String,
         fipsHostInboundTcpPorts: String
     ) {
         let parsedPort = UInt16(listenPort.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -371,8 +370,7 @@ final class AppManager: ObservableObject {
             endpoint: endpoint,
             tunnelIp: tunnelIp,
             listenPort: parsedPort,
-            fipsHostInboundTcpPorts: fipsHostInboundTcpPorts,
-            magicDnsSuffix: magicDnsSuffix
+            fipsHostInboundTcpPorts: fipsHostInboundTcpPorts
         )), status: "Saving device settings")
     }
 
@@ -497,6 +495,10 @@ final class AppManager: ObservableObject {
 
     func setFipsHostTunnel(_ enabled: Bool) {
         dispatch(.updateSettings(patch: settingsPatch(fipsHostTunnelEnabled: enabled)), status: "Saving FIPS option")
+    }
+
+    func setConnectToNonRosterFipsPeers(_ enabled: Bool) {
+        dispatch(.updateSettings(patch: settingsPatch(connectToNonRosterFipsPeers: enabled)), status: "Saving FIPS option")
     }
 
     func setLaunchOnStartup(_ enabled: Bool) {
@@ -1213,6 +1215,7 @@ final class AppManager: ObservableObject {
             wireguardExitPersistentKeepaliveSecs: 25,
             wireguardExitConfig: "",
             fipsHostTunnelEnabled: true,
+            connectToNonRosterFipsPeers: true,
             fipsHostInboundTcpPorts: "",
             magicDnsSuffix: "nvpn",
             magicDnsStatus: "Serving .nvpn names",
@@ -1720,8 +1723,8 @@ func settingsPatch(
     wireguardExitPersistentKeepaliveSecs: UInt16? = nil,
     wireguardExitConfig: String? = nil,
     fipsHostTunnelEnabled: Bool? = nil,
+    connectToNonRosterFipsPeers: Bool? = nil,
     fipsHostInboundTcpPorts: String? = nil,
-    magicDnsSuffix: String? = nil,
     autoconnect: Bool? = nil,
     launchOnStartup: Bool? = nil,
     closeToTrayOnClose: Bool? = nil
@@ -1750,8 +1753,8 @@ func settingsPatch(
         wireguardExitPersistentKeepaliveSecs: wireguardExitPersistentKeepaliveSecs,
         wireguardExitConfig: wireguardExitConfig,
         fipsHostTunnelEnabled: fipsHostTunnelEnabled,
+        connectToNonRosterFipsPeers: connectToNonRosterFipsPeers,
         fipsHostInboundTcpPorts: fipsHostInboundTcpPorts,
-        magicDnsSuffix: magicDnsSuffix,
         autoconnect: autoconnect,
         launchOnStartup: launchOnStartup,
         closeToTrayOnClose: closeToTrayOnClose

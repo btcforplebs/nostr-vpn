@@ -65,8 +65,8 @@
     listenPort: '',
     relays: '',
     advertisedRoutes: '',
-    magicDnsSuffix: '',
     fipsHostTunnelEnabled: true,
+    connectToNonRosterFipsPeers: true,
     fipsHostInboundTcpPorts: '',
     autoconnect: false,
   };
@@ -171,8 +171,8 @@
       listenPort: String(next.listenPort || ''),
       relays: relays.map((relay) => relay.url).join('\n'),
       advertisedRoutes: next.advertisedRoutes.join(', '),
-      magicDnsSuffix: next.magicDnsSuffix,
       fipsHostTunnelEnabled: next.fipsHostTunnelEnabled,
+      connectToNonRosterFipsPeers: next.connectToNonRosterFipsPeers,
       fipsHostInboundTcpPorts: next.fipsHostInboundTcpPorts,
       autoconnect: next.autoconnect,
     };
@@ -797,8 +797,8 @@
           .map((relay) => relay.trim())
           .filter(Boolean),
         advertisedRoutes: settingsDraft.advertisedRoutes,
-        magicDnsSuffix: settingsDraft.magicDnsSuffix,
         fipsHostTunnelEnabled: settingsDraft.fipsHostTunnelEnabled,
+        connectToNonRosterFipsPeers: settingsDraft.connectToNonRosterFipsPeers,
         fipsHostInboundTcpPorts: settingsDraft.fipsHostInboundTcpPorts,
         autoconnect: settingsDraft.autoconnect,
       },
@@ -1748,7 +1748,7 @@
             </label>
 
             <label class="switch-row">
-              <span>Autoconnect</span>
+              <span>Start VPN automatically</span>
               <input
                 type="checkbox"
                 bind:checked={settingsDraft.autoconnect}
@@ -1757,10 +1757,19 @@
             </label>
 
             <label class="switch-row">
-              <span>Non-VPN .fips</span>
+              <span>Route to non-VPN .fips</span>
               <input
                 type="checkbox"
                 bind:checked={settingsDraft.fipsHostTunnelEnabled}
+                on:change={() => (settingsDirty = true)}
+              />
+            </label>
+
+            <label class="switch-row">
+              <span>Connect to non-roster FIPS peers</span>
+              <input
+                type="checkbox"
+                bind:checked={settingsDraft.connectToNonRosterFipsPeers}
                 on:change={() => (settingsDirty = true)}
               />
             </label>

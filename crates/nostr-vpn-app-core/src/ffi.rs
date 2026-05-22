@@ -662,6 +662,8 @@ impl NativeAppRuntime {
                 wireguard_exit_config_text(&self.config.wireguard_exit)
             },
             fips_host_tunnel_enabled: !config_unavailable && self.config.fips_host_tunnel_enabled,
+            connect_to_non_roster_fips_peers: !config_unavailable
+                && self.config.connect_to_non_roster_fips_peers,
             fips_host_inbound_tcp_ports: if config_unavailable {
                 String::new()
             } else {
@@ -1392,11 +1394,11 @@ impl NativeAppRuntime {
         if let Some(value) = patch.fips_host_tunnel_enabled {
             self.config.fips_host_tunnel_enabled = value;
         }
+        if let Some(value) = patch.connect_to_non_roster_fips_peers {
+            self.config.connect_to_non_roster_fips_peers = value;
+        }
         if let Some(value) = patch.fips_host_inbound_tcp_ports {
             self.config.fips_host_inbound_tcp_ports = parse_tcp_ports(&value);
-        }
-        if let Some(value) = patch.magic_dns_suffix {
-            self.config.magic_dns_suffix = value.trim().trim_matches('.').to_ascii_lowercase();
         }
         if let Some(value) = patch.autoconnect {
             self.config.autoconnect = value;
@@ -4679,6 +4681,7 @@ exit 0
         runtime.dispatch(NativeAppAction::UpdateSettings {
             patch: SettingsPatch {
                 fips_host_tunnel_enabled: Some(false),
+                connect_to_non_roster_fips_peers: Some(false),
                 fips_host_inbound_tcp_ports: Some("443, 22, 22".to_string()),
                 ..SettingsPatch::default()
             },
@@ -4687,10 +4690,12 @@ exit 0
         assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
         let saved = AppConfig::load(&runtime.config_path).expect("load persisted config");
         assert!(!saved.fips_host_tunnel_enabled);
+        assert!(!saved.connect_to_non_roster_fips_peers);
         assert_eq!(saved.fips_host_inbound_tcp_ports, vec![22, 443]);
 
         let state = runtime.state();
         assert!(!state.fips_host_tunnel_enabled);
+        assert!(!state.connect_to_non_roster_fips_peers);
         assert_eq!(state.fips_host_inbound_tcp_ports, "22, 443");
 
         let _ = fs::remove_dir_all(&dir);

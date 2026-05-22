@@ -350,13 +350,22 @@ internal fun DeviceSettingsCard(state: AppState, dispatch: (JSONObject) -> Unit)
         OutlinedTextField(nodeName, { nodeName = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Name") })
         OutlinedTextField(tunnelIp, { tunnelIp = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Tunnel IP") })
         OutlinedTextField(endpoint, { endpoint = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Endpoint") })
-        OutlinedTextField(port, { port = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Port") })
+        OutlinedTextField(port, { port = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Listen Port") })
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(
                 checked = state.autoconnect,
                 onCheckedChange = { enabled -> dispatch(NativeActions.updateSettings("autoconnect" to enabled)) },
             )
-            Text("Autoconnect")
+            Text("Start VPN automatically")
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = state.connectToNonRosterFipsPeers,
+                onCheckedChange = { enabled ->
+                    dispatch(NativeActions.updateSettings("connectToNonRosterFipsPeers" to enabled))
+                },
+            )
+            Text("Connect to non-roster FIPS peers")
         }
         Button(onClick = {
             dispatch(

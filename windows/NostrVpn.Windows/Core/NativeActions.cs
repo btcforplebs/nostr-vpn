@@ -60,8 +60,8 @@ public sealed class SettingsPatch
     public ushort? WireguardExitPersistentKeepaliveSecs { get; set; }
     public string? WireguardExitConfig { get; set; }
     public bool? FipsHostTunnelEnabled { get; set; }
+    public bool? ConnectToNonRosterFipsPeers { get; set; }
     public string? FipsHostInboundTcpPorts { get; set; }
-    public string? MagicDnsSuffix { get; set; }
     public bool? Autoconnect { get; set; }
     public bool? LaunchOnStartup { get; set; }
     public bool? CloseToTrayOnClose { get; set; }

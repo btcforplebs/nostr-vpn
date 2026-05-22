@@ -141,6 +141,7 @@ export type UiState = {
   wireguardExitEndpoint: string;
   wireguardExitConfig: string;
   fipsHostTunnelEnabled: boolean;
+  connectToNonRosterFipsPeers: boolean;
   fipsHostInboundTcpPorts: string;
   magicDnsSuffix: string;
   magicDnsStatus: string;

@@ -83,6 +83,10 @@ pub(crate) fn default_fips_host_tunnel_enabled() -> bool {
     cfg!(any(target_os = "linux", target_os = "macos"))
 }
 
+pub(crate) fn default_connect_to_non_roster_fips_peers() -> bool {
+    true
+}
+
 pub(crate) fn default_close_to_tray_on_close() -> bool {
     true
 }

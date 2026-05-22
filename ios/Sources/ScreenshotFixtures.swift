@@ -62,6 +62,7 @@ enum ScreenshotFixtures {
         state.magicDnsSuffix = "home.mesh"
         state.magicDnsStatus = "Ready"
         state.autoconnect = true
+        state.connectToNonRosterFipsPeers = true
         state.inviteBroadcastActive = false
         state.nearbyDiscoveryActive = true
         state.nearbyDiscoveryRemainingSecs = 112
@@ -291,6 +292,9 @@ enum ScreenshotFixtures {
         }
         if let autoconnect = patch["autoconnect"] as? Bool {
             state.autoconnect = autoconnect
+        }
+        if let connectToNonRosterFipsPeers = patch["connectToNonRosterFipsPeers"] as? Bool {
+            state.connectToNonRosterFipsPeers = connectToNonRosterFipsPeers
         }
         if let nodeName = patch["nodeName"] as? String {
             state.nodeName = nodeName

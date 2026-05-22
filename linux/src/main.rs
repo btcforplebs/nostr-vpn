@@ -85,7 +85,6 @@ struct Drafts {
     tunnel_ip: String,
     listen_port: String,
     relay_input: String,
-    magic_dns_suffix: String,
     fips_host_inbound_tcp_ports: String,
     advertised_routes: String,
     exit_search: String,
@@ -98,7 +97,6 @@ impl Drafts {
         self.endpoint = state.endpoint.clone();
         self.tunnel_ip = state.tunnel_ip.clone();
         self.listen_port = state.listen_port.to_string();
-        self.magic_dns_suffix = state.magic_dns_suffix.clone();
         self.fips_host_inbound_tcp_ports = state.fips_host_inbound_tcp_ports.clone();
         self.advertised_routes = state.advertised_routes.join(", ");
         self.wireguard_exit_config = state.wireguard_exit_config.clone();
@@ -2479,7 +2477,6 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     setting_entry(app, &device, "Tunnel IP", "tunnel_ip");
     setting_entry(app, &device, "Endpoint", "endpoint");
     setting_entry(app, &device, "Listen Port", "listen_port");
-    setting_entry(app, &device, "DNS Suffix", "magic_dns_suffix");
     setting_entry(
         app,
         &device,
@@ -2721,22 +2718,38 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
         }
         system.append(&row);
     }
-    switch_row(app, &system, "Autoconnect", state.autoconnect, |enabled| {
-        NativeAppAction::UpdateSettings {
+    switch_row(
+        app,
+        &system,
+        "Start VPN automatically",
+        state.autoconnect,
+        |enabled| NativeAppAction::UpdateSettings {
             patch: SettingsPatch {
                 autoconnect: Some(enabled),
                 ..SettingsPatch::default()
             },
-        }
-    });
+        },
+    );
     switch_row(
         app,
         &system,
-        "Non-VPN .fips",
+        "Route to non-VPN .fips",
         state.fips_host_tunnel_enabled,
         |enabled| NativeAppAction::UpdateSettings {
             patch: SettingsPatch {
                 fips_host_tunnel_enabled: Some(enabled),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+    switch_row(
+        app,
+        &system,
+        "Connect to non-roster FIPS peers",
+        state.connect_to_non_roster_fips_peers,
+        |enabled| NativeAppAction::UpdateSettings {
+            patch: SettingsPatch {
+                connect_to_non_roster_fips_peers: Some(enabled),
                 ..SettingsPatch::default()
             },
         },
@@ -3072,7 +3085,6 @@ fn setting_entry(app: &AppRef, parent: &gtk::Box, title: &str, key: &'static str
             "endpoint" => model.drafts.endpoint.clone(),
             "tunnel_ip" => model.drafts.tunnel_ip.clone(),
             "listen_port" => model.drafts.listen_port.clone(),
-            "magic_dns_suffix" => model.drafts.magic_dns_suffix.clone(),
             "fips_host_inbound_tcp_ports" => model.drafts.fips_host_inbound_tcp_ports.clone(),
             _ => String::new(),
         }
@@ -3088,7 +3100,6 @@ fn setting_entry(app: &AppRef, parent: &gtk::Box, title: &str, key: &'static str
                 "endpoint" => model.drafts.endpoint = value,
                 "tunnel_ip" => model.drafts.tunnel_ip = value,
                 "listen_port" => model.drafts.listen_port = value,
-                "magic_dns_suffix" => model.drafts.magic_dns_suffix = value,
                 "fips_host_inbound_tcp_ports" => model.drafts.fips_host_inbound_tcp_ports = value,
                 _ => {}
             }
@@ -3150,7 +3161,6 @@ fn save_device_settings(app: &AppRef) {
                 endpoint: Some(drafts.endpoint),
                 tunnel_ip: Some(drafts.tunnel_ip),
                 listen_port,
-                magic_dns_suffix: Some(drafts.magic_dns_suffix),
                 fips_host_inbound_tcp_ports: Some(drafts.fips_host_inbound_tcp_ports),
                 ..SettingsPatch::default()
             },

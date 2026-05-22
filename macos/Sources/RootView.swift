@@ -12,7 +12,6 @@ struct RootView: View {
     @State private var tunnelIp = ""
     @State private var listenPort = ""
     @State private var relayInput = ""
-    @State private var magicDnsSuffix = ""
     @State private var fipsHostInboundTcpPorts = ""
     @State private var wireguardExitConfig = ""
     @State private var networkNameInput = ""
@@ -36,7 +35,6 @@ struct RootView: View {
     @State private var lastSyncedEndpoint = ""
     @State private var lastSyncedTunnelIp = ""
     @State private var lastSyncedListenPort: UInt32 = 0
-    @State private var lastSyncedMagicDnsSuffix = ""
     @State private var lastSyncedFipsHostInboundTcpPorts = ""
     @State private var lastSyncedWireguardExitConfig: String? = nil
 
@@ -1352,13 +1350,17 @@ struct RootView: View {
                 }
             }
             VStack(alignment: .leading, spacing: 8) {
-                settingsToggleRow("Autoconnect", isOn: Binding(
+                settingsToggleRow("Start VPN automatically", isOn: Binding(
                     get: { state.autoconnect },
                     set: { manager.setAutoconnect($0) }
                 ))
-                settingsToggleRow("Non-VPN .fips", isOn: Binding(
+                settingsToggleRow("Route to non-VPN .fips", isOn: Binding(
                     get: { state.fipsHostTunnelEnabled },
                     set: { manager.setFipsHostTunnel($0) }
+                ))
+                settingsToggleRow("Connect to non-roster FIPS peers", isOn: Binding(
+                    get: { state.connectToNonRosterFipsPeers },
+                    set: { manager.setConnectToNonRosterFipsPeers($0) }
                 ))
                 settingsToggleRow("Launch on startup", isOn: Binding(
                     get: { state.launchOnStartup },
@@ -1380,7 +1382,6 @@ struct RootView: View {
                     endpoint: endpoint,
                     tunnelIp: tunnelIp,
                     listenPort: listenPort,
-                    magicDnsSuffix: magicDnsSuffix,
                     fipsHostInboundTcpPorts: fipsHostInboundTcpPorts
                 )
             } label: {
@@ -1830,10 +1831,6 @@ struct RootView: View {
         if state.listenPort != lastSyncedListenPort {
             listenPort = String(state.listenPort)
             lastSyncedListenPort = state.listenPort
-        }
-        if state.magicDnsSuffix != lastSyncedMagicDnsSuffix {
-            magicDnsSuffix = state.magicDnsSuffix
-            lastSyncedMagicDnsSuffix = state.magicDnsSuffix
         }
         if state.fipsHostInboundTcpPorts != lastSyncedFipsHostInboundTcpPorts {
             fipsHostInboundTcpPorts = state.fipsHostInboundTcpPorts

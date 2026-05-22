@@ -28,6 +28,7 @@ fn generated_config_auto_populates_keys() {
         config.fips_host_tunnel_enabled,
         cfg!(any(target_os = "linux", target_os = "macos"))
     );
+    assert!(config.connect_to_non_roster_fips_peers);
     assert!(config.fips_host_inbound_tcp_ports.is_empty());
     assert!(!config.node.advertise_exit_node);
     assert!(config.node.advertised_routes.is_empty());
@@ -73,6 +74,18 @@ fn exit_node_leak_protection_off_is_preserved() {
 
     let decoded: AppConfig = toml::from_str(&encoded).expect("parse config");
     assert!(!decoded.exit_node_leak_protection);
+}
+
+#[test]
+fn magic_dns_suffix_is_fixed_and_not_serialized() {
+    let mut config: AppConfig =
+        toml::from_str(r#"magic_dns_suffix = "custom.test""#).expect("parse legacy suffix");
+
+    config.ensure_defaults();
+
+    assert_eq!(config.magic_dns_suffix, "nvpn");
+    let encoded = toml::to_string(&config).expect("serialize config");
+    assert!(!encoded.contains("magic_dns_suffix"));
 }
 
 #[test]

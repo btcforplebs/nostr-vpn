@@ -227,6 +227,14 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void ConnectToNonRosterFipsPeers_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is CheckBox checkBox)
+        {
+            await ViewModel.SetConnectToNonRosterFipsPeersAsync(checkBox.IsChecked == true);
+        }
+    }
+
     private async void LaunchOnStartup_Click(object sender, RoutedEventArgs e)
     {
         if (sender is CheckBox checkBox)

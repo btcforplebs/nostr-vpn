@@ -46,6 +46,7 @@ struct AppState: Decodable {
     var wireguardExitMtu: Int = 0
     var wireguardExitPersistentKeepaliveSecs: Int = 0
     var wireguardExitConfig = ""
+    var connectToNonRosterFipsPeers = true
     var magicDnsSuffix = ""
     var magicDnsStatus = ""
     var autoconnect = false
@@ -75,6 +76,7 @@ struct AppState: Decodable {
         case wireguardExitPrivateKey, wireguardExitPeerPublicKey, wireguardExitPeerPresharedKey
         case wireguardExitEndpoint, wireguardExitAllowedIps, wireguardExitDns
         case wireguardExitMtu, wireguardExitPersistentKeepaliveSecs, wireguardExitConfig
+        case connectToNonRosterFipsPeers
         case magicDnsSuffix, magicDnsStatus, autoconnect
         case inviteBroadcastActive, inviteBroadcastRemainingSecs
         case nearbyDiscoveryActive, nearbyDiscoveryRemainingSecs, configPath
@@ -130,6 +132,7 @@ struct AppState: Decodable {
         wireguardExitMtu = container.int(.wireguardExitMtu)
         wireguardExitPersistentKeepaliveSecs = container.int(.wireguardExitPersistentKeepaliveSecs)
         wireguardExitConfig = container.string(.wireguardExitConfig)
+        connectToNonRosterFipsPeers = container.bool(.connectToNonRosterFipsPeers, default: true)
         magicDnsSuffix = container.string(.magicDnsSuffix)
         magicDnsStatus = container.string(.magicDnsStatus)
         autoconnect = container.bool(.autoconnect)
