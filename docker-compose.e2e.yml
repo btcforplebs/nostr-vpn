@@ -3,8 +3,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.e2e
+      args:
+        NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
-        fips: ${NVPN_FIPS_REPO_PATH:-../fips}
+        fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
     entrypoint: ["sleep", "infinity"]
     environment:
       FIPS_PEER_ACTOR: "${FIPS_PEER_ACTOR:-0}"
@@ -20,8 +22,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.e2e
+      args:
+        NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
-        fips: ${NVPN_FIPS_REPO_PATH:-../fips}
+        fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
     entrypoint: ["sleep", "infinity"]
     environment:
       FIPS_PEER_ACTOR: "${FIPS_PEER_ACTOR:-0}"
@@ -37,8 +41,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.e2e
+      args:
+        NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
-        fips: ${NVPN_FIPS_REPO_PATH:-../fips}
+        fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
     entrypoint: ["sleep", "infinity"]
     environment:
       FIPS_PEER_ACTOR: "${FIPS_PEER_ACTOR:-0}"

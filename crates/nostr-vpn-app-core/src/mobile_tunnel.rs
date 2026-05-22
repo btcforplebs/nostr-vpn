@@ -1795,12 +1795,12 @@ fn fips_peer_configs_from_mesh(
             continue;
         }
         if let Ok(peer) = FipsMeshPeerConfig::from_participant_pubkey(participant, Vec::new()) {
-            // Learned non-roster hints seed direct reconnects but not fallback
-            // fanout.
+            // Learned non-roster hints are authenticated overlay peers; without
+            // fallback transit, they are warm sessions with little use.
             configs.push(fips_peer_config_from_hint(
                 &peer.endpoint_npub,
                 Some(hints),
-                false,
+                true,
             ));
             included.insert(participant.clone());
         }
@@ -3307,8 +3307,8 @@ mod tests {
         assert_eq!(transit_config.addresses[0].addr, "192.168.50.33:51820");
         assert_eq!(transit_config.addresses[0].seen_at_ms, Some(1234));
         assert!(
-            !transit_config.discovery_fallback_transit,
-            "hinted non-roster peers seed direct reconnects but not fallback fanout"
+            transit_config.discovery_fallback_transit,
+            "hinted non-roster peers should be usable as fallback transit"
         );
     }
 

@@ -145,6 +145,8 @@ fi
   --endpoint "198.51.100.10:51820" \
   --listen-port 51820 \
   --fips-advertise-endpoint true \
+  --fips-nostr-discovery-enabled false \
+  --fips-bootstrap-enabled false \
   --fips-peer-endpoint "$BOB_NPUB=198.51.100.11:51820" \
   --advertise-exit-node >/dev/null
 "${COMPOSE[@]}" exec -T node-b nvpn set \
@@ -152,6 +154,8 @@ fi
   --endpoint "198.51.100.11:51820" \
   --listen-port 51820 \
   --fips-advertise-endpoint true \
+  --fips-nostr-discovery-enabled false \
+  --fips-bootstrap-enabled false \
   --fips-peer-endpoint "$ALICE_NPUB=198.51.100.10:51820" \
   --exit-node "$ALICE_NPUB" >/dev/null
 

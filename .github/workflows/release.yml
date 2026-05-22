@@ -28,9 +28,6 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Checkout FIPS Docker e2e context
-        run: git clone --depth 1 https://github.com/mmalmi/fips.git ../fips
-
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

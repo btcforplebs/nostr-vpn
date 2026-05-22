@@ -208,6 +208,8 @@ PersistentKeepalive = 25
   --endpoint "${NODE_A_IP}:51820" \
   --listen-port 51820 \
   --fips-advertise-endpoint true \
+  --fips-nostr-discovery-enabled false \
+  --fips-bootstrap-enabled false \
   --fips-peer-endpoint "$BOB_NPUB=198.51.100.11:51820" \
   --wireguard-exit-config-file /tmp/wg-upstream.conf \
   --wireguard-exit-enabled true >/dev/null
@@ -216,6 +218,8 @@ PersistentKeepalive = 25
   --endpoint "198.51.100.11:51820" \
   --listen-port 51820 \
   --fips-advertise-endpoint true \
+  --fips-nostr-discovery-enabled false \
+  --fips-bootstrap-enabled false \
   --fips-peer-endpoint "$ALICE_NPUB=${NODE_A_IP}:51820" >/dev/null
 
 for node in node-a node-b; do

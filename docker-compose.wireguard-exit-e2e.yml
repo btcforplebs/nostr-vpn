@@ -6,8 +6,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.e2e
+      args:
+        NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
-        fips: ${NVPN_FIPS_REPO_PATH:-../fips}
+        fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
     cap_add:
       - NET_ADMIN
     entrypoint: ["sleep", "infinity"]
@@ -19,8 +21,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.e2e
+      args:
+        NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
-        fips: ${NVPN_FIPS_REPO_PATH:-../fips}
+        fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
     cap_add:
       - NET_ADMIN
     sysctls:
@@ -40,8 +44,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.e2e
+      args:
+        NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
-        fips: ${NVPN_FIPS_REPO_PATH:-../fips}
+        fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
     cap_add:
       - NET_ADMIN
     devices:
@@ -55,8 +61,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.e2e
+      args:
+        NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
-        fips: ${NVPN_FIPS_REPO_PATH:-../fips}
+        fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
     cap_add:
       - NET_ADMIN
     devices:

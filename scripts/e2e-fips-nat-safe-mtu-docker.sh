@@ -380,6 +380,8 @@ fi
   --endpoint "$NODE_A_PUBLIC_IP:51820" \
   --listen-port 51820 \
   --fips-advertise-endpoint false \
+  --fips-nostr-discovery-enabled false \
+  --fips-bootstrap-enabled false \
   --fips-peer-endpoint "$BOB_NPUB=$NAT_B_PUBLIC_IP:51820" >/dev/null
 
 "${COMPOSE[@]}" exec -T node-b nvpn set \
@@ -390,6 +392,8 @@ fi
   --endpoint "$NAT_B_PUBLIC_IP:51820" \
   --listen-port 51820 \
   --fips-advertise-endpoint false \
+  --fips-nostr-discovery-enabled false \
+  --fips-bootstrap-enabled false \
   --fips-peer-endpoint "$ALICE_NPUB=$NODE_A_PUBLIC_IP:51820" >/dev/null
 
 for node in node-a node-b; do

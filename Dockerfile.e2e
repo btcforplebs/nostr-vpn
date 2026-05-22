@@ -11,10 +11,20 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY --from=fips . /app/fips
 
-# The compose file passes the sibling fips checkout as a BuildKit context.
-# Patch crates.io FIPS dependencies to that local context so perf/e2e images
-# exercise the code under test instead of the published crates.
-RUN printf '\n[patch.crates-io]\nfips-core = { path = "/app/fips/crates/fips-core" }\nfips-endpoint = { path = "/app/fips/crates/fips-endpoint" }\nfips-identity = { path = "/app/fips/crates/fips-identity" }\n' >> Cargo.toml
+ARG NVPN_PATCH_LOCAL_FIPS=0
+
+# CI gates the published FIPS crates pinned by Cargo.lock. Developers can set
+# NVPN_PATCH_LOCAL_FIPS=1 and NVPN_FIPS_REPO_PATH=../fips to exercise a sibling
+# FIPS checkout against these docker e2es.
+RUN case "$NVPN_PATCH_LOCAL_FIPS" in \
+        1|true|TRUE|True|yes|YES|Yes|on|ON|On) \
+          test -f /app/fips/crates/fips-core/Cargo.toml \
+            && test -f /app/fips/crates/fips-endpoint/Cargo.toml \
+            && test -f /app/fips/crates/fips-identity/Cargo.toml \
+            || { echo "NVPN_PATCH_LOCAL_FIPS=1 requires NVPN_FIPS_REPO_PATH to point at a fips checkout" >&2; exit 1; }; \
+          printf '\n[patch.crates-io]\nfips-core = { path = "/app/fips/crates/fips-core" }\nfips-endpoint = { path = "/app/fips/crates/fips-endpoint" }\nfips-identity = { path = "/app/fips/crates/fips-identity" }\n' >> Cargo.toml; \
+          ;; \
+      esac
 
 # BuildKit cache mounts: persist the cargo registry, git checkouts, and
 # target/ across builds. Without this, every source change re-downloads

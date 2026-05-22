@@ -22,6 +22,20 @@ All notable changes to this project are documented in this file.
   connectivity keep working when it is off. Available on web, macOS, iOS,
   Android, Windows, and Linux, and via `nvpn set --fips-nostr-discovery-enabled`
   / `--fips-bootstrap-enabled`.
+- Learned non-roster FIPS peers are now kept as fallback transit peers, so
+  authenticated overlay neighbors discovered in previous sessions can help
+  route lookups after restart.
+- Docker e2e images now build against the published FIPS crates by default;
+  set `NVPN_PATCH_LOCAL_FIPS=1` with `NVPN_FIPS_REPO_PATH` to test a local FIPS
+  checkout.
+
+### Fixed
+
+- CLI invite import now preserves the invite secret so FIPS join requests sent
+  from imported invites are accepted by the admin.
+- Docker FIPS e2e scripts with static local topologies now disable public
+  relay/bootstrap discovery so outside peers cannot perturb deterministic
+  continuity checks.
 
 ## 4.0.39 - 2026-05-22
 

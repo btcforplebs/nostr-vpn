@@ -90,6 +90,7 @@ pub(crate) fn apply_network_invite_to_active_network(
             network.shared_roster_updated_at = 0;
             network.shared_roster_signed_by.clear();
         }
+        network.invite_secret = invite.invite_secret.trim().to_string();
 
         for participant in &invite_participants {
             if own_pubkey.as_deref() == Some(participant.as_str()) {

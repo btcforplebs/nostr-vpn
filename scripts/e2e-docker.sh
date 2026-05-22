@@ -289,6 +289,8 @@ fi
   --endpoint "10.203.0.10:51820" \
   --listen-port 51820 \
   --fips-advertise-endpoint true \
+  --fips-nostr-discovery-enabled false \
+  --fips-bootstrap-enabled false \
   --fips-peer-endpoint "$BOB_NPUB=10.203.0.11:51820" >/dev/null
 
 "${COMPOSE[@]}" exec -T node-b nvpn set \
@@ -298,6 +300,8 @@ fi
   --endpoint "10.203.0.11:51820" \
   --listen-port 51820 \
   --fips-advertise-endpoint true \
+  --fips-nostr-discovery-enabled false \
+  --fips-bootstrap-enabled false \
   --fips-peer-endpoint "$ALICE_NPUB=10.203.0.10:51820" \
   --fips-host-inbound-tcp-ports "$FIPS_HOST_TCP_PORT" >/dev/null
 

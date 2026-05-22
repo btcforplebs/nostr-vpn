@@ -1479,8 +1479,8 @@ fn fips_endpoint_peers_from_mesh(
     // fips dialer ranks them ahead of unstamped operator hints in the
     // same try-everything pass. Authenticated non-roster entries are kept
     // too: those are overlay transit peers we successfully handshook with
-    // before, and reseeding them on restart keeps the FIPS overlay warm
-    // before relay discovery catches up.
+    // before, and reseeding them as fallback transit keeps the FIPS overlay
+    // useful before relay discovery catches up.
     for (npub, addresses) in recent_peer_endpoints {
         let npub = normalize_fips_endpoint_npub(&npub);
         let peer = peers
@@ -1488,7 +1488,7 @@ fn fips_endpoint_peers_from_mesh(
             .or_insert_with(|| FipsEndpointPeerTransportConfig {
                 npub,
                 addresses: Vec::new(),
-                discovery_fallback_transit: false,
+                discovery_fallback_transit: true,
             });
         for (addr, seen_at_ms) in addresses {
             let trimmed = addr.trim();
@@ -4803,8 +4803,8 @@ mod tests {
         assert_eq!(charlie.addresses[0].addr, "10.203.0.12:51820");
         assert_eq!(charlie.addresses[0].seen_at_ms, Some(123_000));
         assert!(
-            !charlie.discovery_fallback_transit,
-            "recent non-roster peers seed direct hints but are not ambient lookup transit"
+            charlie.discovery_fallback_transit,
+            "recent non-roster peers should remain useful as fallback lookup transit"
         );
     }
 
@@ -4957,8 +4957,8 @@ mod tests {
         assert_eq!(charlie.addresses[0].addr, "203.0.113.55:51820");
         assert_eq!(charlie.addresses[0].seen_at_ms, Some(123_000));
         assert!(
-            !charlie.discovery_fallback_transit,
-            "recent non-roster peers should not receive fallback lookup fanout"
+            charlie.discovery_fallback_transit,
+            "recent non-roster peers should receive fallback lookup fanout"
         );
     }
 
