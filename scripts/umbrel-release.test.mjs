@@ -58,6 +58,7 @@ test('renderUmbrelCompose includes the pinned image and tunnel access', () => {
   assert.match(compose, /\$\{APP_DATA_DIR\}\/data:\/data/)
   assert.match(compose, /NVPN_DAEMON_STATUS_MODE: state-file/)
   assert.match(compose, /NVPN_EXTERNAL_DAEMON: "true"/)
+  assert.match(compose, /^      APP_PORT: 38080$/m)
 })
 
 test('renderUmbrelManifest syncs version and release notes', () => {
@@ -81,6 +82,11 @@ submission: ""
 test('base Umbrel manifest does not ship a blank submission URL', () => {
   const manifest = readFileSync(join(repoRoot, 'umbrel/umbrel-app.yml'), 'utf8')
   assert.doesNotMatch(manifest, /^submission:\s*""$/m)
+})
+
+test('base Umbrel manifest uses the app-store port assigned for Nostr VPN', () => {
+  const manifest = readFileSync(join(repoRoot, 'umbrel/umbrel-app.yml'), 'utf8')
+  assert.match(manifest, /^port: 38180$/m)
 })
 
 test('base Umbrel app includes an exports file', () => {
