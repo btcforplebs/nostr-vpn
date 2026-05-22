@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.39 - 2026-05-22
+
 ### Added
 
 - Built-in public FIPS bootstrap nodes, dialed as fallback transit so peers can
@@ -11,6 +13,11 @@ All notable changes to this project are documented in this file.
   single editable peer list in config (shared with any custom transit peers);
   the web settings show it with inline editing and a "reset to defaults" button,
   and every platform has a "Use bootstrap servers" master toggle (default on).
+- Embedded `.fips` host tunnel: `.fips` hosts now route through a fips-core TUN
+  with the fips-core host firewall instead of the legacy path.
+- Import WireGuard configuration files directly from the web and Android apps.
+- Manual network join in the web UI for joining a network by id without an
+  invite, with full device id and grouped network id display.
 - Outbound TCP transport so bootstrap/transit peers advertised on `tcp:443` can
   be reached on networks that block UDP outright. Peer addresses are transport
   tagged (`udp:` / `tcp:`).
@@ -22,38 +29,17 @@ All notable changes to this project are documented in this file.
   connectivity keep working when it is off. Available on web, macOS, iOS,
   Android, Windows, and Linux, and via `nvpn set --fips-nostr-discovery-enabled`
   / `--fips-bootstrap-enabled`.
+- Linux desktop GUI reaches settings parity with macOS, supports close-to-tray,
+  and now launches hidden on startup.
+- Diagnostics surface per-peer FIPS stats on both desktop and mobile.
+- Invite QR codes are larger and rendered as SVG for sharper scanning, and
+  invite secrets and group network ids now rotate.
 - Learned non-roster FIPS peers are now kept as fallback transit peers, so
   authenticated overlay neighbors discovered in previous sessions can help
   route lookups after restart.
 - Docker e2e images now build against the published FIPS crates by default;
   set `NVPN_PATCH_LOCAL_FIPS=1` with `NVPN_FIPS_REPO_PATH` to test a local FIPS
   checkout.
-
-### Fixed
-
-- CLI invite import now preserves the invite secret so FIPS join requests sent
-  from imported invites are accepted by the admin.
-- Docker FIPS e2e scripts with static local topologies now disable public
-  relay/bootstrap discovery so outside peers cannot perturb deterministic
-  continuity checks.
-
-## 4.0.39 - 2026-05-22
-
-### Added
-
-- Embedded `.fips` host tunnel: `.fips` hosts now route through a fips-core TUN
-  with the fips-core host firewall instead of the legacy path.
-- Import WireGuard configuration files directly from the web and Android apps.
-- Manual network join in the web UI for joining a network by id without an
-  invite, with full device id and grouped network id display.
-
-### Changed
-
-- Linux desktop GUI reaches settings parity with macOS, supports close-to-tray,
-  and now launches hidden on startup.
-- Diagnostics surface per-peer FIPS stats on both desktop and mobile.
-- Invite QR codes are larger and rendered as SVG for sharper scanning, and
-  invite secrets and group network ids now rotate.
 - Device lists hide the search field when short, normal button colors are
   muted, and macOS device/exit-node/rename fields no longer rebuild the whole
   root view on each keystroke, keeping text input responsive on large rosters.
@@ -63,6 +49,11 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- CLI invite import now preserves the invite secret so FIPS join requests sent
+  from imported invites are accepted by the admin.
+- Docker FIPS e2e scripts with static local topologies now disable public
+  relay/bootstrap discovery so outside peers cannot perturb deterministic
+  continuity checks.
 - FIPS peer discovery settings and roster propagation for stale peers.
 - Windows exit-node list build.
 
