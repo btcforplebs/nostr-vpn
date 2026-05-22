@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result, anyhow};
-use fips_core::config::TcpConfig;
 use fips_endpoint::{
     Config, ConnectPolicy, FipsEndpoint, FipsEndpointError, FipsEndpointMessage, FipsEndpointPeer,
     NostrDiscoveryPolicy, PeerAddress, PeerConfig as FipsPeerConfig, RoutingMode,
@@ -1402,7 +1401,14 @@ fn fips_endpoint_config(
             .any(|hint| split_peer_transport_addr(&hint.addr).0 == "tcp")
     });
     if needs_tcp {
-        config.transports.tcp = TransportInstances::Single(TcpConfig::default());
+        // Default = outbound-only (no bind_addr). Inferred type keeps this the
+        // exact `TcpConfig` of `config.transports`, which matters under the e2e's
+        // [patch.crates-io] where a second fips-core version can be in the graph,
+        // so we deliberately keep `Default::default()` over `TcpConfig::default()`.
+        #[allow(clippy::default_trait_access)]
+        {
+            config.transports.tcp = TransportInstances::Single(Default::default());
+        }
     }
     config.peers = peers
         .iter()

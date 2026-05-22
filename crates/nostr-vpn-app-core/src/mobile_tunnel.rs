@@ -17,7 +17,6 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
-use fips_core::config::TcpConfig;
 use fips_endpoint::{
     Config as FipsConfig, ConnectPolicy, FipsEndpoint, FipsEndpointMessage, FipsEndpointPeer,
     FipsEndpointRelayStatus, NostrDiscoveryPolicy, PeerAddress, PeerConfig as FipsPeerConfig,
@@ -2012,7 +2011,13 @@ fn fips_endpoint_config(scope: &str, mobile: &MobileTunnelConfig) -> FipsConfig 
             .any(|addr| addr.transport.eq_ignore_ascii_case("tcp"))
     });
     if needs_tcp {
-        config.transports.tcp = TransportInstances::Single(TcpConfig::default());
+        // Default = outbound-only; inferred type avoids naming a possibly-second
+        // fips-core's TcpConfig (see fips_private_mesh for the same rationale), so
+        // we deliberately keep `Default::default()` over `TcpConfig::default()`.
+        #[allow(clippy::default_trait_access)]
+        {
+            config.transports.tcp = TransportInstances::Single(Default::default());
+        }
     }
     config
 }

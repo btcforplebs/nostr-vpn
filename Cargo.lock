@@ -2561,7 +2561,6 @@ dependencies = [
  "anyhow",
  "base64",
  "dirs",
- "fips-core",
  "fips-endpoint",
  "image",
  "jni 0.21.1",
