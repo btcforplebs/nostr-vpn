@@ -54,6 +54,8 @@ All notable changes to this project are documented in this file.
 - Docker FIPS e2e scripts with static local topologies now disable public
   relay/bootstrap discovery so outside peers cannot perturb deterministic
   continuity checks.
+- Linux musl CLI release builds no longer depend on Cargo pre-extracting the
+  `rustables` registry source before the nftables header workaround is applied.
 - Recent FIPS peer caches preserve learned TCP transport tags while continuing
   to accept old bare UDP endpoint entries.
 - FIPS peer discovery settings and roster propagation for stale peers.

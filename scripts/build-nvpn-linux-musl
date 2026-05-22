@@ -89,32 +89,49 @@ fi
 
 cargo "${cargo_config_args[@]}" fetch --target "$TARGET"
 
-rustables_src=$(find "${CARGO_HOME:-/root/.cargo}/registry/src" -maxdepth 3 -type d -name rustables-0.8.7 -print -quit)
+rustables_src=$(find "${CARGO_HOME:-/root/.cargo}/registry/src" -maxdepth 3 -type d -name 'rustables-[0-9]*' -print -quit)
 if [[ -z "$rustables_src" ]]; then
-  echo "rustables-0.8.7 was not found in the cargo registry after cargo fetch" >&2
+  rm -rf vendor-cargo
+  vendor_log=/tmp/nvpn-cargo-vendor.log
+  if ! cargo "${cargo_config_args[@]}" vendor --versioned-dirs vendor-cargo >/tmp/nvpn-cargo-vendor-config.toml 2>"$vendor_log"; then
+    cat "$vendor_log" >&2
+    exit 1
+  fi
+  rustables_src=$(find vendor-cargo -maxdepth 1 -type d -name 'rustables-[0-9]*' -print -quit)
+fi
+if [[ -z "$rustables_src" ]]; then
+  echo "rustables source was not found after cargo fetch/vendor" >&2
   exit 1
 fi
 
 mkdir -p vendor
-cp -a "$rustables_src" vendor/rustables-0.8.7
+rustables_vendor="vendor/$(basename "$rustables_src")"
+rm -rf "$rustables_vendor"
+cp -a "$rustables_src" "$rustables_vendor"
 
-if ! grep -q '^rustables = { path = "vendor/rustables-0.8.7" }' Cargo.toml; then
-  if grep -q '^\[patch.crates-io\]' Cargo.toml; then
-    sed -i '/^\[patch.crates-io\]/a rustables = { path = "vendor/rustables-0.8.7" }' Cargo.toml
-  else
-    cat >> Cargo.toml <<'PATCH'
+rustables_patch_line="rustables = { path = \"$rustables_vendor\" }"
+if ! grep -Fq "$rustables_patch_line" Cargo.toml; then
+  python3 - "$rustables_patch_line" <<'PATCH'
+from pathlib import Path
+import sys
 
-[patch.crates-io]
-rustables = { path = "vendor/rustables-0.8.7" }
+path = Path("Cargo.toml")
+patch_line = sys.argv[1]
+text = path.read_text()
+if "[patch.crates-io]\n" in text:
+    text = text.replace("[patch.crates-io]\n", f"[patch.crates-io]\n{patch_line}\n", 1)
+else:
+    text += f"\n[patch.crates-io]\n{patch_line}\n"
+path.write_text(text)
 PATCH
-  fi
 fi
 
-if ! grep -q 'NFTA_CHAIN_FLAGS' vendor/rustables-0.8.7/build.rs; then
-  python3 - <<'PATCH'
+if ! grep -q 'NFTA_CHAIN_FLAGS' "$rustables_vendor/build.rs"; then
+  python3 - "$rustables_vendor/build.rs" <<'PATCH'
 from pathlib import Path
+import sys
 
-path = Path("vendor/rustables-0.8.7/build.rs")
+path = Path(sys.argv[1])
 text = path.read_text()
 old = '    let s = bindings.to_string().replace(" ; ", ";\\n");\n    let s = reformat_units(&s);\n'
 new = '''    let mut s = bindings.to_string().replace(" ; ", ";\\n");
