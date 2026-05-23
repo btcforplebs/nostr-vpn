@@ -476,7 +476,7 @@ pub(crate) enum FipsPrivateMeshEvent {
         sender_pubkey: String,
         network_id: String,
         roster: NetworkRoster,
-        signed_roster: Option<SignedRoster>,
+        signed_roster: Option<Box<SignedRoster>>,
     },
     Capabilities {
         sender_pubkey: String,
@@ -1076,7 +1076,7 @@ impl FipsPrivateMeshRuntime {
             &FipsControlFrame::Roster {
                 network_id,
                 roster,
-                signed_roster: Some(signed_roster),
+                signed_roster: Some(Box::new(signed_roster)),
             },
         )
         .await

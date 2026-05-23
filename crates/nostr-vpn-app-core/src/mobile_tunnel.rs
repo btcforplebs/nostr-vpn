@@ -69,6 +69,7 @@ const MOBILE_CAPABILITIES_BROADCAST_SECS: u64 = 30;
 const MOBILE_CAPABILITIES_STARTUP_BURST_COUNT: usize = 4;
 const MOBILE_CAPABILITIES_STARTUP_BURST_INTERVAL_MS: u64 = 750;
 const MOBILE_RUNTIME_STATE_REFRESH_SECS: u64 = 2;
+const MOBILE_ROSTER_RESEND_SECS: u64 = 10;
 const MOBILE_RUNTIME_STATE_FILE: &str = "mobile-runtime-state.json";
 const MOBILE_PEER_ONLINE_GRACE_SECS: u64 = 45;
 const MOBILE_PEER_ACTIVE_PING_INTERVAL_SECS: u64 = 10;
@@ -728,7 +729,7 @@ impl MobileTunnel {
             let presence = Arc::clone(&presence);
             let app_config = Arc::clone(&app_config);
             tasks.push(tokio::spawn(async move {
-                let mut sent_hash_by_peer = HashMap::<String, String>::new();
+                let mut sent_by_peer = HashMap::<String, MobileRosterSentState>::new();
                 loop {
                     if let Err(error) = sync_mobile_signed_roster_with_connected_peers(
                         &endpoint,
@@ -736,7 +737,7 @@ impl MobileTunnel {
                         &presence,
                         &app_config,
                         &config_path,
-                        &mut sent_hash_by_peer,
+                        &mut sent_by_peer,
                     )
                     .await
                     {
@@ -1022,7 +1023,7 @@ async fn handle_mobile_control_frame(
                 &source_pubkey,
                 &network_id,
                 &roster,
-                signed_roster.as_ref(),
+                signed_roster.as_deref(),
             )
             .await?;
         }
@@ -1803,35 +1804,40 @@ async fn broadcast_mobile_capabilities(
     Ok(sent)
 }
 
+struct MobileRosterSentState {
+    hash: String,
+    sent_at: u64,
+}
+
 async fn sync_mobile_signed_roster_with_connected_peers(
     endpoint: &FipsEndpoint,
     mesh: &Arc<RwLock<FipsMeshRuntime>>,
     presence: &Arc<RwLock<HashMap<String, MobilePeerPresence>>>,
     app_config: &Arc<RwLock<AppConfig>>,
     config_path: &Path,
-    sent_hash_by_peer: &mut HashMap<String, String>,
+    sent_by_peer: &mut HashMap<String, MobileRosterSentState>,
 ) -> Result<usize> {
     let Some(signed_roster) = mobile_current_signed_roster_from_store(app_config, config_path)?
     else {
-        sent_hash_by_peer.clear();
+        sent_by_peer.clear();
         return Ok(0);
     };
+    let now = unix_timestamp();
     let roster_hash = signed_roster.content_hash();
     let frame = FipsControlFrame::Roster {
         network_id: signed_roster.network_id()?,
         roster: signed_roster.roster()?,
-        signed_roster: Some(signed_roster),
+        signed_roster: Some(Box::new(signed_roster)),
     };
     let messages = encode_fips_control_messages(&frame)?;
     let connected = mobile_connected_roster_peers(mesh, presence)?;
-    sent_hash_by_peer.retain(|peer, _| connected.contains_key(peer));
+    sent_by_peer.retain(|peer, _| connected.contains_key(peer));
 
     let mut sent = 0usize;
     for (participant, endpoint_npub) in connected {
-        if sent_hash_by_peer
-            .get(&participant)
-            .is_some_and(|sent_hash| sent_hash == &roster_hash)
-        {
+        if sent_by_peer.get(&participant).is_some_and(|sent| {
+            sent.hash == roster_hash && now.saturating_sub(sent.sent_at) < MOBILE_ROSTER_RESEND_SECS
+        }) {
             continue;
         }
         let mut all_sent = true;
@@ -1846,7 +1852,13 @@ async fn sync_mobile_signed_roster_with_connected_peers(
             }
         }
         if all_sent {
-            sent_hash_by_peer.insert(participant, roster_hash.clone());
+            sent_by_peer.insert(
+                participant,
+                MobileRosterSentState {
+                    hash: roster_hash.clone(),
+                    sent_at: now,
+                },
+            );
             sent += 1;
         }
     }

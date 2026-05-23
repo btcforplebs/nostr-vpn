@@ -182,6 +182,63 @@ fn shared_roster_publish_allowed_only_for_current_signer() {
 }
 
 #[test]
+fn forwarded_signed_roster_can_be_selected_for_peer_sync() {
+    let nonce = unix_timestamp();
+    let dir = std::env::temp_dir().join(format!("nvpn-forwarded-signed-roster-{nonce}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let config_path = dir.join("config.toml");
+
+    let mut alice = AppConfig::generated();
+    activate_first_network(&mut alice);
+    let alice_pubkey = alice.own_nostr_pubkey_hex().expect("alice pubkey");
+
+    let mut bob = AppConfig::generated();
+    activate_first_network(&mut bob);
+    let bob_pubkey = bob.own_nostr_pubkey_hex().expect("bob pubkey");
+    let carol_pubkey = Keys::generate().public_key().to_hex();
+
+    alice.networks[0].name = "Home".to_string();
+    alice.networks[0].network_id = "mesh".to_string();
+    alice.networks[0].participants = vec![bob_pubkey.clone(), carol_pubkey.clone()];
+    alice.networks[0].admins = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+    alice.networks[0].shared_roster_updated_at = 1_726_000_000;
+    alice.networks[0].shared_roster_signed_by = alice_pubkey.clone();
+
+    let alice_shared = alice
+        .shared_network_roster(&alice.networks[0].id)
+        .expect("alice shared roster");
+    let signed = SignedRoster::sign(
+        &alice_shared.network_id,
+        network_roster_from_shared(&alice_shared),
+        &alice.nostr_keys().expect("alice keys"),
+    )
+    .expect("sign roster");
+
+    bob.networks[0].name = "Home".to_string();
+    bob.networks[0].network_id = "mesh".to_string();
+    bob.networks[0].participants = vec![alice_pubkey.clone(), carol_pubkey];
+    bob.networks[0].admins = vec![alice_pubkey, bob_pubkey];
+    bob.networks[0].shared_roster_updated_at = signed.signed_at();
+    bob.networks[0].shared_roster_signed_by = signed.signer_pubkey_hex().expect("signer");
+
+    upsert_signed_roster(&signed_rosters_file_path(&config_path), signed.clone())
+        .expect("persist signed roster");
+
+    let forwarded = active_signed_roster_for_sync(&bob, &config_path, true)
+        .expect("load forwarded roster")
+        .expect("forwarded roster should be selected");
+    assert_eq!(forwarded.artifact_hash(), signed.artifact_hash());
+    assert!(
+        active_signed_roster_for_sync(&bob, &config_path, false)
+            .expect("load own-signed roster")
+            .is_none(),
+        "explicit admin publish should not re-sign or forward another admin's stored artifact"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn active_network_invite_code_roundtrips_current_roster() {
     let inviter_hex = Keys::generate().public_key().to_hex();
     let participant_hex = Keys::generate().public_key().to_hex();

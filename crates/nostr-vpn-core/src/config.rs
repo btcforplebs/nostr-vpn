@@ -1141,7 +1141,11 @@ impl AppConfig {
         let Some(network) = self.active_network_opt() else {
             return Vec::new();
         };
-        let mut participants = network.participants.clone();
+        let mut participants = network
+            .participants
+            .iter()
+            .filter_map(|participant| normalize_nostr_pubkey(participant).ok())
+            .collect::<Vec<_>>();
         participants.sort();
         participants.dedup();
         participants
@@ -1151,7 +1155,12 @@ impl AppConfig {
         let mut participants = self
             .networks
             .iter()
-            .flat_map(|network| network.participants.iter().cloned())
+            .flat_map(|network| {
+                network
+                    .participants
+                    .iter()
+                    .filter_map(|participant| normalize_nostr_pubkey(participant).ok())
+            })
             .collect::<Vec<_>>();
         participants.sort();
         participants.dedup();
@@ -1557,8 +1566,12 @@ impl AppConfig {
         let network = self
             .network_by_id(network_id)
             .ok_or_else(|| anyhow::anyhow!("network not found"))?;
-        let mut members = network.participants.clone();
-        members.extend(network.admins.iter().cloned());
+        let mut members = network
+            .participants
+            .iter()
+            .chain(network.admins.iter())
+            .filter_map(|member| normalize_nostr_pubkey(member).ok())
+            .collect::<Vec<_>>();
         members.sort();
         members.dedup();
         Ok(members)
@@ -1578,8 +1591,12 @@ impl AppConfig {
         let Some(network) = self.active_network_opt() else {
             return Vec::new();
         };
-        let mut members = network.participants.clone();
-        members.extend(network.admins.iter().cloned());
+        let mut members = network
+            .participants
+            .iter()
+            .chain(network.admins.iter())
+            .filter_map(|member| normalize_nostr_pubkey(member).ok())
+            .collect::<Vec<_>>();
         members.sort();
         members.dedup();
         members

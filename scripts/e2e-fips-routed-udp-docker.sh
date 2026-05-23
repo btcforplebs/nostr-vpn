@@ -351,6 +351,10 @@ if [[ -z "$ALICE_NPUB" || -z "$BOB_NPUB" || -z "$CHARLIE_NPUB" ]]; then
   exit 1
 fi
 
+"${COMPOSE[@]}" exec -T node-a nvpn set --participant "$ALICE_NPUB" >/dev/null
+"${COMPOSE[@]}" exec -T node-b nvpn set --participant "$BOB_NPUB" >/dev/null
+"${COMPOSE[@]}" exec -T node-c nvpn set --participant "$CHARLIE_NPUB" >/dev/null
+
 "${COMPOSE[@]}" exec -T node-a nvpn set \
   --network-id "$NETWORK_ID" \
   --node-name alice \

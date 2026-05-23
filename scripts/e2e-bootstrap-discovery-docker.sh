@@ -146,6 +146,9 @@ if [[ -z "$ADMIN_NPUB" || -z "$REQUESTER_NPUB" ]]; then
   exit 1
 fi
 
+"${COMPOSE[@]}" exec -T node-a nvpn set --participant "$ADMIN_NPUB" >/dev/null
+"${COMPOSE[@]}" exec -T node-c nvpn set --participant "$REQUESTER_NPUB" >/dev/null
+
 # Admin: accept join requests, advertise its endpoint, relay discovery OFF.
 "${COMPOSE[@]}" exec -T node-a nvpn set \
   --network-id "$NETWORK_ID" \

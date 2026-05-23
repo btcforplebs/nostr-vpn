@@ -3,6 +3,8 @@ use std::net::Ipv4Addr;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use nostr_sdk::prelude::Keys;
+
 use super::control_daemon_request_for_test;
 use crate::*;
 
@@ -334,9 +336,9 @@ fn fips_runtime_state_is_ready_without_waiting_for_every_peer() {
 fn fips_runtime_state_counts_direct_roster_and_other_peers() {
     let mut config = AppConfig::generated();
     activate_first_network(&mut config);
-    let roster_peer = "11".repeat(32);
-    let routed_roster_peer = "22".repeat(32);
-    let other_peer = "33".repeat(32);
+    let roster_peer = Keys::generate().public_key().to_hex();
+    let routed_roster_peer = Keys::generate().public_key().to_hex();
+    let other_peer = Keys::generate().public_key().to_hex();
     config.networks[0].participants = vec![roster_peer.clone(), routed_roster_peer.clone()];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
 
@@ -412,7 +414,7 @@ fn fips_runtime_state_counts_direct_roster_and_other_peers() {
 fn daemon_runtime_state_marks_peers_unreachable_when_vpn_is_off() {
     let mut config = AppConfig::generated();
     activate_first_network(&mut config);
-    let peer_pubkey = "11".repeat(32);
+    let peer_pubkey = Keys::generate().public_key().to_hex();
     config.networks[0].participants = vec![peer_pubkey.clone()];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
     let peer_status = MeshPeerStatus {

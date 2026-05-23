@@ -295,7 +295,7 @@ pub enum FipsControlFrame {
         network_id: String,
         roster: NetworkRoster,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        signed_roster: Option<SignedRoster>,
+        signed_roster: Option<Box<SignedRoster>>,
     },
     Capabilities {
         network_id: String,
@@ -598,7 +598,7 @@ pub fn signed_roster_control_frame(signed_roster: SignedRoster) -> FipsControlFr
     FipsControlFrame::Roster {
         network_id,
         roster,
-        signed_roster: Some(signed_roster),
+        signed_roster: Some(Box::new(signed_roster)),
     }
 }
 

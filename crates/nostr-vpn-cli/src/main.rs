@@ -2051,9 +2051,18 @@ fn signed_roster_is_current_for_app(
 }
 
 #[cfg(feature = "embedded-fips")]
+const FIPS_ROSTER_RESEND_SECS: u64 = 10;
+
+#[cfg(feature = "embedded-fips")]
 #[derive(Default)]
 struct FipsRosterSyncState {
-    sent_hash_by_peer: HashMap<String, String>,
+    sent_by_peer: HashMap<String, FipsRosterSentState>,
+}
+
+#[cfg(feature = "embedded-fips")]
+struct FipsRosterSentState {
+    hash: String,
+    sent_at: u64,
 }
 
 #[cfg(feature = "embedded-fips")]
@@ -2066,6 +2075,7 @@ async fn sync_fips_roster_with_connected_peers(
     let Some(signed_roster) = active_signed_roster_for_sync(app, config_path, true)? else {
         return Ok(0);
     };
+    let now = unix_timestamp();
     let roster_hash = signed_roster.content_hash();
     let own_pubkey = app.own_nostr_pubkey_hex().ok();
     let roster_peers = app
@@ -2082,20 +2092,24 @@ async fn sync_fips_roster_with_connected_peers(
         .collect::<HashSet<_>>();
 
     state
-        .sent_hash_by_peer
+        .sent_by_peer
         .retain(|peer, _| connected.contains(peer));
 
     let mut sent = 0usize;
     for peer in connected {
-        if state
-            .sent_hash_by_peer
-            .get(&peer)
-            .is_some_and(|sent_hash| sent_hash == &roster_hash)
-        {
+        if state.sent_by_peer.get(&peer).is_some_and(|sent| {
+            sent.hash == roster_hash && now.saturating_sub(sent.sent_at) < FIPS_ROSTER_RESEND_SECS
+        }) {
             continue;
         }
         runtime.send_roster(&peer, signed_roster.clone()).await?;
-        state.sent_hash_by_peer.insert(peer, roster_hash.clone());
+        state.sent_by_peer.insert(
+            peer,
+            FipsRosterSentState {
+                hash: roster_hash.clone(),
+                sent_at: now,
+            },
+        );
         sent += 1;
     }
     Ok(sent)
@@ -2873,7 +2887,7 @@ fn drain_fips_mesh_events(
                 &sender_pubkey,
                 &network_id,
                 &roster,
-                signed_roster.as_ref(),
+                signed_roster.as_deref(),
                 vpn_status,
             ) {
                 Ok(Some(_)) => roster_changed = true,

@@ -217,9 +217,7 @@ fn config_path_bytes(path: &Path) -> Vec<u8> {
 
 fn is_redacted_secret(value: &str) -> bool {
     let value = value.trim();
-    REDACTED_SECRET_MARKERS
-        .iter()
-        .any(|marker| value == *marker)
+    REDACTED_SECRET_MARKERS.contains(&value)
 }
 
 #[cfg(target_os = "macos")]

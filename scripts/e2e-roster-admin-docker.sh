@@ -29,6 +29,8 @@ dump_debug() {
     "${COMPOSE[@]}" exec -T "$node" nvpn status --json --discover-secs 0 || true
     echo "--- $node config ---"
     "${COMPOSE[@]}" exec -T "$node" sh -lc "cat /root/.config/nvpn/config.toml 2>/dev/null || true" || true
+    echo "--- $node signed-rosters.json ---"
+    "${COMPOSE[@]}" exec -T "$node" sh -lc "cat /root/.config/nvpn/signed-rosters.json 2>/dev/null || true" || true
     echo "--- $node daemon.log ---"
     "${COMPOSE[@]}" exec -T "$node" sh -lc "tail -n 240 /root/.config/nvpn/daemon.log 2>/dev/null || true" || true
   done
@@ -98,6 +100,26 @@ start_daemon() {
   fi
 }
 
+wait_for_config_scalar_equals() {
+  local service="$1"
+  local key="$2"
+  local expected="$3"
+  local description="$4"
+  local raw=""
+
+  for _ in $(seq 1 60); do
+    raw="$("${COMPOSE[@]}" exec -T "$service" sh -lc "awk -F= '/^$key[[:space:]]*=/{gsub(/[[:space:]\\\"]/, \"\", \$2); print \$2; exit}' /root/.config/nvpn/config.toml" | tr -d '\r')"
+    if [[ "$raw" == "$expected" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "roster/admin docker e2e failed: $description" >&2
+  echo "last $key value: $raw" >&2
+  exit 1
+}
+
 reload_daemon() {
   local service="$1"
   local output=""
@@ -120,6 +142,11 @@ reload_daemon() {
   echo "roster/admin docker e2e failed: daemon reload never acknowledged on $service" >&2
   echo "$output" >&2
   exit 1
+}
+
+stop_container() {
+  local service="$1"
+  "${COMPOSE[@]}" stop "$service" >/dev/null
 }
 
 status_connected_peer_count() {
@@ -266,6 +293,28 @@ wait_for_peer_alias() {
   exit 1
 }
 
+wait_for_signed_roster_artifact() {
+  local service="$1"
+  local description="$2"
+  local raw=""
+
+  for _ in $(seq 1 60); do
+    raw="$("${COMPOSE[@]}" exec -T "$service" sh -lc "cat /root/.config/nvpn/signed-rosters.json 2>/dev/null" || true)"
+    if grep -q '"kind": 30388' <<<"$raw" \
+      && grep -q '"content": ""' <<<"$raw" \
+      && grep -q "\"$NETWORK_ID\"" <<<"$raw" \
+      && grep -q '"member"' <<<"$raw" \
+      && grep -q '"admin"' <<<"$raw"; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "roster/admin docker e2e failed: $description" >&2
+  echo "$raw" >&2
+  exit 1
+}
+
 set_membership() {
   local service="$1"
   local participants_toml="$2"
@@ -407,6 +456,10 @@ if [[ -z "$ALICE_NPUB" || -z "$BOB_NPUB" || -z "$CAROL_NPUB" ]]; then
   exit 1
 fi
 
+"${COMPOSE[@]}" exec -T node-a nvpn set --participant "$ALICE_NPUB" >/dev/null
+"${COMPOSE[@]}" exec -T node-b nvpn set --participant "$BOB_NPUB" >/dev/null
+"${COMPOSE[@]}" exec -T node-c nvpn set --participant "$CAROL_NPUB" >/dev/null
+
 AB_PARTICIPANTS="$(toml_array "$ALICE_NPUB" "$BOB_NPUB")"
 ABC_PARTICIPANTS="$(toml_array "$ALICE_NPUB" "$BOB_NPUB" "$CAROL_NPUB")"
 A_ADMIN="$(toml_array "$ALICE_NPUB")"
@@ -420,6 +473,8 @@ B_ADMIN="$(toml_array "$BOB_NPUB")"
   --endpoint "10.203.0.10:51820" \
   --listen-port 51820 \
   --fips-advertise-endpoint true \
+  --fips-nostr-discovery-enabled false \
+  --fips-bootstrap-enabled false \
   --fips-peer-endpoint "$BOB_NPUB=10.203.0.11:51820" \
   --fips-peer-endpoint "$CAROL_NPUB=10.203.0.12:51820" >/dev/null
 
@@ -430,6 +485,8 @@ B_ADMIN="$(toml_array "$BOB_NPUB")"
   --endpoint "10.203.0.11:51820" \
   --listen-port 51820 \
   --fips-advertise-endpoint true \
+  --fips-nostr-discovery-enabled false \
+  --fips-bootstrap-enabled false \
   --fips-peer-endpoint "$ALICE_NPUB=10.203.0.10:51820" \
   --fips-peer-endpoint "$CAROL_NPUB=10.203.0.12:51820" >/dev/null
 
@@ -465,15 +522,18 @@ wait_for_config_array_contains node-b participants "$CAROL_NPUB" \
   "bob never applied alice's signed participant add for carol"
 wait_for_config_array_contains node-b admins "$BOB_NPUB" \
   "bob never applied alice's signed admin promotion"
+wait_for_signed_roster_artifact node-b \
+  "bob never persisted alice's signed roster artifact after participant add"
 
 "${COMPOSE[@]}" exec -T node-c nvpn set \
   --network-id "$NETWORK_ID" \
   --participant "$ALICE_NPUB" \
   --participant "$BOB_NPUB" \
-  --participant "$CAROL_NPUB" \
   --endpoint "10.203.0.12:51820" \
   --listen-port 51820 \
   --fips-advertise-endpoint true \
+  --fips-nostr-discovery-enabled false \
+  --fips-bootstrap-enabled false \
   --fips-peer-endpoint "$ALICE_NPUB=10.203.0.10:51820" \
   --fips-peer-endpoint "$BOB_NPUB=10.203.0.11:51820" >/dev/null
 
@@ -484,8 +544,20 @@ if [[ -z "$CAROL_TUNNEL_IP" ]]; then
   exit 1
 fi
 
-set_membership node-c "$ABC_PARTICIPANTS" "$AB_ADMINS" "$ALICE_NPUB" "$ALICE_NPUB" "$ADD_CAROL_SHARED_AT"
+set_membership node-c "$AB_PARTICIPANTS" "$A_ADMIN" "$ALICE_NPUB" "$ALICE_NPUB" "$INITIAL_SHARED_AT"
+stop_container node-a
 start_daemon node-c
+
+wait_for_config_array_contains node-c admins "$BOB_NPUB" \
+  "carol never applied bob's admin promotion via bob while alice was offline"
+wait_for_config_scalar_equals node-c shared_roster_updated_at "$ADD_CAROL_SHARED_AT" \
+  "carol never advanced to alice's newer signed roster via bob while alice was offline"
+wait_for_signed_roster_artifact node-c \
+  "carol never persisted alice's signed roster artifact received from bob"
+
+"${COMPOSE[@]}" start node-a >/dev/null
+wait_for_service node-a
+start_daemon node-a
 
 wait_for_connected_peer_count node-a 2 "alice never reached the 2/2 mesh after carol joined"
 wait_for_connected_peer_count node-b 2 "bob never reached the 2/2 mesh after carol joined"
