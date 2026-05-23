@@ -56,6 +56,7 @@ class NostrVpnService : VpnService() {
             return
         }
         stopTunnel()
+        NativeCore.initializeAndroidContext(applicationContext)
 
         val config = try {
             JSONObject(configJson)

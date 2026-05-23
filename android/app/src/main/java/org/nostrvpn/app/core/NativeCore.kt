@@ -1,10 +1,13 @@
 package org.nostrvpn.app.core
 
+import android.content.Context
+
 internal object NativeCore {
     init {
         System.loadLibrary("nostr_vpn_app_core")
     }
 
+    external fun initializeAndroidContext(context: Context)
     external fun appNew(dataDir: String, appVersion: String): Long
     external fun appFree(handle: Long)
     external fun stateJson(handle: Long): String

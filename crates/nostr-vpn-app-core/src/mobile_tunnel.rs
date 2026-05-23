@@ -285,7 +285,7 @@ impl MobileTunnelConfig {
 
         Ok(Self {
             config_path: config_path.to_string_lossy().to_string(),
-            app_config_toml: app_config_toml(app)?,
+            app_config_toml: plaintext_app_config_toml(app)?,
             identity_nsec: app.nostr.secret_key.clone(),
             node_name: app.node_name.trim().to_string(),
             network_id,
@@ -343,10 +343,17 @@ fn mobile_app_config(config: &MobileTunnelConfig) -> Result<AppConfig> {
     Ok(app)
 }
 
-fn app_config_toml(app: &AppConfig) -> Result<String> {
-    let mut app = app.clone();
-    app.ensure_defaults();
-    toml::to_string_pretty(&app).context("failed to encode mobile app config TOML")
+fn plaintext_app_config_toml(app: &AppConfig) -> Result<String> {
+    app.plaintext_toml()
+        .context("failed to encode mobile app config TOML")
+}
+
+fn persisted_app_config_toml(app: &AppConfig, config_path: &Path) -> Result<String> {
+    if config_path.as_os_str().is_empty() {
+        return plaintext_app_config_toml(app);
+    }
+    app.persisted_toml_for_path(config_path)
+        .context("failed to encode mobile app config TOML")
 }
 
 pub(crate) fn tunnel_config_json(data_dir: &str) -> String {
@@ -842,7 +849,14 @@ impl MobileTunnel {
             .app_config
             .read()
             .map_err(|_| anyhow!("mobile app config lock poisoned"))?;
-        match app_config_toml(&app) {
+        let config_path = self
+            .config
+            .read()
+            .map_err(|_| anyhow!("mobile FIPS config lock poisoned"))?
+            .config_path
+            .clone();
+        let config_path = non_empty_path(&config_path).unwrap_or_else(|| PathBuf::from(""));
+        match persisted_app_config_toml(&app, &config_path) {
             Ok(toml) => Ok(toml),
             Err(error) => {
                 self.app_config_dirty.store(true, Ordering::Relaxed);

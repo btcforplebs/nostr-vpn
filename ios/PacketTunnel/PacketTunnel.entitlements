@@ -6,6 +6,10 @@
 	<array>
 		<string>group.to.iris.nvpn</string>
 	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)group.to.iris.nvpn</string>
+	</array>
 	<key>com.apple.developer.networking.networkextension</key>
 	<array>
 		<string>packet-tunnel-provider</string>

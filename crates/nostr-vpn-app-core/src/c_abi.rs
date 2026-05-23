@@ -1,7 +1,11 @@
+#[cfg(target_os = "android")]
+use std::ffi::c_void;
 use std::ffi::{CStr, CString, c_char};
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
 use std::sync::Arc;
+#[cfg(target_os = "android")]
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -9,7 +13,7 @@ use image::ImageReader;
 #[cfg(target_os = "android")]
 use jni::JNIEnv;
 #[cfg(target_os = "android")]
-use jni::objects::{JByteArray, JClass, JString};
+use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString};
 #[cfg(target_os = "android")]
 use jni::sys::{jboolean, jint, jlong, jstring};
 use qrcode::QrCode;
@@ -289,6 +293,31 @@ pub unsafe extern "C" fn nostr_vpn_string_free(value: *mut c_char) {
     unsafe {
         drop(CString::from_raw(value));
     }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_nostrvpn_app_core_NativeCore_initializeAndroidContext(
+    env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context: JObject<'_>,
+) {
+    static ANDROID_CONTEXT: OnceLock<Option<GlobalRef>> = OnceLock::new();
+    ANDROID_CONTEXT.get_or_init(|| match env.new_global_ref(&context) {
+        Ok(global) => {
+            let Ok(vm) = env.get_java_vm() else {
+                return None;
+            };
+            unsafe {
+                ndk_context::initialize_android_context(
+                    vm.get_java_vm_pointer() as *mut c_void,
+                    global.as_obj().as_raw() as *mut c_void,
+                );
+            }
+            Some(global)
+        }
+        Err(_) => None,
+    });
 }
 
 #[cfg(target_os = "android")]

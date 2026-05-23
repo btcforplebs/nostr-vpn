@@ -24,6 +24,7 @@ import org.json.JSONObject
 import org.nostrvpn.app.core.AppCoreClient
 import org.nostrvpn.app.core.AppState
 import org.nostrvpn.app.core.NativeActions
+import org.nostrvpn.app.core.NativeCore
 import org.nostrvpn.app.update.AndroidSelfUpdateManager
 import org.nostrvpn.app.update.AndroidSelfUpdateState
 import org.nostrvpn.app.vpn.NostrVpnService
@@ -38,6 +39,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         deepLink = intent?.dataString
         debugAction = intent?.getStringExtra(EXTRA_DEBUG_ACTION)
+        NativeCore.initializeAndroidContext(applicationContext)
         val dataDir = filesDir.resolve("app-core")
         seedMobileConfig(dataDir, androidDeviceName())
         // Pass empty so the FFI falls back to its own CARGO_PKG_VERSION

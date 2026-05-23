@@ -908,6 +908,14 @@ impl AppConfig {
         self.save_with_secret_persistence(path, SecretPersistence::Plaintext)
     }
 
+    pub fn persisted_toml_for_path(&self, path: &Path) -> Result<String> {
+        self.toml_with_secret_persistence(path, SecretPersistence::Platform)
+    }
+
+    pub fn plaintext_toml(&self) -> Result<String> {
+        self.toml_with_secret_persistence(Path::new(""), SecretPersistence::Plaintext)
+    }
+
     fn save_with_secret_persistence(
         &self,
         path: &Path,
@@ -918,15 +926,23 @@ impl AppConfig {
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
 
+        let raw = self.toml_with_secret_persistence(path, persistence)?;
+        write_config_file(path, raw.as_bytes())
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        Ok(())
+    }
+
+    fn toml_with_secret_persistence(
+        &self,
+        path: &Path,
+        persistence: SecretPersistence,
+    ) -> Result<String> {
         let mut to_write = self.clone();
         to_write.ensure_defaults();
         to_write.canonicalize_user_facing_pubkeys();
         prepare_config_secrets_for_save(path, &mut to_write, persistence)?;
 
-        let raw = toml::to_string_pretty(&to_write).with_context(|| "failed to encode TOML")?;
-        write_config_file(path, raw.as_bytes())
-            .with_context(|| format!("failed to write {}", path.display()))?;
-        Ok(())
+        toml::to_string_pretty(&to_write).with_context(|| "failed to encode TOML")
     }
 
     pub fn ensure_defaults(&mut self) {
