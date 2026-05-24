@@ -105,13 +105,27 @@ target_root() {
   fi
 }
 
+macos_rust_target_root() {
+  local dir="${NVPN_MACOS_CARGO_TARGET_DIR:-$BUILD_DIR/cargo-target}"
+  if [[ "$dir" = /* ]]; then
+    printf '%s\n' "$dir"
+  else
+    printf '%s/%s\n' "$ROOT" "$dir"
+  fi
+}
+
 host_dynamic_lib() {
   printf '%s/%s/libnostr_vpn_app_core.dylib\n' "$(target_root)" "$PROFILE"
 }
 
 target_static_lib() {
   local target="$1"
-  printf '%s/%s/%s/libnostr_vpn_app_core.a\n' "$(target_root)" "$target" "$PROFILE"
+  printf '%s/%s/%s/libnostr_vpn_app_core.a\n' "$(macos_rust_target_root)" "$target" "$PROFILE"
+}
+
+target_cli_bin() {
+  local target="$1"
+  printf '%s/%s/%s/nvpn\n' "$(macos_rust_target_root)" "$target" "$PROFILE"
 }
 
 run_macos_gen_swift() {
@@ -144,6 +158,8 @@ run_macos_rust() {
   local sdkroot
   local min_version="${NVPN_MACOS_MIN_VERSION:-14.0}"
   local arch_target
+  local rustflags_env_var
+  local target_rustflags
 
   dev_dir="$(xcode-select -p)"
   toolchain_bin="$dev_dir/Toolchains/XcodeDefault.xctoolchain/usr/bin"
@@ -155,13 +171,20 @@ run_macos_rust() {
 
   for target in $TARGETS; do
     case "$target" in
-      aarch64-apple-darwin) arch_target="arm64-apple-macos${min_version}" ;;
-      x86_64-apple-darwin) arch_target="x86_64-apple-macos${min_version}" ;;
+      aarch64-apple-darwin)
+        arch_target="arm64-apple-macos${min_version}"
+        rustflags_env_var="CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS"
+        ;;
+      x86_64-apple-darwin)
+        arch_target="x86_64-apple-macos${min_version}"
+        rustflags_env_var="CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS"
+        ;;
       *)
         echo "Unsupported macOS target: $target" >&2
         exit 2
         ;;
     esac
+    target_rustflags="-C linker=$cc_bin -C link-arg=-target -C link-arg=$arch_target -C link-arg=-mmacosx-version-min=${min_version}"
 
     if [[ "$PROFILE" == "release" ]]; then
       env \
@@ -171,13 +194,14 @@ run_macos_rust() {
         CXX="$cxx_bin" \
         AR="$ar_bin" \
         RANLIB="$ranlib_bin" \
+        CARGO_TARGET_DIR="$(macos_rust_target_root)" \
         CFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CXXFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CXXFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$cc_bin" \
         CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$cc_bin" \
-        RUSTFLAGS="-C linker=$cc_bin -C link-arg=-target -C link-arg=$arch_target -C link-arg=-mmacosx-version-min=${min_version}" \
+        "$rustflags_env_var=$target_rustflags" \
         cargo build -p nostr-vpn-app-core --release --target "$target"
 
       env \
@@ -187,13 +211,14 @@ run_macos_rust() {
         CXX="$cxx_bin" \
         AR="$ar_bin" \
         RANLIB="$ranlib_bin" \
+        CARGO_TARGET_DIR="$(macos_rust_target_root)" \
         CFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CXXFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CXXFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$cc_bin" \
         CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$cc_bin" \
-        RUSTFLAGS="-C linker=$cc_bin -C link-arg=-target -C link-arg=$arch_target -C link-arg=-mmacosx-version-min=${min_version}" \
+        "$rustflags_env_var=$target_rustflags" \
         cargo build -p nvpn --release --bin nvpn --target "$target"
     else
       env \
@@ -203,13 +228,14 @@ run_macos_rust() {
         CXX="$cxx_bin" \
         AR="$ar_bin" \
         RANLIB="$ranlib_bin" \
+        CARGO_TARGET_DIR="$(macos_rust_target_root)" \
         CFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CXXFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CXXFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$cc_bin" \
         CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$cc_bin" \
-        RUSTFLAGS="-C linker=$cc_bin -C link-arg=-target -C link-arg=$arch_target -C link-arg=-mmacosx-version-min=${min_version}" \
+        "$rustflags_env_var=$target_rustflags" \
         cargo build -p nostr-vpn-app-core --target "$target"
 
       env \
@@ -219,13 +245,14 @@ run_macos_rust() {
         CXX="$cxx_bin" \
         AR="$ar_bin" \
         RANLIB="$ranlib_bin" \
+        CARGO_TARGET_DIR="$(macos_rust_target_root)" \
         CFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CXXFLAGS_aarch64_apple_darwin="-target arm64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CXXFLAGS_x86_64_apple_darwin="-target x86_64-apple-macos${min_version} -mmacosx-version-min=${min_version}" \
         CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$cc_bin" \
         CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$cc_bin" \
-        RUSTFLAGS="-C linker=$cc_bin -C link-arg=-target -C link-arg=$arch_target -C link-arg=-mmacosx-version-min=${min_version}" \
+        "$rustflags_env_var=$target_rustflags" \
         cargo build -p nvpn --bin nvpn --target "$target"
     fi
   done
@@ -257,7 +284,7 @@ run_macos_xcframework() {
 
   for target in $TARGETS; do
     libs+=("$(target_static_lib "$target")")
-    cp "$(target_root)/$target/$PROFILE/nvpn" "$MACOS_DIR/Resources/binaries/nvpn"
+    cp "$(target_cli_bin "$target")" "$MACOS_DIR/Resources/binaries/nvpn"
   done
 
   if [[ "${#libs[@]}" -eq 1 ]]; then
