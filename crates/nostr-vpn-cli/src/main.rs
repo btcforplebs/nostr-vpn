@@ -436,6 +436,8 @@ struct ServiceStatusArgs {
     config: Option<PathBuf>,
     #[arg(long)]
     json: bool,
+    #[arg(long, hide = true)]
+    skip_binary_version: bool,
 }
 
 #[derive(Debug, Args)]

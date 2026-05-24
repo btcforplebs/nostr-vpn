@@ -1,5 +1,8 @@
 use super::*;
 
+const BINARY_VERSION_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
+const BINARY_VERSION_QUERY_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
 pub(crate) fn run_service_command(args: ServiceArgs) -> Result<()> {
     match args.command {
         ServiceCommand::Install(args) => service_install(args),
@@ -266,7 +269,8 @@ fn service_disable(args: ServiceControlArgs) -> Result<()> {
 
 fn service_status(args: ServiceStatusArgs) -> Result<()> {
     let _config_path = args.config.unwrap_or_else(default_config_path);
-    let status = query_service_status(&_config_path)?;
+    let status =
+        query_service_status_with_binary_version(&_config_path, !args.skip_binary_version)?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&status)?);
@@ -298,6 +302,13 @@ fn service_status(args: ServiceStatusArgs) -> Result<()> {
 }
 
 pub(crate) fn query_service_status(_config_path: &Path) -> Result<ServiceStatusView> {
+    query_service_status_with_binary_version(_config_path, true)
+}
+
+pub(crate) fn query_service_status_with_binary_version(
+    _config_path: &Path,
+    include_binary_version: bool,
+) -> Result<ServiceStatusView> {
     #[cfg(target_os = "macos")]
     {
         let plist_path = macos_service::macos_service_plist_path(_config_path);
@@ -332,10 +343,14 @@ pub(crate) fn query_service_status(_config_path: &Path) -> Result<ServiceStatusV
             }
         };
         let service_binary = macos_service::macos_service_executable_path(&plist_path);
-        let binary_version = service_binary
-            .as_ref()
-            .and_then(|path| query_binary_version(path))
-            .unwrap_or_default();
+        let binary_version = if include_binary_version {
+            service_binary
+                .as_ref()
+                .and_then(|path| query_binary_version(path))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
 
         Ok(ServiceStatusView {
             supported: true,
@@ -355,12 +370,12 @@ pub(crate) fn query_service_status(_config_path: &Path) -> Result<ServiceStatusV
 
     #[cfg(target_os = "linux")]
     {
-        linux_query_service_status()
+        linux_query_service_status(include_binary_version)
     }
 
     #[cfg(target_os = "windows")]
     {
-        windows_query_service_status()
+        windows_query_service_status(include_binary_version)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -381,15 +396,38 @@ pub(crate) fn query_service_status(_config_path: &Path) -> Result<ServiceStatusV
 }
 
 fn query_binary_version(path: &Path) -> Option<String> {
-    let output = ProcessCommand::new(path)
+    use std::io::Read as _;
+
+    let mut child = ProcessCommand::new(path)
         .args(["version", "--json"])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    if !output.status.success() {
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= BINARY_VERSION_QUERY_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.try_wait();
+                return None;
+            }
+            Ok(None) => thread::sleep(BINARY_VERSION_QUERY_POLL_INTERVAL),
+            Err(_) => {
+                let _ = child.kill();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
         return None;
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut stdout = Vec::new();
+    child.stdout.take()?.read_to_end(&mut stdout).ok()?;
+
+    let stdout = String::from_utf8_lossy(&stdout);
     let info = serde_json::from_str::<VersionInfoView>(stdout.trim()).ok()?;
     let version = info.version.trim();
     if version.is_empty() {
@@ -495,14 +533,18 @@ fn linux_uninstall_service() -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_query_service_status() -> Result<ServiceStatusView> {
+fn linux_query_service_status(include_binary_version: bool) -> Result<ServiceStatusView> {
     let unit_path = linux_service_unit_path();
     let installed = unit_path.exists();
     let service_binary = linux_service_executable_path(&unit_path);
-    let binary_version = service_binary
-        .as_ref()
-        .and_then(|path| query_binary_version(path))
-        .unwrap_or_default();
+    let binary_version = if include_binary_version {
+        service_binary
+            .as_ref()
+            .and_then(|path| query_binary_version(path))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     if !linux_systemctl_available() {
         return Ok(ServiceStatusView {
             supported: false,
@@ -765,7 +807,7 @@ fn windows_uninstall_service() -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn windows_enable_service() -> Result<()> {
-    let status = windows_query_service_status()?;
+    let status = windows_query_service_status(true)?;
     if !status.installed {
         return Err(anyhow!("system service is not installed"));
     }
@@ -781,7 +823,7 @@ fn windows_enable_service() -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn windows_disable_service() -> Result<()> {
-    let status = windows_query_service_status()?;
+    let status = windows_query_service_status(true)?;
     if !status.installed {
         return Err(anyhow!("system service is not installed"));
     }
@@ -801,7 +843,9 @@ pub(crate) fn windows_should_apply_config_via_service(status: &ServiceStatusView
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn windows_query_service_status() -> Result<ServiceStatusView> {
+pub(crate) fn windows_query_service_status(
+    include_binary_version: bool,
+) -> Result<ServiceStatusView> {
     let query = windows_service_query()?;
     let Some(query) = query else {
         return Ok(ServiceStatusView {
@@ -825,10 +869,14 @@ pub(crate) fn windows_query_service_status() -> Result<ServiceStatusView> {
     let (running, pid) = windows_service_status_from_query_output(&query_text);
     let disabled = windows_service_disabled_from_qc_output(&config_text);
     let service_binary = windows_service_binary_path_from_sc_qc_output(&config_text);
-    let binary_version = service_binary
-        .as_ref()
-        .and_then(|path| query_binary_version(path))
-        .unwrap_or_default();
+    let binary_version = if include_binary_version {
+        service_binary
+            .as_ref()
+            .and_then(|path| query_binary_version(path))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     Ok(ServiceStatusView {
         supported: true,
         installed: true,
@@ -943,7 +991,7 @@ pub(crate) fn windows_start_service_and_wait(
 fn windows_wait_for_service_running(timeout: Duration) -> Result<()> {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if windows_query_service_status()?.running {
+        if windows_query_service_status(true)?.running {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(200));

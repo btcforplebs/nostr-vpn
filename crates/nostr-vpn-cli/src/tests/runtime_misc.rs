@@ -235,6 +235,36 @@ fn wall_time_jump_detection_ignores_busy_loop_delays() {
     ));
 }
 
+#[cfg(feature = "embedded-fips")]
+#[test]
+fn fips_link_events_restart_endpoint_for_major_link_changes() {
+    assert_eq!(
+        fips_link_event_refresh(true, false, false, false),
+        FipsLinkEventRefresh::RestartEndpoint
+    );
+    assert_eq!(
+        fips_link_event_refresh(false, false, true, false),
+        FipsLinkEventRefresh::RestartEndpoint
+    );
+    assert_eq!(
+        fips_link_event_refresh(false, false, false, true),
+        FipsLinkEventRefresh::RestartEndpoint
+    );
+}
+
+#[cfg(feature = "embedded-fips")]
+#[test]
+fn fips_link_events_refresh_config_for_endpoint_only_changes() {
+    assert_eq!(
+        fips_link_event_refresh(false, true, false, false),
+        FipsLinkEventRefresh::RefreshConfig
+    );
+    assert_eq!(
+        fips_link_event_refresh(false, false, false, false),
+        FipsLinkEventRefresh::None
+    );
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn runtime_exit_node_routes_do_not_advertise_ipv6_default() {

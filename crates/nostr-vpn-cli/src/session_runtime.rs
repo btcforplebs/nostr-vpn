@@ -133,6 +133,30 @@ struct RecentPeerRefresh<'a> {
 }
 
 #[cfg(feature = "embedded-fips")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FipsLinkEventRefresh {
+    None,
+    RefreshConfig,
+    RestartEndpoint,
+}
+
+#[cfg(feature = "embedded-fips")]
+pub(crate) fn fips_link_event_refresh(
+    network_changed: bool,
+    endpoint_changed: bool,
+    underlay_repaired: bool,
+    resumed_after_sleep: bool,
+) -> FipsLinkEventRefresh {
+    if network_changed || underlay_repaired || resumed_after_sleep {
+        FipsLinkEventRefresh::RestartEndpoint
+    } else if endpoint_changed {
+        FipsLinkEventRefresh::RefreshConfig
+    } else {
+        FipsLinkEventRefresh::None
+    }
+}
+
+#[cfg(feature = "embedded-fips")]
 fn endpoint_peer_signature(
     endpoint_peers: &[crate::fips_private_mesh::FipsEndpointPeerTransportConfig],
 ) -> EndpointPeerSignature {
@@ -221,6 +245,47 @@ async fn update_recent_peers_from_runtime(
             eprintln!("fips: rebuilding peer hint list failed: {error}");
         }
     }
+}
+
+#[cfg(feature = "embedded-fips")]
+async fn restart_fips_tunnel_runtime_after_link_event(
+    runtime: &mut Option<crate::fips_private_mesh::FipsPrivateTunnelRuntime>,
+    app: &nostr_vpn_core::config::AppConfig,
+    network_id: &str,
+    fallback_iface: &str,
+    own_pubkey: Option<&str>,
+    recent_peers: Option<&nostr_vpn_core::recent_peers::RecentPeerEndpoints>,
+    last_endpoint_peer_signature: &mut EndpointPeerSignature,
+    reason: &str,
+) -> Result<()> {
+    let config_iface = runtime
+        .as_ref()
+        .map(|runtime| runtime.iface().to_string())
+        .unwrap_or_else(|| fallback_iface.to_string());
+    let live_peer_endpoints = runtime
+        .as_ref()
+        .map(|runtime| runtime.peer_endpoint_hints())
+        .unwrap_or_default();
+    let config = fips_tunnel_config_from_app(
+        app,
+        network_id,
+        config_iface,
+        own_pubkey,
+        recent_peers,
+        &live_peer_endpoints,
+    )?;
+    let endpoint_peer_signature = endpoint_peer_signature(&config.endpoint_peers);
+    if let Some(existing) = runtime.take() {
+        existing.stop().await?;
+    }
+    let restarted = crate::fips_private_mesh::FipsPrivateTunnelRuntime::start(config).await?;
+    eprintln!(
+        "daemon: restarted FIPS private mesh on {} after {reason}",
+        restarted.iface()
+    );
+    *runtime = Some(restarted);
+    *last_endpoint_peer_signature = endpoint_peer_signature;
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -852,7 +917,24 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                     continue;
                 }
 
-                if network_changed || underlay_repaired || resumed_after_sleep {
+                #[cfg(feature = "embedded-fips")]
+                let fips_refresh = fips_link_event_refresh(
+                    network_changed,
+                    endpoint_changed,
+                    underlay_repaired,
+                    resumed_after_sleep,
+                );
+
+                if network_changed || underlay_repaired || resumed_after_sleep || endpoint_changed {
+                    let refresh_reason = if network_changed {
+                        "network change"
+                    } else if resumed_after_sleep {
+                        "sleep/wake"
+                    } else if underlay_repaired {
+                        "macOS underlay repair"
+                    } else {
+                        "endpoint change"
+                    };
                     if network_changed {
                         network_snapshot = latest_snapshot;
                         network_changed_at = Some(unix_timestamp());
@@ -861,25 +943,80 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         network_snapshot = latest_snapshot;
                         network_changed_at = Some(now);
                         eprintln!("daemon: sleep/wake detected; refreshing FIPS endpoint state");
-                    } else {
+                    } else if underlay_repaired {
                         network_snapshot = latest_snapshot;
                         eprintln!("daemon: refreshing tunnel after macOS underlay repair");
+                    } else {
+                        eprintln!("daemon: endpoint changed; refreshing FIPS endpoint state");
                     }
                     if underlay_repaired {
                         reset_tunnel_runtime_after_macos_underlay_repair(&mut tunnel_runtime);
                     }
                     #[cfg(feature = "embedded-fips")]
-                    if let Some(runtime) = fips_tunnel_runtime.as_mut()
-                        && let Err(error) = refresh_fips_tunnel_config(
-                            runtime,
-                            &app,
-                            &network_id,
-                            own_pubkey.as_deref(),
-                        )
-                        .await
-                    {
-                        vpn_status = format!("Network change refresh failed ({error})");
+                    let fips_result = match fips_refresh {
+                        FipsLinkEventRefresh::RestartEndpoint => {
+                            if fips_tunnel_runtime.is_some()
+                                || fips_private_runtime_active(&app, vpn_enabled, expected_peers)
+                            {
+                                restart_fips_tunnel_runtime_after_link_event(
+                                    &mut fips_tunnel_runtime,
+                                    &app,
+                                    &network_id,
+                                    &iface,
+                                    own_pubkey.as_deref(),
+                                    Some(&recent_peers),
+                                    &mut last_fips_endpoint_peer_signature,
+                                    refresh_reason,
+                                )
+                                .await
+                            } else {
+                                Ok(())
+                            }
+                        }
+                        FipsLinkEventRefresh::RefreshConfig => {
+                            if let Some(runtime) = fips_tunnel_runtime.as_mut() {
+                                refresh_fips_tunnel_config(
+                                    runtime,
+                                    &app,
+                                    &network_id,
+                                    own_pubkey.as_deref(),
+                                )
+                                .await
+                            } else {
+                                Ok(())
+                            }
+                        }
+                        FipsLinkEventRefresh::None => Ok(()),
+                    };
+                    #[cfg(feature = "embedded-fips")]
+                    if let Err(error) = fips_result {
+                        vpn_status = format!("Network return refresh failed ({error})");
                     } else {
+                        #[cfg(feature = "embedded-fips")]
+                        if let Some(runtime) = fips_tunnel_runtime.as_ref() {
+                            if let Err(error) = runtime.ping_peers(&network_id, now).await {
+                                eprintln!("fips: peer ping failed after network refresh: {error}");
+                            }
+                            if let Err(error) = runtime.refresh_link_statuses().await {
+                                eprintln!(
+                                    "fips: peer link snapshot failed after network refresh: {error}"
+                                );
+                            }
+                            update_recent_peers_from_runtime(
+                                runtime,
+                                &app,
+                                &network_id,
+                                own_pubkey.as_deref(),
+                                RecentPeerRefresh {
+                                    recent_peers: &mut recent_peers,
+                                    recent_peers_path: &recent_peers_path,
+                                    last_endpoint_peer_signature:
+                                        &mut last_fips_endpoint_peer_signature,
+                                },
+                                now,
+                            )
+                            .await;
+                        }
                         vpn_status = if daemon_vpn_active(vpn_enabled, expected_peers) {
                             "Connected (network refresh)".to_string()
                         } else {

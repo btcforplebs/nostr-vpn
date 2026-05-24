@@ -49,6 +49,8 @@ final class AppManager: ObservableObject {
     private var serviceSettlementTask: Task<Void, Never>?
     private var updateTask: Task<Void, Never>?
     private var updatePollTask: Task<Void, Never>?
+    private var refreshInFlight = false
+    private var refreshPending = false
     private var startupUrlsDrained = false
     private var startupUpdateCheckDone = false
     private var updateAssetUrl: URL?
@@ -149,9 +151,9 @@ final class AppManager: ObservableObject {
         guard refreshTask == nil else {
             return
         }
-        refreshTask = Task { [weak self] in
+        refreshTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                self?.refresh()
+                await self?.performRefresh()
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
             }
         }
@@ -167,18 +169,35 @@ final class AppManager: ObservableObject {
     }
 
     func refresh() {
+        Task { @MainActor [weak self] in
+            await self?.performRefresh()
+        }
+    }
+
+    private func performRefresh() async {
         guard let app else {
             return
         }
-        Task {
+        if refreshInFlight {
+            refreshPending = true
+            return
+        }
+        refreshInFlight = true
+        defer {
+            refreshInFlight = false
+        }
+
+        repeat {
+            refreshPending = false
             let nextState = await Task.detached {
                 app.refresh()
             }.value
-            await MainActor.run {
-                self.state = nextState
-                self.maybePromptServiceUpdate(nextState)
+            guard !Task.isCancelled else {
+                return
             }
-        }
+            state = nextState
+            maybePromptServiceUpdate(nextState)
+        } while refreshPending && !Task.isCancelled
     }
 
     func dispatch(
@@ -929,17 +948,7 @@ final class AppManager: ObservableObject {
                 guard let self else {
                     return
                 }
-                let app = await MainActor.run { self.app }
-                guard let app else {
-                    return
-                }
-                let nextState = await Task.detached {
-                    app.refresh()
-                }.value
-                await MainActor.run {
-                    self.state = nextState
-                    self.maybePromptServiceUpdate(nextState)
-                }
+                await self.performRefresh()
             }
             await MainActor.run {
                 self?.serviceSettling = false

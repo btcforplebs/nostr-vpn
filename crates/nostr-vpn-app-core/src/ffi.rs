@@ -42,7 +42,7 @@ use crate::state::{
 
 const NVPN_BIN_ENV: &str = "NVPN_CLI_PATH";
 const EXTERNAL_DAEMON_ENV: &str = "NVPN_EXTERNAL_DAEMON";
-const SERVICE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const SERVICE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const MOBILE_RUNTIME_STATE_FILE: &str = "mobile-runtime-state.json";
 const MOBILE_RUNTIME_STATE_STALE_SECS: u64 = 10;
 
@@ -487,6 +487,15 @@ impl NativeAppRuntime {
         let fips_peer_stats = active_network_fips_peer_stats(&networks, &own_pubkey_hex);
         let other_fips_peer_count =
             daemon_state.map_or(0, |state| state.fips_other_peer_count as u64);
+        let daemon_binary_version = daemon_state
+            .map(|state| state.binary_version.clone())
+            .unwrap_or_default();
+        let service_binary_version =
+            if self.service_binary_version.is_empty() && self.service_running {
+                daemon_binary_version.clone()
+            } else {
+                self.service_binary_version.clone()
+            };
 
         NativeAppState {
             rev: self.rev,
@@ -519,10 +528,8 @@ impl NativeAppRuntime {
             vpn_enabled,
             vpn_active,
             vpn_status: self.vpn_status.clone(),
-            daemon_binary_version: daemon_state
-                .map(|state| state.binary_version.clone())
-                .unwrap_or_default(),
-            service_binary_version: self.service_binary_version.clone(),
+            daemon_binary_version,
+            service_binary_version,
             expected_service_binary_version: self.expected_service_binary_version.clone(),
             own_npub: if config_unavailable {
                 String::new()
@@ -2164,6 +2171,7 @@ impl NativeAppRuntime {
             "service",
             "status",
             "--json",
+            "--skip-binary-version",
             "--config",
             self.config_path_str()?,
         ])?;
@@ -5108,7 +5116,7 @@ exit 0
         runtime.dispatch(NativeAppAction::ConnectVpn);
 
         let calls = fs::read_to_string(&calls_path).expect("read fake nvpn calls");
-        assert!(calls.contains("service status --json --config"));
+        assert!(calls.contains("service status --json --skip-binary-version --config"));
         assert!(calls.contains("status --json --discover-secs 0 --config"));
         assert!(!calls.contains("start --daemon --connect"));
         assert_eq!(runtime.last_error, "Install background service first");
