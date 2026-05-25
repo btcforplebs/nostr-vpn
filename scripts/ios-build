@@ -24,6 +24,7 @@ BUNDLE_ID="${NVPN_IOS_BUNDLE_ID:-to.iris.nvpn}"
 PACKET_TUNNEL_BUNDLE_ID="${NVPN_IOS_PACKET_TUNNEL_BUNDLE_ID:-to.iris.nvpn.PacketTunnel}"
 PROVISIONING_ENV="$DIST_DIR/provisioning.env"
 IOS_INTERNAL_ONLY="${NVPN_IOS_INTERNAL_ONLY:-true}"
+IOS_UPLOAD_TRANSPORT="${NVPN_IOS_UPLOAD_TRANSPORT:-HTTP}"
 
 usage() {
   cat <<'EOF'
@@ -45,6 +46,8 @@ env (read from .env.release.local or shell):
   NVPN_ASC_AUTH_KEY_ISSUER_ID    Issuer ID
   NVPN_IOS_TEAM_ID               Apple developer team id (default J8PPJKD7TA)
   NVPN_IOS_BUNDLE_ID             App bundle id (default to.iris.nvpn)
+  NVPN_ITMS_TRANSPORTER          iTMSTransporter path
+  NVPN_IOS_UPLOAD_TRANSPORT      Transporter delivery method (default HTTP)
 EOF
 }
 
@@ -120,11 +123,12 @@ run_ios_archive() {
   run_ios_xcframework
   run_ios_project
 
-  # Use automatic signing for the archive itself with -allowProvisioningUpdates
-  # so xcodebuild applies whichever profile Xcode finds for each target. The
-  # explicit per-target profile mapping happens at export time via
-  # exportOptionsPlist, which is where Apple expects you to pin profiles for
-  # App Store submission.
+  # shellcheck disable=SC1090
+  source "$PROVISIONING_ENV"
+  : "${NVPN_IOS_CODE_SIGN_IDENTITY:?code signing identity not set}"
+  : "${NVPN_IOS_PROVISIONING_PROFILE_UUID:?profile uuid not set}"
+  : "${NVPN_IOS_PACKET_TUNNEL_PROVISIONING_PROFILE_UUID:?packet tunnel profile uuid not set}"
+
   xcodebuild \
     -project "$PROJECT" \
     -scheme "$SCHEME" \
@@ -133,6 +137,9 @@ run_ios_archive() {
     -archivePath "$ARCHIVE_PATH" \
     -allowProvisioningUpdates \
     DEVELOPMENT_TEAM="$TEAM_ID" \
+    NVPN_IOS_CODE_SIGN_IDENTITY="$NVPN_IOS_CODE_SIGN_IDENTITY" \
+    NVPN_IOS_PROVISIONING_PROFILE_UUID="$NVPN_IOS_PROVISIONING_PROFILE_UUID" \
+    NVPN_IOS_PACKET_TUNNEL_PROVISIONING_PROFILE_UUID="$NVPN_IOS_PACKET_TUNNEL_PROVISIONING_PROFILE_UUID" \
     archive
 }
 
@@ -164,17 +171,26 @@ ipa_path() {
 
 run_ios_upload() {
   local ipa
+  local transporter="${NVPN_ITMS_TRANSPORTER:-/Applications/Transporter.app/Contents/itms/bin/iTMSTransporter}"
   ipa="$(ipa_path)"
   if [[ -z "$ipa" ]]; then
     echo "No IPA found in $EXPORT_DIR; run ios-export first" >&2
     exit 1
   fi
+  if [[ ! -x "$transporter" ]]; then
+    echo "iTMSTransporter not found: $transporter" >&2
+    echo "Install Apple's Transporter app or set NVPN_ITMS_TRANSPORTER." >&2
+    exit 1
+  fi
   echo "Uploading $ipa to App Store Connect (TestFlight Internal)..."
-  xcrun altool --upload-app \
-    --type ios \
-    --file "$ipa" \
-    --apiKey "$NVPN_ASC_AUTH_KEY_ID" \
-    --apiIssuer "$NVPN_ASC_AUTH_KEY_ISSUER_ID"
+  "$transporter" \
+    -m upload \
+    -assetFile "$ipa" \
+    -apiKey "$NVPN_ASC_AUTH_KEY_ID" \
+    -apiIssuer "$NVPN_ASC_AUTH_KEY_ISSUER_ID" \
+    -t "$IOS_UPLOAD_TRANSPORT" \
+    -v informational \
+    -throughput
   echo "Upload submitted. Build will appear in TestFlight Internal once Apple"
   echo "finishes processing (typically 5-15 minutes)."
 }

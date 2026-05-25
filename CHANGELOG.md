@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- iOS TestFlight release archives now use pinned App Store profiles and
+  Transporter HTTP uploads, matching the currently available App Store profile
+  entitlements.
+
 ## 4.0.40 - 2026-05-24
 
 ### Added

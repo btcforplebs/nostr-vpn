@@ -753,7 +753,7 @@ function buildIosArtifacts({ tag, dryRun, builtLines }) {
     NVPN_RELEASE_TAG: tag,
   }
   // ios-build runs ios-profiles ensure (which needs ASC creds), then archive,
-  // then export, then altool upload. Output is TestFlight Internal — no
+  // then export, then Transporter upload. Output is TestFlight Internal — no
   // download artifact ends up in dist/.
   run('bash', [join(repoRoot, 'scripts', 'ios-build'), 'ios-testflight'], { env, dryRun })
   builtLines.push(`Uploaded iOS ${tag} to App Store Connect (TestFlight Internal).`)

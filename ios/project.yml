@@ -43,6 +43,11 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         HEADER_SEARCH_PATHS: $(PROJECT_DIR)/Bindings
         SWIFT_OBJC_BRIDGING_HEADER: Bindings/NostrVpnAppCoreC.h
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: $(NVPN_IOS_CODE_SIGN_IDENTITY)
+          PROVISIONING_PROFILE: $(NVPN_IOS_PROVISIONING_PROFILE_UUID)
     dependencies:
       - framework: Frameworks/NostrVpnAppCore.xcframework
         embed: false
@@ -71,6 +76,11 @@ targets:
         CODE_SIGN_ENTITLEMENTS: PacketTunnel/PacketTunnel.entitlements
         HEADER_SEARCH_PATHS: $(PROJECT_DIR)/Bindings
         SWIFT_OBJC_BRIDGING_HEADER: Bindings/NostrVpnAppCoreC.h
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: $(NVPN_IOS_CODE_SIGN_IDENTITY)
+          PROVISIONING_PROFILE: $(NVPN_IOS_PACKET_TUNNEL_PROVISIONING_PROFILE_UUID)
     dependencies:
       - framework: Frameworks/NostrVpnAppCore.xcframework
         embed: false

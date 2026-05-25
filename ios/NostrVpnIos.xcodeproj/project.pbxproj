@@ -216,14 +216,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-					2DDBC3A91D35DF14C8FB244F = {
-						ProvisioningStyle = Automatic;
-					};
-					AB61873F2829C99F6B9C990E = {
-						ProvisioningStyle = Automatic;
-					};
-				};
 			};
 			buildConfigurationList = 74AC5F0BB81527A1F708C8A6 /* Build configuration list for PBXProject "NostrVpnIos" */;
 			compatibilityVersion = "Xcode 14.0";
@@ -330,7 +322,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = NostrVpnIos.entitlements;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "$(NVPN_IOS_CODE_SIGN_IDENTITY)";
+				CODE_SIGN_STYLE = Manual;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"Frameworks\"",
@@ -344,6 +337,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn;
 				PRODUCT_MODULE_NAME = NostrVpnIos;
 				PRODUCT_NAME = "Nostr VPN";
+				PROVISIONING_PROFILE = "$(NVPN_IOS_PROVISIONING_PROFILE_UUID)";
 				SDKROOT = iphoneos;
 				SWIFT_OBJC_BRIDGING_HEADER = Bindings/NostrVpnAppCoreC.h;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -446,6 +440,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements;
+				CODE_SIGN_IDENTITY = "$(NVPN_IOS_CODE_SIGN_IDENTITY)";
+				CODE_SIGN_STYLE = Manual;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"Frameworks\"",
@@ -460,6 +456,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.PacketTunnel;
 				PRODUCT_MODULE_NAME = PacketTunnel;
 				PRODUCT_NAME = "Nostr VPN Tunnel";
+				PROVISIONING_PROFILE = "$(NVPN_IOS_PACKET_TUNNEL_PROVISIONING_PROFILE_UUID)";
 				SDKROOT = iphoneos;
 				SWIFT_OBJC_BRIDGING_HEADER = Bindings/NostrVpnAppCoreC.h;
 				TARGETED_DEVICE_FAMILY = "1,2";
