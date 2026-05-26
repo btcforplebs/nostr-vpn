@@ -4,8 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.41 - 2026-05-26
+
+### Changed
+
+- Settings are split consistently across platforms so device, general, FIPS,
+  and public FIPS routing controls are not grouped under "This Device".
+- Public FIPS routing settings now show the device's `npub.fips` address and
+  label the inbound TCP port field as public `.fips` routing.
+
 ### Fixed
 
+- Invite imports now reuse an inactive default network placeholder and keep the
+  UI focused on the imported network instead of leaving Umbrel on the previous
+  default network.
 - iOS TestFlight release archives now use pinned App Store profiles and
   Transporter HTTP uploads, matching the currently available App Store profile
   entitlements.
