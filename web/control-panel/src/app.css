@@ -526,6 +526,7 @@ code {
   display: flex;
   align-items: center;
   gap: 10px;
+  margin-top: 16px;
   min-width: 0;
   flex-wrap: wrap;
 }

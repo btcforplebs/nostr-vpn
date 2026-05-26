@@ -1915,13 +1915,12 @@
                   />
                 </label>
               </div>
-            </div>
 
-            <div class="settings-actions">
-              <button type="submit" class="secondary-button" disabled={Boolean(busyAction)}>
-                Save
-              </button>
-              <span class="form-status">{state.magicDnsStatus}</span>
+              <div class="settings-actions">
+                <button type="submit" class="secondary-button" disabled={Boolean(busyAction) || !settingsDirty}>
+                  Save settings
+                </button>
+              </div>
             </div>
           </form>
 
