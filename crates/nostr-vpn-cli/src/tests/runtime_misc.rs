@@ -275,6 +275,17 @@ fn runtime_exit_node_routes_do_not_advertise_ipv6_default() {
     assert_eq!(runtime_effective_advertised_routes(&app), vec!["0.0.0.0/0"]);
 }
 
+#[test]
+fn legacy_macos_exit_cleanup_leaves_global_ipv4_forwarding_alone() {
+    let mut app = AppConfig::generated();
+    app.node.advertise_exit_node = true;
+
+    let plan = legacy_macos_exit_cleanup_plan(&runtime_effective_advertised_routes(&app));
+
+    assert!(plan.cleanup_pf_nat);
+    assert!(!plan.restore_ipv4_forwarding);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_underlay_repair_resets_tunnel_runtime() {

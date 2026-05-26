@@ -511,11 +511,6 @@ pub(crate) fn apply_macos_route_spec(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn read_macos_ip_forward() -> Result<bool> {
-    crate::macos_network::read_macos_ip_forward()
-}
-
-#[cfg(target_os = "macos")]
 pub(crate) fn write_macos_ip_forward(enabled: bool) -> Result<()> {
     crate::macos_network::write_macos_ip_forward(enabled)
 }

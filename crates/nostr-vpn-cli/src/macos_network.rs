@@ -481,17 +481,6 @@ fn delete_macos_direct_route_variants(target: &str, iface: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn read_macos_ip_forward() -> Result<bool> {
-    Ok(command_stdout_checked(
-        ProcessCommand::new("sysctl")
-            .arg("-n")
-            .arg("net.inet.ip.forwarding"),
-    )?
-    .trim()
-        == "1")
-}
-
-#[cfg(target_os = "macos")]
 pub(super) fn write_macos_ip_forward(enabled: bool) -> Result<()> {
     run_checked(ProcessCommand::new("sysctl").arg("-w").arg(format!(
         "net.inet.ip.forwarding={}",

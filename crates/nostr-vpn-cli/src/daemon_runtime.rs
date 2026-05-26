@@ -759,29 +759,34 @@ pub(crate) fn repair_legacy_macos_network_state(config_path: &Path) -> Result<bo
         }
     }
 
-    let route_families =
-        linux_exit_node_default_route_families(&runtime_effective_advertised_routes(&app));
-    if route_families.ipv4 {
+    let cleanup_plan = legacy_macos_exit_cleanup_plan(&runtime_effective_advertised_routes(&app));
+    if cleanup_plan.cleanup_pf_nat {
         if let Err(error) = cleanup_macos_pf_nat() {
             eprintln!("repair-network: failed to clear legacy macOS PF NAT rules: {error}");
         } else {
             repaired = true;
         }
-
-        match read_macos_ip_forward() {
-            Ok(true) => {
-                write_macos_ip_forward(false)
-                    .context("failed to restore legacy macOS IPv4 forwarding state")?;
-                repaired = true;
-            }
-            Ok(false) => {}
-            Err(error) => {
-                return Err(error).context("failed to read legacy macOS IPv4 forwarding state");
-            }
-        }
     }
 
     Ok(repaired)
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LegacyMacosExitCleanupPlan {
+    pub(crate) cleanup_pf_nat: bool,
+    pub(crate) restore_ipv4_forwarding: bool,
+}
+
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn legacy_macos_exit_cleanup_plan(routes: &[String]) -> LegacyMacosExitCleanupPlan {
+    let route_families = linux_exit_node_default_route_families(routes);
+    LegacyMacosExitCleanupPlan {
+        cleanup_pf_nat: route_families.ipv4,
+        // Legacy repair has no reliable saved owner for this global knob.
+        // Internet Sharing and VM hosts also use it, so do not force it off.
+        restore_ipv4_forwarding: false,
+    }
 }
 
 pub(crate) fn repair_saved_network_state(config_path: &Path) -> Result<bool> {
