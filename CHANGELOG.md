@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.42 - 2026-05-26
+
+### Fixed
+
+- iOS now preserves pasted WireGuard upstream configs while background app
+  state refreshes are running, instead of replacing the unsaved draft with the
+  last saved config.
+
 ## 4.0.41 - 2026-05-26
 
 ### Changed
