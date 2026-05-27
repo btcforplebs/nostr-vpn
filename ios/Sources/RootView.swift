@@ -1403,7 +1403,7 @@ private struct FipsSettingsCard: View {
                     model.dispatch(NativeActions.updateSettings(["connectToNonRosterFipsPeers": value]), status: "Saving")
                 }
             ))
-            Toggle("Find peers over relays", isOn: Binding(
+            Toggle("Find peers over Nostr relays", isOn: Binding(
                 get: { model.state.fipsNostrDiscoveryEnabled },
                 set: { value in
                     model.dispatch(NativeActions.updateSettings(["fipsNostrDiscoveryEnabled": value]), status: "Saving")

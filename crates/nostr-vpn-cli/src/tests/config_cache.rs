@@ -342,7 +342,7 @@ fn inbound_fips_roster_rejects_tampered_signed_event() {
     let mut event = signed.event.clone();
     event
         .tags
-        .push(Tag::parse(&["name", "Office"]).expect("tag"));
+        .push(Tag::parse(["name", "Office"]).expect("tag"));
     let tampered = SignedRoster { event };
 
     let error =

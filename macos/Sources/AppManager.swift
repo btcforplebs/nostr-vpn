@@ -1239,7 +1239,7 @@ final class AppManager: ObservableObject {
             fipsHostTunnelEnabled: false,
             connectToNonRosterFipsPeers: true,
             fipsNostrDiscoveryEnabled: true,
-            fipsBootstrapEnabled: true,
+            fipsBootstrapEnabled: false,
             fipsBootstrapPeers: [:],
             fipsBootstrapPeerDefaults: [:],
             fipsHostInboundTcpPorts: "",

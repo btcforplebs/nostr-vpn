@@ -64,7 +64,7 @@ enum ScreenshotFixtures {
         state.autoconnect = true
         state.connectToNonRosterFipsPeers = true
         state.fipsNostrDiscoveryEnabled = true
-        state.fipsBootstrapEnabled = true
+        state.fipsBootstrapEnabled = false
         state.inviteBroadcastActive = false
         state.nearbyDiscoveryActive = true
         state.nearbyDiscoveryRemainingSecs = 112

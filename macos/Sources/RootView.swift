@@ -1435,7 +1435,7 @@ struct RootView: View {
                     get: { state.connectToNonRosterFipsPeers },
                     set: { manager.setConnectToNonRosterFipsPeers($0) }
                 ))
-                settingsToggleRow("Find peers over relays", isOn: Binding(
+                settingsToggleRow("Find peers over Nostr relays", isOn: Binding(
                     get: { state.fipsNostrDiscoveryEnabled },
                     set: { manager.setFipsNostrDiscoveryEnabled($0) }
                 ))

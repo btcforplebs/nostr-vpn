@@ -694,7 +694,7 @@
               <StackPanel>
                 <TextBlock Text="FIPS" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
                 <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Connect to non-roster FIPS peers" IsChecked="{Binding State.ConnectToNonRosterFipsPeers, Mode=OneWay}" Click="ConnectToNonRosterFipsPeers_Click" />
-                <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Find peers over relays" IsChecked="{Binding State.FipsNostrDiscoveryEnabled, Mode=OneWay}" Click="FipsNostrDiscoveryEnabled_Click" />
+                <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Find peers over Nostr relays" IsChecked="{Binding State.FipsNostrDiscoveryEnabled, Mode=OneWay}" Click="FipsNostrDiscoveryEnabled_Click" />
                 <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Use bootstrap servers" IsChecked="{Binding State.FipsBootstrapEnabled, Mode=OneWay}" Click="FipsBootstrapEnabled_Click" />
               </StackPanel>
             </Border>

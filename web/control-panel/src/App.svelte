@@ -68,7 +68,7 @@
     fipsHostTunnelEnabled: false,
     connectToNonRosterFipsPeers: true,
     fipsNostrDiscoveryEnabled: true,
-    fipsBootstrapEnabled: true,
+    fipsBootstrapEnabled: false,
     fipsBootstrapPeers: '',
     fipsHostInboundTcpPorts: '',
     autoconnect: false,
@@ -1833,7 +1833,7 @@
               </label>
 
               <label class="switch-row">
-                <span>Find peers over relays</span>
+                <span>Find peers over Nostr relays</span>
                 <input
                   type="checkbox"
                   bind:checked={settingsDraft.fipsNostrDiscoveryEnabled}

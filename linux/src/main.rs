@@ -2560,7 +2560,7 @@ fn build_settings_page(app: &AppRef, page: &gtk::Box, state: &NativeAppState) {
     switch_row(
         app,
         &fips,
-        "Find peers over relays",
+        "Find peers over Nostr relays",
         state.fips_nostr_discovery_enabled,
         |enabled| NativeAppAction::UpdateSettings {
             patch: SettingsPatch {

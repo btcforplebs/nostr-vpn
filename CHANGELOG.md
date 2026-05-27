@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Settings now label relay-based FIPS discovery as "Find peers over Nostr
+  relays", and bootstrap servers default off for new configs.
+
 ## 4.0.42 - 2026-05-26
 
 ### Changed

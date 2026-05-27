@@ -32,14 +32,11 @@ const SIGNED_ROSTER_APP: &str = "nostr-vpn/shared-roster";
 
 impl SignedRoster {
     pub fn sign(network_id: impl Into<String>, roster: NetworkRoster, keys: &Keys) -> Result<Self> {
-        let event = EventBuilder::new(
-            Kind::Custom(SIGNED_ROSTER_KIND),
-            "",
-            signed_roster_tags(&network_id.into(), &roster)?,
-        )
-        .custom_created_at(Timestamp::from(roster.signed_at))
-        .to_event(keys)
-        .map_err(|error| anyhow!("failed to sign roster event: {error}"))?;
+        let event = EventBuilder::new(Kind::Custom(SIGNED_ROSTER_KIND), "")
+            .tags(signed_roster_tags(&network_id.into(), &roster)?)
+            .custom_created_at(Timestamp::from(roster.signed_at))
+            .sign_with_keys(keys)
+            .map_err(|error| anyhow!("failed to sign roster event: {error}"))?;
         let signed = Self { event };
         signed.verify()?;
         Ok(signed)
@@ -81,7 +78,7 @@ impl SignedRoster {
     }
 
     pub fn signed_at(&self) -> u64 {
-        self.event.created_at.as_u64()
+        self.event.created_at.as_secs()
     }
 
     pub fn content_hash(&self) -> String {
@@ -93,7 +90,7 @@ impl SignedRoster {
     }
 
     fn to_network_roster(&self) -> Result<(String, NetworkRoster)> {
-        signed_roster_from_tags(&self.event.tags, self.event.created_at.as_u64())
+        signed_roster_from_tags(self.event.tags.as_slice(), self.event.created_at.as_secs())
     }
 }
 
@@ -221,7 +218,7 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
 }
 
 fn roster_tag(parts: &[&str]) -> Result<Tag> {
-    Tag::parse(parts).map_err(|error| anyhow!("invalid roster event tag: {error}"))
+    Tag::parse(parts.iter().copied()).map_err(|error| anyhow!("invalid roster event tag: {error}"))
 }
 
 fn normalize_roster_pubkeys(values: &[String], role: &str) -> Result<Vec<String>> {

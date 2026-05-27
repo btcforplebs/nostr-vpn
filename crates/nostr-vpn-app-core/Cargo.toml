@@ -22,7 +22,7 @@ netdev.workspace = true
 nostr-sdk.workspace = true
 nostr-vpn-core.workspace = true
 qrcode = { version = "0.14", default-features = false }
-rqrr = "0.7"
+rqrr = "0.10"
 serde.workspace = true
 serde_json.workspace = true
 socket2.workspace = true

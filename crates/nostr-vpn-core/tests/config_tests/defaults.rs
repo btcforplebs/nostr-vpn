@@ -45,11 +45,18 @@ fn generated_config_auto_populates_keys() {
 }
 
 #[test]
-fn fips_discovery_and_bootstrap_default_on() {
+fn fips_discovery_defaults_on_bootstrap_defaults_off() {
     let config = AppConfig::generated();
 
     assert!(config.fips_nostr_discovery_enabled);
-    assert!(config.fips_bootstrap_enabled);
+    assert!(!config.fips_bootstrap_enabled);
+
+    assert!(config.fips_bootstrap_peer_endpoints().is_empty());
+
+    let config = AppConfig {
+        fips_bootstrap_enabled: true,
+        ..config
+    };
 
     let bootstrap = config.fips_bootstrap_peer_endpoints();
     assert_eq!(bootstrap.len(), DEFAULT_FIPS_BOOTSTRAP_PEERS.len());
@@ -82,6 +89,9 @@ fn fips_bootstrap_peers_are_seeded_editable_and_resettable() {
     );
     config.set_fips_bootstrap_peers(custom);
     assert_eq!(config.fips_bootstrap_peers.len(), 1);
+    assert!(config.fips_bootstrap_peer_endpoints().is_empty());
+
+    config.fips_bootstrap_enabled = true;
     let addrs = config.fips_bootstrap_peer_endpoints();
     assert_eq!(addrs.len(), 1);
     assert_eq!(addrs[0].1, vec!["tcp:45.79.10.10:443".to_string()]);
@@ -110,28 +120,28 @@ fn fips_bootstrap_disabled_yields_no_peers() {
 }
 
 #[test]
-fn fips_discovery_and_bootstrap_off_round_trip() {
+fn fips_discovery_off_and_bootstrap_opt_in_round_trip() {
     let config = AppConfig {
         fips_nostr_discovery_enabled: false,
-        fips_bootstrap_enabled: false,
+        fips_bootstrap_enabled: true,
         ..AppConfig::default()
     };
 
     let encoded = toml::to_string(&config).expect("serialize config");
     assert!(encoded.contains("fips_nostr_discovery_enabled = false"));
-    assert!(encoded.contains("fips_bootstrap_enabled = false"));
+    assert!(encoded.contains("fips_bootstrap_enabled = true"));
 
     let decoded: AppConfig = toml::from_str(&encoded).expect("parse config");
     assert!(!decoded.fips_nostr_discovery_enabled);
-    assert!(!decoded.fips_bootstrap_enabled);
+    assert!(decoded.fips_bootstrap_enabled);
 }
 
 #[test]
-fn fips_discovery_and_bootstrap_default_on_when_missing() {
+fn fips_discovery_defaults_on_bootstrap_defaults_off_when_missing() {
     let config: AppConfig = toml::from_str("").expect("parse empty config");
 
     assert!(config.fips_nostr_discovery_enabled);
-    assert!(config.fips_bootstrap_enabled);
+    assert!(!config.fips_bootstrap_enabled);
 }
 
 #[test]
@@ -564,7 +574,7 @@ fn apply_verified_admin_signed_shared_roster_rejects_tampered_event() {
     let mut event = signed.event.clone();
     event
         .tags
-        .push(nostr_sdk::prelude::Tag::parse(&["name", "Office"]).expect("tag"));
+        .push(nostr_sdk::prelude::Tag::parse(["name", "Office"]).expect("tag"));
     let tampered = SignedRoster { event };
 
     let error = config

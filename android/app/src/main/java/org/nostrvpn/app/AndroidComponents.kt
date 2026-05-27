@@ -409,7 +409,7 @@ internal fun FipsSettingsCard(state: AppState, dispatch: (JSONObject) -> Unit) {
                     dispatch(NativeActions.updateSettings("fipsNostrDiscoveryEnabled" to enabled))
                 },
             )
-            Text("Find peers over relays")
+            Text("Find peers over Nostr relays")
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(

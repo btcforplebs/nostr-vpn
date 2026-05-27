@@ -27,10 +27,12 @@ use nostr_vpn_core::config::{
     maybe_autoconfigure_node, normalize_nostr_pubkey, normalize_runtime_network_id,
     split_peer_transport_addr,
 };
+#[cfg(test)]
+use nostr_vpn_core::fips_control::NetworkRoster;
 use nostr_vpn_core::fips_control::{
-    FipsControlFragmentBuffer, FipsControlFrame, NetworkRoster, PeerCapabilities, PeerEndpointHint,
-    SignedRoster, decode_fips_control_frame, encode_fips_control_frame,
-    encode_fips_control_messages, peer_endpoint_hint_addr,
+    FipsControlFragmentBuffer, FipsControlFrame, PeerCapabilities, PeerEndpointHint, SignedRoster,
+    decode_fips_control_frame, encode_fips_control_frame, encode_fips_control_messages,
+    peer_endpoint_hint_addr,
 };
 use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
 use nostr_vpn_core::join_requests::{FIPS_JOIN_REQUEST_RETRY_SECS, MeshJoinRequest};
