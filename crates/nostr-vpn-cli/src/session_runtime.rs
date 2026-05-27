@@ -998,7 +998,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                     };
                     #[cfg(feature = "embedded-fips")]
                     if let Err(error) = fips_result {
-                        vpn_status = format!("Network return refresh failed ({error})");
+                        vpn_status = format!("Network route refresh failed ({error})");
                     } else {
                         #[cfg(feature = "embedded-fips")]
                         if let Some(runtime) = fips_tunnel_runtime.as_ref() {
