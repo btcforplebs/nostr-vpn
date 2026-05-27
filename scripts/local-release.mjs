@@ -480,10 +480,14 @@ Set-Location ${guestRepoQuoted}
 cargo build --release --target ${psQuote(target)} -p nvpn
 $cli = Join-Path ${guestRepoQuoted} ${psQuote(`target\\${target}\\release\\nvpn.exe`)}
 if (!(Test-Path $cli)) { throw "Missing nvpn.exe for ${target}" }
+$wintun = Join-Path ${guestRepoQuoted} ${psQuote(`target\\${target}\\release\\wintun.dll`)}
+if (!(Test-Path $wintun)) { throw "Missing wintun.dll for ${target}" }
 $tempDir = Join-Path $env:TEMP ${psQuote(`nvpn-${target}-zip`)}
 Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 Copy-Item $cli (Join-Path $tempDir 'nvpn.exe')
+New-Item -ItemType Directory -Force -Path (Join-Path $tempDir 'binaries') | Out-Null
+Copy-Item $wintun (Join-Path $tempDir 'binaries\\wintun.dll')
 Compress-Archive -Path (Join-Path $tempDir '*') -DestinationPath ${psQuote(`${guestDist}\\${archiveName}`)} -Force
 Remove-Item -Recurse -Force $tempDir
 `,

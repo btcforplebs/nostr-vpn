@@ -65,6 +65,8 @@ pub(crate) fn run_update(args: UpdateArgs) -> Result<()> {
     download_asset(&asset_url, &archive_path)?;
     extract_archive(&archive_path, &temp_dir)?;
     let binary = find_nvpn_binary(&temp_dir)?;
+    install_parent(&destination)?;
+    install_bundled_helpers(&binary, &destination)?;
     install_binary(&binary, &destination)?;
     let _ = fs::remove_dir_all(&temp_dir);
 
@@ -289,21 +291,7 @@ fn find_nvpn_binary(root: &Path) -> Result<PathBuf> {
 }
 
 fn install_binary(source: &Path, destination: &Path) -> Result<()> {
-    if destination.as_os_str().is_empty() {
-        return Err(anyhow!("install path must not be empty"));
-    }
-    if destination.is_dir() {
-        return Err(anyhow!(
-            "install path points to a directory: {}",
-            destination.display()
-        ));
-    }
-    let parent = destination.parent().ok_or_else(|| {
-        anyhow!(
-            "install path must include parent directory: {}",
-            destination.display()
-        )
-    })?;
+    let parent = install_parent(destination)?;
     fs::create_dir_all(parent)
         .with_context(|| format!("failed to create directory {}", parent.display()))?;
 
@@ -341,6 +329,121 @@ fn install_binary(source: &Path, destination: &Path) -> Result<()> {
     fs::rename(&temp_path, destination).with_context(|| {
         format!(
             "failed to move {} into {}",
+            temp_path.display(),
+            destination.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn install_parent(destination: &Path) -> Result<&Path> {
+    if destination.as_os_str().is_empty() {
+        return Err(anyhow!("install path must not be empty"));
+    }
+    if destination.is_dir() {
+        return Err(anyhow!(
+            "install path points to a directory: {}",
+            destination.display()
+        ));
+    }
+    destination.parent().ok_or_else(|| {
+        anyhow!(
+            "install path must include parent directory: {}",
+            destination.display()
+        )
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn install_bundled_helpers(source_binary: &Path, destination_binary: &Path) -> Result<()> {
+    let Some(source_dir) = bundled_helper_source_dir(source_binary) else {
+        return Ok(());
+    };
+    let destination_dir = install_parent(destination_binary)?.join("binaries");
+    install_bundled_helper_dir(&source_dir, &destination_dir)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn install_bundled_helpers(_source_binary: &Path, _destination_binary: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn bundled_helper_source_dir(source_binary: &Path) -> Option<PathBuf> {
+    source_binary
+        .parent()
+        .map(|parent| parent.join("binaries"))
+        .filter(|path| path.is_dir())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn install_bundled_helper_dir(source_dir: &Path, destination_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut installed = Vec::new();
+    let mut stack = vec![source_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in
+            fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+
+            let relative = path
+                .strip_prefix(source_dir)
+                .with_context(|| format!("failed to relativize {}", path.display()))?;
+            let destination = destination_dir.join(relative);
+            install_helper_file(&path, &destination)?;
+            installed.push(destination);
+        }
+    }
+    Ok(installed)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn install_helper_file(source: &Path, destination: &Path) -> Result<()> {
+    let parent = destination.parent().ok_or_else(|| {
+        anyhow!(
+            "helper install path must include parent directory: {}",
+            destination.display()
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create directory {}", parent.display()))?;
+
+    let file_name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("helper");
+    let temp_path = destination.with_file_name(format!(
+        ".nvpn-update-{}-{}-{file_name}",
+        std::process::id(),
+        unix_timestamp(),
+    ));
+    if temp_path.exists() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    fs::copy(source, &temp_path).with_context(|| {
+        format!(
+            "failed to copy helper {} to {}",
+            source.display(),
+            temp_path.display()
+        )
+    })?;
+    if destination.exists() {
+        fs::remove_file(destination)
+            .with_context(|| format!("failed to replace {}", destination.display()))?;
+    }
+    fs::rename(&temp_path, destination).with_context(|| {
+        format!(
+            "failed to move helper {} into {}",
             temp_path.display(),
             destination.display()
         )
@@ -428,6 +531,15 @@ fn unix_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("nvpn-updater-{label}-{nonce}"))
+    }
 
     #[test]
     fn parses_github_release_manifest() {
@@ -475,5 +587,49 @@ mod tests {
         assert!(version_is_newer("v4.0.13", "4.0.12"));
         assert!(!version_is_newer("v4.0.12", "4.0.12"));
         assert!(!version_is_newer("v4.0.11", "4.0.12"));
+    }
+
+    #[test]
+    fn helper_source_dir_is_next_to_downloaded_binary() {
+        let root = unique_temp_dir("helper-source");
+        let binary = root.join("archive").join("nvpn.exe");
+        let helper_dir = binary.parent().expect("binary parent").join("binaries");
+        fs::create_dir_all(&helper_dir).expect("create helper dir");
+        fs::write(&binary, b"exe").expect("write binary placeholder");
+        fs::write(helper_dir.join("wintun.dll"), b"dll").expect("write helper placeholder");
+
+        assert_eq!(bundled_helper_source_dir(&binary), Some(helper_dir));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn installs_bundled_helper_files_recursively() {
+        let root = unique_temp_dir("helper-install");
+        let source_dir = root.join("source").join("binaries");
+        let destination_dir = root.join("install").join("binaries");
+        fs::create_dir_all(source_dir.join("drivers")).expect("create source dirs");
+        fs::create_dir_all(&destination_dir).expect("create destination dir");
+        fs::write(source_dir.join("wintun.dll"), b"new").expect("write wintun helper");
+        fs::write(source_dir.join("drivers").join("extra.dll"), b"extra")
+            .expect("write nested helper");
+        fs::write(destination_dir.join("wintun.dll"), b"old").expect("write old helper");
+
+        let installed = install_bundled_helper_dir(&source_dir, &destination_dir)
+            .expect("install bundled helpers");
+
+        assert!(installed.contains(&destination_dir.join("wintun.dll")));
+        assert!(installed.contains(&destination_dir.join("drivers").join("extra.dll")));
+        assert_eq!(
+            fs::read(destination_dir.join("wintun.dll")).expect("read installed wintun"),
+            b"new"
+        );
+        assert_eq!(
+            fs::read(destination_dir.join("drivers").join("extra.dll"))
+                .expect("read installed nested helper"),
+            b"extra"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

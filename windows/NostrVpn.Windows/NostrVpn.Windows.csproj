@@ -16,7 +16,8 @@
   <ItemGroup>
     <Content Include="Assets\nostr-vpn.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\nostr-vpn-tray.ico" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\..\target\$(Configuration)\nostr_vpn_app_core.dll" Condition="Exists('..\..\target\$(Configuration)\nostr_vpn_app_core.dll')" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\..\target\$(Configuration)\nvpn.exe" Condition="Exists('..\..\target\$(Configuration)\nvpn.exe')" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\target\$(Configuration)\nostr_vpn_app_core.dll" Condition="Exists('..\..\target\$(Configuration)\nostr_vpn_app_core.dll')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\..\target\$(Configuration)\nvpn.exe" Condition="Exists('..\..\target\$(Configuration)\nvpn.exe')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\..\target\$(Configuration)\binaries\**\*" Condition="Exists('..\..\target\$(Configuration)\binaries')" Link="binaries\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

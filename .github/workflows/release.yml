@@ -103,6 +103,12 @@ jobs:
 
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "${BIN_DIR}/nvpn.exe" dist/nvpn/
+            if [ ! -f "${BIN_DIR}/wintun.dll" ]; then
+              echo "::error::Missing ${BIN_DIR}/wintun.dll"
+              exit 1
+            fi
+            mkdir -p dist/nvpn/binaries
+            cp "${BIN_DIR}/wintun.dll" dist/nvpn/binaries/
             powershell -NoProfile -Command "Compress-Archive -Path 'dist/nvpn/*' -DestinationPath 'dist/nvpn-${RELEASE_VERSION}-${TARGET}.zip' -Force"
             exit 0
           fi

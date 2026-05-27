@@ -71,6 +71,33 @@ function Resolve-OutputPath {
   return [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $Path))
 }
 
+function Copy-RequiredFile {
+  param(
+    [string]$Source,
+    [string]$Destination,
+    [string]$Label
+  )
+
+  if (!(Test-Path $Source)) {
+    throw "Missing ${Label}: $Source"
+  }
+
+  $DestinationParent = Split-Path -Parent $Destination
+  New-Item -ItemType Directory -Force -Path $DestinationParent | Out-Null
+  if ([System.IO.Path]::GetFullPath($Source) -ine [System.IO.Path]::GetFullPath($Destination)) {
+    Copy-Item -Force $Source $Destination
+  }
+}
+
+function Assert-BundledWindowsHelpers {
+  param([string]$OutputDir)
+
+  $WintunDll = Join-Path $OutputDir "binaries\wintun.dll"
+  if (!(Test-Path $WintunDll)) {
+    throw "Published Windows app is missing bundled helper: $WintunDll"
+  }
+}
+
 $CargoArgs = @("build", "-p", "nostr-vpn-app-core", "-p", "nvpn")
 if ($Configuration -eq "Release") {
   $CargoArgs += "--release"
@@ -83,19 +110,20 @@ New-Item -ItemType Directory -Force -Path $AppCargoDir | Out-Null
 foreach ($FileName in @("nostr_vpn_app_core.dll", "nvpn.exe")) {
   $Source = Join-Path $CargoOutputDir $FileName
   $Destination = Join-Path $AppCargoDir $FileName
-  if (Test-Path $Source) {
-    if ([System.IO.Path]::GetFullPath($Source) -ine [System.IO.Path]::GetFullPath($Destination)) {
-      Copy-Item -Force $Source $Destination
-    }
-  }
+  Copy-RequiredFile $Source $Destination $FileName
 }
+$AppBinariesDir = Join-Path $AppCargoDir "binaries"
+Copy-RequiredFile (Join-Path $CargoOutputDir "wintun.dll") (Join-Path $AppBinariesDir "wintun.dll") "wintun.dll"
 
 if ($Publish -or $Installer) {
   $SelfContained = if ($Installer) { "true" } else { "false" }
   Invoke-Checked dotnet @("publish", $Project, "-c", $Configuration, "-r", $Runtime, "--self-contained", $SelfContained)
+  $DotnetOutputDir = Join-Path $Root "windows\NostrVpn.Windows\bin\$Configuration\net8.0-windows\$Runtime\publish"
 } else {
   Invoke-Checked dotnet @("build", $Project, "-c", $Configuration)
+  $DotnetOutputDir = Join-Path $Root "windows\NostrVpn.Windows\bin\$Configuration\net8.0-windows"
 }
+Assert-BundledWindowsHelpers $DotnetOutputDir
 
 if ($Installer) {
   if ($Runtime -ne "win-x64") {
@@ -110,7 +138,7 @@ if ($Installer) {
   $InstallerOutputDir = if ($OutputDir) { Resolve-OutputPath $OutputDir } else { Join-Path $Root "dist" }
   New-Item -ItemType Directory -Force -Path $InstallerOutputDir | Out-Null
 
-  $PublishDir = Join-Path $Root "windows\NostrVpn.Windows\bin\$Configuration\net8.0-windows\$Runtime\publish"
+  $PublishDir = $DotnetOutputDir
   if (!(Test-Path (Join-Path $PublishDir "NostrVpn.Windows.exe"))) {
     throw "Published Windows app not found in $PublishDir"
   }

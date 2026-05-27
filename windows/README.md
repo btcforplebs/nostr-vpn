@@ -26,4 +26,4 @@ From Git Bash or `just` on Windows:
 just run-windows
 ```
 
-The build first compiles `nostr-vpn-app-core` and `nvpn`, then builds the WPF shell and copies `nostr_vpn_app_core.dll` plus `nvpn.exe` next to the app executable.
+The build first compiles `nostr-vpn-app-core` and `nvpn`, then builds the WPF shell and copies `nostr_vpn_app_core.dll`, `nvpn.exe`, and helper binaries such as `binaries\wintun.dll` into the app output.
