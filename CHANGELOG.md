@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.45 - 2026-05-27
+
+### Fixed
+
+- macOS release builds now compile the Add Network join-request section with
+  an explicit SwiftUI return, unblocking local htree release artifacts.
+
 ## 4.0.44 - 2026-05-27
 
 ### Fixed

@@ -1014,7 +1014,7 @@ struct RootView: View {
         let requestNetwork = network ?? state.networks.first { candidate in
             candidate.outboundJoinRequest != nil || !candidate.inviteInviterNpub.isEmpty
         }
-        surface {
+        return surface {
             sectionHeader("Join Network", systemImage: "arrow.down.circle")
             Text("Paste invite code")
                 .font(.caption)

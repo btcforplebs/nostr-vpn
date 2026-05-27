@@ -26,8 +26,8 @@ android {
         applicationId = "org.nostrvpn.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 40044
-        versionName = "4.0.44"
+        versionCode = 40045
+        versionName = "4.0.45"
 
         ndk {
             abiFilters += "arm64-v8a"
