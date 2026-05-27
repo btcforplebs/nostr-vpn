@@ -984,6 +984,9 @@ private struct ParticipantRow: View {
                             if participant.isAdmin {
                                 Pill("Admin", tint: AppColors.accent)
                             }
+                            if isNetworkDns(participant, state: model.state) {
+                                Pill("DNS", tint: AppColors.ok)
+                            }
                             if isSelf(participant, state: model.state) {
                                 Pill("This device", tint: AppColors.ok)
                             }
@@ -1051,6 +1054,9 @@ private struct DeviceDetailSheet: View {
                         Spacer()
                         if participant.isAdmin {
                             Pill("Admin", tint: AppColors.accent)
+                        }
+                        if isNetworkDns(participant, state: model.state) {
+                            Pill("DNS", tint: AppColors.ok)
                         }
                         if isMe {
                             Pill("This device", tint: AppColors.ok)
@@ -1144,6 +1150,31 @@ private struct DeviceDetailSheet: View {
                                 Label(participant.isAdmin ? "Remove admin" : "Make admin", systemImage: participant.isAdmin ? "person.fill.badge.minus" : "person.fill.badge.plus")
                             }
                             .buttonStyle(.bordered)
+
+                            Button {
+                                let ip = cleanIp(participant.tunnelIp)
+                                if isNetworkDns(participant, state: model.state) {
+                                    let remaining = model.state.networkDnsServers.filter { $0 != ip }
+                                    model.dispatch(
+                                        NativeActions.updateSettings(["networkDnsServers": remaining.isEmpty ? [] as [String] : remaining]),
+                                        status: "Removing DNS"
+                                    )
+                                } else {
+                                    var servers = model.state.networkDnsServers
+                                    servers.append(ip)
+                                    model.dispatch(
+                                        NativeActions.updateSettings(["networkDnsServers": servers]),
+                                        status: "Setting DNS"
+                                    )
+                                }
+                            } label: {
+                                Label(
+                                    isNetworkDns(participant, state: model.state) ? "Remove DNS" : "Make DNS",
+                                    systemImage: "server.rack"
+                                )
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(model.actionInFlight || cleanIp(participant.tunnelIp).isEmpty)
 
                             Button(role: .destructive) {
                                 pendingRemove = true
@@ -1991,6 +2022,11 @@ private func sortedParticipants(_ participants: [ParticipantState], state: AppSt
 
 private func isSelf(_ participant: ParticipantState, state: AppState) -> Bool {
     (!state.ownNpub.isEmpty && participant.npub == state.ownNpub) || participant.meshState == "local"
+}
+
+private func isNetworkDns(_ participant: ParticipantState, state: AppState) -> Bool {
+    let ip = cleanIp(participant.tunnelIp)
+    return !ip.isEmpty && state.networkDnsServers.contains(ip)
 }
 
 private func isActiveExitParticipant(_ participant: ParticipantState, state: AppState) -> Bool {

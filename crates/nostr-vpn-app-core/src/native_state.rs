@@ -209,6 +209,10 @@ pub struct NativeAppState {
     pub fips_host_inbound_tcp_ports: String,
     pub magic_dns_suffix: String,
     pub magic_dns_status: String,
+    #[serde(default)]
+    pub network_dns_servers: Vec<String>,
+    #[serde(default)]
+    pub dns_override_active: bool,
     pub autoconnect: bool,
     pub invite_broadcast_active: bool,
     pub invite_broadcast_remaining_secs: u64,

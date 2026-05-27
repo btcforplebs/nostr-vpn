@@ -84,6 +84,7 @@ internal fun ParticipantRow(
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (isSelf) Pill("This device", Color(0xFFECFDF5), Ok)
                     if (participant.isAdmin) Pill("Admin", Color(0xFFF5F3FF), Accent)
+                    if (participant.isNetworkDns(state)) Pill("DNS", Color(0xFFECFDF5), Ok)
                     if (participant.offersExitNode) {
                         Pill(
                             participant.exitNodeLabel(state),
@@ -136,6 +137,7 @@ private fun DeviceDetailDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (isSelf) Pill("This device", Color(0xFFECFDF5), Ok)
                     if (participant.isAdmin) Pill("Admin", Color(0xFFF5F3FF), Accent)
+                    if (participant.isNetworkDns(state)) Pill("DNS", Color(0xFFECFDF5), Ok)
                     if (participant.offersExitNode) {
                         Pill(
                             participant.exitNodeLabel(state),
@@ -208,6 +210,24 @@ private fun DeviceDetailDialog(
                                 .put("networkId", manageNetwork.id).put("npub", participant.npub))
                         }) {
                             Text(if (participant.isAdmin) "Remove admin" else "Make admin")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                val ip = participant.tunnelIp.split("/")[0].trim()
+                                val current = state.networkDnsServers
+                                val servers = if (participant.isNetworkDns(state)) {
+                                    current.filter { it != ip }
+                                } else {
+                                    current + ip
+                                }
+                                val arr = JSONArray()
+                                servers.forEach { arr.put(it) }
+                                manageDispatch(JSONObject().put("type", "update_settings")
+                                    .put("patch", JSONObject().put("networkDnsServers", arr)))
+                            },
+                            enabled = participant.tunnelIp.split("/")[0].trim().isNotEmpty(),
+                        ) {
+                            Text(if (participant.isNetworkDns(state)) "Remove DNS" else "Make DNS")
                         }
                         OutlinedButton(onClick = { pendingRemove = true }) {
                             Text("Remove from network")
@@ -852,6 +872,11 @@ private fun ParticipantState.fipsPathLabel(appState: AppState): String {
 
 private fun ParticipantState.isFipsRouted(state: AppState): Boolean =
     !isSelf(state) && reachable && fipsTransportAddr.isBlank()
+
+private fun ParticipantState.isNetworkDns(state: AppState): Boolean {
+    val ip = tunnelIp.split("/")[0].trim()
+    return ip.isNotEmpty() && state.networkDnsServers.contains(ip)
+}
 
 private fun ParticipantState.isActiveExitNode(state: AppState): Boolean =
     state.exitNodeActive && state.exitNode.isNotBlank() && npub == state.exitNode

@@ -149,6 +149,8 @@ export type UiState = {
   fipsHostInboundTcpPorts: string;
   magicDnsSuffix: string;
   magicDnsStatus: string;
+  networkDnsServers: string[];
+  dnsOverrideActive: boolean;
   autoconnect: boolean;
   inviteBroadcastActive: boolean;
   inviteBroadcastRemainingSecs: number;

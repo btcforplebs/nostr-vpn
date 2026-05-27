@@ -847,6 +847,26 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             participant.IsAdmin ? "Removing admin" : "Adding admin");
     }
 
+    public Task ToggleDnsAsync(NativeParticipantState participant)
+    {
+        var network = ActiveNetwork;
+        if (network?.LocalIsAdmin != true)
+        {
+            return Task.CompletedTask;
+        }
+        var ip = participant.CleanTunnelIp;
+        if (string.IsNullOrEmpty(ip))
+        {
+            return Task.CompletedTask;
+        }
+        var servers = participant.IsNetworkDns
+            ? State.NetworkDnsServers.Where(s => s != ip).ToList()
+            : State.NetworkDnsServers.Concat(new[] { ip }).ToList();
+        return DispatchAsync(
+            NativeActions.UpdateSettings(new SettingsPatch { NetworkDnsServers = servers }),
+            participant.IsNetworkDns ? "Removing DNS" : "Setting DNS");
+    }
+
     public Task ActivateNetworkAsync(string networkId)
     {
         return DispatchAsync(NativeActions.SetNetworkEnabled(networkId, true), "Activating network");
@@ -1381,6 +1401,9 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
                 participant.IsSelf =
                     string.Equals(participant.MeshState, "local", StringComparison.OrdinalIgnoreCase)
                     || (!string.IsNullOrEmpty(ownNpub) && participant.Npub == ownNpub);
+                var cleanIp = participant.CleanTunnelIp;
+                participant.IsNetworkDns = !string.IsNullOrEmpty(cleanIp)
+                    && state.NetworkDnsServers.Contains(cleanIp);
             }
         }
     }
