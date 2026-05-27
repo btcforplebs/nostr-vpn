@@ -106,6 +106,14 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void ToggleDns_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: NativeParticipantState participant })
+        {
+            await ViewModel.ToggleDnsAsync(participant);
+        }
+    }
+
     private async void RemoveParticipant_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button { Tag: NativeParticipantState participant })

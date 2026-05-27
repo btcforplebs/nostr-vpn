@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -18,7 +18,7 @@
 		6CD25EAFAEB49BF8DD9DBCC2 /* NativeCoreClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C4E67D5D36550552B70435 /* NativeCoreClient.swift */; };
 		71E581C6F6310F9115EE989A /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C026B0860BA3DC6889593E3F /* AppIntents.framework */; };
 		79E8116198C0F1544EEEB1D2 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B11B87B71A3CB9B7FFB57358 /* PrivacyInfo.xcprivacy */; };
-		9655E8C2070C163CD6BB08D2 /* PacketTunnel.appex in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 21F75A016D5B4CB3DFBE0621 /* PacketTunnel.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		9655E8C2070C163CD6BB08D2 /* Nostr VPN Tunnel.appex in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 21F75A016D5B4CB3DFBE0621 /* Nostr VPN Tunnel.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9E4E18AFBA1E70116199E68D /* NostrVpnIosApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8C2C375478E216EE34D7E2A /* NostrVpnIosApp.swift */; };
 		A2D4FF7B1D02640E8D08D6C7 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B11B87B71A3CB9B7FFB57358 /* PrivacyInfo.xcprivacy */; };
 		B9BD3A30C0A8D50809A96E69 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F7274F66C76E9FC38CB0DEDB /* Assets.xcassets */; };
@@ -46,7 +46,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				9655E8C2070C163CD6BB08D2 /* PacketTunnel.appex in Embed Dependencies */,
+				9655E8C2070C163CD6BB08D2 /* Nostr VPN Tunnel.appex in Embed Dependencies */,
 			);
 			name = "Embed Dependencies";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -56,14 +56,14 @@
 /* Begin PBXFileReference section */
 		10601F7E977CA9A2CA70782B /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
 		1432941BCEFBEB848E748486 /* NostrVpnAppCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = NostrVpnAppCore.xcframework; path = Frameworks/NostrVpnAppCore.xcframework; sourceTree = "<group>"; };
-		21F75A016D5B4CB3DFBE0621 /* PacketTunnel.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = PacketTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		21F75A016D5B4CB3DFBE0621 /* Nostr VPN Tunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Nostr VPN Tunnel.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		29E68FA9898E0C487261BE03 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		3DDFB58648107DDDBCC8DBE5 /* PacketTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PacketTunnel.entitlements; sourceTree = "<group>"; };
 		47D10A3E63B2672F87095031 /* ScreenshotFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotFixtures.swift; sourceTree = "<group>"; };
 		4E8D34EBC51BAFC05BF873C3 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
-		5EE69AF3C3AAAA49D523C344 /* NostrVpnIos.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NostrVpnIos.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5EE69AF3C3AAAA49D523C344 /* Nostr VPN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Nostr VPN.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		620E8362A0A3215BB8EFF1F5 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
-		B11B87B71A3CB9B7FFB57358 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		B11B87B71A3CB9B7FFB57358 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		BD1EA5A948BC1EEB916CEC3D /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
 		C026B0860BA3DC6889593E3F /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 		C8BAA0EBA6F30832FC35B6E6 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
@@ -150,8 +150,8 @@
 		D39D5A56D64190205BCC5B1A /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				5EE69AF3C3AAAA49D523C344 /* NostrVpnIos.app */,
-				21F75A016D5B4CB3DFBE0621 /* PacketTunnel.appex */,
+				5EE69AF3C3AAAA49D523C344 /* Nostr VPN.app */,
+				21F75A016D5B4CB3DFBE0621 /* Nostr VPN Tunnel.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -186,7 +186,7 @@
 			packageProductDependencies = (
 			);
 			productName = NostrVpnIos;
-			productReference = 5EE69AF3C3AAAA49D523C344 /* NostrVpnIos.app */;
+			productReference = 5EE69AF3C3AAAA49D523C344 /* Nostr VPN.app */;
 			productType = "com.apple.product-type.application";
 		};
 		AB61873F2829C99F6B9C990E /* PacketTunnel */ = {
@@ -205,7 +205,7 @@
 			packageProductDependencies = (
 			);
 			productName = PacketTunnel;
-			productReference = 21F75A016D5B4CB3DFBE0621 /* PacketTunnel.appex */;
+			productReference = 21F75A016D5B4CB3DFBE0621 /* Nostr VPN Tunnel.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
@@ -218,7 +218,6 @@
 				LastUpgradeCheck = 1430;
 			};
 			buildConfigurationList = 74AC5F0BB81527A1F708C8A6 /* Build configuration list for PBXProject "NostrVpnIos" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -228,6 +227,7 @@
 			mainGroup = 277A36BBB757931F3D25086F;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
+			productRefGroup = D39D5A56D64190205BCC5B1A /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -298,6 +298,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = NostrVpnIos.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 525WQ48Y72;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"Frameworks\"",
@@ -308,7 +309,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn;
+				PRODUCT_BUNDLE_IDENTIFIER = to.loge.nvpn;
 				PRODUCT_MODULE_NAME = NostrVpnIos;
 				PRODUCT_NAME = "Nostr VPN";
 				SDKROOT = iphoneos;
@@ -379,7 +380,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 4000045;
+				CURRENT_PROJECT_VERSION = 4000046;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -399,7 +400,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 4.0.45;
+				MARKETING_VERSION = 4.0.46;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -416,6 +417,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements;
+				DEVELOPMENT_TEAM = 525WQ48Y72;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"Frameworks\"",
@@ -427,7 +429,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.PacketTunnel;
+				PRODUCT_BUNDLE_IDENTIFIER = to.loge.nvpn.PacketTunnel;
 				PRODUCT_MODULE_NAME = PacketTunnel;
 				PRODUCT_NAME = "Nostr VPN Tunnel";
 				SDKROOT = iphoneos;
@@ -498,7 +500,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 4000045;
+				CURRENT_PROJECT_VERSION = 4000046;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -512,7 +514,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 4.0.45;
+				MARKETING_VERSION = 4.0.46;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

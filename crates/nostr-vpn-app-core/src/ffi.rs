@@ -700,6 +700,12 @@ impl NativeAppRuntime {
             } else {
                 self.magic_dns_status()
             },
+            network_dns_servers: if config_unavailable {
+                Vec::new()
+            } else {
+                self.active_network_dns_servers()
+            },
+            dns_override_active: !config_unavailable && self.dns_override_active(),
             autoconnect: !config_unavailable && self.config.autoconnect,
             invite_broadcast_active: self.invite_broadcast_active(),
             invite_broadcast_remaining_secs: self.invite_broadcast_remaining_secs(),
@@ -1434,6 +1440,27 @@ impl NativeAppRuntime {
         }
         if let Some(value) = patch.close_to_tray_on_close {
             self.config.close_to_tray_on_close = value;
+        }
+        if let Some(servers) = patch.network_dns_servers {
+            let own_pubkey = self.config.own_nostr_pubkey_hex()?;
+            let active_id = self
+                .config
+                .active_network_opt()
+                .map(|n| n.id.clone())
+                .unwrap_or_default();
+            if !self.config.is_network_admin(&active_id, &own_pubkey) {
+                return Err(anyhow::anyhow!("only a network admin can set DNS servers"));
+            }
+            for server in &servers {
+                server
+                    .trim()
+                    .parse::<std::net::IpAddr>()
+                    .map_err(|_| anyhow::anyhow!("invalid DNS server IP: {server}"))?;
+            }
+            if let Some(network) = self.config.network_by_id_mut(&active_id) {
+                network.dns_servers = servers;
+            }
+            let _ = self.config.note_active_network_roster_local_change();
         }
         Ok(())
     }
@@ -2238,6 +2265,25 @@ impl NativeAppRuntime {
         } else {
             "DNS disabled (VPN off)".to_string()
         }
+    }
+
+    fn active_network_dns_servers(&self) -> Vec<String> {
+        self.config
+            .networks
+            .iter()
+            .find(|n| n.enabled)
+            .map(|n| n.dns_servers.clone())
+            .unwrap_or_default()
+    }
+
+    fn dns_override_active(&self) -> bool {
+        self.vpn_active
+            && self
+                .config
+                .networks
+                .iter()
+                .find(|n| n.enabled)
+                .is_some_and(|n| !n.dns_servers.is_empty())
     }
 
     fn self_magic_dns_label_for_display(&self) -> Option<String> {
@@ -5165,6 +5211,71 @@ exit 0
         assert!(!runtime.vpn_enabled);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dns_settings_patch_requires_admin_and_validates_ips() {
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.last_error.clear();
+        create_test_network(&mut runtime, "Home");
+        let own_pubkey = runtime
+            .config
+            .own_nostr_pubkey_hex()
+            .expect("generated config should have own pubkey");
+
+        // Non-admin: should fail.
+        runtime.config.networks[0].admins = vec!["other_pubkey".to_string()];
+        let result = runtime.apply_settings_patch(SettingsPatch {
+            network_dns_servers: Some(vec!["10.44.1.100".to_string()]),
+            ..Default::default()
+        });
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("only a network admin")
+        );
+
+        // Admin with invalid IP: should fail.
+        runtime.config.networks[0].admins = vec![own_pubkey.clone()];
+        let result = runtime.apply_settings_patch(SettingsPatch {
+            network_dns_servers: Some(vec!["not-an-ip".to_string()]),
+            ..Default::default()
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid DNS"));
+
+        // Admin with valid IPs: should succeed.
+        let result = runtime.apply_settings_patch(SettingsPatch {
+            network_dns_servers: Some(vec![
+                "10.44.1.100".to_string(),
+                "10.44.1.200".to_string(),
+            ]),
+            ..Default::default()
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            runtime.config.networks[0].dns_servers,
+            vec!["10.44.1.100", "10.44.1.200"]
+        );
+        let state = runtime.state();
+        assert_eq!(
+            state.network_dns_servers,
+            vec!["10.44.1.100", "10.44.1.200"]
+        );
+
+        // Clear with empty list.
+        let result = runtime.apply_settings_patch(SettingsPatch {
+            network_dns_servers: Some(Vec::new()),
+            ..Default::default()
+        });
+        assert!(result.is_ok());
+        assert!(runtime.config.networks[0].dns_servers.is_empty());
+        let state = runtime.state();
+        assert!(state.network_dns_servers.is_empty());
     }
 
     #[cfg(target_os = "macos")]

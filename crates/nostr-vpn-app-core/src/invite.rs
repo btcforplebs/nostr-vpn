@@ -264,6 +264,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         });
 
         let code = active_network_invite_code_with_endpoints(

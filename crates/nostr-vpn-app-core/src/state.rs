@@ -310,6 +310,8 @@ pub struct SettingsPatch {
     pub autoconnect: Option<bool>,
     pub launch_on_startup: Option<bool>,
     pub close_to_tray_on_close: Option<bool>,
+    /// DNS server IPs for the active network (admin only). `Some(vec![])` clears.
+    pub network_dns_servers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
