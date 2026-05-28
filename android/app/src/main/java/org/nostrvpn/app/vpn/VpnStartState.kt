@@ -1,0 +1,21 @@
+package org.nostrvpn.app.vpn
+
+import android.content.Context
+
+internal object VpnStartState {
+    private const val PREFS = "nostr_vpn_service"
+    private const val USER_WANTS_VPN = "user_wants_vpn"
+
+    fun setUserWantsVpn(context: Context, enabled: Boolean) {
+        context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(USER_WANTS_VPN, enabled)
+            .apply()
+    }
+
+    fun userWantsVpn(context: Context): Boolean =
+        context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(USER_WANTS_VPN, false)
+}

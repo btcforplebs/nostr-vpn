@@ -79,6 +79,8 @@ const MOBILE_PEER_DISCOVERY_PROBE_INTERVAL_SECS: u64 = 120;
 const MOBILE_CONTROL_RTT_MAX_ACCEPT_MS: u128 = 10_000;
 const MOBILE_HANDSHAKE_RESEND_INTERVAL_MS: u64 = 300;
 const MOBILE_HANDSHAKE_RESEND_BACKOFF: f64 = 1.5;
+const MOBILE_EXIT_NODE_DEFAULT_ROUTES: &[&str] = &["0.0.0.0/0"];
+const MOBILE_EXIT_NODE_DNS_SERVERS: &[&str] = &["1.1.1.1", "9.9.9.9"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -200,7 +202,7 @@ impl MobileTunnelConfig {
             .into_iter()
             .filter(|participant| participant != &own_pubkey)
         {
-            let allowed_ips = if participant_pubkeys.contains(&participant) {
+            let mut allowed_ips = if participant_pubkeys.contains(&participant) {
                 let Some(tunnel_ip) = derive_mesh_tunnel_ip(&network_id, &participant) else {
                     continue;
                 };
@@ -210,6 +212,16 @@ impl MobileTunnelConfig {
             } else {
                 Vec::new()
             };
+            if app.exit_node == participant {
+                let exit_routes = MOBILE_EXIT_NODE_DEFAULT_ROUTES
+                    .iter()
+                    .map(|route| (*route).to_string())
+                    .collect::<Vec<_>>();
+                route_targets.extend(exit_routes.iter().cloned());
+                allowed_ips.extend(exit_routes);
+            }
+            allowed_ips.sort();
+            allowed_ips.dedup();
             peers.push(FipsMeshPeerConfig::from_participant_pubkey(
                 participant,
                 allowed_ips,
@@ -238,6 +250,7 @@ impl MobileTunnelConfig {
         // 0.0.0.0/0 (all outbound traffic should enter the tun) and
         // ask the host platform to keep the WG endpoint outside the
         // tunnel via `excluded_routes`.
+        let selected_peer_exit = route_targets.iter().any(|route| route == "0.0.0.0/0");
         let (wireguard_exit, excluded_routes, dns_servers) =
             if app.wireguard_exit.enabled && app.wireguard_exit.configured() {
                 let mut excluded = Vec::new();
@@ -273,6 +286,15 @@ impl MobileTunnelConfig {
                     wg.persistent_keepalive_secs = 25;
                 }
                 (Some(wg), excluded, dns)
+            } else if selected_peer_exit {
+                (
+                    None,
+                    Vec::new(),
+                    MOBILE_EXIT_NODE_DNS_SERVERS
+                        .iter()
+                        .map(|server| (*server).to_string())
+                        .collect(),
+                )
             } else {
                 (None, Vec::new(), Vec::new())
             };
@@ -2540,7 +2562,55 @@ mod tests {
     }
 
     #[test]
-    fn mobile_config_routes_only_private_peer_addresses() {
+    fn mobile_config_stays_split_tunnel_without_exit() {
+        let mut app = AppConfig::generated();
+        app.ensure_defaults();
+        let own = app.own_nostr_pubkey_hex().expect("own pubkey");
+        let peer = "26525c442dd039de4e728b41ee8d7f717b267ab25b7c219d53a3249e1c9174cc";
+        app.networks = vec![NetworkConfig {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            enabled: true,
+            network_id: "test".to_string(),
+            invite_secret: "join-secret".to_string(),
+            participants: vec![peer.to_string()],
+            admins: vec![own],
+            listen_for_join_requests: true,
+            invite_inviter: String::new(),
+            outbound_join_request: None,
+            inbound_join_requests: Vec::new(),
+            shared_roster_updated_at: 0,
+            shared_roster_signed_by: String::new(),
+        }];
+
+        let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
+
+        assert_eq!(config.peers.len(), 1);
+        assert_eq!(config.route_targets.len(), 2);
+        assert_eq!(config.peers[0].allowed_ips.len(), 1);
+        assert!(
+            config
+                .route_targets
+                .iter()
+                .any(|route| route == MESH_TUNNEL_IPV4_CIDR)
+        );
+        let peer_route = config
+            .route_targets
+            .iter()
+            .find(|route| route.as_str() != MESH_TUNNEL_IPV4_CIDR)
+            .expect("peer route");
+        assert!(peer_route.starts_with("10."));
+        assert!(
+            !config
+                .route_targets
+                .iter()
+                .any(|route| route == "0.0.0.0/0")
+        );
+        assert!(config.dns_servers.is_empty());
+    }
+
+    #[test]
+    fn mobile_config_selected_exit_node_adds_default_route() {
         let mut app = AppConfig::generated();
         app.ensure_defaults();
         let own = app.own_nostr_pubkey_hex().expect("own pubkey");
@@ -2565,25 +2635,25 @@ mod tests {
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
 
         assert_eq!(config.peers.len(), 1);
-        assert_eq!(config.route_targets.len(), 2);
         assert!(
             config
                 .route_targets
                 .iter()
                 .any(|route| route == MESH_TUNNEL_IPV4_CIDR)
         );
-        let peer_route = config
-            .route_targets
-            .iter()
-            .find(|route| route.as_str() != MESH_TUNNEL_IPV4_CIDR)
-            .expect("peer route");
-        assert!(peer_route.starts_with("10."));
         assert!(
-            !config
+            config
                 .route_targets
                 .iter()
                 .any(|route| route == "0.0.0.0/0")
         );
+        assert!(
+            config.peers[0]
+                .allowed_ips
+                .iter()
+                .any(|route| route == "0.0.0.0/0")
+        );
+        assert_eq!(config.dns_servers, vec!["1.1.1.1", "9.9.9.9"]);
     }
 
     #[test]
