@@ -4055,6 +4055,7 @@ mod tests {
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))
                 .collect(),
             signed_at: 123,
+            dns_servers: Vec::new(),
         };
         let frame = FipsControlFrame::Roster {
             network_id: "mesh".to_string(),
@@ -4264,6 +4265,7 @@ mod tests {
                 admins: Vec::new(),
                 aliases: HashMap::new(),
                 signed_at: 42,
+                dns_servers: Vec::new(),
             },
             signed_roster: None,
         };

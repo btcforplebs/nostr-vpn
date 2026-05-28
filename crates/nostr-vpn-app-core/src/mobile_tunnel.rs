@@ -306,7 +306,12 @@ impl MobileTunnelConfig {
                         .collect(),
                 )
             } else {
-                (None, Vec::new(), Vec::new())
+                // No WG exit — use roster DNS servers if set by the admin.
+                let roster_dns = app
+                    .active_network_opt()
+                    .map(|n| n.dns_servers.clone())
+                    .unwrap_or_default();
+                (None, Vec::new(), roster_dns)
             };
         if dns_servers.is_empty() && !app.magic_dns_suffix.trim().is_empty() {
             dns_servers.push(MOBILE_MAGIC_DNS_SERVER.to_string());
@@ -2727,6 +2732,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         }];
         Arc::new(RwLock::new(app))
     }
@@ -2795,6 +2801,7 @@ mod tests {
                 admins: vec![known_admin_hex, outsider_hex],
                 aliases: HashMap::new(),
                 signed_at: 1_726_000_000,
+                dns_servers: Vec::new(),
             },
             &outsider,
         )
@@ -2884,6 +2891,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         }];
         app.exit_node = peer.to_string();
 
@@ -2987,6 +2995,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         }];
         app.fips_peer_endpoints
             .insert(peer.to_string(), vec!["192.168.50.10:51820".to_string()]);
@@ -3031,6 +3040,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         }];
         app.fips_peer_endpoints
             .insert(admin.clone(), vec!["192.168.50.10:51820".to_string()]);
@@ -3087,6 +3097,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         }];
         // Isolate the admin-listener behavior from the built-in bootstrap nodes,
         // which would otherwise populate config.peers as fallback transit.
@@ -3237,6 +3248,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         }];
         let requester = Keys::generate().public_key().to_hex();
         let app_config = Arc::new(RwLock::new(app));
@@ -3337,6 +3349,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         }];
         admin_app.ensure_defaults();
         admin_app
@@ -3563,6 +3576,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
@@ -3616,6 +3630,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
@@ -3693,6 +3708,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -3779,6 +3795,7 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,

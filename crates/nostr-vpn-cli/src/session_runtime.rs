@@ -396,7 +396,7 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
         println!("connect: FIPS private mesh on {}", runtime.iface());
         Some(runtime)
     };
-    let magic_dns_runtime = ConnectMagicDnsRuntime::start(&app);
+    let mut magic_dns_runtime = ConnectMagicDnsRuntime::start(&app);
 
     println!(
         "connect: network {network_id} using FIPS private mesh; waiting for {expected_peers} configured peer(s)"
@@ -466,7 +466,7 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
                             {
                                 eprintln!("connect: roster applied, but FIPS reload failed: {error}");
                             }
-                            if let Some(rt) = magic_dns_runtime.as_ref() {
+                            if let Some(rt) = magic_dns_runtime.as_mut() {
                                 rt.refresh_records(&app);
                             }
                         }
@@ -640,7 +640,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
         } else {
             (None, Vec::new())
         };
-    let magic_dns_runtime = ConnectMagicDnsRuntime::start(&app);
+    let mut magic_dns_runtime = ConnectMagicDnsRuntime::start(&app);
 
     let mesh_refresh_interval = Duration::from_secs(args.mesh_refresh_interval_secs.max(5));
     let mut announce_interval = tokio::time::interval(mesh_refresh_interval);
@@ -1080,7 +1080,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                                 vpn_status =
                                     format!("Roster applied, but FIPS reload failed ({error})");
                             }
-                            if let Some(rt) = magic_dns_runtime.as_ref() {
+                            if let Some(rt) = magic_dns_runtime.as_mut() {
                                 rt.refresh_records(&app);
                             }
                         }
@@ -1165,7 +1165,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                                             network_id = reload.network_id;
                                             expected_peers = reload.expected_peers;
                                             own_pubkey = reload.own_pubkey;
-                                            if let Some(rt) = magic_dns_runtime.as_ref() {
+                                            if let Some(rt) = magic_dns_runtime.as_mut() {
                                                 rt.refresh_records(&app);
                                             }
 

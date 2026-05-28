@@ -604,6 +604,9 @@ struct RootView: View {
                     if participant.isAdmin {
                         badge("Admin", style: selected ? .selected : .muted)
                     }
+                    if isNetworkDns(participant) {
+                        badge("DNS", style: selected ? .selected : .ok)
+                    }
                     if participant.offersExitNode {
                         badge(exitNodeBadgeText(participant), style: selected ? .selected : exitNodeBadgeStyle(participant))
                     }
@@ -672,13 +675,16 @@ struct RootView: View {
                     Text(deviceName(participant))
                         .font(.system(size: 24, weight: .semibold))
                         .lineLimit(2)
-                    if isSelf(participant) || participant.isAdmin || participant.offersExitNode || participant.reachable {
+                    if isSelf(participant) || participant.isAdmin || isNetworkDns(participant) || participant.offersExitNode || participant.reachable {
                         HStack(spacing: 6) {
                             if isSelf(participant) {
                                 badge("This device", style: .ok)
                             }
                             if participant.isAdmin {
                                 badge("Admin", style: .muted)
+                            }
+                            if isNetworkDns(participant) {
+                                badge("DNS", style: .ok)
                             }
                             if participant.offersExitNode {
                                 badge(exitNodeBadgeText(participant), style: exitNodeBadgeStyle(participant))
@@ -771,6 +777,11 @@ struct RootView: View {
         }
     }
 
+    private func isNetworkDns(_ participant: NativeParticipantState) -> Bool {
+        let ip = cleanIp(participant.tunnelIp)
+        return !ip.isEmpty && state.networkDnsServers.contains(ip)
+    }
+
     private func deviceActionButtons(_ participant: NativeParticipantState, network: NativeNetworkState) -> some View {
         HStack(spacing: 6) {
             Button {
@@ -783,6 +794,28 @@ struct RootView: View {
             }
             .disabled(manager.actionInFlight)
             .help(participant.isAdmin ? "Remove admin" : "Make admin")
+            Button {
+                let ip = cleanIp(participant.tunnelIp)
+                if isNetworkDns(participant) {
+                    let remaining = state.networkDnsServers.filter { $0 != ip }
+                    if remaining.isEmpty {
+                        manager.clearNetworkDns()
+                    } else {
+                        manager.saveNetworkDns(remaining)
+                    }
+                } else {
+                    var servers = state.networkDnsServers
+                    servers.append(ip)
+                    manager.saveNetworkDns(servers)
+                }
+            } label: {
+                Label(
+                    isNetworkDns(participant) ? "Remove DNS" : "Make DNS",
+                    systemImage: "server.rack"
+                )
+            }
+            .disabled(manager.actionInFlight || cleanIp(participant.tunnelIp).isEmpty)
+            .help(isNetworkDns(participant) ? "Remove as network DNS provider" : "Make network DNS provider")
             Button(role: .destructive) {
                 pendingParticipantRemoval = PendingParticipantRemoval(
                     networkId: network.id,
@@ -1572,6 +1605,25 @@ struct RootView: View {
                         Text(network.joinRequestsEnabled ? "Allowed" : "Blocked")
                             .foregroundStyle(.secondary)
                     }
+                    if !state.networkDnsServers.isEmpty {
+                        GridRow {
+                            label("DNS")
+                            HStack(spacing: 6) {
+                                Text(state.networkDnsServers.joined(separator: ", "))
+                                    .foregroundStyle(.secondary)
+                                if network.localIsAdmin {
+                                    Button {
+                                        manager.clearNetworkDns()
+                                    } label: {
+                                        Label("Clear", systemImage: "xmark")
+                                    }
+                                    .controlSize(.small)
+                                    .disabled(manager.actionInFlight)
+                                    .help("Clear network DNS")
+                                }
+                            }
+                        }
+                    }
                     GridRow {
                         label("")
                         Button(role: .destructive) {
@@ -1926,7 +1978,6 @@ struct RootView: View {
             wireguardExitConfig = state.wireguardExitConfig
             lastSyncedWireguardExitConfig = state.wireguardExitConfig
         }
-
         for network in state.networks {
             if networkNameDrafts[network.id] == nil {
                 networkNameDrafts[network.id] = network.name
@@ -2093,6 +2144,9 @@ struct RootView: View {
         }
         if participant.isAdmin {
             roles.append("Admin")
+        }
+        if isNetworkDns(participant) {
+            roles.append("DNS")
         }
         if participant.offersExitNode {
             roles.append(exitNodeBadgeText(participant))

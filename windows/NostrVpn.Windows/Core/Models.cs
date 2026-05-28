@@ -65,6 +65,8 @@ public sealed class NativeAppState
     public string FipsHostInboundTcpPorts { get; set; } = "";
     public string MagicDnsSuffix { get; set; } = "";
     public string MagicDnsStatus { get; set; } = "";
+    public List<string> NetworkDnsServers { get; set; } = new();
+    public bool DnsOverrideActive { get; set; }
     public bool Autoconnect { get; set; }
     public bool InviteBroadcastActive { get; set; }
     public ulong InviteBroadcastRemainingSecs { get; set; }
@@ -140,6 +142,8 @@ public sealed class NativeParticipantState
     public string LastSeenText { get; set; } = "";
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsSelf { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsNetworkDns { get; set; }
     public string DisplayName => FirstNonEmpty(
         MagicDnsName,
         Alias,
@@ -162,6 +166,10 @@ public sealed class NativeParticipantState
             if (IsAdmin)
             {
                 roles.Add("Admin");
+            }
+            if (IsNetworkDns)
+            {
+                roles.Add("DNS");
             }
             if (OffersExitNode)
             {

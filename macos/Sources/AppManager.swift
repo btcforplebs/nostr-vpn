@@ -580,6 +580,14 @@ final class AppManager: ObservableObject {
         dispatch(.updateSettings(patch: settingsPatch(exitNodeLeakProtection: enabled)), status: "Saving exit protection")
     }
 
+    func saveNetworkDns(_ servers: [String]) {
+        dispatch(.updateSettings(patch: settingsPatch(networkDnsServers: servers)), status: "Saving DNS servers")
+    }
+
+    func clearNetworkDns() {
+        dispatch(.updateSettings(patch: settingsPatch(networkDnsServers: [])), status: "Clearing DNS servers")
+    }
+
     func addParticipant(networkId: String, npub: String, alias: String? = nil) {
         let trimmed = npub.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
@@ -1302,6 +1310,8 @@ final class AppManager: ObservableObject {
             fipsHostInboundTcpPorts: "",
             magicDnsSuffix: "nvpn",
             magicDnsStatus: "Serving .nvpn names",
+            networkDnsServers: [],
+            dnsOverrideActive: false,
             autoconnect: true,
             inviteBroadcastActive: true,
             inviteBroadcastRemainingSecs: 417,
@@ -1897,7 +1907,8 @@ func settingsPatch(
     fipsHostInboundTcpPorts: String? = nil,
     autoconnect: Bool? = nil,
     launchOnStartup: Bool? = nil,
-    closeToTrayOnClose: Bool? = nil
+    closeToTrayOnClose: Bool? = nil,
+    networkDnsServers: [String]? = nil
 ) -> SettingsPatch {
     SettingsPatch(
         nodeName: nodeName,
@@ -1930,7 +1941,8 @@ func settingsPatch(
         fipsHostInboundTcpPorts: fipsHostInboundTcpPorts,
         autoconnect: autoconnect,
         launchOnStartup: launchOnStartup,
-        closeToTrayOnClose: closeToTrayOnClose
+        closeToTrayOnClose: closeToTrayOnClose,
+        networkDnsServers: networkDnsServers
     )
 }
 

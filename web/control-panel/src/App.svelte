@@ -493,6 +493,11 @@
     devicePane = 'list';
   }
 
+  function isNetworkDns(participant: ParticipantView): boolean {
+    const ip = participant.tunnelIp.split('/')[0].trim();
+    return ip !== '' && (state?.networkDnsServers ?? []).includes(ip);
+  }
+
   function deviceRoleText(participant: ParticipantView): string {
     const roles = [];
     if (isSelf(participant)) {
@@ -500,6 +505,9 @@
     }
     if (participant.isAdmin) {
       roles.push('Admin');
+    }
+    if (isNetworkDns(participant)) {
+      roles.push('DNS');
     }
     const exitRole = exitNodeBadgeText(participant);
     if (exitRole) {
@@ -669,6 +677,19 @@
         npub: participant.npub,
       },
       participant.isAdmin ? 'Removing admin' : 'Adding admin',
+    );
+  }
+
+  async function toggleDns(participant: ParticipantView) {
+    const ip = participant.tunnelIp.split('/')[0].trim();
+    const current = state?.networkDnsServers ?? [];
+    const servers = isNetworkDns(participant)
+      ? current.filter((s) => s !== ip)
+      : [...current, ip];
+    await run(
+      '/api/update_settings',
+      { patch: { networkDnsServers: servers } },
+      isNetworkDns(participant) ? 'Removing DNS' : 'Setting DNS',
     );
   }
 
@@ -1408,6 +1429,9 @@
                         {#if participant.isAdmin}
                           <span class="badge muted">Admin</span>
                         {/if}
+                        {#if isNetworkDns(participant)}
+                          <span class="badge active">DNS</span>
+                        {/if}
                         {#if exitNodeBadgeText(participant)}
                           <span
                             class="badge"
@@ -1479,13 +1503,16 @@
                   </button>
                   <div>
                     <h2>{participantName(selectedParticipant)}</h2>
-                    {#if isSelf(selectedParticipant) || selectedParticipant.isAdmin || exitNodeBadgeText(selectedParticipant) || fipsPathBadgeText(selectedParticipant)}
+                    {#if isSelf(selectedParticipant) || selectedParticipant.isAdmin || isNetworkDns(selectedParticipant) || exitNodeBadgeText(selectedParticipant) || fipsPathBadgeText(selectedParticipant)}
                       <div class="badge-row">
                         {#if isSelf(selectedParticipant)}
                           <span class="badge active">Self</span>
                         {/if}
                         {#if selectedParticipant.isAdmin}
                           <span class="badge muted">Admin</span>
+                        {/if}
+                        {#if isNetworkDns(selectedParticipant)}
+                          <span class="badge active">DNS</span>
                         {/if}
                         {#if exitNodeBadgeText(selectedParticipant)}
                           <span
@@ -1561,6 +1588,14 @@
                           on:click={() => toggleAdmin(shownNetwork, selectedParticipant)}
                         >
                           {selectedParticipant.isAdmin ? 'Remove admin' : 'Make admin'}
+                        </button>
+                        <button
+                          type="button"
+                          class="small-button"
+                          disabled={!selectedParticipant.tunnelIp.split('/')[0].trim()}
+                          on:click={() => toggleDns(selectedParticipant)}
+                        >
+                          {isNetworkDns(selectedParticipant) ? 'Remove DNS' : 'Make DNS'}
                         </button>
                         <button
                           type="button"
