@@ -28,6 +28,7 @@ import org.nostrvpn.app.core.NativeCore
 import org.nostrvpn.app.update.AndroidSelfUpdateManager
 import org.nostrvpn.app.update.AndroidSelfUpdateState
 import org.nostrvpn.app.vpn.NostrVpnService
+import org.nostrvpn.app.vpn.VpnStartState
 
 class MainActivity : ComponentActivity() {
     private var deepLink by mutableStateOf<String?>(null)
@@ -56,6 +57,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             var state by remember { mutableStateOf(core.state()) }
             var androidError by remember { mutableStateOf("") }
+            var vpnLockdownActive by remember { mutableStateOf(VpnStartState.lockdownActive(this)) }
             var pendingVpnStart by remember { mutableStateOf(false) }
             var pendingLocalNetworkAction by remember { mutableStateOf<JSONObject?>(null) }
             var showQrScanner by remember { mutableStateOf(false) }
@@ -249,6 +251,7 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(core) {
                 while (true) {
                     delay(2_000)
+                    vpnLockdownActive = VpnStartState.lockdownActive(this@MainActivity)
                     state = try {
                         val nextState = core.refresh()
                         if (nextState.error.isNotBlank()) {
@@ -298,11 +301,7 @@ class MainActivity : ComponentActivity() {
             }
 
             NostrVpnTheme {
-                val displayState = if (state.error.isBlank() && androidError.isNotBlank()) {
-                    state.copy(error = androidError)
-                } else {
-                    state
-                }
+                val displayState = state.withAndroidNotice(androidError, vpnLockdownActive)
                 NostrVpnApp(
                     state = displayState,
                     qrJson = { invite -> core.qrMatrix(invite) },
@@ -344,6 +343,19 @@ class MainActivity : ComponentActivity() {
         } else {
             startService(intent)
         }
+    }
+
+    private fun AppState.withAndroidNotice(androidError: String, vpnLockdownActive: Boolean): AppState {
+        if (error.isNotBlank()) return this
+        if (androidError.isNotBlank()) return copy(error = androidError)
+        val fullTunnelConfigured =
+            exitNode.isNotBlank() || (wireguardExitEnabled && wireguardExitConfigured)
+        if (vpnEnabled && vpnLockdownActive && !fullTunnelConfigured) {
+            return copy(
+                error = "Android VPN lockdown is on. Select an exit node or turn off Block connections without VPN.",
+            )
+        }
+        return this
     }
 
     companion object {

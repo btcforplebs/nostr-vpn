@@ -765,6 +765,7 @@ internal fun Pill(text: String, background: Color, foreground: Color) {
 internal val Accent = Color(0xFF7C3AED)
 internal val Ok = Color(0xFF16A34A)
 internal val Muted = Color(0xFF68717C)
+internal const val JOIN_REQUEST_SENT_TEXT = "Join request sent"
 
 private fun ParticipantState.isSelf(state: AppState): Boolean =
     (state.ownNpub.isNotBlank() && npub == state.ownNpub) || meshState == "local"
@@ -788,9 +789,15 @@ private fun ParticipantState.subtitle(isSelf: Boolean): String {
 
 private fun ParticipantState.statusLabel(appState: AppState): String {
     if (isSelf(appState)) return if (appState.vpnEnabled) "This device" else "Off"
+    if (state == "pending") {
+        return when (statusText.trim().lowercase()) {
+            "join request sent" -> JOIN_REQUEST_SENT_TEXT
+            "waiting for admin" -> "Waiting for admin"
+            else -> "Connecting"
+        }
+    }
     return when (state) {
         "local", "online", "present" -> "Online"
-        "pending" -> "Connecting"
         "offline", "absent", "off" -> "Offline"
         else -> if (reachable) "Online" else "Unknown"
     }

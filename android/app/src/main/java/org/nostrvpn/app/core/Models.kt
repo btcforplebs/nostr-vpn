@@ -132,6 +132,12 @@ data class HealthIssue(
 val AppState.activeNetwork: NetworkState?
     get() = networks.firstOrNull { it.enabled }
 
+val AppState.joinRequestNetwork: NetworkState?
+    get() =
+        networks.firstOrNull { it.outboundJoinRequest }
+            ?: activeNetwork?.takeIf { it.inviteInviterNpub.isNotBlank() }
+            ?: networks.firstOrNull { it.inviteInviterNpub.isNotBlank() }
+
 fun parseAppState(jsonText: String): AppState {
     val json = JSONObject(jsonText.ifBlank { "{}" })
     return AppState(

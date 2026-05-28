@@ -123,6 +123,14 @@ class NostrVpnService : VpnService() {
         if (configError.isNotBlank()) {
             return failStart(foregroundStarted, configError)
         }
+        val lockdownActive = currentLockdownActive()
+        VpnStartState.setLockdownActive(this, lockdownActive)
+        if (lockdownActive && !config.hasDefaultRoute()) {
+            Log.w(
+                "NostrVpnService",
+                "Android VPN lockdown is active without a default VPN route; non-nvpn internet will be blocked",
+            )
+        }
 
         stopTunnel()
         if (!foregroundStarted) {
@@ -295,6 +303,21 @@ class NostrVpnService : VpnService() {
                 Log.w("NostrVpnService", "Ignoring invalid VPN DNS server: $server", error)
             }
         }
+    }
+
+    private fun currentLockdownActive(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && runCatching {
+            isLockdownEnabled
+        }.getOrDefault(false)
+
+    private fun JSONObject.hasDefaultRoute(): Boolean {
+        val routes = optJSONArray("routeTargets") ?: return false
+        for (index in 0 until routes.length()) {
+            if (routes.optString(index).trim() == "0.0.0.0/0") {
+                return true
+            }
+        }
+        return false
     }
 
     private fun registerUnderlyingNetworkUpdates() {

@@ -64,6 +64,7 @@ import org.nostrvpn.app.core.NativeActions
 import org.nostrvpn.app.core.NetworkState
 import org.nostrvpn.app.core.ParticipantState
 import org.nostrvpn.app.core.activeNetwork
+import org.nostrvpn.app.core.joinRequestNetwork
 import org.nostrvpn.app.update.AndroidSelfUpdateState
 
 internal data class SelfUpdateActions(
@@ -487,13 +488,20 @@ private fun NetworkSetupCard(
 ) {
     var networkName by remember { mutableStateOf("My Network") }
     var inviteInput by remember { mutableStateOf("") }
-    var joinRequestStatus by remember { mutableStateOf("") }
     val context = androidx.compose.ui.platform.LocalContext.current
     val clipboard = remember(context) {
         context.getSystemService(android.content.ClipboardManager::class.java)
     }
-    val requestNetwork = state.activeNetwork
-        ?: state.networks.firstOrNull { it.outboundJoinRequest || it.inviteInviterNpub.isNotBlank() }
+    val requestNetwork = state.joinRequestNetwork
+    fun importInviteIfPresent(value: String): Boolean {
+        val trimmed = value.trim()
+        if (!trimmed.startsWith("nvpn://invite/", ignoreCase = true)) {
+            return false
+        }
+        dispatch(NativeActions.importInvite(trimmed))
+        inviteInput = ""
+        return true
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SetupChoiceCard("Create Network", Color(0xFF16A34A)) {
@@ -523,11 +531,7 @@ private fun NetworkSetupCard(
                 value = inviteInput,
                 onValueChange = { newValue ->
                     inviteInput = newValue
-                    val trimmed = newValue.trim()
-                    if (trimmed.startsWith("nvpn://invite/", ignoreCase = true)) {
-                        dispatch(NativeActions.importInvite(trimmed))
-                        inviteInput = ""
-                    }
+                    importInviteIfPresent(newValue)
                 },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -537,7 +541,11 @@ private fun NetworkSetupCard(
                 OutlinedButton(
                     onClick = {
                         val item = clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)
-                        item?.toString()?.let { inviteInput = it.trim() }
+                        item?.toString()?.trim()?.let { pasted ->
+                            if (!importInviteIfPresent(pasted)) {
+                                inviteInput = pasted
+                            }
+                        }
                     },
                     modifier = Modifier.weight(1f),
                 ) {
@@ -551,9 +559,9 @@ private fun NetworkSetupCard(
                 }
             }
             if (requestNetwork != null) {
-                if (joinRequestStatus.isNotBlank() || requestNetwork.outboundJoinRequest) {
+                if (requestNetwork.outboundJoinRequest) {
                     Text(
-                        "Join request sent",
+                        JOIN_REQUEST_SENT_TEXT,
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFF9A3412),
                     )
@@ -561,7 +569,6 @@ private fun NetworkSetupCard(
                     OutlinedButton(
                         onClick = {
                             dispatch(NativeActions.requestNetworkJoin(requestNetwork.id))
-                            joinRequestStatus = "Join request sent"
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
