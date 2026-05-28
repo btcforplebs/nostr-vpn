@@ -20,10 +20,13 @@ ensure_cargo_audit
 #   can move to the stable nostr line that replaces it.
 # - RUSTSEC-2024-0436: `paste` is pulled by netlink-packet-core 0.8.1 via
 #   netdev/rtnetlink; remove once rust-netlink ships a replacement.
+# - RUSTSEC-2026-0002: `lru` 0.12 is pulled by hashtree-resolver/updater via
+#   nostr-database 0.35; remove once hashtree can move to lru >= 0.16.3.
 audit_args=(
   --deny warnings
   --ignore RUSTSEC-2024-0384
   --ignore RUSTSEC-2024-0436
+  --ignore RUSTSEC-2026-0002
 )
 
 cargo audit "${audit_args[@]}"
