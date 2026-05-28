@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct RootView: View {
@@ -869,7 +870,7 @@ private struct ExitNodesPage: View {
                         ForEach(exitParticipants) { participant in
                             ExitNodeRow(
                                 title: participant.displayName,
-                                subtitle: participant.npub,
+                                subtitle: deviceSubtitle(participant, state: model.state),
                                 selected: !model.state.wireguardExitEnabled
                                     && model.state.exitNode == participant.npub,
                                 enabled: true,
@@ -929,7 +930,6 @@ private struct ExitNodeRow: View {
                             .font(.footnote)
                             .foregroundColor(.secondary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
                     }
                 }
                 Spacer()
@@ -979,7 +979,8 @@ private struct ParticipantRow: View {
                         HStack(spacing: 8) {
                             Text(deviceName(participant, state: model.state))
                                 .font(.headline)
-                                .lineLimit(1)
+                                .lineLimit(nil)
+                                .fixedSize(horizontal: false, vertical: true)
                             if participant.isAdmin {
                                 Pill("Admin", tint: AppColors.accent)
                             }
@@ -1179,12 +1180,21 @@ private struct DeviceDetailSheet: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 90, alignment: .leading)
-            Text(value)
-                .font(.callout)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+            if label == "Device ID" {
+                WrappingIdentifierText(
+                    value: value,
+                    font: .preferredFont(forTextStyle: .callout),
+                    color: .label
+                )
                 .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(value)
+                    .font(.callout)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if copyable {
                 Button {
                     model.copy(value)
@@ -1256,6 +1266,11 @@ private struct JoinRequestRow: View {
                 VStack(alignment: .leading) {
                     Text(request.requesterNodeName.isEmpty ? "Join request" : request.requesterNodeName)
                         .font(.headline)
+                    WrappingIdentifierText(
+                        value: request.requesterNpub,
+                        font: .preferredFont(forTextStyle: .caption2),
+                        color: .secondaryLabel
+                    )
                     Text(request.requestedAtText)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -1340,6 +1355,12 @@ private struct DeviceSettingsCard: View {
         AppCard {
             Text("This Device")
                 .font(.headline)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Device ID")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                CopyLine(value: model.state.ownNpub, model: model)
+            }
             TextField("Name", text: $nodeName)
                 .textFieldStyle(.roundedBorder)
             TextField("Tunnel IP", text: $tunnelIp)
@@ -1747,6 +1768,54 @@ private struct NoticeCard: View {
     }
 }
 
+private struct WrappingIdentifierText: UIViewRepresentable {
+    let value: String
+    let font: UIFont
+    let color: UIColor
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.backgroundColor = .clear
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isScrollEnabled = false
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.textContainer.lineBreakMode = .byCharWrapping
+        textView.adjustsFontForContentSizeCategory = true
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        textView.attributedText = attributedText
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        guard let width = proposal.width else {
+            return nil
+        }
+        let fittingSize = uiView.sizeThatFits(
+            CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+        )
+        return CGSize(width: width, height: fittingSize.height)
+    }
+
+    private var attributedText: NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.hyphenationFactor = 0
+        paragraph.lineBreakMode = .byCharWrapping
+        return NSAttributedString(
+            string: value.isEmpty ? "-" : value,
+            attributes: [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: paragraph,
+            ]
+        )
+    }
+}
+
 private struct CopyLine: View {
     let value: String
     var displayValue: String? = nil
@@ -1754,12 +1823,22 @@ private struct CopyLine: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Text((displayValue ?? value).isEmpty ? "-" : (displayValue ?? value))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
+            if value.hasPrefix("npub1") {
+                WrappingIdentifierText(
+                    value: (displayValue ?? value).isEmpty ? "-" : (displayValue ?? value),
+                    font: .preferredFont(forTextStyle: .footnote),
+                    color: .secondaryLabel
+                )
                 .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text((displayValue ?? value).isEmpty ? "-" : (displayValue ?? value))
+                    .font(.footnote)
+                    .textSelection(.enabled)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Button {
                 model.copy(value)
             } label: {
@@ -1930,7 +2009,7 @@ private func deviceName(_ participant: ParticipantState, state: AppState) -> Str
     if !participant.magicDnsAlias.isEmpty {
         return participant.magicDnsAlias
     }
-    return short(participant.npub, prefix: 12, suffix: 6)
+    return "Device"
 }
 
 private func deviceSubtitle(_ participant: ParticipantState, state: AppState) -> String {
@@ -2010,13 +2089,6 @@ private func isFipsRouted(_ participant: ParticipantState, state: AppState) -> B
     !isSelf(participant, state: state)
         && participant.reachable
         && participant.fipsTransportAddr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-}
-
-private func short(_ value: String, prefix: Int, suffix: Int) -> String {
-    guard value.count > prefix + suffix + 1 else {
-        return value.isEmpty ? "Device" : value
-    }
-    return "\(value.prefix(prefix))...\(value.suffix(suffix))"
 }
 
 private let bech32BodyCharset: Set<Character> = Set("qpzry9x8gf2tvdw0s3jn54khce6mua7l")

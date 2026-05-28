@@ -239,9 +239,8 @@ pub unsafe extern "C" fn nostr_vpn_mobile_tunnel_send_packet(
 /// Raw fd of the userspace WG upstream UDP socket, or -1 when WG
 /// upstream isn't running on this tunnel. The Android host calls
 /// `VpnService.protect(fd)` on this fd so the encrypted UDP escapes
-/// the VPN tun. iOS doesn't need this — it relies on
-/// `NEIPv4Settings.excludedRoutes` declared at tunnel-establish time
-/// instead.
+/// the VPN tun. iOS instead asks for the resolved upstream route below
+/// and installs it in `NEIPv4Settings.excludedRoutes`.
 ///
 /// # Safety
 ///
@@ -255,6 +254,31 @@ pub unsafe extern "C" fn nostr_vpn_mobile_tunnel_wg_socket_fd(
     }
     let tunnel = unsafe { &*handle };
     tunnel.tunnel.wg_upstream_socket_fd()
+}
+
+/// Resolved IPv4 `/32` route for the userspace WG upstream UDP endpoint.
+/// iOS adds this to `NEIPv4Settings.excludedRoutes` so encrypted UDP
+/// continues to escape after the packet tunnel installs `0.0.0.0/0`.
+/// Returns an empty string when WG upstream is not running or resolved
+/// to an IPv6 endpoint.
+///
+/// # Safety
+///
+/// `handle` must be a live mobile tunnel handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nostr_vpn_mobile_tunnel_wg_excluded_route(
+    handle: *const NvpnMobileTunnelHandle,
+) -> *mut c_char {
+    if handle.is_null() {
+        return json_raw_string("");
+    }
+    let tunnel = unsafe { &*handle };
+    json_raw_string(
+        &tunnel
+            .tunnel
+            .wg_upstream_excluded_route()
+            .unwrap_or_default(),
+    )
 }
 
 /// # Safety

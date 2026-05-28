@@ -115,7 +115,7 @@ fn run_dns_loop(
             .map(|guard| (*guard).clone())
             .unwrap_or_else(|_| HashMap::new());
 
-        let Some(response) = build_dns_response(request, &snapshot) else {
+        let Some(response) = build_dns_response(request, &snapshot, true) else {
             continue;
         };
 
@@ -123,7 +123,18 @@ fn run_dns_loop(
     }
 }
 
-fn build_dns_response(request: &[u8], records: &HashMap<String, Ipv4Addr>) -> Option<Vec<u8>> {
+pub fn build_magic_dns_response_if_handled(
+    request: &[u8],
+    records: &HashMap<String, Ipv4Addr>,
+) -> Option<Vec<u8>> {
+    build_dns_response(request, records, false)
+}
+
+fn build_dns_response(
+    request: &[u8],
+    records: &HashMap<String, Ipv4Addr>,
+    answer_name_errors: bool,
+) -> Option<Vec<u8>> {
     let message = Message::from_vec(request).ok()?;
     let mut response = Message::new(message.id, MessageType::Response, OpCode::Query);
     response.metadata.recursion_desired = message.recursion_desired;
@@ -131,12 +142,9 @@ fn build_dns_response(request: &[u8], records: &HashMap<String, Ipv4Addr>) -> Op
     response.metadata.authoritative = true;
 
     let mut answered = false;
+    let mut matched_name = false;
     for query in &message.queries {
         response.add_query(query.clone());
-        if query.query_type() != RecordType::A {
-            continue;
-        }
-
         let mut qname = query.name().to_utf8().to_ascii_lowercase();
         qname = qname.trim_end_matches('.').to_string();
         if qname.is_empty() {
@@ -146,13 +154,21 @@ fn build_dns_response(request: &[u8], records: &HashMap<String, Ipv4Addr>) -> Op
         let Some(ip) = records.get(&qname).copied() else {
             continue;
         };
+        matched_name = true;
+        if query.query_type() != RecordType::A {
+            continue;
+        }
 
         let answer = Record::from_rdata(query.name().clone(), DNS_TTL_SECS, RData::A(A(ip)));
         response.add_answer(answer);
         answered = true;
     }
 
-    response.metadata.response_code = if answered {
+    if !answered && !matched_name && !answer_name_errors {
+        return None;
+    }
+
+    response.metadata.response_code = if answered || matched_name {
         ResponseCode::NoError
     } else {
         ResponseCode::NXDomain
@@ -660,8 +676,48 @@ fn strip_cidr(value: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{windows_install_nrpt_script, windows_nameserver, windows_uninstall_nrpt_script};
+    use super::{
+        build_magic_dns_response_if_handled, windows_install_nrpt_script, windows_nameserver,
+        windows_uninstall_nrpt_script,
+    };
+    use hickory_proto::op::{Message, MessageType, OpCode, Query};
+    use hickory_proto::rr::{Name, RecordType};
+    use hickory_proto::serialize::binary::{BinEncodable, BinEncoder};
+    use std::collections::HashMap;
     use std::net::Ipv4Addr;
+
+    fn dns_query(name: &str) -> Vec<u8> {
+        let mut message = Message::new(0x1234, MessageType::Query, OpCode::Query);
+        message.add_query(Query::query(
+            Name::from_ascii(name).expect("query name"),
+            RecordType::A,
+        ));
+        let mut bytes = Vec::new();
+        let mut encoder = BinEncoder::new(&mut bytes);
+        message.emit(&mut encoder).expect("encode query");
+        bytes
+    }
+
+    #[test]
+    fn magic_dns_response_if_answered_returns_matching_record() {
+        let mut records = HashMap::new();
+        records.insert("fixture-peer.nvpn".to_string(), Ipv4Addr::new(10, 44, 1, 2));
+
+        let response =
+            build_magic_dns_response_if_handled(&dns_query("fixture-peer.nvpn"), &records)
+                .expect("response");
+        let parsed = Message::from_vec(&response).expect("parse response");
+
+        assert_eq!(parsed.answers.len(), 1);
+        assert!(response.windows(4).any(|window| window == [10, 44, 1, 2]));
+    }
+
+    #[test]
+    fn magic_dns_response_if_answered_lets_unknown_names_fall_through() {
+        let records = HashMap::new();
+
+        assert!(build_magic_dns_response_if_handled(&dns_query("example.com"), &records).is_none());
+    }
 
     #[test]
     fn windows_nrpt_install_script_targets_suffix_and_nameserver() {

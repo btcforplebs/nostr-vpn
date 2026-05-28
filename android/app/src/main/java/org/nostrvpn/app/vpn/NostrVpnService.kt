@@ -17,6 +17,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
 import org.nostrvpn.app.MainActivity
 import org.nostrvpn.app.R
@@ -25,6 +26,7 @@ import org.nostrvpn.app.core.NativeCore
 import org.nostrvpn.app.seedMobileConfig
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.net.Inet4Address
 import java.util.concurrent.atomic.AtomicBoolean
 
 class NostrVpnService : VpnService() {
@@ -131,6 +133,8 @@ class NostrVpnService : VpnService() {
                 "Android VPN lockdown is active without a default VPN route; non-nvpn internet will be blocked",
             )
         }
+        config.put("dnsForwarders", currentUnderlyingDnsServers())
+        val tunnelConfigJson = config.toString()
 
         stopTunnel()
         if (!foregroundStarted) {
@@ -144,7 +148,7 @@ class NostrVpnService : VpnService() {
             stopSelf()
             return false
         }
-        val handle = NativeCore.mobileTunnelNew(configJson)
+        val handle = NativeCore.mobileTunnelNew(tunnelConfigJson)
         if (handle == 0L) {
             descriptor.close()
             releaseMulticastLock()
@@ -271,17 +275,30 @@ class NostrVpnService : VpnService() {
         }.getOrNull()
     }
 
+    @Suppress("DEPRECATION")
     private fun currentUnderlyingNetworks(): Array<Network> {
         val connectivity = getSystemService(ConnectivityManager::class.java) ?: return emptyArray()
-        val network = connectivity.activeNetwork ?: return emptyArray()
-        val capabilities = connectivity.getNetworkCapabilities(network) ?: return emptyArray()
-        if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-            return emptyArray()
+        val candidates = linkedSetOf<Network>()
+        connectivity.activeNetwork?.let { candidates.add(it) }
+        candidates.addAll(connectivity.allNetworks)
+        return candidates.filter { network ->
+            val capabilities = connectivity.getNetworkCapabilities(network) ?: return@filter false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+        }.toTypedArray()
+    }
+
+    private fun currentUnderlyingDnsServers(): JSONArray {
+        val servers = JSONArray()
+        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return servers
+        currentUnderlyingNetworks().forEach { network ->
+            connectivity.getLinkProperties(network)?.dnsServers.orEmpty()
+                .filterIsInstance<Inet4Address>()
+                .mapNotNull { it.hostAddress }
+                .filter { it.isNotBlank() }
+                .forEach { servers.put(it) }
         }
-        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
-            return emptyArray()
-        }
-        return arrayOf(network)
+        return servers
     }
 
     private fun excludeOwnProcess(builder: Builder) {
