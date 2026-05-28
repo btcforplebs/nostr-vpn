@@ -2343,10 +2343,45 @@ fn load_config_with_overrides(
     if let Some(network_id) = network_id {
         app.set_active_network_id(&network_id)?;
     }
+    rehydrate_config_from_stored_roster(&mut app, path);
     maybe_autoconfigure_node(&mut app);
 
     let network_id = app.effective_network_id();
     Ok((app, network_id))
+}
+
+/// At boot, rehydrate roster fields (e.g. `dns_servers`) that may be absent
+/// from the config file because it was last written by an older binary that
+/// predates those fields.  The signed event stored in `signed-rosters.json`
+/// is the authoritative source — its Nostr tags carry the full roster even
+/// when the local binary at the time of receipt didn't know about every field.
+fn rehydrate_config_from_stored_roster(app: &mut AppConfig, config_path: &Path) {
+    let store_path = signed_rosters_file_path(config_path);
+    let Ok(store) = load_signed_rosters(&store_path) else {
+        return;
+    };
+    let network_id = app.effective_network_id();
+    let Some(stored) = store.latest_for(&network_id) else {
+        return;
+    };
+    let Ok(roster) = stored.roster() else {
+        return;
+    };
+    let Some(network) = app.networks.iter_mut().find(|n| n.enabled) else {
+        return;
+    };
+    // Only patch when the timestamps match — this means the same roster was
+    // already applied but the config was serialized without the newer fields.
+    if stored.signed_at() != network.shared_roster_updated_at {
+        return;
+    }
+    if network.dns_servers == roster.dns_servers {
+        return;
+    }
+    network.dns_servers = roster.dns_servers;
+    if let Err(error) = app.save(config_path) {
+        eprintln!("config: failed to persist rehydrated roster fields: {error}");
+    }
 }
 
 fn build_daemon_reload_config(app: AppConfig, network_id: String) -> DaemonReloadConfig {
