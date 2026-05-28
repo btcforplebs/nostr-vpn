@@ -81,10 +81,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 ipv4.excludedRoutes = excludedRoutes.compactMap(ipv4Route)
             }
             settings.ipv4Settings = ipv4
-            NSLog(
-                "nvpn-pkt: ipv4 addr=\(parsed.address)/\(parsed.mask) "
-                    + "included=\(parsedConfig.routeTargets) "
-                    + "excluded=\(excludedRoutes)"
+            pktLog.log(
+                "nvpn-pkt: ipv4 addr=\(parsed.address, privacy: .public)/\(parsed.mask, privacy: .public) included=\(parsedConfig.routeTargets, privacy: .public) excluded=\(excludedRoutes, privacy: .public)"
             )
         }
 
