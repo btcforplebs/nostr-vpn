@@ -21,7 +21,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         packetDebugLog("startTunnel entered options=\(options.map { Array($0.keys).sorted() } ?? [])")
         let configuration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
         packetDebugLog("providerConfiguration keys=\(Array(configuration.keys).sorted())")
-        let configJson = configuration["mobileTunnelConfigJson"] as? String ?? ""
+        let optionConfigJson = options?["mobileTunnelConfigJson"] as? String
+        let configJson = optionConfigJson ?? configuration["mobileTunnelConfigJson"] as? String ?? ""
         let parsedConfig = MobileTunnelConfig(json: configJson)
         if let error = parsedConfig.errorText {
             NSLog("nvpn-pkt: config parse failed: \(error)")
@@ -44,6 +45,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         tunnelRunning = true
         activeTunnelCalls = 0
         tunnelCondition.unlock()
+        var excludedRoutes = parsedConfig.excludedRoutes
+        let resolvedWgExcludedRoute = consumeCString(
+            nostr_vpn_mobile_tunnel_wg_excluded_route(handle)
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !resolvedWgExcludedRoute.isEmpty && !excludedRoutes.contains(resolvedWgExcludedRoute) {
+            excludedRoutes.append(resolvedWgExcludedRoute)
+            packetDebugLog("added resolved WG excluded route \(resolvedWgExcludedRoute)")
+        }
 
         // tunnelRemoteAddress is what iOS shows in Settings → VPN
         // and uses to decide "where the tunnel goes". wireguard-apple
@@ -63,17 +72,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             ipv4.includedRoutes = parsedConfig.routeTargets.compactMap(ipv4Route)
             // When WG upstream is on, the Rust runtime has expanded
             // `routeTargets` to include 0.0.0.0/0 so all outbound
-            // traffic enters the tun. We then exclude the WG
+            // traffic enters the tun. We then exclude the resolved WG
             // endpoint IP itself so the encrypted UDP can actually
             // escape the tunnel and reach the upstream.
-            if !parsedConfig.excludedRoutes.isEmpty {
-                ipv4.excludedRoutes = parsedConfig.excludedRoutes.compactMap(ipv4Route)
+            if !excludedRoutes.isEmpty {
+                ipv4.excludedRoutes = excludedRoutes.compactMap(ipv4Route)
             }
             settings.ipv4Settings = ipv4
             NSLog(
                 "nvpn-pkt: ipv4 addr=\(parsed.address)/\(parsed.mask) "
                     + "included=\(parsedConfig.routeTargets) "
-                    + "excluded=\(parsedConfig.excludedRoutes)"
+                    + "excluded=\(excludedRoutes)"
             )
         }
 

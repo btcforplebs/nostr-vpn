@@ -36,6 +36,7 @@ use nostr_vpn_core::fips_control::{
 };
 use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
 use nostr_vpn_core::join_requests::{FIPS_JOIN_REQUEST_RETRY_SECS, MeshJoinRequest};
+use nostr_vpn_core::magic_dns::{build_magic_dns_records, build_magic_dns_response_if_handled};
 use nostr_vpn_core::signed_rosters::{signed_rosters_file_path, upsert_signed_roster};
 use nostr_vpn_core::wg_upstream::{DAEMON_WG_UPSTREAM_HANDSHAKE_TIMEOUT, WgUpstreamRuntime};
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,11 @@ const MOBILE_PEER_DISCOVERY_PROBE_INTERVAL_SECS: u64 = 120;
 const MOBILE_CONTROL_RTT_MAX_ACCEPT_MS: u128 = 10_000;
 const MOBILE_HANDSHAKE_RESEND_INTERVAL_MS: u64 = 300;
 const MOBILE_HANDSHAKE_RESEND_BACKOFF: f64 = 1.5;
+const MOBILE_EXIT_NODE_DEFAULT_ROUTES: &[&str] = &["0.0.0.0/0"];
+const MOBILE_EXIT_NODE_DNS_SERVERS: &[&str] = &["1.1.1.1", "9.9.9.9"];
+const MOBILE_MAGIC_DNS_SERVER: &str = "10.44.0.53";
+const MOBILE_MAGIC_DNS_FORWARDERS: &[&str] = &["1.1.1.1:53", "9.9.9.9:53"];
+const MOBILE_MAGIC_DNS_FORWARD_TIMEOUT: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -130,8 +136,9 @@ pub(crate) struct MobileTunnelConfig {
     ///     it to boringtun)
     ///   * route every IP in `excluded_routes` outside the tunnel so
     ///     the encrypted UDP can actually reach the WG upstream
-    ///     endpoint (iOS does this via `NEIPv4Settings.excludedRoutes`;
-    ///     on Android the host calls `VpnService.protect(socket_fd)`
+    ///     endpoint (iOS does this via `NEIPv4Settings.excludedRoutes`
+    ///     and also asks the running tunnel for the resolved endpoint
+    ///     route; on Android the host calls `VpnService.protect(socket_fd)`
     ///     instead, see `MobileTunnel::wg_upstream_socket_fd`).
     #[serde(default)]
     pub(crate) excluded_routes: Vec<String>,
@@ -141,6 +148,11 @@ pub(crate) struct MobileTunnelConfig {
     /// silently fails even though TCP transits the tunnel.
     #[serde(default)]
     pub(crate) dns_servers: Vec<String>,
+    /// Resolvers the in-tunnel `MagicDNS` responder uses for non-.nvpn
+    /// queries. Android injects the active network DNS before starting
+    /// the native tunnel; other mobile hosts use public fallback DNS.
+    #[serde(default)]
+    dns_forwarders: Vec<String>,
     /// The WG upstream config to drive boringtun against. None when
     /// the user hasn't enabled WG upstream — in which case the mobile
     /// tunnel runs in pure FIPS-mesh mode.
@@ -200,7 +212,7 @@ impl MobileTunnelConfig {
             .into_iter()
             .filter(|participant| participant != &own_pubkey)
         {
-            let allowed_ips = if participant_pubkeys.contains(&participant) {
+            let mut allowed_ips = if participant_pubkeys.contains(&participant) {
                 let Some(tunnel_ip) = derive_mesh_tunnel_ip(&network_id, &participant) else {
                     continue;
                 };
@@ -210,6 +222,16 @@ impl MobileTunnelConfig {
             } else {
                 Vec::new()
             };
+            if app.exit_node == participant {
+                let exit_routes = MOBILE_EXIT_NODE_DEFAULT_ROUTES
+                    .iter()
+                    .map(|route| (*route).to_string())
+                    .collect::<Vec<_>>();
+                route_targets.extend(exit_routes.iter().cloned());
+                allowed_ips.extend(exit_routes);
+            }
+            allowed_ips.sort();
+            allowed_ips.dedup();
             peers.push(FipsMeshPeerConfig::from_participant_pubkey(
                 participant,
                 allowed_ips,
@@ -238,7 +260,8 @@ impl MobileTunnelConfig {
         // 0.0.0.0/0 (all outbound traffic should enter the tun) and
         // ask the host platform to keep the WG endpoint outside the
         // tunnel via `excluded_routes`.
-        let (wireguard_exit, excluded_routes, dns_servers) =
+        let selected_peer_exit = route_targets.iter().any(|route| route == "0.0.0.0/0");
+        let (wireguard_exit, excluded_routes, mut dns_servers) =
             if app.wireguard_exit.enabled && app.wireguard_exit.configured() {
                 let mut excluded = Vec::new();
                 if let Some(ip) = wireguard_endpoint_host_ip(&app.wireguard_exit.endpoint) {
@@ -273,6 +296,15 @@ impl MobileTunnelConfig {
                     wg.persistent_keepalive_secs = 25;
                 }
                 (Some(wg), excluded, dns)
+            } else if selected_peer_exit {
+                (
+                    None,
+                    Vec::new(),
+                    MOBILE_EXIT_NODE_DNS_SERVERS
+                        .iter()
+                        .map(|server| (*server).to_string())
+                        .collect(),
+                )
             } else {
                 // No WG exit — use roster DNS servers if set by the admin.
                 let roster_dns = app
@@ -281,6 +313,9 @@ impl MobileTunnelConfig {
                     .unwrap_or_default();
                 (None, Vec::new(), roster_dns)
             };
+        if dns_servers.is_empty() && !app.magic_dns_suffix.trim().is_empty() {
+            dns_servers.push(MOBILE_MAGIC_DNS_SERVER.to_string());
+        }
         let (pending_join_request_recipient, pending_join_invite_secret, pending_join_requested_at) =
             app.active_network_opt()
                 .and_then(|network| {
@@ -318,6 +353,7 @@ impl MobileTunnelConfig {
             nostr_discovery_enabled: app.fips_nostr_discovery_enabled,
             excluded_routes,
             dns_servers,
+            dns_forwarders: Vec::new(),
             wireguard_exit,
             join_requests_enabled: app.join_requests_enabled(),
             pending_join_request_recipient,
@@ -336,6 +372,10 @@ impl MobileTunnelConfig {
             wireguard_exit.private_key.clear();
             wireguard_exit.peer_preshared_key.clear();
         }
+    }
+
+    fn detach_from_persisted_config_path(&mut self) {
+        self.config_path.clear();
     }
 }
 
@@ -386,6 +426,21 @@ pub(crate) fn tunnel_config_json(data_dir: &str) -> String {
             ..empty_config()
         });
     config.redact_for_launch_configuration();
+    serde_json::to_string(&config).unwrap_or_else(|error| {
+        format!(
+            r#"{{"error":"{}"}}"#,
+            error.to_string().replace(['\\', '"'], "")
+        )
+    })
+}
+
+pub(crate) fn tunnel_provider_options_config_json(data_dir: &str) -> String {
+    let mut config =
+        MobileTunnelConfig::from_data_dir(data_dir).unwrap_or_else(|error| MobileTunnelConfig {
+            error: error.to_string(),
+            ..empty_config()
+        });
+    config.detach_from_persisted_config_path();
     serde_json::to_string(&config).unwrap_or_else(|error| {
         format!(
             r#"{{"error":"{}"}}"#,
@@ -605,9 +660,24 @@ impl MobileTunnel {
             let wg_send_tx_for_dispatch = wg_send_tx.clone();
             let wg_addr = wg_address_ipv4;
             let mesh_addr = mesh_ipv4;
+            let inbound_tx_for_dns = inbound_tx.clone();
+            let app_config_for_dns = Arc::clone(&app_config);
+            let dns_forwarders = mobile_magic_dns_forwarders(&config.dns_forwarders);
             tokio::spawn(async move {
                 let mut outbound_count: u32 = 0;
                 while let Some(packet) = outbound_rx.recv().await {
+                    if let Some(response) = mobile_magic_dns_response_packet(
+                        &packet,
+                        &app_config_for_dns,
+                        &dns_forwarders,
+                    )
+                    .await
+                    {
+                        if inbound_tx_for_dns.send(response).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
                     let outgoing = mesh
                         .read()
                         .ok()
@@ -851,10 +921,16 @@ impl MobileTunnel {
     /// Raw fd of the WG upstream UDP socket, or -1 if WG upstream
     /// isn't running. On Android, the host's `VpnService` calls
     /// `protect(fd)` on this so the encrypted UDP escapes the VPN
-    /// tun. iOS doesn't need this — it relies on `excludedRoutes`
-    /// declared at tunnel-establish time instead.
+    /// tun. iOS relies on the resolved upstream route being declared
+    /// as an `excludedRoutes` entry at tunnel-establish time instead.
     pub(crate) fn wg_upstream_socket_fd(&self) -> c_int {
         self.wg_upstream_socket_fd
+    }
+
+    pub(crate) fn wg_upstream_excluded_route(&self) -> Option<String> {
+        self.wg_upstream
+            .as_ref()
+            .and_then(|runtime| wg_upstream_excluded_route_for_addr(runtime.upstream()))
     }
 
     pub(crate) fn runtime_state_json(&self) -> Result<String> {
@@ -2375,6 +2451,175 @@ fn endpoint_addr_ip(endpoint: &str) -> Option<IpAddr> {
     host.trim().parse::<IpAddr>().ok()
 }
 
+fn wg_upstream_excluded_route_for_addr(upstream: SocketAddr) -> Option<String> {
+    match upstream.ip() {
+        IpAddr::V4(ip) => Some(format!("{ip}/32")),
+        IpAddr::V6(_) => None,
+    }
+}
+
+struct MobileDnsQuery<'a> {
+    source: Ipv4Addr,
+    destination: Ipv4Addr,
+    source_port: u16,
+    destination_port: u16,
+    payload: &'a [u8],
+}
+
+async fn mobile_magic_dns_response_packet(
+    packet: &[u8],
+    app_config: &Arc<RwLock<AppConfig>>,
+    forwarders: &[SocketAddr],
+) -> Option<Vec<u8>> {
+    let query = parse_mobile_magic_dns_query(packet)?;
+    let response = {
+        let app = app_config.read().ok()?;
+        let records = build_magic_dns_records(&app);
+        build_magic_dns_response_if_handled(query.payload, &records)
+    };
+    let response = match response {
+        Some(response) => response,
+        None => forward_mobile_dns_query(query.payload, forwarders).await?,
+    };
+    build_mobile_dns_response_packet(&query, &response)
+}
+
+fn parse_mobile_magic_dns_query(packet: &[u8]) -> Option<MobileDnsQuery<'_>> {
+    if packet.len() < 28 || packet[0] >> 4 != 4 {
+        return None;
+    }
+    let header_len = usize::from(packet[0] & 0x0f) * 4;
+    if header_len < 20 || packet.len() < header_len + 8 || packet[9] != 17 {
+        return None;
+    }
+    let total_len = usize::from(u16::from_be_bytes([packet[2], packet[3]]));
+    if total_len < header_len + 8 || packet.len() < total_len {
+        return None;
+    }
+    let fragment = u16::from_be_bytes([packet[6], packet[7]]) & 0x3fff;
+    if fragment != 0 {
+        return None;
+    }
+    let source = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+    let destination = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+    if destination != parse_ipv4(MOBILE_MAGIC_DNS_SERVER)? {
+        return None;
+    }
+    let udp = header_len;
+    let source_port = u16::from_be_bytes([packet[udp], packet[udp + 1]]);
+    let destination_port = u16::from_be_bytes([packet[udp + 2], packet[udp + 3]]);
+    if destination_port != 53 {
+        return None;
+    }
+    let udp_len = usize::from(u16::from_be_bytes([packet[udp + 4], packet[udp + 5]]));
+    if udp_len < 8 || udp + udp_len > total_len {
+        return None;
+    }
+    Some(MobileDnsQuery {
+        source,
+        destination,
+        source_port,
+        destination_port,
+        payload: &packet[udp + 8..udp + udp_len],
+    })
+}
+
+fn build_mobile_dns_response_packet(
+    query: &MobileDnsQuery<'_>,
+    dns_response: &[u8],
+) -> Option<Vec<u8>> {
+    let udp_len = 8_usize.checked_add(dns_response.len())?;
+    let total_len = 20_usize.checked_add(udp_len)?;
+    let udp_len_u16 = u16::try_from(udp_len).ok()?;
+    let total_len_u16 = u16::try_from(total_len).ok()?;
+    let mut packet = vec![0_u8; total_len];
+    packet[0] = 0x45;
+    packet[2..4].copy_from_slice(&total_len_u16.to_be_bytes());
+    packet[8] = 64;
+    packet[9] = 17;
+    packet[12..16].copy_from_slice(&query.destination.octets());
+    packet[16..20].copy_from_slice(&query.source.octets());
+    let checksum = ipv4_header_checksum(&packet[..20]);
+    packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+
+    packet[20..22].copy_from_slice(&query.destination_port.to_be_bytes());
+    packet[22..24].copy_from_slice(&query.source_port.to_be_bytes());
+    packet[24..26].copy_from_slice(&udp_len_u16.to_be_bytes());
+    packet[28..].copy_from_slice(dns_response);
+    Some(packet)
+}
+
+fn ipv4_header_checksum(header: &[u8]) -> u16 {
+    let mut sum = 0_u32;
+    for chunk in header.chunks(2) {
+        let value = if chunk.len() == 2 {
+            u16::from_be_bytes([chunk[0], chunk[1]])
+        } else {
+            u16::from(chunk[0]) << 8
+        };
+        sum = sum.wrapping_add(u32::from(value));
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !u16::try_from(sum).expect("folded IPv4 checksum fits in u16")
+}
+
+async fn forward_mobile_dns_query(query: &[u8], forwarders: &[SocketAddr]) -> Option<Vec<u8>> {
+    for forwarder in forwarders {
+        let bind_addr = if forwarder.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
+        let Ok(socket) = tokio::net::UdpSocket::bind(bind_addr).await else {
+            continue;
+        };
+        if socket.send_to(query, forwarder).await.is_err() {
+            continue;
+        }
+        let mut buffer = vec![0_u8; 4096];
+        let Ok(Ok((len, _))) = tokio::time::timeout(
+            MOBILE_MAGIC_DNS_FORWARD_TIMEOUT,
+            socket.recv_from(&mut buffer),
+        )
+        .await
+        else {
+            continue;
+        };
+        buffer.truncate(len);
+        return Some(buffer);
+    }
+    None
+}
+
+fn mobile_magic_dns_forwarders(configured: &[String]) -> Vec<SocketAddr> {
+    let mut seen = HashSet::new();
+    configured
+        .iter()
+        .filter_map(|server| parse_dns_forwarder(server))
+        .chain(
+            MOBILE_MAGIC_DNS_FORWARDERS
+                .iter()
+                .filter_map(|server| parse_dns_forwarder(server)),
+        )
+        .filter(|server| seen.insert(*server))
+        .collect()
+}
+
+fn parse_dns_forwarder(value: &str) -> Option<SocketAddr> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    value.parse::<SocketAddr>().ok().or_else(|| {
+        value
+            .parse::<IpAddr>()
+            .ok()
+            .map(|ip| SocketAddr::new(ip, 53))
+    })
+}
+
 fn ipv4_is_lan_endpoint_hint(ip: Ipv4Addr) -> bool {
     ip.is_private() && !ipv4_is_mesh_tunnel_ip(ip)
 }
@@ -2455,6 +2700,7 @@ fn empty_config() -> MobileTunnelConfig {
         nostr_discovery_enabled: true,
         excluded_routes: Vec::new(),
         dns_servers: Vec::new(),
+        dns_forwarders: Vec::new(),
         wireguard_exit: None,
         join_requests_enabled: false,
         pending_join_request_recipient: String::new(),
@@ -2489,6 +2735,37 @@ mod tests {
             dns_servers: Vec::new(),
         }];
         Arc::new(RwLock::new(app))
+    }
+
+    fn dns_query(name: &str, query_type: u16) -> Vec<u8> {
+        let mut bytes = vec![
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        for label in name.split('.') {
+            bytes.push(u8::try_from(label.len()).expect("label length fits"));
+            bytes.extend_from_slice(label.as_bytes());
+        }
+        bytes.push(0);
+        bytes.extend_from_slice(&query_type.to_be_bytes());
+        bytes.extend_from_slice(&1_u16.to_be_bytes());
+        bytes
+    }
+
+    fn ipv4_udp_packet(
+        source: Ipv4Addr,
+        destination: Ipv4Addr,
+        source_port: u16,
+        destination_port: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let query = MobileDnsQuery {
+            source: destination,
+            destination: source,
+            source_port: destination_port,
+            destination_port: source_port,
+            payload,
+        };
+        build_mobile_dns_response_packet(&query, payload).expect("test packet length fits")
     }
 
     #[test]
@@ -2547,7 +2824,55 @@ mod tests {
     }
 
     #[test]
-    fn mobile_config_routes_only_private_peer_addresses() {
+    fn mobile_config_stays_split_tunnel_without_exit() {
+        let mut app = AppConfig::generated();
+        app.ensure_defaults();
+        let own = app.own_nostr_pubkey_hex().expect("own pubkey");
+        let peer = "26525c442dd039de4e728b41ee8d7f717b267ab25b7c219d53a3249e1c9174cc";
+        app.networks = vec![NetworkConfig {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            enabled: true,
+            network_id: "test".to_string(),
+            invite_secret: "join-secret".to_string(),
+            participants: vec![peer.to_string()],
+            admins: vec![own],
+            listen_for_join_requests: true,
+            invite_inviter: String::new(),
+            outbound_join_request: None,
+            inbound_join_requests: Vec::new(),
+            shared_roster_updated_at: 0,
+            shared_roster_signed_by: String::new(),
+        }];
+
+        let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
+
+        assert_eq!(config.peers.len(), 1);
+        assert_eq!(config.route_targets.len(), 2);
+        assert_eq!(config.peers[0].allowed_ips.len(), 1);
+        assert!(
+            config
+                .route_targets
+                .iter()
+                .any(|route| route == MESH_TUNNEL_IPV4_CIDR)
+        );
+        let peer_route = config
+            .route_targets
+            .iter()
+            .find(|route| route.as_str() != MESH_TUNNEL_IPV4_CIDR)
+            .expect("peer route");
+        assert!(peer_route.starts_with("10."));
+        assert!(
+            !config
+                .route_targets
+                .iter()
+                .any(|route| route == "0.0.0.0/0")
+        );
+        assert_eq!(config.dns_servers, vec![MOBILE_MAGIC_DNS_SERVER]);
+    }
+
+    #[test]
+    fn mobile_config_selected_exit_node_adds_default_route() {
         let mut app = AppConfig::generated();
         app.ensure_defaults();
         let own = app.own_nostr_pubkey_hex().expect("own pubkey");
@@ -2573,24 +2898,80 @@ mod tests {
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
 
         assert_eq!(config.peers.len(), 1);
-        assert_eq!(config.route_targets.len(), 2);
         assert!(
             config
                 .route_targets
                 .iter()
                 .any(|route| route == MESH_TUNNEL_IPV4_CIDR)
         );
-        let peer_route = config
-            .route_targets
-            .iter()
-            .find(|route| route.as_str() != MESH_TUNNEL_IPV4_CIDR)
-            .expect("peer route");
-        assert!(peer_route.starts_with("10."));
         assert!(
-            !config
+            config
                 .route_targets
                 .iter()
                 .any(|route| route == "0.0.0.0/0")
+        );
+        assert!(
+            config.peers[0]
+                .allowed_ips
+                .iter()
+                .any(|route| route == "0.0.0.0/0")
+        );
+        assert_eq!(config.dns_servers, vec!["1.1.1.1", "9.9.9.9"]);
+    }
+
+    #[test]
+    fn mobile_magic_dns_answers_peer_name_from_tun_packet() {
+        let mut app = AppConfig::generated();
+        app.ensure_defaults();
+        let own = app.own_nostr_pubkey_hex().expect("own pubkey");
+        let peer = "26525c442dd039de4e728b41ee8d7f717b267ab25b7c219d53a3249e1c9174cc";
+        app.networks = vec![NetworkConfig {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            enabled: true,
+            network_id: "test".to_string(),
+            invite_secret: "join-secret".to_string(),
+            participants: vec![peer.to_string()],
+            admins: vec![own],
+            listen_for_join_requests: true,
+            invite_inviter: String::new(),
+            outbound_join_request: None,
+            inbound_join_requests: Vec::new(),
+            shared_roster_updated_at: 0,
+            shared_roster_signed_by: String::new(),
+        }];
+        app.set_peer_alias(peer, "fixture-peer")
+            .expect("peer alias");
+        let app = Arc::new(RwLock::new(app));
+        let source = Ipv4Addr::new(10, 44, 206, 222);
+        let dns_server = parse_ipv4(MOBILE_MAGIC_DNS_SERVER).expect("magic dns server");
+        let query = ipv4_udp_packet(
+            source,
+            dns_server,
+            53000,
+            53,
+            &dns_query("fixture-peer.nvpn", 1),
+        );
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+
+        let response = runtime
+            .block_on(mobile_magic_dns_response_packet(&query, &app, &[]))
+            .expect("dns response packet");
+
+        assert_eq!(&response[12..16], &dns_server.octets());
+        assert_eq!(&response[16..20], &source.octets());
+        assert_eq!(u16::from_be_bytes([response[20], response[21]]), 53);
+        assert_eq!(u16::from_be_bytes([response[22], response[23]]), 53000);
+        let expected_ip = derive_mesh_tunnel_ip("test", peer)
+            .and_then(|value| strip_cidr(&value).parse::<Ipv4Addr>().ok())
+            .expect("peer tunnel ip");
+        let expected_octets = expected_ip.octets();
+        assert!(
+            response.windows(4).any(|window| window == expected_octets),
+            "response did not include {expected_ip}: {response:?}"
         );
     }
 
@@ -3374,6 +3755,18 @@ mod tests {
     }
 
     #[test]
+    fn wg_upstream_excluded_route_is_ipv4_only() {
+        assert_eq!(
+            wg_upstream_excluded_route_for_addr("198.51.100.20:51820".parse().unwrap()),
+            Some("198.51.100.20/32".to_string())
+        );
+        assert_eq!(
+            wg_upstream_excluded_route_for_addr("[2001:db8::20]:51820".parse().unwrap()),
+            None
+        );
+    }
+
+    #[test]
     fn mobile_tunnel_launch_config_redacts_persisted_secrets() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3449,6 +3842,36 @@ mod tests {
                 .private_key,
             "client-private-key"
         );
+
+        let provider_json =
+            tunnel_provider_options_config_json(dir.to_str().expect("utf8 temp dir"));
+        assert!(provider_json.contains(&secret_key));
+        assert!(provider_json.contains("join-secret"));
+        assert!(provider_json.contains("client-private-key"));
+        assert!(provider_json.contains("client-peer-psk"));
+
+        let provider_config: MobileTunnelConfig =
+            serde_json::from_str(&provider_json).expect("provider options config");
+        assert!(
+            provider_config.config_path.is_empty(),
+            "packet tunnel extension must not read the containing app's private config path"
+        );
+
+        let provider_loaded =
+            mobile_app_config(&provider_config).expect("load app config from embedded toml");
+        let provider_runtime =
+            MobileTunnelConfig::from_app_with_config_path(&provider_loaded, Path::new(""))
+                .expect("provider runtime config");
+        assert_eq!(provider_runtime.identity_nsec, secret_key);
+        assert_eq!(
+            provider_runtime
+                .wireguard_exit
+                .as_ref()
+                .expect("provider runtime wireguard")
+                .private_key,
+            "client-private-key"
+        );
+        assert!(provider_runtime.config_path.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
     }

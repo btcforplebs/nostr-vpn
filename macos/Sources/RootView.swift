@@ -852,11 +852,19 @@ struct RootView: View {
     private func detailValueRow(_ title: String, _ value: String, displayValue customDisplayValue: String? = nil) -> some View {
         let displayValue = value.isEmpty ? "-" : customDisplayValue ?? value
         return VStack(alignment: .leading, spacing: 4) {
-            Text(displayValue)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
+            if value.hasPrefix("npub1") {
+                WrappingIdentifierText(
+                    value: displayValue,
+                    font: .preferredFont(forTextStyle: .subheadline),
+                    color: .labelColor
+                )
+            } else {
+                Text(displayValue)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
             HStack(spacing: 6) {
                 Text(title)
                     .font(.caption)
@@ -886,11 +894,14 @@ struct RootView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(request.requesterNodeName.isEmpty ? "New device" : request.requesterNodeName)
                                 .font(.headline)
-                            Text("\(request.requesterNpub) · \(request.requestedAtText)")
+                            WrappingIdentifierText(
+                                value: request.requesterNpub,
+                                font: .preferredFont(forTextStyle: .caption1),
+                                color: .secondaryLabelColor
+                            )
+                            Text(request.requestedAtText)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
                         }
                         Spacer()
                         copyButton(value: request.requesterNpub, copied: .peerNpub, peerNpub: request.requesterNpub, systemImage: "doc.on.doc")
@@ -1123,7 +1134,15 @@ struct RootView: View {
                 ForEach(state.lanPeers, id: \.invite) { peer in
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(peer.nodeName.isEmpty ? peer.npub : peer.nodeName)
+                            if peer.nodeName.isEmpty {
+                                WrappingIdentifierText(
+                                    value: peer.npub,
+                                    font: .preferredFont(forTextStyle: .body),
+                                    color: .labelColor
+                                )
+                            } else {
+                                Text(peer.nodeName)
+                            }
                             Text(peer.networkName)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -2086,7 +2105,7 @@ struct RootView: View {
         if !participant.magicDnsAlias.isEmpty {
             return participant.magicDnsAlias
         }
-        return short(participant.npub, prefix: 12, suffix: 6)
+        return "Device"
     }
 
     private func deviceSubtitle(_ participant: NativeParticipantState) -> String {
@@ -2314,6 +2333,57 @@ private struct SyncedTextFieldRow: View {
     }
 }
 
+private struct WrappingIdentifierText: NSViewRepresentable {
+    let value: String
+    let font: NSFont
+    let color: NSColor
+
+    func makeNSView(context: Context) -> NSTextView {
+        let textView = NSTextView()
+        textView.drawsBackground = false
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.textContainerInset = .zero
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.lineBreakMode = .byCharWrapping
+        textView.textContainer?.widthTracksTextView = true
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return textView
+    }
+
+    func updateNSView(_ textView: NSTextView, context: Context) {
+        textView.textStorage?.setAttributedString(attributedText)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+        guard let width = proposal.width, let textContainer = nsView.textContainer else {
+            return nil
+        }
+        nsView.frame.size.width = width
+        textContainer.containerSize = CGSize(width: width, height: .greatestFiniteMagnitude)
+        nsView.layoutManager?.ensureLayout(for: textContainer)
+        let height = nsView.layoutManager?.usedRect(for: textContainer).height ?? font.pointSize
+        return CGSize(width: width, height: ceil(height))
+    }
+
+    private var attributedText: NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.hyphenationFactor = 0
+        paragraph.lineBreakMode = .byCharWrapping
+        return NSAttributedString(
+            string: value.isEmpty ? "-" : value,
+            attributes: [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: paragraph,
+            ]
+        )
+    }
+}
+
 struct InviteQRCodeView: View {
     let invite: String
 
@@ -2410,13 +2480,6 @@ private func formatBytes(_ bytes: UInt64) -> String {
         return "\(bytes) B"
     }
     return String(format: "%.1f %@", value, units[unitIndex])
-}
-
-private func short(_ value: String, prefix: Int, suffix: Int) -> String {
-    guard value.count > prefix + suffix + 3 else {
-        return value
-    }
-    return "\(value.prefix(prefix))...\(value.suffix(suffix))"
 }
 
 private func displayNetworkId(_ value: String) -> String {
