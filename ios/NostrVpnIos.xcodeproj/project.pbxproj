@@ -334,7 +334,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn;
+				PRODUCT_BUNDLE_IDENTIFIER = to.loge.nvpn;
 				PRODUCT_MODULE_NAME = NostrVpnIos;
 				PRODUCT_NAME = "Nostr VPN";
 				PROVISIONING_PROFILE = "$(NVPN_IOS_PROVISIONING_PROFILE_UUID)";
@@ -453,7 +453,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.PacketTunnel;
+				PRODUCT_BUNDLE_IDENTIFIER = to.loge.nvpn.PacketTunnel;
 				PRODUCT_MODULE_NAME = PacketTunnel;
 				PRODUCT_NAME = "Nostr VPN Tunnel";
 				PROVISIONING_PROFILE = "$(NVPN_IOS_PACKET_TUNNEL_PROVISIONING_PROFILE_UUID)";
