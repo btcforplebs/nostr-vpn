@@ -1,8 +1,10 @@
 import Foundation
 import NetworkExtension
 import Darwin
+import os
 
-private let appGroupIdentifier = "group.to.iris.nvpn"
+private let appGroupIdentifier = "group.to.loge.nvpn"
+private let pktLog = Logger(subsystem: "to.loge.nvpn.PacketTunnel", category: "tunnel")
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
     private static let nextPacketPollTimeoutMs: UInt32 = 100
@@ -11,13 +13,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var tunnelRunning = false
     private var activeTunnelCalls = 0
     private let tunnelCondition = NSCondition()
-    private let packetQueue = DispatchQueue(label: "to.iris.nvpn.packet-tunnel", qos: .userInitiated)
+    private let packetQueue = DispatchQueue(label: "to.loge.nvpn.packet-tunnel", qos: .userInitiated)
 
     override func startTunnel(
         options: [String: NSObject]?,
         completionHandler: @escaping (Error?) -> Void
     ) {
-        NSLog("nvpn-pkt: startTunnel entered")
+        pktLog.log("nvpn-pkt: startTunnel entered")
         packetDebugLog("startTunnel entered options=\(options.map { Array($0.keys).sorted() } ?? [])")
         let configuration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
         packetDebugLog("providerConfiguration keys=\(Array(configuration.keys).sorted())")
@@ -25,20 +27,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let configJson = optionConfigJson ?? configuration["mobileTunnelConfigJson"] as? String ?? ""
         let parsedConfig = MobileTunnelConfig(json: configJson)
         if let error = parsedConfig.errorText {
-            NSLog("nvpn-pkt: config parse failed: \(error)")
+            pktLog.log("nvpn-pkt: config parse failed: \(error.localizedDescription, privacy: .public)")
             packetDebugLog("config parse failed: \(error)")
             completionHandler(error)
             return
         }
-        NSLog("nvpn-pkt: calling nostr_vpn_mobile_tunnel_new (configLen=\(configJson.count))")
+        pktLog.log("nvpn-pkt: calling nostr_vpn_mobile_tunnel_new (configLen=\(configJson.count, privacy: .public))")
         packetDebugLog("calling nostr_vpn_mobile_tunnel_new configLen=\(configJson.count)")
         guard let handle = configJson.withCString({ nostr_vpn_mobile_tunnel_new($0) }) else {
-            NSLog("nvpn-pkt: nostr_vpn_mobile_tunnel_new returned NULL")
+            pktLog.log("nvpn-pkt: nostr_vpn_mobile_tunnel_new returned NULL")
             packetDebugLog("nostr_vpn_mobile_tunnel_new returned NULL")
             completionHandler(PacketTunnelError.startFailed)
             return
         }
-        NSLog("nvpn-pkt: rust runtime up, handle=\(handle)")
+        pktLog.log("nvpn-pkt: rust runtime up, handle=\(String(describing: handle), privacy: .public)")
         packetDebugLog("rust runtime up")
         tunnelCondition.lock()
         tunnelHandle = handle
@@ -79,10 +81,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 ipv4.excludedRoutes = excludedRoutes.compactMap(ipv4Route)
             }
             settings.ipv4Settings = ipv4
-            NSLog(
-                "nvpn-pkt: ipv4 addr=\(parsed.address)/\(parsed.mask) "
-                    + "included=\(parsedConfig.routeTargets) "
-                    + "excluded=\(excludedRoutes)"
+            pktLog.log(
+                "nvpn-pkt: ipv4 addr=\(parsed.address, privacy: .public)/\(parsed.mask, privacy: .public) included=\(parsedConfig.routeTargets, privacy: .public) excluded=\(excludedRoutes, privacy: .public)"
             )
         }
 
@@ -98,23 +98,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let dns = NEDNSSettings(servers: parsedConfig.dnsServers)
             dns.matchDomains = [""] // catch-all so VPN DNS handles every query
             settings.dnsSettings = dns
-            NSLog("nvpn-pkt: dns servers=\(parsedConfig.dnsServers)")
+            pktLog.log("nvpn-pkt: dns servers=\(parsedConfig.dnsServers, privacy: .public)")
         }
 
-        NSLog("nvpn-pkt: calling setTunnelNetworkSettings")
+        pktLog.log("nvpn-pkt: calling setTunnelNetworkSettings")
         packetDebugLog("calling setTunnelNetworkSettings")
         setTunnelNetworkSettings(settings) { [weak self] error in
             if let error {
-                NSLog("nvpn-pkt: setTunnelNetworkSettings failed: \(error)")
+                pktLog.log("nvpn-pkt: setTunnelNetworkSettings failed: \(error.localizedDescription, privacy: .public)")
                 packetDebugLog("setTunnelNetworkSettings failed: \(error)")
                 self?.stopRustTunnel()
                 completionHandler(error)
                 return
             }
-            NSLog("nvpn-pkt: setTunnelNetworkSettings succeeded — starting packet loops")
+            pktLog.log("nvpn-pkt: setTunnelNetworkSettings succeeded — starting packet loops")
             packetDebugLog("setTunnelNetworkSettings succeeded")
             self?.startPacketLoops()
-            NSLog("nvpn-pkt: completionHandler(nil) — VPN should transition to connected")
+            pktLog.log("nvpn-pkt: completionHandler(nil) — VPN should transition to connected")
             packetDebugLog("completionHandler nil")
             completionHandler(nil)
         }
@@ -253,6 +253,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         return body(handle)
     }
+
 }
 
 private enum PacketTunnelError: LocalizedError {
