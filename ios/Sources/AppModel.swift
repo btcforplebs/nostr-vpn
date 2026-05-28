@@ -1,10 +1,11 @@
 import Foundation
+import Security
 import SwiftUI
 import UIKit
 
 @MainActor
 final class AppModel: ObservableObject {
-    nonisolated static let appGroupIdentifier = "group.to.iris.nvpn"
+    nonisolated static let appGroupIdentifier = "group.to.loge.nvpn"
     private static let configFileName = "config.toml"
     private static let mobileRuntimeStateFileName = "mobile-runtime-state.json"
     static let vpnDisclosureAcceptedKey = "vpnDisclosureAccepted"
@@ -43,6 +44,7 @@ final class AppModel: ObservableObject {
         // Pass empty so the FFI falls back to its own CARGO_PKG_VERSION
         // (workspace-inherited). Avoids drift between MARKETING_VERSION in the
         // xcodeproj and the bundled nvpn binary.
+        Self.migrateKeychainToAppGroup()
         let client = NativeCoreClient(dataDir: supportDir?.path ?? "", appVersion: "")
         core = client
         state = client.state()
@@ -582,6 +584,49 @@ final class AppModel: ObservableObject {
         } catch {
             debugLog("failed to write tunnel sidecar file \(name): \(String(describing: error))")
             return false
+        }
+    }
+
+    nonisolated private static func migrateKeychainToAppGroup() {
+        let service = "to.nostrvpn.nvpn.config-secrets"
+        let accounts = ["nostr-secret-key", "wireguard-exit-private-key", "wireguard-exit-peer-preshared-key"]
+        for account in accounts {
+            let readQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecReturnData as String: true,
+            ]
+            var result: AnyObject?
+            let readStatus = SecItemCopyMatching(readQuery as CFDictionary, &result)
+            guard readStatus == errSecSuccess, let data = result as? Data else {
+                continue
+            }
+            let checkQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecAttrAccessGroup as String: appGroupIdentifier,
+                kSecReturnData as String: true,
+            ]
+            var existing: AnyObject?
+            let checkStatus = SecItemCopyMatching(checkQuery as CFDictionary, &existing)
+            if checkStatus == errSecSuccess, let existingData = existing as? Data, existingData == data {
+                continue
+            }
+            if checkStatus == errSecSuccess {
+                let updateAttrs: [String: Any] = [kSecValueData as String: data]
+                SecItemUpdate(checkQuery as CFDictionary, updateAttrs as CFDictionary)
+            } else {
+                let addQuery: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrService as String: service,
+                    kSecAttrAccount as String: account,
+                    kSecAttrAccessGroup as String: appGroupIdentifier,
+                    kSecValueData as String: data,
+                ]
+                SecItemAdd(addQuery as CFDictionary, nil)
+            }
         }
     }
 
