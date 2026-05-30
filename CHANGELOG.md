@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-## 4.0.49 - 2026-05-30
+## 4.0.50 - 2026-05-30
 
 ### Changed
 
@@ -27,6 +27,13 @@ All notable changes to this project are documented in this file.
   admin, so non-admin devices cannot mint invites.
 - Mobile app rows now keep full npubs in device detail views and avoid
   hyphenating/wrapping npubs.
+
+## 4.0.49 - 2026-05-30
+
+### Changed
+
+- Android-only Zapstore build, superseded by 4.0.50 so Android and TestFlight
+  use the same fresh mobile release number.
 
 ## 4.0.48 - 2026-05-28
 
