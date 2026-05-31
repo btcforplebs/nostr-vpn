@@ -15,6 +15,11 @@ if [[ -f "$ROOT/scripts/release_common.sh" ]]; then
   source "$ROOT/scripts/release_common.sh"
   resolve_shared_build_metadata "$ROOT"
 fi
+if [[ -f "$ROOT/scripts/mobile_env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$ROOT/scripts/mobile_env.sh"
+  load_mobile_env "$ROOT"
+fi
 IOS_DIR="$ROOT/ios"
 BUILD_DIR="$IOS_DIR/.build"
 FRAMEWORKS_DIR="$IOS_DIR/Frameworks"
