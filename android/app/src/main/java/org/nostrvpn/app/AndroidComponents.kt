@@ -199,24 +199,6 @@ private fun DeviceDetailDialog(
                         }) {
                             Text(if (participant.isAdmin) "Remove admin" else "Make admin")
                         }
-                        OutlinedButton(
-                            onClick = {
-                                val ip = participant.tunnelIp.split("/")[0].trim()
-                                val current = state.networkDnsServers
-                                val servers = if (participant.isNetworkDns(state)) {
-                                    current.filter { it != ip }
-                                } else {
-                                    current + ip
-                                }
-                                val arr = JSONArray()
-                                servers.forEach { arr.put(it) }
-                                manageDispatch(JSONObject().put("type", "update_settings")
-                                    .put("patch", JSONObject().put("networkDnsServers", arr)))
-                            },
-                            enabled = participant.tunnelIp.split("/")[0].trim().isNotEmpty(),
-                        ) {
-                            Text(if (participant.isNetworkDns(state)) "Remove DNS" else "Make DNS")
-                        }
                         OutlinedButton(onClick = { pendingRemove = true }) {
                             Text("Remove from network")
                         }
@@ -405,6 +387,47 @@ internal fun GeneralSettingsCard(state: AppState, dispatch: (JSONObject) -> Unit
                 },
             )
             Text("Block internet if exit node disconnects")
+        }
+    }
+}
+
+@Composable
+internal fun NetworkDnsSettingsCard(state: AppState, dispatch: (JSONObject) -> Unit) {
+    val isAdmin = state.activeNetwork?.localIsAdmin == true
+    if (!isAdmin) return
+    var dnsInput by remember { mutableStateOf(state.networkDnsServers.joinToString(", ")) }
+    AppCard {
+        Text("Network DNS", style = MaterialTheme.typography.titleMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = state.networkDnsServers.isNotEmpty(),
+                onCheckedChange = { enabled ->
+                    if (!enabled) {
+                        dnsInput = ""
+                        val arr = JSONArray()
+                        dispatch(JSONObject().put("type", "update_settings")
+                            .put("patch", JSONObject().put("networkDnsServers", arr)))
+                    }
+                },
+            )
+            Text("Custom DNS")
+        }
+        if (state.networkDnsServers.isNotEmpty() || dnsInput.isNotBlank()) {
+            OutlinedTextField(
+                value = dnsInput,
+                onValueChange = { dnsInput = it },
+                label = { Text("DNS IPs (comma-separated)") },
+                singleLine = true,
+            )
+            OutlinedButton(onClick = {
+                val servers = dnsInput.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                val arr = JSONArray()
+                servers.forEach { arr.put(it) }
+                dispatch(JSONObject().put("type", "update_settings")
+                    .put("patch", JSONObject().put("networkDnsServers", arr)))
+            }) {
+                Text("Save")
+            }
         }
     }
 }

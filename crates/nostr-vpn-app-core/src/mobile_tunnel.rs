@@ -600,6 +600,7 @@ impl MobileTunnel {
         let (outbound_tx, mut outbound_rx) =
             tokio_mpsc::channel::<Vec<u8>>(TUNNEL_CHANNEL_CAPACITY);
         let (inbound_tx, inbound_rx) = mpsc::sync_channel::<Vec<u8>>(TUNNEL_CHANNEL_CAPACITY);
+        let dns_ipv6_queries = Arc::new(Mutex::new(HashMap::<u16, ([u8; 16], u16)>::new()));
 
         // If the user has WG upstream enabled, stand up the boringtun
         // pump alongside the FIPS endpoint. The WG runtime is fed via
@@ -742,6 +743,7 @@ impl MobileTunnel {
                 }
             };
             let dns_nat_targets = config.dns_nat_targets.clone();
+            let dns_ipv6_queries_send = Arc::clone(&dns_ipv6_queries);
             let config_path_for_log = config_path.clone();
             let dns_log_path = config.dns_log_path.clone();
             tokio::spawn(async move {
@@ -782,30 +784,90 @@ impl MobileTunnel {
                             &config_path_for_log,
                             "OUTBOUND DNS (IPv6) RECEIVED"
                         );
-                        if let Some(response) = mobile_magic_dns_response_packet_ipv6(
-                            &packet,
-                            &app_config_for_dns,
-                            &dns_forwarders_ipv6,
-                        )
-                        .await
-                        {
-                            dns_log(
-                                &dns_log_path,
-                                &config_path_for_log,
-                                "OUTBOUND DNS (IPv6): Answered by local MagicDNS responder"
-                            );
-                            if inbound_tx_for_dns.send(response).is_err() {
-                                break;
+                        if let Some(query) = parse_mobile_magic_dns_query_ipv6(&packet) {
+                            // Check local MagicDNS first
+                            let records = {
+                                let app = app_config_for_dns.read().ok();
+                                app.map(|a| build_magic_dns_records(&a))
+                            };
+                            let local_response = records.and_then(|r| {
+                                build_magic_dns_response_if_handled(query.payload, &r)
+                            });
+                            if let Some(response) = local_response {
+                                if let Some(resp_packet) = build_mobile_dns_response_packet_ipv6(&query, &response) {
+                                    dns_log(
+                                        &dns_log_path,
+                                        &config_path_for_log,
+                                        "OUTBOUND DNS (IPv6): Answered by local MagicDNS responder"
+                                    );
+                                    if inbound_tx_for_dns.send(resp_packet).is_err() {
+                                        break;
+                                    }
+                                    continue;
+                                }
                             }
-                            continue;
-                        } else {
-                            dns_log(
-                                &dns_log_path,
-                                &config_path_for_log,
-                                "OUTBOUND DNS (IPv6): Drop (No match / Pi-hole failed)"
-                            );
-                            continue;
+                            
+                            // Not resolved locally. Do we have a NAT target (Pi-hole)?
+                            if let Some(&target) = dns_nat_targets.first() {
+                                if let Some(local_mesh_ip) = mesh_addr {
+                                    // Record original IPv6 details in our queries map
+                                    if let Ok(mut queries) = dns_ipv6_queries_send.lock() {
+                                        queries.insert(query.source_port, (query.source, query.source_port));
+                                    }
+                                    
+                                    // Construct IPv4 UDP packet
+                                    let udp_len = 8 + query.payload.len();
+                                    let total_len = 20 + udp_len;
+                                    let mut ipv4_packet = vec![0_u8; total_len];
+                                    
+                                    // IPv4 Header
+                                    ipv4_packet[0] = 0x45;
+                                    ipv4_packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+                                    ipv4_packet[8] = 64; // TTL
+                                    ipv4_packet[9] = 17; // Protocol UDP
+                                    ipv4_packet[12..16].copy_from_slice(&local_mesh_ip.octets());
+                                    ipv4_packet[16..20].copy_from_slice(&target.octets());
+                                    let chk = ipv4_header_checksum(&ipv4_packet[..20]);
+                                    ipv4_packet[10..12].copy_from_slice(&chk.to_be_bytes());
+                                    
+                                    // UDP Header
+                                    ipv4_packet[20..22].copy_from_slice(&query.source_port.to_be_bytes());
+                                    ipv4_packet[22..24].copy_from_slice(&(53 as u16).to_be_bytes());
+                                    ipv4_packet[24..26].copy_from_slice(&(udp_len as u16).to_be_bytes());
+                                    ipv4_packet[28..].copy_from_slice(query.payload);
+                                    
+                                    nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut ipv4_packet);
+                                    
+                                    dns_log(
+                                        &dns_log_path,
+                                        &config_path_for_log,
+                                        &format!("OUTBOUND DNS (IPv6 -> IPv4 NAT64): Translated query from port {} to {} over mesh", query.source_port, target)
+                                    );
+                                    
+                                    // Route the translated IPv4 packet over the FIPS mesh!
+                                    let outgoing = mesh
+                                        .read()
+                                        .ok()
+                                        .and_then(|mesh| mesh.route_outbound_packet(&ipv4_packet));
+                                    if let Some(outgoing) = outgoing {
+                                        let _ = endpoint.send(outgoing.endpoint_npub, outgoing.bytes).await;
+                                    } else {
+                                        dns_log(
+                                            &dns_log_path,
+                                            &config_path_for_log,
+                                            "OUTBOUND DNS (IPv6 -> IPv4 NAT64): No mesh route for target! Dropping query."
+                                        );
+                                    }
+                                    continue;
+                                }
+                            }
                         }
+                        dns_log(
+                            &dns_log_path,
+                            &config_path_for_log,
+                            "OUTBOUND DNS (IPv6): Drop (No match / Pi-hole not configured)"
+                        );
+                        continue;
                     }
 
                     if let Some(response) = mobile_magic_dns_response_packet(
@@ -1038,6 +1100,7 @@ impl MobileTunnel {
             let join_request_active = Arc::clone(&join_request_active);
             let network_id = config.network_id.clone();
             let dns_nat_targets_for_recv = config.dns_nat_targets.clone();
+            let dns_ipv6_queries_recv = Arc::clone(&dns_ipv6_queries);
             tokio::spawn(async move {
                 let mut control_fragments = FipsControlFragmentBuffer::default();
                 loop {
@@ -1087,6 +1150,51 @@ impl MobileTunnel {
                         };
 
                         if is_dns_inbound {
+                            let header_len = usize::from(bytes[0] & 0x0f) * 4;
+                            let dst_port = u16::from_be_bytes([bytes[header_len + 2], bytes[header_len + 3]]);
+                            
+                            let original_query = {
+                                if let Ok(queries) = dns_ipv6_queries_recv.lock() {
+                                    queries.get(&dst_port).cloned()
+                                } else {
+                                    None
+                                }
+                            };
+                            
+                            if let Some((orig_src_ip, orig_src_port)) = original_query {
+                                if let Ok(mut queries) = dns_ipv6_queries_recv.lock() {
+                                    queries.remove(&dst_port);
+                                }
+                                
+                                let udp_len = usize::from(u16::from_be_bytes([bytes[header_len + 4], bytes[header_len + 5]]));
+                                if udp_len >= 8 && bytes.len() >= header_len + udp_len {
+                                    let dns_payload = &bytes[header_len + 8..header_len + udp_len];
+                                    let dummy_dns_ip: [u8; 16] = [
+                                        0xfd, 0x00, 0, 0, 0, 0, 0, 0,
+                                        0, 0, 0, 0, 0, 0, 0, 0x53,
+                                    ];
+                                    let query_ipv6 = MobileDnsQueryIpv6 {
+                                        source: orig_src_ip,
+                                        destination: dummy_dns_ip,
+                                        source_port: orig_src_port,
+                                        destination_port: 53,
+                                        payload: dns_payload,
+                                    };
+                                    
+                                    if let Some(ipv6_resp_packet) = build_mobile_dns_response_packet_ipv6(&query_ipv6, dns_payload) {
+                                        dns_log(
+                                            &dns_log_path,
+                                            &config_path,
+                                            &format!("INBOUND DNS (IPv4 -> IPv6 NAT64): Translated response for port {} back to IPv6", orig_src_port)
+                                        );
+                                        if inbound_tx.send(ipv6_resp_packet).is_err() {
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
+
                             let src = Ipv4Addr::new(bytes[12], bytes[13], bytes[14], bytes[15]);
                             let dst = Ipv4Addr::new(bytes[16], bytes[17], bytes[18], bytes[19]);
                             dns_log(

@@ -106,12 +106,17 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void ToggleDns_Click(object sender, RoutedEventArgs e)
+    private async void DnsEnabled_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { Tag: NativeParticipantState participant })
+        if (sender is CheckBox { IsChecked: false })
         {
-            await ViewModel.ToggleDnsAsync(participant);
+            await ViewModel.ClearNetworkDnsAsync();
         }
+    }
+
+    private async void SaveDns_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.SaveNetworkDnsAsync();
     }
 
     private async void RemoveParticipant_Click(object sender, RoutedEventArgs e)

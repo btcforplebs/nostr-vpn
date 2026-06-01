@@ -193,9 +193,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         var normalized = servers
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        if !normalized.isEmpty {
-            normalized.append("fd00::53")
-        }
+        normalized.append("fd00::53")
         return (normalized, [""], false)
     }
 

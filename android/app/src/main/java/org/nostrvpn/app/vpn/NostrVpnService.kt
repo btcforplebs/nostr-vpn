@@ -318,16 +318,16 @@ class NostrVpnService : VpnService() {
     }
 
     private fun addDnsServers(builder: Builder, config: JSONObject) {
-        val servers = config.optJSONArray("dnsServers") ?: return
+        val servers = config.optJSONArray("dnsServers")
         val list = mutableListOf<String>()
-        for (index in 0 until servers.length()) {
-            val server = servers.optString(index).trim()
-            if (server.isEmpty()) continue
-            list.add(server)
+        if (servers != null) {
+            for (index in 0 until servers.length()) {
+                val server = servers.optString(index).trim()
+                if (server.isEmpty()) continue
+                list.add(server)
+            }
         }
-        if (list.isNotEmpty()) {
-            list.add("fd00::53")
-        }
+        list.add("fd00::53")
         for (server in list) {
             runCatching {
                 builder.addDnsServer(server)

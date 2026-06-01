@@ -271,14 +271,12 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
                       </Grid.ColumnDefinitions>
                       <TextBlock Text="Name" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" />
                       <TextBox x:Name="AliasInput" Grid.Column="1" Text="{Binding SelectedParticipant.MagicDnsAlias, Mode=OneWay}" Margin="0,0,8,0" />
                       <Button Grid.Column="2" Content="Save" Tag="{Binding SelectedParticipant}" Click="SetParticipantAlias_Click" Margin="0,0,8,0" />
                       <Button Grid.Column="3" Content="Admin" Tag="{Binding SelectedParticipant}" Click="ToggleAdmin_Click" Margin="0,0,8,0" Visibility="{Binding SelectedParticipantCanManage, Converter={StaticResource BoolToVisibility}}" />
-                      <Button Grid.Column="4" Content="DNS" Tag="{Binding SelectedParticipant}" Click="ToggleDns_Click" Margin="0,0,8,0" Visibility="{Binding SelectedParticipantCanManage, Converter={StaticResource BoolToVisibility}}" />
-                      <Button Grid.Column="5" Content="Remove" Tag="{Binding SelectedParticipant}" Click="RemoveParticipant_Click" Visibility="{Binding SelectedParticipantCanManage, Converter={StaticResource BoolToVisibility}}" />
+                      <Button Grid.Column="4" Content="Remove" Tag="{Binding SelectedParticipant}" Click="RemoveParticipant_Click" Visibility="{Binding SelectedParticipantCanManage, Converter={StaticResource BoolToVisibility}}" />
                     </Grid>
                     <Grid Margin="0,10,0,0" Visibility="{Binding SelectedParticipantCanManage, Converter={StaticResource BoolToVisibility}}">
                       <Grid.ColumnDefinitions>
@@ -691,6 +689,22 @@
                 <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Start VPN automatically" IsChecked="{Binding State.Autoconnect, Mode=OneWay}" Click="Autoconnect_Click" />
                 <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Launch on startup" IsChecked="{Binding State.LaunchOnStartup, Mode=OneWay}" Click="LaunchOnStartup_Click" />
                 <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Tray on close" IsChecked="{Binding State.CloseToTrayOnClose, Mode=OneWay}" Click="CloseToTray_Click" />
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}" Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}">
+              <StackPanel>
+                <TextBlock Text="Network DNS" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
+                <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Custom DNS" IsChecked="{Binding DnsEnabled, Mode=OneWay}" Click="DnsEnabled_Click" />
+                <Grid Margin="0,8,0,0" Visibility="{Binding DnsEnabled, Converter={StaticResource BoolToVisibility}}">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBox x:Name="DnsInput" Text="{Binding DnsServersText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
+                  <Button Grid.Column="1" Content="Save" Click="SaveDns_Click" />
+                </Grid>
+                <TextBlock Foreground="{StaticResource TextSecondary}" FontSize="11" Text="Comma-separated IPs" Margin="0,4,0,0" />
               </StackPanel>
             </Border>
 

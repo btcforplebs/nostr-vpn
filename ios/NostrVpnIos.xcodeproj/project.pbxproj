@@ -216,9 +216,16 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					2DDBC3A91D35DF14C8FB244F = {
+						DevelopmentTeam = 525WQ48Y72;
+					};
+					AB61873F2829C99F6B9C990E = {
+						DevelopmentTeam = 525WQ48Y72;
+					};
+				};
 			};
 			buildConfigurationList = 74AC5F0BB81527A1F708C8A6 /* Build configuration list for PBXProject "NostrVpnIos" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -228,6 +235,7 @@
 			mainGroup = 277A36BBB757931F3D25086F;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
+			productRefGroup = D39D5A56D64190205BCC5B1A /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -308,7 +316,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn;
+				PRODUCT_BUNDLE_IDENTIFIER = to.loge.nvpn;
 				PRODUCT_MODULE_NAME = NostrVpnIos;
 				PRODUCT_NAME = "Nostr VPN";
 				SDKROOT = iphoneos;
@@ -381,6 +389,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 4000050;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 525WQ48Y72;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -427,7 +436,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = to.iris.nvpn.PacketTunnel;
+				PRODUCT_BUNDLE_IDENTIFIER = to.loge.nvpn.PacketTunnel;
 				PRODUCT_MODULE_NAME = PacketTunnel;
 				PRODUCT_NAME = "Nostr VPN Tunnel";
 				SDKROOT = iphoneos;
@@ -500,6 +509,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 4000050;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 525WQ48Y72;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
