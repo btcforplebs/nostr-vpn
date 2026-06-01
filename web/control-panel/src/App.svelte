@@ -1898,13 +1898,13 @@
             <div class="panel wide">
               <div class="section-heading">
                 <div>
-                  <h3>Network DNS</h3>
+                  <h3>DNS Override</h3>
                   <p>Override DNS for all devices in this network</p>
                 </div>
               </div>
 
               <label class="switch-row">
-                <span>Custom DNS</span>
+                <span>DNS Override</span>
                 <input
                   type="checkbox"
                   checked={(state?.networkDnsServers ?? []).length > 0}
@@ -1913,11 +1913,11 @@
               </label>
 
               <label>
-                <span>DNS IPs (comma-separated)</span>
+                <span>DNS Override IPs (comma-separated)</span>
                 <input type="text" bind:value={dnsInput} />
               </label>
               <button type="button" class="small-button" disabled={Boolean(busyAction)} on:click={saveNetworkDns}>
-                Save DNS
+                Save DNS Override
               </button>
             </div>
             {/if}

@@ -862,7 +862,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             .ToList();
         return DispatchAsync(
             NativeActions.UpdateSettings(new SettingsPatch { NetworkDnsServers = servers }),
-            "Setting DNS");
+            "Setting DNS Override");
     }
 
     public Task ClearNetworkDnsAsync()
@@ -870,7 +870,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         DnsServersText = "";
         return DispatchAsync(
             NativeActions.UpdateSettings(new SettingsPatch { NetworkDnsServers = new List<string>() }),
-            "Clearing DNS");
+            "Clearing DNS Override");
     }
 
     public Task ActivateNetworkAsync(string networkId)

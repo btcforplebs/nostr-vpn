@@ -419,7 +419,7 @@ internal fun NetworkDnsSettingsCard(state: AppState, dispatch: (JSONObject) -> U
     if (!isAdmin) return
     var dnsInput by remember { mutableStateOf(state.networkDnsServers.joinToString(", ")) }
     AppCard {
-        Text("Network DNS", style = MaterialTheme.typography.titleMedium)
+        Text("DNS Override", style = MaterialTheme.typography.titleMedium)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(
                 checked = state.networkDnsServers.isNotEmpty(),
@@ -432,13 +432,13 @@ internal fun NetworkDnsSettingsCard(state: AppState, dispatch: (JSONObject) -> U
                     }
                 },
             )
-            Text("Custom DNS")
+            Text("DNS Override")
         }
         if (state.networkDnsServers.isNotEmpty() || dnsInput.isNotBlank()) {
             OutlinedTextField(
                 value = dnsInput,
                 onValueChange = { dnsInput = it },
-                label = { Text("DNS IPs (comma-separated)") },
+                label = { Text("DNS Override IPs (comma-separated)") },
                 singleLine = true,
             )
             OutlinedButton(onClick = {
