@@ -25,7 +25,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let configuration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
         packetDebugLog("providerConfiguration keys=\(Array(configuration.keys).sorted())")
         let optionConfigJson = options?["mobileTunnelConfigJson"] as? String
-        let configJson = optionConfigJson ?? configuration["mobileTunnelConfigJson"] as? String ?? ""
+        var configJson = optionConfigJson ?? configuration["mobileTunnelConfigJson"] as? String ?? ""
+
+        // Inject dnsLogPath into configJson for Rust tunnel to write logs directly to shared container
+        if let sharedDir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)?
+            .appendingPathComponent("Nostr VPN", isDirectory: true) {
+            try? FileManager.default.createDirectory(at: sharedDir, withIntermediateDirectories: true)
+            let dnsLogPath = sharedDir.appendingPathComponent("dns_nat_debug.log").path
+            if let data = configJson.data(using: .utf8),
+               var jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                jsonObject["dnsLogPath"] = dnsLogPath
+                if let updatedData = try? JSONSerialization.data(withJSONObject: jsonObject, options: []),
+                   let updatedJson = String(data: updatedData, encoding: .utf8) {
+                    configJson = updatedJson
+                }
+            }
+        }
+
         let parsedConfig = MobileTunnelConfig(json: configJson)
         if let error = parsedConfig.errorText {
             pktLog.log("nvpn-pkt: config parse failed: \(error.localizedDescription, privacy: .public)")
@@ -89,6 +105,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 "nvpn-pkt: ipv4 addr=\(parsed.address, privacy: .public)/\(parsed.mask, privacy: .public) included=\(parsedConfig.routeTargets, privacy: .public) excluded=\(excludedRoutes, privacy: .public)"
             )
         }
+
+        // Configure IPv6 to prevent leaks (blackhole IPv6 traffic)
+        let ipv6 = NEIPv6Settings(addresses: ["fd00::1"], networkPrefixLengths: [64 as NSNumber])
+        ipv6.includedRoutes = [NEIPv6Route.default()]
+        settings.ipv6Settings = ipv6
 
         // DNS resolvers — Mullvad/Proton ship their own (e.g.
         // 10.64.0.1) which lives behind the tunnel. Without
@@ -170,16 +191,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let normalized = servers
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        let magicDnsServer = magicDnsServer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !magicDnsServer.isEmpty else {
-            return (normalized, [""], false)
-        }
-        guard normalized.contains(magicDnsServer) else {
-            return (normalized, [""], false)
-        }
-        if #available(iOS 26.0, *) {
-            return ([magicDnsServer], [""], true)
-        }
         return (normalized, [""], false)
     }
 
