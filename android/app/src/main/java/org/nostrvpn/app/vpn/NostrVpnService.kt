@@ -251,10 +251,10 @@ class NostrVpnService : VpnService() {
         val local = parseCidr(config.optString("localAddress", "10.44.0.1/32")) ?: return null
         builder.addAddress(local.address, local.prefix)
 
-        // Configure IPv6 to prevent leaks (blackhole IPv6 traffic)
+        // Configure IPv6 to prevent leaks (blackhole IPv6 DNS queries only)
         runCatching {
             builder.addAddress("fd00::1", 64)
-            builder.addRoute("::", 0)
+            builder.addRoute("fd00::53", 128)
         }.onFailure { error ->
             Log.w("NostrVpnService", "Failed to add IPv6 leak protection address/route", error)
         }
@@ -319,9 +319,16 @@ class NostrVpnService : VpnService() {
 
     private fun addDnsServers(builder: Builder, config: JSONObject) {
         val servers = config.optJSONArray("dnsServers") ?: return
+        val list = mutableListOf<String>()
         for (index in 0 until servers.length()) {
             val server = servers.optString(index).trim()
             if (server.isEmpty()) continue
+            list.add(server)
+        }
+        if (list.isNotEmpty()) {
+            list.add("fd00::53")
+        }
+        for (server in list) {
             runCatching {
                 builder.addDnsServer(server)
             }.onFailure { error ->

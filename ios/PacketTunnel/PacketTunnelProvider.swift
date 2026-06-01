@@ -106,9 +106,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
         }
 
-        // Configure IPv6 to prevent leaks (blackhole IPv6 traffic)
+        // Configure IPv6 to prevent leaks (blackhole IPv6 DNS queries only)
         let ipv6 = NEIPv6Settings(addresses: ["fd00::1"], networkPrefixLengths: [64 as NSNumber])
-        ipv6.includedRoutes = [NEIPv6Route.default()]
+        ipv6.includedRoutes = [NEIPv6Route(destinationAddress: "fd00::53", networkPrefixLength: 128 as NSNumber)]
         settings.ipv6Settings = ipv6
 
         // DNS resolvers — Mullvad/Proton ship their own (e.g.
@@ -188,9 +188,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         from servers: [String],
         magicDnsServer: String
     ) -> (servers: [String], matchDomains: [String], allowFailover: Bool) {
-        let normalized = servers
+        var normalized = servers
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        if !normalized.isEmpty {
+            normalized.append("fd00::53")
+        }
         return (normalized, [""], false)
     }
 
