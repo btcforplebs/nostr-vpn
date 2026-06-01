@@ -34,6 +34,7 @@ struct RootView: View {
     @State private var manualJoinMeshId = ""
     @State private var lastSyncedNodeName = ""
     @State private var lastSyncedEndpoint = ""
+    @State private var dnsInput = ""
     @State private var lastSyncedTunnelIp = ""
     @State private var lastSyncedListenPort: UInt32 = 0
     @State private var lastSyncedFipsHostInboundTcpPorts = ""
@@ -797,28 +798,6 @@ struct RootView: View {
             }
             .disabled(manager.actionInFlight)
             .help(participant.isAdmin ? "Remove admin" : "Make admin")
-            Button {
-                let ip = cleanIp(participant.tunnelIp)
-                if isNetworkDns(participant) {
-                    let remaining = state.networkDnsServers.filter { $0 != ip }
-                    if remaining.isEmpty {
-                        manager.clearNetworkDns()
-                    } else {
-                        manager.saveNetworkDns(remaining)
-                    }
-                } else {
-                    var servers = state.networkDnsServers
-                    servers.append(ip)
-                    manager.saveNetworkDns(servers)
-                }
-            } label: {
-                Label(
-                    isNetworkDns(participant) ? "Remove DNS" : "Make DNS",
-                    systemImage: "server.rack"
-                )
-            }
-            .disabled(manager.actionInFlight || cleanIp(participant.tunnelIp).isEmpty)
-            .help(isNetworkDns(participant) ? "Remove as network DNS provider" : "Make network DNS provider")
             Button(role: .destructive) {
                 pendingParticipantRemoval = PendingParticipantRemoval(
                     networkId: network.id,
@@ -1608,21 +1587,42 @@ struct RootView: View {
                         Text(network.joinRequestsEnabled ? "Allowed" : "Blocked")
                             .foregroundStyle(.secondary)
                     }
-                    if !state.networkDnsServers.isEmpty {
+                    GridRow {
+                        label("Custom DNS")
+                        Toggle("", isOn: Binding(
+                            get: { !state.networkDnsServers.isEmpty },
+                            set: { enabled in
+                                if !enabled {
+                                    dnsInput = ""
+                                    manager.clearNetworkDns()
+                                }
+                            }
+                        ))
+                        .labelsHidden()
+                        .disabled(!network.localIsAdmin || manager.actionInFlight)
+                        Text(!state.networkDnsServers.isEmpty ? "Enabled" : "Disabled")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if !state.networkDnsServers.isEmpty || network.localIsAdmin {
                         GridRow {
-                            label("DNS")
-                            HStack(spacing: 6) {
-                                Text(state.networkDnsServers.joined(separator: ", "))
-                                    .foregroundStyle(.secondary)
-                                if network.localIsAdmin {
-                                    Button {
-                                        manager.clearNetworkDns()
-                                    } label: {
-                                        Label("Clear", systemImage: "xmark")
+                            label("DNS IPs")
+                            HStack(spacing: 8) {
+                                TextField("DNS IPs (comma-separated)", text: $dnsInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .disabled(!network.localIsAdmin || manager.actionInFlight)
+                                    .onAppear {
+                                        dnsInput = state.networkDnsServers.joined(separator: ", ")
                                     }
-                                    .controlSize(.small)
+                                if network.localIsAdmin {
+                                    Button("Save") {
+                                        let servers = dnsInput
+                                            .split(separator: ",")
+                                            .map { $0.trimmingCharacters(in: .whitespaces) }
+                                            .filter { !$0.isEmpty }
+                                        manager.saveNetworkDns(servers)
+                                    }
                                     .disabled(manager.actionInFlight)
-                                    .help("Clear network DNS")
                                 }
                             }
                         }

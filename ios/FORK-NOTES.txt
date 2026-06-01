@@ -1,0 +1,78 @@
+iOS Fork Notes — Bundle ID Migration (to.iris.nvpn -> to.loge.nvpn)
+====================================================================
+
+This file documents the non-obvious fixes needed when forking the
+upstream nostr-vpn iOS app with a new bundle ID. If the VPN tunnel
+stops working after a bundle ID change, check these items first.
+
+
+1. Keychain Access Group Mismatch
+---------------------------------
+Problem:
+  nostr_vpn_mobile_tunnel_new() returns NULL. The Rust error is:
+  "Nostr secret key is marked as stored in the iOS Keychain,
+  but no matching secret exists"
+
+Root cause:
+  The Rust core stores secrets via set_generic_password() (from the
+  security_framework crate), which writes to the app's default
+  keychain access group (<team-id>.<bundle-id>). The PacketTunnel
+  extension is a separate process with its own default keychain group
+  (<team-id>.<bundle-id>.PacketTunnel). It cannot read items from
+  the main app's group.
+
+  The upstream repo relies on Xcode automatic signing to inject the
+  com.apple.security.application-groups entitlement from their Apple
+  Developer portal profile. When forking with a new bundle ID, this
+  entitlement must be added manually to both entitlements files.
+
+Fix (AppModel.swift):
+  migrateKeychainToAppGroup() — copies keychain secrets from the
+  main app's default access group into the shared App Group keychain
+  (group.to.loge.nvpn) using explicit kSecAttrAccessGroup. Called on
+  every app launch before creating the NativeCoreClient. Idempotent.
+
+  Keychain service: "to.nostrvpn.nvpn.config-secrets"
+  Accounts: nostr-secret-key, wireguard-exit-private-key,
+            wireguard-exit-peer-preshared-key
+
+Required entitlements (both files):
+  - NostrVpnIos.entitlements
+  - PacketTunnel/PacketTunnel.entitlements
+  Must include com.apple.security.application-groups with
+  group.to.loge.nvpn.
+
+
+2. Network Extension Logging
+-----------------------------
+Problem:
+  NSLog output from the PacketTunnel extension is invisible in
+  Console.app due to iOS privacy redaction of extension processes.
+
+Fix (PacketTunnelProvider.swift):
+  Use os.Logger with privacy: .public instead of NSLog. Filter
+  Console.app by subsystem "to.loge.nvpn.PacketTunnel" to see
+  extension logs.
+
+
+3. Stale VPN Manager Cleanup
+-----------------------------
+Problem:
+  After changing bundle IDs, iOS may retain a VPN manager referencing
+  the old bundle ID (to.iris.nvpn.PacketTunnel). Starting the tunnel
+  with the old manager silently fails because the extension binary
+  no longer matches.
+
+Fix (PacketTunnelController.swift):
+  loadOrCreateManager() removes managers whose
+  providerBundleIdentifier doesn't match the current bundle ID
+  before selecting or creating one.
+
+
+Files modified from upstream:
+  ios/Sources/AppModel.swift         — keychain migration, bundle ID
+  ios/PacketTunnel/PacketTunnelProvider.swift — os.Logger, bundle ID
+  ios/Sources/PacketTunnelController.swift    — bundle ID, stale manager cleanup
+  ios/NostrVpnIos.entitlements       — app groups entitlement
+  ios/PacketTunnel/PacketTunnel.entitlements  — app groups entitlement
+  ios/project.yml                    — bundle IDs

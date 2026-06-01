@@ -56,6 +56,7 @@
   let meshIdDrafts: Record<string, string> = {};
   let wireguardExitConfigDraft = '';
   let wireguardDirty = false;
+  let dnsInput = '';
   let wireguardConfigFileInput: HTMLInputElement | null = null;
   let noticeTimer: number | undefined;
 
@@ -218,6 +219,7 @@
       fipsHostInboundTcpPorts: next.fipsHostInboundTcpPorts,
       autoconnect: next.autoconnect,
     };
+    dnsInput = (next.networkDnsServers ?? []).join(', ');
   }
 
   function resetBootstrapPeers() {
@@ -680,18 +682,6 @@
     );
   }
 
-  async function toggleDns(participant: ParticipantView) {
-    const ip = participant.tunnelIp.split('/')[0].trim();
-    const current = state?.networkDnsServers ?? [];
-    const servers = isNetworkDns(participant)
-      ? current.filter((s) => s !== ip)
-      : [...current, ip];
-    await run(
-      '/api/update_settings',
-      { patch: { networkDnsServers: servers } },
-      isNetworkDns(participant) ? 'Removing DNS' : 'Setting DNS',
-    );
-  }
 
   async function removeParticipant(network: NetworkView, participant: ParticipantView) {
     if (!window.confirm(`Remove ${participantName(participant)} from ${network.name}?`)) {
@@ -705,6 +695,16 @@
       },
       'Removing device',
     );
+  }
+
+  async function saveNetworkDns() {
+    const servers = dnsInput.split(',').map((s) => s.trim()).filter((s) => s !== '');
+    await run('/api/update_settings', { patch: { networkDnsServers: servers } }, 'Setting DNS');
+  }
+
+  async function clearNetworkDns() {
+    dnsInput = '';
+    await run('/api/update_settings', { patch: { networkDnsServers: [] } }, 'Clearing DNS');
   }
 
   async function setJoinRequests(network: NetworkView, enabled: boolean) {
@@ -1591,14 +1591,6 @@
                         </button>
                         <button
                           type="button"
-                          class="small-button"
-                          disabled={!selectedParticipant.tunnelIp.split('/')[0].trim()}
-                          on:click={() => toggleDns(selectedParticipant)}
-                        >
-                          {isNetworkDns(selectedParticipant) ? 'Remove DNS' : 'Make DNS'}
-                        </button>
-                        <button
-                          type="button"
                           class="small-button danger"
                           on:click={() => removeParticipant(shownNetwork, selectedParticipant)}
                         >
@@ -1901,6 +1893,34 @@
                 <textarea bind:value={settingsDraft.relays} on:input={() => (settingsDirty = true)} rows="4"></textarea>
               </label>
             </div>
+
+            {#if shownNetwork?.localIsAdmin}
+            <div class="panel wide">
+              <div class="section-heading">
+                <div>
+                  <h3>Network DNS</h3>
+                  <p>Override DNS for all devices in this network</p>
+                </div>
+              </div>
+
+              <label class="switch-row">
+                <span>Custom DNS</span>
+                <input
+                  type="checkbox"
+                  checked={(state?.networkDnsServers ?? []).length > 0}
+                  on:change={(e) => { if (!e.currentTarget.checked) clearNetworkDns(); }}
+                />
+              </label>
+
+              <label>
+                <span>DNS IPs (comma-separated)</span>
+                <input type="text" bind:value={dnsInput} />
+              </label>
+              <button type="button" class="small-button" disabled={Boolean(busyAction)} on:click={saveNetworkDns}>
+                Save DNS
+              </button>
+            </div>
+            {/if}
 
             <div class="panel wide">
               <div class="section-heading">

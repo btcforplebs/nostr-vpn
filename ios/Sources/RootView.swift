@@ -741,6 +741,7 @@ private struct InviteToMyNetworkCard: View {
                 }
             ))
             .disabled(!network.localIsAdmin || model.actionInFlight)
+
             Button {
                 if model.state.inviteBroadcastActive {
                     model.dispatch(NativeActions.stopInviteBroadcast(), status: "Stopped nearby sharing")
@@ -952,6 +953,7 @@ private struct SettingsPage: View {
                 GeneralSettingsCard(model: model)
                 FipsSettingsCard(model: model)
                 RelaySettingsCard(model: model)
+                DnsSettingsCard(model: model)
                 DiagnosticsCard(state: model.state)
             }
             .padding()
@@ -1151,30 +1153,6 @@ private struct DeviceDetailSheet: View {
                             }
                             .buttonStyle(.bordered)
 
-                            Button {
-                                let ip = cleanIp(participant.tunnelIp)
-                                if isNetworkDns(participant, state: model.state) {
-                                    let remaining = model.state.networkDnsServers.filter { $0 != ip }
-                                    model.dispatch(
-                                        NativeActions.updateSettings(["networkDnsServers": remaining.isEmpty ? [] as [String] : remaining]),
-                                        status: "Removing DNS"
-                                    )
-                                } else {
-                                    var servers = model.state.networkDnsServers
-                                    servers.append(ip)
-                                    model.dispatch(
-                                        NativeActions.updateSettings(["networkDnsServers": servers]),
-                                        status: "Setting DNS"
-                                    )
-                                }
-                            } label: {
-                                Label(
-                                    isNetworkDns(participant, state: model.state) ? "Remove DNS" : "Make DNS",
-                                    systemImage: "server.rack"
-                                )
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(model.actionInFlight || cleanIp(participant.tunnelIp).isEmpty)
 
                             Button(role: .destructive) {
                                 pendingRemove = true
@@ -1610,6 +1588,79 @@ private struct RelaySettingsCard: View {
     }
 }
 
+private struct DnsSettingsCard: View {
+    @ObservedObject var model: AppModel
+    @State private var dnsInput: String = ""
+
+    private var activeNetwork: NetworkState? {
+        model.state.networks.first { $0.enabled } ?? model.state.networks.first
+    }
+
+    private var isAdmin: Bool {
+        activeNetwork?.localIsAdmin ?? false
+    }
+
+    var body: some View {
+        AppCard {
+            Text("DNS")
+                .font(.headline)
+            
+            if let network = activeNetwork {
+                Toggle("Custom DNS", isOn: Binding(
+                    get: { !model.state.networkDnsServers.isEmpty },
+                    set: { enabled in
+                        if !enabled {
+                            dnsInput = ""
+                            model.dispatch(
+                                NativeActions.updateSettings(["networkDnsServers": [] as [String]]),
+                                status: "Clearing DNS"
+                            )
+                        }
+                    }
+                ))
+                .disabled(!isAdmin || model.actionInFlight)
+                
+                if !model.state.networkDnsServers.isEmpty || isAdmin {
+                    HStack {
+                        TextField("DNS IPs (comma-separated)", text: $dnsInput)
+                            .textFieldStyle(.roundedBorder)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .disabled(!isAdmin || model.actionInFlight)
+                            .onAppear {
+                                dnsInput = model.state.networkDnsServers.joined(separator: ", ")
+                            }
+                        
+                        Button("Save") {
+                            let servers = dnsInput
+                                .split(separator: ",")
+                                .map { $0.trimmingCharacters(in: .whitespaces) }
+                                .filter { !$0.isEmpty }
+                            model.dispatch(
+                                NativeActions.updateSettings(["networkDnsServers": servers]),
+                                status: "Setting DNS"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!isAdmin || model.actionInFlight)
+                    }
+                }
+                
+                if !isAdmin {
+                    Text("Only network administrators can configure custom DNS.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("No active network to configure DNS.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+
 private struct WireGuardSettingsCard: View {
     @ObservedObject var model: AppModel
     @State private var config = ""
@@ -1704,6 +1755,24 @@ private struct WireGuardSettingsCard: View {
 
 private struct DiagnosticsCard: View {
     let state: AppState
+    @State private var dnsLogs: String = ""
+    @State private var showingLogs = false
+
+    private var logUrl: URL? {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: AppModel.appGroupIdentifier)?
+            .appendingPathComponent("Nostr VPN", isDirectory: true)
+            .appendingPathComponent("dns_nat_debug.log")
+    }
+
+    private func loadLogs() {
+        if let url = logUrl,
+           let content = try? String(contentsOf: url, encoding: .utf8) {
+            dnsLogs = content
+        } else {
+            dnsLogs = "No DNS NAT logs found yet."
+        }
+    }
 
     var body: some View {
         AppCard {
@@ -1716,6 +1785,28 @@ private struct DiagnosticsCard: View {
             Metric("MagicDNS", state.magicDnsStatus)
             Metric("Version", state.appVersion)
             Metric("Config", state.configPath)
+            
+            Button(showingLogs ? "Hide DNS NAT Logs" : "View DNS NAT Logs") {
+                if !showingLogs {
+                    loadLogs()
+                }
+                showingLogs.toggle()
+            }
+            .buttonStyle(.bordered)
+            .font(.footnote)
+            
+            if showingLogs {
+                ScrollView {
+                    Text(dnsLogs)
+                        .font(.system(.footnote, design: .monospaced))
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(6)
+                }
+                .frame(maxHeight: 200)
+            }
+            
             ForEach(state.health) { issue in
                 VStack(alignment: .leading, spacing: 3) {
                     Text(issue.severity)

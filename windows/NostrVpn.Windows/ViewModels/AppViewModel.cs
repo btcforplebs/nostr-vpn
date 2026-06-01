@@ -847,24 +847,30 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             participant.IsAdmin ? "Removing admin" : "Adding admin");
     }
 
-    public Task ToggleDnsAsync(NativeParticipantState participant)
+    public bool IsAdmin => ActiveNetwork?.LocalIsAdmin == true;
+
+    public bool DnsEnabled => State.NetworkDnsServers.Count > 0;
+
+    private string _dnsServersText = "";
+    public string DnsServersText { get => _dnsServersText; set => SetField(ref _dnsServersText, value); }
+
+    public Task SaveNetworkDnsAsync()
     {
-        var network = ActiveNetwork;
-        if (network?.LocalIsAdmin != true)
-        {
-            return Task.CompletedTask;
-        }
-        var ip = participant.CleanTunnelIp;
-        if (string.IsNullOrEmpty(ip))
-        {
-            return Task.CompletedTask;
-        }
-        var servers = participant.IsNetworkDns
-            ? State.NetworkDnsServers.Where(s => s != ip).ToList()
-            : State.NetworkDnsServers.Concat(new[] { ip }).ToList();
+        var servers = _dnsServersText.Split(',')
+            .Select(s => s.Trim())
+            .Where(s => !string.IsNullOrEmpty(s))
+            .ToList();
         return DispatchAsync(
             NativeActions.UpdateSettings(new SettingsPatch { NetworkDnsServers = servers }),
-            participant.IsNetworkDns ? "Removing DNS" : "Setting DNS");
+            "Setting DNS");
+    }
+
+    public Task ClearNetworkDnsAsync()
+    {
+        DnsServersText = "";
+        return DispatchAsync(
+            NativeActions.UpdateSettings(new SettingsPatch { NetworkDnsServers = new List<string>() }),
+            "Clearing DNS");
     }
 
     public Task ActivateNetworkAsync(string networkId)
@@ -1422,6 +1428,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         WireguardExitConfig = state.WireguardExitConfig;
         NetworkNameDraft = active?.Name ?? "";
         NetworkMeshIdDraft = DisplayNetworkId(active?.NetworkId ?? "");
+        DnsServersText = string.Join(", ", state.NetworkDnsServers);
     }
 
     private static string NormalizeNetworkIdInput(string value)
