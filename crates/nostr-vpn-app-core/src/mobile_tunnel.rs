@@ -1091,6 +1091,7 @@ impl MobileTunnel {
             let network_id = config.network_id.clone();
             let dns_nat_targets_for_recv = config.dns_nat_targets.clone();
             let dns_ipv6_queries_recv = Arc::clone(&dns_ipv6_queries);
+            let magic_dns_enabled = !config.magic_dns_server.trim().is_empty();
             tokio::spawn(async move {
                 let mut control_fragments = FipsControlFragmentBuffer::default();
                 loop {
@@ -1194,7 +1195,7 @@ impl MobileTunnel {
                             );
                         }
 
-                        dns_nat_rewrite_inbound(&mut bytes, &dns_nat_targets_for_recv);
+                        dns_nat_rewrite_inbound(&mut bytes, &dns_nat_targets_for_recv, magic_dns_enabled);
 
                         if is_dns_inbound {
                             let new_src = Ipv4Addr::new(bytes[12], bytes[13], bytes[14], bytes[15]);
@@ -3012,7 +3013,10 @@ fn dns_nat_rewrite_outbound(mut packet: Vec<u8>, targets: &[Ipv4Addr]) -> Vec<u8
     packet
 }
 
-fn dns_nat_rewrite_inbound(packet: &mut [u8], targets: &[Ipv4Addr]) {
+fn dns_nat_rewrite_inbound(packet: &mut [u8], targets: &[Ipv4Addr], magic_dns_enabled: bool) {
+    if !magic_dns_enabled {
+        return;
+    }
     let Some(&target) = targets.first() else {
         return;
     };

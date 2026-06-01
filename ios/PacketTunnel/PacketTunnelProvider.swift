@@ -126,14 +126,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if !dnsConfig.servers.isEmpty {
             let dns = NEDNSSettings(servers: dnsConfig.servers)
             dns.matchDomains = dnsConfig.matchDomains
-            if dnsConfig.allowFailover {
-                if #available(iOS 26.0, *) {
-                    dns.allowFailover = true
-                }
-            }
+            dns.allowFailover = false
             settings.dnsSettings = dns
             pktLog.log(
-                "nvpn-pkt: dns servers=\(dnsConfig.servers) match=\(dnsConfig.matchDomains) failover=\(dnsConfig.allowFailover)"
+                "nvpn-pkt: dns servers=\(dnsConfig.servers) match=\(dnsConfig.matchDomains) failover=false"
             )
         }
 
