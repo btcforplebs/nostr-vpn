@@ -1593,18 +1593,18 @@ private struct DnsSettingsCard: View {
 
     var body: some View {
         AppCard {
-            Text("DNS")
+            Text("DNS Override")
                 .font(.headline)
             
             if let network = activeNetwork {
-                Toggle("Custom DNS", isOn: Binding(
+                Toggle("DNS Override", isOn: Binding(
                     get: { !model.state.networkDnsServers.isEmpty },
                     set: { enabled in
                         if !enabled {
                             dnsInput = ""
                             model.dispatch(
                                 NativeActions.updateSettings(["networkDnsServers": [] as [String]]),
-                                status: "Clearing DNS"
+                                status: "Clearing DNS Override"
                             )
                         }
                     }
@@ -1613,7 +1613,7 @@ private struct DnsSettingsCard: View {
                 
                 if !model.state.networkDnsServers.isEmpty || isAdmin {
                     HStack {
-                        TextField("DNS IPs (comma-separated)", text: $dnsInput)
+                        TextField("DNS Override IPs (comma-separated)", text: $dnsInput)
                             .textFieldStyle(.roundedBorder)
                             .autocapitalization(.none)
                             .disableAutocorrection(true)
@@ -1629,7 +1629,7 @@ private struct DnsSettingsCard: View {
                                 .filter { !$0.isEmpty }
                             model.dispatch(
                                 NativeActions.updateSettings(["networkDnsServers": servers]),
-                                status: "Setting DNS"
+                                status: "Setting DNS Override"
                             )
                         }
                         .buttonStyle(.bordered)
@@ -1638,12 +1638,12 @@ private struct DnsSettingsCard: View {
                 }
                 
                 if !isAdmin {
-                    Text("Only network administrators can configure custom DNS.")
+                    Text("Only network administrators can configure DNS override.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } else {
-                Text("No active network to configure DNS.")
+                Text("No active network to configure DNS override.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

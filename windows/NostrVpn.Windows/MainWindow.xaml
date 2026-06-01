@@ -694,17 +694,17 @@
 
             <Border Style="{StaticResource Card}" Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}">
               <StackPanel>
-                <TextBlock Text="Network DNS" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
-                <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Custom DNS" IsChecked="{Binding DnsEnabled, Mode=OneWay}" Click="DnsEnabled_Click" />
+                <TextBlock Text="DNS Override" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
+                <CheckBox Style="{StaticResource SwitchCheckBox}" Content="DNS Override" IsChecked="{Binding DnsEnabled, Mode=OneWay}" Click="DnsEnabled_Click" />
                 <Grid Margin="0,8,0,0" Visibility="{Binding DnsEnabled, Converter={StaticResource BoolToVisibility}}">
                   <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
+                    <Grid.ColumnDefinition Width="*" />
+                    <Grid.ColumnDefinition Width="Auto" />
                   </Grid.ColumnDefinitions>
                   <TextBox x:Name="DnsInput" Text="{Binding DnsServersText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
                   <Button Grid.Column="1" Content="Save" Click="SaveDns_Click" />
                 </Grid>
-                <TextBlock Foreground="{StaticResource TextSecondary}" FontSize="11" Text="Comma-separated IPs" Margin="0,4,0,0" />
+                <TextBlock Foreground="{StaticResource TextSecondary}" FontSize="11" Text="DNS Override IPs (comma-separated)" Margin="0,4,0,0" />
               </StackPanel>
             </Border>
 

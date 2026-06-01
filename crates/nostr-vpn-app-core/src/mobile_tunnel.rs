@@ -731,17 +731,7 @@ impl MobileTunnel {
                     forwarders
                 }
             };
-            let dns_forwarders_ipv6 = {
-                let mut forwarders = Vec::new();
-                for target in &config.dns_nat_targets {
-                    forwarders.push(SocketAddr::new(IpAddr::V4(*target), 53));
-                }
-                if forwarders.is_empty() {
-                    mobile_magic_dns_forwarders(&config.dns_forwarders)
-                } else {
-                    forwarders
-                }
-            };
+
             let dns_nat_targets = config.dns_nat_targets.clone();
             let dns_ipv6_queries_send = Arc::clone(&dns_ipv6_queries);
             let config_path_for_log = config_path.clone();
@@ -2816,23 +2806,6 @@ struct MobileDnsQueryIpv6<'a> {
     payload: &'a [u8],
 }
 
-async fn mobile_magic_dns_response_packet_ipv6(
-    packet: &[u8],
-    app_config: &Arc<RwLock<AppConfig>>,
-    forwarders: &[SocketAddr],
-) -> Option<Vec<u8>> {
-    let query = parse_mobile_magic_dns_query_ipv6(packet)?;
-    let response = {
-        let app = app_config.read().ok()?;
-        let records = build_magic_dns_records(&app);
-        build_magic_dns_response_if_handled(query.payload, &records)
-    };
-    let response = match response {
-        Some(response) => response,
-        None => forward_mobile_dns_query(query.payload, forwarders).await?,
-    };
-    build_mobile_dns_response_packet_ipv6(&query, &response)
-}
 
 fn parse_mobile_magic_dns_query_ipv6(packet: &[u8]) -> Option<MobileDnsQueryIpv6<'_>> {
     if packet.len() < 48 || packet[0] >> 4 != 6 {
