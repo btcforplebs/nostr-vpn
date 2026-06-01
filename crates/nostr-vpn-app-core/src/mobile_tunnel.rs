@@ -342,6 +342,9 @@ impl MobileTunnelConfig {
         excluded_routes.sort();
         excluded_routes.dedup();
         let magic_dns_server = if app.magic_dns_suffix.trim().is_empty() {
+            if !admin_dns.is_empty() {
+                dns_servers.extend(admin_dns.clone());
+            }
             String::new()
         } else {
             dns_servers.retain(|server| server.trim() != nostr_vpn_core::MESH_MAGIC_DNS_SERVER);
