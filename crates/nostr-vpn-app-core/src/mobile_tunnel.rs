@@ -730,6 +730,17 @@ impl MobileTunnel {
                     forwarders
                 }
             };
+            let dns_forwarders_ipv6 = {
+                let mut forwarders = Vec::new();
+                for target in &config.dns_nat_targets {
+                    forwarders.push(SocketAddr::new(IpAddr::V4(*target), 53));
+                }
+                if forwarders.is_empty() {
+                    mobile_magic_dns_forwarders(&config.dns_forwarders)
+                } else {
+                    forwarders
+                }
+            };
             let dns_nat_targets = config.dns_nat_targets.clone();
             let config_path_for_log = config_path.clone();
             let dns_log_path = config.dns_log_path.clone();
@@ -748,6 +759,13 @@ impl MobileTunnel {
                         false
                     };
 
+                    let is_dns_ipv6 = if packet.len() >= 48 && packet[0] >> 4 == 6 && packet[6] == 17 {
+                        let dst_port = u16::from_be_bytes([packet[42], packet[43]]);
+                        dst_port == 53
+                    } else {
+                        false
+                    };
+
                     if is_dns {
                         let src = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
                         let dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
@@ -756,6 +774,38 @@ impl MobileTunnel {
                             &config_path_for_log,
                             &format!("OUTBOUND DNS RECEIVED: {src} -> {dst} (targets={:?})", dns_nat_targets)
                         );
+                    }
+
+                    if is_dns_ipv6 {
+                        dns_log(
+                            &dns_log_path,
+                            &config_path_for_log,
+                            "OUTBOUND DNS (IPv6) RECEIVED"
+                        );
+                        if let Some(response) = mobile_magic_dns_response_packet_ipv6(
+                            &packet,
+                            &app_config_for_dns,
+                            &dns_forwarders_ipv6,
+                        )
+                        .await
+                        {
+                            dns_log(
+                                &dns_log_path,
+                                &config_path_for_log,
+                                "OUTBOUND DNS (IPv6): Answered by local MagicDNS responder"
+                            );
+                            if inbound_tx_for_dns.send(response).is_err() {
+                                break;
+                            }
+                            continue;
+                        } else {
+                            dns_log(
+                                &dns_log_path,
+                                &config_path_for_log,
+                                "OUTBOUND DNS (IPv6): Drop (No match / Pi-hole failed)"
+                            );
+                            continue;
+                        }
                     }
 
                     if let Some(response) = mobile_magic_dns_response_packet(
@@ -2648,6 +2698,138 @@ async fn mobile_magic_dns_response_packet(
         None => forward_mobile_dns_query(query.payload, forwarders).await?,
     };
     build_mobile_dns_response_packet(&query, &response)
+}
+
+struct MobileDnsQueryIpv6<'a> {
+    source: [u8; 16],
+    destination: [u8; 16],
+    source_port: u16,
+    destination_port: u16,
+    payload: &'a [u8],
+}
+
+async fn mobile_magic_dns_response_packet_ipv6(
+    packet: &[u8],
+    app_config: &Arc<RwLock<AppConfig>>,
+    forwarders: &[SocketAddr],
+) -> Option<Vec<u8>> {
+    let query = parse_mobile_magic_dns_query_ipv6(packet)?;
+    let response = {
+        let app = app_config.read().ok()?;
+        let records = build_magic_dns_records(&app);
+        build_magic_dns_response_if_handled(query.payload, &records)
+    };
+    let response = match response {
+        Some(response) => response,
+        None => forward_mobile_dns_query(query.payload, forwarders).await?,
+    };
+    build_mobile_dns_response_packet_ipv6(&query, &response)
+}
+
+fn parse_mobile_magic_dns_query_ipv6(packet: &[u8]) -> Option<MobileDnsQueryIpv6<'_>> {
+    if packet.len() < 48 || packet[0] >> 4 != 6 {
+        return None;
+    }
+    let next_header = packet[6];
+    if next_header != 17 {
+        return None;
+    }
+    let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
+    if packet.len() < 40 + payload_len {
+        return None;
+    }
+    let mut source = [0_u8; 16];
+    source.copy_from_slice(&packet[8..24]);
+    let mut destination = [0_u8; 16];
+    destination.copy_from_slice(&packet[24..40]);
+
+    let dummy_dns_ip: [u8; 16] = [
+        0xfd, 0x00, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0x53,
+    ];
+    if destination != dummy_dns_ip {
+        return None;
+    }
+
+    let source_port = u16::from_be_bytes([packet[40], packet[41]]);
+    let destination_port = u16::from_be_bytes([packet[42], packet[43]]);
+    if destination_port != 53 {
+        return None;
+    }
+    let udp_len = usize::from(u16::from_be_bytes([packet[44], packet[45]]));
+    if udp_len < 8 || udp_len - 8 > payload_len {
+        return None;
+    }
+    Some(MobileDnsQueryIpv6 {
+        source,
+        destination,
+        source_port,
+        destination_port,
+        payload: &packet[48..40 + udp_len],
+    })
+}
+
+fn build_mobile_dns_response_packet_ipv6(
+    query: &MobileDnsQueryIpv6<'_>,
+    dns_response: &[u8],
+) -> Option<Vec<u8>> {
+    let udp_len = 8_usize.checked_add(dns_response.len())?;
+    let total_len = 40_usize.checked_add(udp_len)?;
+    let udp_len_u16 = u16::try_from(udp_len).ok()?;
+    let payload_len_u16 = u16::try_from(udp_len).ok()?;
+    
+    let mut packet = vec![0_u8; total_len];
+    packet[0] = 0x60;
+    packet[4..6].copy_from_slice(&payload_len_u16.to_be_bytes());
+    packet[6] = 17;
+    packet[7] = 64;
+    packet[8..24].copy_from_slice(&query.destination);
+    packet[24..40].copy_from_slice(&query.source);
+
+    packet[40..42].copy_from_slice(&query.destination_port.to_be_bytes());
+    packet[42..44].copy_from_slice(&query.source_port.to_be_bytes());
+    packet[44..46].copy_from_slice(&udp_len_u16.to_be_bytes());
+    packet[48..].copy_from_slice(dns_response);
+    
+    let checksum = ipv6_udp_checksum(&packet, &query.destination, &query.source);
+    packet[46..48].copy_from_slice(&checksum.to_be_bytes());
+    
+    Some(packet)
+}
+
+fn ipv6_udp_checksum(packet: &[u8], source: &[u8; 16], destination: &[u8; 16]) -> u16 {
+    let mut sum = 0_u32;
+    for i in 0..8 {
+        sum += u32::from(u16::from_be_bytes([source[i * 2], source[i * 2 + 1]]));
+    }
+    for i in 0..8 {
+        sum += u32::from(u16::from_be_bytes([destination[i * 2], destination[i * 2 + 1]]));
+    }
+    let udp_len = u32::from(u16::from_be_bytes([packet[44], packet[45]]));
+    sum += udp_len;
+    sum += 17_u32;
+
+    let udp_part = &packet[40..];
+    for chunk in udp_part.chunks(2) {
+        if chunk.len() == 2 {
+            if chunk == &udp_part[6..8] {
+                continue;
+            }
+            sum += u32::from(u16::from_be_bytes([chunk[0], chunk[1]]));
+        } else {
+            sum += u32::from(chunk[0]) << 8;
+        }
+    }
+
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    let folded = !u16::try_from(sum).unwrap_or(0xffff);
+    if folded == 0 {
+        0xffff
+    } else {
+        folded
+    }
 }
 
 fn parse_mobile_magic_dns_query(packet: &[u8]) -> Option<MobileDnsQuery<'_>> {
