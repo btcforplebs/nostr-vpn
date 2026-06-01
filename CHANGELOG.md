@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.52 - 2026-06-01
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.24 and `fips-endpoint` 0.3.18.
+
+### Fixed
+
+- FIPS rekey responders now wait for the peer's authenticated K-bit flip
+  instead of time-cutting over on their own maintenance tick, avoiding
+  split-session direct links after rekey churn.
+
 ## 4.0.51 - 2026-06-01
 
 ### Changed
