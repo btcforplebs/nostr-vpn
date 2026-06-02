@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.54 - 2026-06-02
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.27 and `fips-endpoint` 0.3.20.
+
+### Fixed
+
+- macOS test-daemon installs now resolve Cargo's real target directory and
+  verify the built `nvpn` version before installing, preventing stale
+  `target/release/nvpn` binaries from being copied when a custom Cargo target
+  dir is configured.
+- Daemon network-refresh status now returns to `VPN on` after recovery instead
+  of leaving the GUI in a stale refresh state.
+- Daemon startup failures now write an explicit failure status instead of
+  leaving the previous projected `Turning VPN on` state visible.
+- FIPS bulk send saturation no longer blocks link liveness/control handling,
+  reducing false link-dead drops during high-rate traffic such as Screen
+  Sharing.
+- FIPS direct-path traversal failures now back off stale recent endpoint paths
+  after link-dead timeouts, so silent UDP upgrades stop repeatedly interrupting
+  otherwise reachable peers.
+- Recently advertised FIPS endpoint paths now use a bounded liveness timeout,
+  reducing direct-path failover delay without shortening normal relayed links.
+
 ## 4.0.52 - 2026-06-01
 
 ### Changed
