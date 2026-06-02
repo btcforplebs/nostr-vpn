@@ -4,9 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.53 - 2026-06-02
+
 ### Changed
 
-- FIPS now uses `fips-core` 0.3.26.
+- FIPS now uses `fips-core` 0.3.26 and `fips-endpoint` 0.3.19.
 
 ### Fixed
 
@@ -19,15 +21,6 @@ All notable changes to this project are documented in this file.
 - FIPS bulk send saturation no longer blocks link liveness/control handling,
   reducing false link-dead drops during high-rate traffic such as Screen
   Sharing.
-
-## 4.0.53 - 2026-06-02
-
-### Changed
-
-- FIPS now uses `fips-core` 0.3.25 and `fips-endpoint` 0.3.19.
-
-### Fixed
-
 - FIPS direct-path traversal failures now back off stale recent endpoint paths
   after link-dead timeouts, so silent UDP upgrades stop repeatedly interrupting
   otherwise reachable peers.

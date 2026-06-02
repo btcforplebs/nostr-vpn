@@ -487,9 +487,8 @@ fn non_roster_endpoint_group_count<T>(
 ) -> usize {
     groups
         .iter()
-        .filter_map(|(participant, addrs)| {
-            (!addrs.is_empty()).then(|| normalize_fips_endpoint_npub(participant))
-        })
+        .filter(|entry| !entry.1.is_empty())
+        .map(|(participant, _)| normalize_fips_endpoint_npub(participant))
         .filter(|npub| !roster_endpoint_npubs.contains(npub))
         .collect::<HashSet<_>>()
         .len()

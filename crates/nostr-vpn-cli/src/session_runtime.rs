@@ -626,14 +626,18 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
             ) {
                 Ok(config) => config,
                 Err(error) => {
+                    let network = network_snapshot.summary(network_changed_at, captive_portal);
+                    let port_mapping = port_mapping_runtime.status();
                     persist_daemon_startup_failure_state(
                         &state_file,
                         &app,
                         vpn_enabled,
                         expected_peers,
                         &tunnel_runtime,
-                        &network_snapshot.summary(network_changed_at, captive_portal),
-                        &port_mapping_runtime.status(),
+                        DaemonStartupFailureContext {
+                            network: &network,
+                            port_mapping: &port_mapping,
+                        },
                         &format!("FIPS private mesh config failed ({error})"),
                     );
                     return Err(error);
@@ -650,14 +654,18 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                 match crate::fips_private_mesh::FipsPrivateTunnelRuntime::start(config).await {
                     Ok(runtime) => runtime,
                     Err(error) => {
+                        let network = network_snapshot.summary(network_changed_at, captive_portal);
+                        let port_mapping = port_mapping_runtime.status();
                         persist_daemon_startup_failure_state(
                             &state_file,
                             &app,
                             vpn_enabled,
                             expected_peers,
                             &tunnel_runtime,
-                            &network_snapshot.summary(network_changed_at, captive_portal),
-                            &port_mapping_runtime.status(),
+                            DaemonStartupFailureContext {
+                                network: &network,
+                                port_mapping: &port_mapping,
+                            },
                             &format!("FIPS private mesh startup failed ({error})"),
                         );
                         return Err(error);
@@ -1424,14 +1432,18 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
     Ok(())
 }
 
+struct DaemonStartupFailureContext<'a> {
+    network: &'a NetworkSummary,
+    port_mapping: &'a PortMappingStatus,
+}
+
 fn persist_daemon_startup_failure_state(
     state_file: &Path,
     app: &AppConfig,
     vpn_enabled: bool,
     expected_peers: usize,
     tunnel_runtime: &CliTunnelRuntime,
-    network: &NetworkSummary,
-    port_mapping: &PortMappingStatus,
+    context: DaemonStartupFailureContext<'_>,
     vpn_status: &str,
 ) {
     let advertised_routes = HashMap::<String, Vec<String>>::new();
@@ -1445,8 +1457,8 @@ fn persist_daemon_startup_failure_state(
         &[],
         &advertised_routes,
         vpn_status,
-        network,
-        port_mapping,
+        context.network,
+        context.port_mapping,
     );
     if let Err(error) = write_daemon_state(state_file, &state) {
         eprintln!("daemon: failed to persist startup failure state: {error}");
