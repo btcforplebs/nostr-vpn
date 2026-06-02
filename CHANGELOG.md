@@ -4,11 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-## 4.0.53 - 2026-06-02
+## 4.0.54 - 2026-06-02
 
 ### Changed
 
-- FIPS now uses `fips-core` 0.3.26 and `fips-endpoint` 0.3.19.
+- FIPS now uses `fips-core` 0.3.27 and `fips-endpoint` 0.3.20.
 
 ### Fixed
 
