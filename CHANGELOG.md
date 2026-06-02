@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.53 - 2026-06-02
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.25 and `fips-endpoint` 0.3.19.
+
+### Fixed
+
+- FIPS direct-path traversal failures now back off stale recent endpoint paths
+  after link-dead timeouts, so silent UDP upgrades stop repeatedly interrupting
+  otherwise reachable peers.
+- Recently advertised FIPS endpoint paths now use a bounded liveness timeout,
+  reducing direct-path failover delay without shortening normal relayed links.
+
 ## 4.0.52 - 2026-06-01
 
 ### Changed
