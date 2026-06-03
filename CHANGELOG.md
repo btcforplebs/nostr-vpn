@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.55 - 2026-06-03
+
+### Fixed
+
+- Umbrel first-run configs now select the initial admin network and seed the
+  local `.nvpn` name, keeping device invites and the self device visible while
+  the VPN daemon is paused.
+
 ## 4.0.54 - 2026-06-02
 
 ### Changed
