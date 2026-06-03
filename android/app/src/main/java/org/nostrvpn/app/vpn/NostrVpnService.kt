@@ -133,7 +133,12 @@ class NostrVpnService : VpnService() {
                 "Android VPN lockdown is active without a default VPN route; non-nvpn internet will be blocked",
             )
         }
-        config.put("dnsForwarders", currentUnderlyingDnsServers())
+        val dnsStrict = config.optBoolean("dnsStrict", false)
+        if (!dnsStrict) {
+            config.put("dnsForwarders", currentUnderlyingDnsServers())
+        } else {
+            Log.i("NostrVpnService", "dns_strict enabled — skipping underlying DNS injection")
+        }
         val tunnelConfigJson = config.toString()
 
         stopTunnel()

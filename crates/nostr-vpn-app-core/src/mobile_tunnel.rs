@@ -162,6 +162,10 @@ pub(crate) struct MobileTunnelConfig {
     /// In-tunnel `MagicDNS` responder address. Empty when `MagicDNS` is disabled.
     #[serde(default)]
     pub(crate) magic_dns_server: String,
+    /// When true, only admin-configured DNS servers are used with zero
+    /// fallback to public resolvers (1.1.1.1, 9.9.9.9, etc.).
+    #[serde(default)]
+    pub(crate) dns_strict: bool,
     /// The WG upstream config to drive boringtun against. None when
     /// the user hasn't enabled WG upstream — in which case the mobile
     /// tunnel runs in pure FIPS-mesh mode.
@@ -306,14 +310,20 @@ impl MobileTunnelConfig {
                 }
                 (Some(wg), excluded, dns)
             } else if selected_peer_exit {
-                (
-                    None,
-                    Vec::new(),
+                let dns_is_strict = app
+                    .active_network_opt()
+                    .is_some_and(|n| n.dns_strict && !n.dns_servers.is_empty());
+                let exit_dns = if dns_is_strict {
+                    // Strict DNS: admin DNS will be applied below, don't
+                    // inject public resolvers.
+                    Vec::new()
+                } else {
                     MOBILE_EXIT_NODE_DNS_SERVERS
                         .iter()
                         .map(|server| (*server).to_string())
-                        .collect(),
-                )
+                        .collect()
+                };
+                (None, Vec::new(), exit_dns)
             } else {
                 (None, Vec::new(), Vec::new())
             };
@@ -397,6 +407,9 @@ impl MobileTunnelConfig {
             dns_nat_targets,
             dns_log_path: String::new(),
             magic_dns_server,
+            dns_strict: app
+                .active_network_opt()
+                .is_some_and(|n| n.dns_strict && !n.dns_servers.is_empty()),
             wireguard_exit,
             join_requests_enabled: app.join_requests_enabled(),
             pending_join_request_recipient,
@@ -714,6 +727,7 @@ impl MobileTunnel {
             let mesh_addr = mesh_ipv4;
             let inbound_tx_for_dns = inbound_tx.clone();
             let app_config_for_dns = Arc::clone(&app_config);
+            let dns_strict = config.dns_strict;
             let dns_forwarders = {
                 let mut forwarders = Vec::new();
                 for target in &config.dns_nat_targets {
@@ -723,7 +737,7 @@ impl MobileTunnel {
                 }
                 if forwarders.is_empty() {
                     if config.dns_nat_targets.is_empty() {
-                        mobile_magic_dns_forwarders(&config.dns_forwarders)
+                        mobile_magic_dns_forwarders(&config.dns_forwarders, dns_strict)
                     } else {
                         Vec::new()
                     }
@@ -887,6 +901,21 @@ impl MobileTunnel {
                             &config_path_for_log,
                             &format!("OUTBOUND DNS AFTER NAT REWRITE: dst={new_dst}")
                         );
+                        // DNS leak guard: in strict mode, drop any DNS
+                        // packet not destined for an approved admin DNS
+                        // server or the MagicDNS responder.
+                        if dns_strict {
+                            let approved = dns_nat_targets.contains(&new_dst)
+                                || new_dst.octets()[0] == 10 && new_dst.octets()[1] == 44;
+                            if !approved {
+                                dns_log(
+                                    &dns_log_path,
+                                    &config_path_for_log,
+                                    &format!("OUTBOUND DNS BLOCKED (strict): dst={new_dst} not in approved DNS servers")
+                                );
+                                continue;
+                            }
+                        }
                     }
                     let outgoing = mesh
                         .read()
@@ -3095,18 +3124,25 @@ async fn forward_mobile_dns_query(query: &[u8], forwarders: &[SocketAddr]) -> Op
     None
 }
 
-fn mobile_magic_dns_forwarders(configured: &[String]) -> Vec<SocketAddr> {
+fn mobile_magic_dns_forwarders(configured: &[String], strict: bool) -> Vec<SocketAddr> {
     let mut seen = HashSet::new();
-    configured
+    let configured_iter = configured
         .iter()
-        .filter_map(|server| parse_dns_forwarder(server))
-        .chain(
-            MOBILE_MAGIC_DNS_FORWARDERS
-                .iter()
-                .filter_map(|server| parse_dns_forwarder(server)),
-        )
-        .filter(|server| seen.insert(*server))
-        .collect()
+        .filter_map(|server| parse_dns_forwarder(server));
+    if strict {
+        // Strict DNS: only use explicitly configured forwarders, never
+        // fall back to hardcoded public resolvers.
+        configured_iter.filter(|server| seen.insert(*server)).collect()
+    } else {
+        configured_iter
+            .chain(
+                MOBILE_MAGIC_DNS_FORWARDERS
+                    .iter()
+                    .filter_map(|server| parse_dns_forwarder(server)),
+            )
+            .filter(|server| seen.insert(*server))
+            .collect()
+    }
 }
 
 fn parse_dns_forwarder(value: &str) -> Option<SocketAddr> {
@@ -3198,6 +3234,7 @@ fn empty_config() -> MobileTunnelConfig {
         nostr_discovery_enabled: true,
         excluded_routes: Vec::new(),
         dns_servers: Vec::new(),
+        dns_strict: false,
         dns_forwarders: Vec::new(),
         dns_nat_targets: Vec::new(),
         dns_log_path: String::new(),
@@ -3234,6 +3271,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         Arc::new(RwLock::new(app))
     }
@@ -3307,6 +3345,7 @@ mod tests {
                 aliases: HashMap::new(),
                 signed_at: 1_726_000_000,
                 dns_servers: Vec::new(),
+                dns_strict: false,
             },
             &outsider,
         )
@@ -3349,6 +3388,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
 
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
@@ -3405,6 +3445,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.exit_node = peer.to_string();
 
@@ -3528,6 +3569,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.set_peer_alias(peer, "fixture-peer")
             .expect("peer alias");
@@ -3586,6 +3628,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.fips_peer_endpoints
             .insert(peer.to_string(), vec!["192.168.50.10:51820".to_string()]);
@@ -3631,6 +3674,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.fips_peer_endpoints
             .insert(admin.clone(), vec!["192.168.50.10:51820".to_string()]);
@@ -3688,6 +3732,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         // Isolate the admin-listener behavior from the built-in bootstrap nodes,
         // which would otherwise populate config.peers as fallback transit.
@@ -3839,6 +3884,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         let requester = Keys::generate().public_key().to_hex();
         let app_config = Arc::new(RwLock::new(app));
@@ -3961,6 +4007,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         admin_app.ensure_defaults();
         admin_app
@@ -4055,6 +4102,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.exit_node = exit_pubkey.to_string();
         app.ensure_defaults();
@@ -4300,6 +4348,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
@@ -4358,6 +4407,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
@@ -4436,6 +4486,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -4577,6 +4628,7 @@ mod tests {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,

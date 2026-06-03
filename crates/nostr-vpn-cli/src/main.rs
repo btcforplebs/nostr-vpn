@@ -2027,6 +2027,7 @@ fn network_roster_from_shared(shared: &SharedNetworkRoster) -> NetworkRoster {
             unix_timestamp()
         },
         dns_servers: shared.dns_servers.clone(),
+        dns_strict: shared.dns_strict,
     }
 }
 
@@ -2543,7 +2544,10 @@ impl ConnectMagicDnsRuntime {
         if dns_servers.is_empty() {
             return None;
         }
-        match DnsOverrideGuard::install(&dns_servers) {
+        let dns_strict = app
+            .active_network_opt()
+            .is_some_and(|n| n.dns_strict);
+        match DnsOverrideGuard::install(&dns_servers, dns_strict) {
             Ok(guard) => {
                 println!(
                     "dns-override: active with servers {}",

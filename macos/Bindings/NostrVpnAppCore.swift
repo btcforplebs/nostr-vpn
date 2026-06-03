@@ -962,6 +962,7 @@ public struct NativeAppState {
     public var magicDnsStatus: String
     public var networkDnsServers: [String]
     public var dnsOverrideActive: Bool
+    public var dnsStrict: Bool
     public var autoconnect: Bool
     public var inviteBroadcastActive: Bool
     public var inviteBroadcastRemainingSecs: UInt64
@@ -989,7 +990,7 @@ public struct NativeAppState {
          */fipsBootstrapPeers: [String: [String]],
         /**
          * Built-in bootstrap defaults, so the UI can offer "reset to defaults".
-         */fipsBootstrapPeerDefaults: [String: [String]], fipsHostInboundTcpPorts: String, magicDnsSuffix: String, magicDnsStatus: String, networkDnsServers: [String], dnsOverrideActive: Bool, autoconnect: Bool, inviteBroadcastActive: Bool, inviteBroadcastRemainingSecs: UInt64, nearbyDiscoveryActive: Bool, nearbyDiscoveryRemainingSecs: UInt64, launchOnStartup: Bool, closeToTrayOnClose: Bool, connectedPeerCount: UInt64, expectedPeerCount: UInt64, fipsConnectedPeerCount: UInt64, fipsRosterPeerCount: UInt64, nonFipsRosterPeerCount: UInt64, meshReady: Bool, health: [NativeHealthIssue], network: NativeNetworkSummary, portMapping: NativePortMappingStatus, networks: [NativeNetworkState], lanPeers: [NativeLanPeerState]) {
+         */fipsBootstrapPeerDefaults: [String: [String]], fipsHostInboundTcpPorts: String, magicDnsSuffix: String, magicDnsStatus: String, networkDnsServers: [String], dnsOverrideActive: Bool, dnsStrict: Bool, autoconnect: Bool, inviteBroadcastActive: Bool, inviteBroadcastRemainingSecs: UInt64, nearbyDiscoveryActive: Bool, nearbyDiscoveryRemainingSecs: UInt64, launchOnStartup: Bool, closeToTrayOnClose: Bool, connectedPeerCount: UInt64, expectedPeerCount: UInt64, fipsConnectedPeerCount: UInt64, fipsRosterPeerCount: UInt64, nonFipsRosterPeerCount: UInt64, meshReady: Bool, health: [NativeHealthIssue], network: NativeNetworkSummary, portMapping: NativePortMappingStatus, networks: [NativeNetworkState], lanPeers: [NativeLanPeerState]) {
         self.rev = rev
         self.platform = platform
         self.mobile = mobile
@@ -1058,6 +1059,7 @@ public struct NativeAppState {
         self.magicDnsStatus = magicDnsStatus
         self.networkDnsServers = networkDnsServers
         self.dnsOverrideActive = dnsOverrideActive
+        self.dnsStrict = dnsStrict
         self.autoconnect = autoconnect
         self.inviteBroadcastActive = inviteBroadcastActive
         self.inviteBroadcastRemainingSecs = inviteBroadcastRemainingSecs
@@ -1290,6 +1292,9 @@ extension NativeAppState: Equatable, Hashable {
         if lhs.dnsOverrideActive != rhs.dnsOverrideActive {
             return false
         }
+        if lhs.dnsStrict != rhs.dnsStrict {
+            return false
+        }
         if lhs.autoconnect != rhs.autoconnect {
             return false
         }
@@ -1416,6 +1421,7 @@ extension NativeAppState: Equatable, Hashable {
         hasher.combine(magicDnsStatus)
         hasher.combine(networkDnsServers)
         hasher.combine(dnsOverrideActive)
+        hasher.combine(dnsStrict)
         hasher.combine(autoconnect)
         hasher.combine(inviteBroadcastActive)
         hasher.combine(inviteBroadcastRemainingSecs)
@@ -1514,6 +1520,7 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
                 magicDnsStatus: FfiConverterString.read(from: &buf),
                 networkDnsServers: FfiConverterSequenceString.read(from: &buf),
                 dnsOverrideActive: FfiConverterBool.read(from: &buf),
+                dnsStrict: FfiConverterBool.read(from: &buf),
                 autoconnect: FfiConverterBool.read(from: &buf),
                 inviteBroadcastActive: FfiConverterBool.read(from: &buf),
                 inviteBroadcastRemainingSecs: FfiConverterUInt64.read(from: &buf),
@@ -1604,6 +1611,7 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
         FfiConverterString.write(value.magicDnsStatus, into: &buf)
         FfiConverterSequenceString.write(value.networkDnsServers, into: &buf)
         FfiConverterBool.write(value.dnsOverrideActive, into: &buf)
+        FfiConverterBool.write(value.dnsStrict, into: &buf)
         FfiConverterBool.write(value.autoconnect, into: &buf)
         FfiConverterBool.write(value.inviteBroadcastActive, into: &buf)
         FfiConverterUInt64.write(value.inviteBroadcastRemainingSecs, into: &buf)
@@ -3044,13 +3052,14 @@ public struct SettingsPatch {
      * DNS server IPs for the active network (admin only). `Some(vec![])` clears.
      */
     public var networkDnsServers: [String]?
+    public var networkDnsStrict: Bool?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(nodeName: String?, endpoint: String?, tunnelIp: String?, listenPort: UInt16?, relays: [String]?, disabledRelays: [String]?, exitNode: String?, exitNodeLeakProtection: Bool?, advertiseExitNode: Bool?, advertisedRoutes: String?, wireguardExitEnabled: Bool?, wireguardExitInterface: String?, wireguardExitAddress: String?, wireguardExitPrivateKey: String?, wireguardExitPeerPublicKey: String?, wireguardExitPeerPresharedKey: String?, wireguardExitEndpoint: String?, wireguardExitAllowedIps: String?, wireguardExitDns: String?, wireguardExitMtu: UInt16?, wireguardExitPersistentKeepaliveSecs: UInt16?, wireguardExitConfig: String?, fipsHostTunnelEnabled: Bool?, connectToNonRosterFipsPeers: Bool?, fipsNostrDiscoveryEnabled: Bool?, fipsBootstrapEnabled: Bool?, fipsBootstrapPeers: [String: [String]]?, fipsHostInboundTcpPorts: String?, autoconnect: Bool?, launchOnStartup: Bool?, closeToTrayOnClose: Bool?,
         /**
          * DNS server IPs for the active network (admin only). `Some(vec![])` clears.
-         */networkDnsServers: [String]?) {
+         */networkDnsServers: [String]?, networkDnsStrict: Bool?) {
         self.nodeName = nodeName
         self.endpoint = endpoint
         self.tunnelIp = tunnelIp
@@ -3083,6 +3092,7 @@ public struct SettingsPatch {
         self.launchOnStartup = launchOnStartup
         self.closeToTrayOnClose = closeToTrayOnClose
         self.networkDnsServers = networkDnsServers
+        self.networkDnsStrict = networkDnsStrict
     }
 }
 
@@ -3189,6 +3199,9 @@ extension SettingsPatch: Equatable, Hashable {
         if lhs.networkDnsServers != rhs.networkDnsServers {
             return false
         }
+        if lhs.networkDnsStrict != rhs.networkDnsStrict {
+            return false
+        }
         return true
     }
 
@@ -3225,6 +3238,7 @@ extension SettingsPatch: Equatable, Hashable {
         hasher.combine(launchOnStartup)
         hasher.combine(closeToTrayOnClose)
         hasher.combine(networkDnsServers)
+        hasher.combine(networkDnsStrict)
     }
 }
 
@@ -3268,7 +3282,8 @@ public struct FfiConverterTypeSettingsPatch: FfiConverterRustBuffer {
                 autoconnect: FfiConverterOptionBool.read(from: &buf),
                 launchOnStartup: FfiConverterOptionBool.read(from: &buf),
                 closeToTrayOnClose: FfiConverterOptionBool.read(from: &buf),
-                networkDnsServers: FfiConverterOptionSequenceString.read(from: &buf)
+                networkDnsServers: FfiConverterOptionSequenceString.read(from: &buf),
+                networkDnsStrict: FfiConverterOptionBool.read(from: &buf)
         )
     }
 
@@ -3305,6 +3320,7 @@ public struct FfiConverterTypeSettingsPatch: FfiConverterRustBuffer {
         FfiConverterOptionBool.write(value.launchOnStartup, into: &buf)
         FfiConverterOptionBool.write(value.closeToTrayOnClose, into: &buf)
         FfiConverterOptionSequenceString.write(value.networkDnsServers, into: &buf)
+        FfiConverterOptionBool.write(value.networkDnsStrict, into: &buf)
     }
 }
 

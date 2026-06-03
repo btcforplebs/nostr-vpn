@@ -23,6 +23,10 @@ pub struct NetworkRoster {
     /// auto-configure their system DNS to use these addresses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dns_servers: Vec<String>,
+    /// When true, peers MUST use only the admin-configured DNS servers
+    /// with zero fallback to public resolvers (1.1.1.1, 9.9.9.9, etc.).
+    #[serde(default)]
+    pub dns_strict: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +152,10 @@ fn signed_roster_tags(network_id: &str, roster: &NetworkRoster) -> Result<Vec<Ta
         }
     }
 
+    if roster.dns_strict {
+        tags.push(roster_tag(&["dns-strict", "true"])?);
+    }
+
     Ok(tags)
 }
 
@@ -160,6 +168,7 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
     let mut admins = Vec::new();
     let mut aliases = HashMap::new();
     let mut dns_servers = Vec::new();
+    let mut dns_strict = false;
 
     for tag in tags {
         let parts = tag.as_slice();
@@ -206,6 +215,9 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
                     }
                 }
             }
+            "dns-strict" => {
+                dns_strict = parts.get(1).is_some_and(|v| v == "true");
+            }
             _ => {}
         }
     }
@@ -235,6 +247,7 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
             aliases,
             signed_at,
             dns_servers,
+            dns_strict,
         },
     ))
 }
@@ -614,6 +627,7 @@ pub fn signed_roster_control_frame(signed_roster: SignedRoster) -> FipsControlFr
         aliases: HashMap::new(),
         signed_at: signed_roster.signed_at(),
         dns_servers: Vec::new(),
+        dns_strict: false,
     });
     FipsControlFrame::Roster {
         network_id,
@@ -639,6 +653,7 @@ pub fn network_roster_from_shared(
     aliases: HashMap<String, String>,
     signed_at: u64,
     dns_servers: Vec<String>,
+    dns_strict: bool,
 ) -> NetworkRoster {
     NetworkRoster {
         network_name,
@@ -647,6 +662,7 @@ pub fn network_roster_from_shared(
         aliases,
         signed_at,
         dns_servers,
+        dns_strict,
     }
 }
 
@@ -725,6 +741,7 @@ mod tests {
             aliases,
             signed_at: 123,
             dns_servers: Vec::new(),
+            dns_strict: false,
         };
 
         let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
@@ -753,6 +770,7 @@ mod tests {
             aliases,
             signed_at: 123,
             dns_servers: Vec::new(),
+            dns_strict: false,
         };
 
         let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
@@ -783,6 +801,7 @@ mod tests {
             aliases: HashMap::new(),
             signed_at: 123,
             dns_servers: vec!["10.44.1.100".to_string(), "10.44.1.200".to_string()],
+            dns_strict: false,
         };
 
         let signed = SignedRoster::sign("mesh", roster.clone(), &admin).expect("sign roster");
@@ -806,6 +825,7 @@ mod tests {
             aliases: HashMap::new(),
             signed_at: 123,
             dns_servers: Vec::new(),
+            dns_strict: false,
         };
 
         let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
@@ -824,6 +844,7 @@ mod tests {
             aliases: HashMap::new(),
             signed_at: 123,
             dns_servers: Vec::new(),
+            dns_strict: false,
         };
         let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
         let mut event = signed.event.clone();
@@ -911,6 +932,7 @@ mod tests {
                 .collect(),
             signed_at: 123,
             dns_servers: Vec::new(),
+            dns_strict: false,
         };
         let frame = FipsControlFrame::Roster {
             network_id: "mesh".to_string(),
@@ -941,6 +963,7 @@ mod tests {
                 .collect(),
             signed_at: 123,
             dns_servers: Vec::new(),
+            dns_strict: false,
         };
         let frame = FipsControlFrame::Roster {
             network_id: "mesh".to_string(),

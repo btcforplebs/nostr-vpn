@@ -729,6 +729,10 @@ pub struct NetworkConfig {
     /// the signed roster. Peers auto-configure their system resolver to these.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dns_servers: Vec<String>,
+    /// When true, peers MUST use only the admin-configured DNS servers
+    /// with zero fallback to public resolvers.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dns_strict: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -768,6 +772,7 @@ pub struct SharedNetworkRoster {
     pub updated_at: u64,
     pub signed_by: String,
     pub dns_servers: Vec<String>,
+    pub dns_strict: bool,
 }
 
 impl Default for AppConfig {
@@ -788,6 +793,7 @@ impl Default for AppConfig {
                 shared_roster_updated_at: 0,
                 shared_roster_signed_by: String::new(),
                 dns_servers: Vec::new(),
+                dns_strict: false,
             }],
             node_name: default_node_name(),
             lan_discovery_enabled: default_lan_discovery_enabled(),
@@ -1255,6 +1261,7 @@ impl AppConfig {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         });
         let _ = self.note_network_roster_local_change(&id);
         id
@@ -1653,6 +1660,7 @@ impl AppConfig {
             updated_at: network.shared_roster_updated_at,
             signed_by: network.shared_roster_signed_by.clone(),
             dns_servers: network.dns_servers.clone(),
+            dns_strict: network.dns_strict,
         })
     }
 
@@ -1667,6 +1675,7 @@ impl AppConfig {
         signed_at: u64,
         signed_by: &str,
         dns_servers: Vec<String>,
+        dns_strict: bool,
     ) -> Result<bool> {
         let normalized_network_id = normalize_runtime_network_id(network_id);
         if normalized_network_id.is_empty() {
@@ -1756,6 +1765,7 @@ impl AppConfig {
         network.shared_roster_updated_at = signed_at;
         network.shared_roster_signed_by = normalized_signed_by;
         network.dns_servers = dns_servers;
+        network.dns_strict = dns_strict;
         network.outbound_join_request = if own_join_completed {
             None
         } else {
@@ -1814,6 +1824,7 @@ impl AppConfig {
             roster.signed_at,
             &signed_by,
             roster.dns_servers,
+            roster.dns_strict,
         )
     }
 

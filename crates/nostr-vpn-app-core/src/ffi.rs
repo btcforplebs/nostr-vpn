@@ -706,6 +706,11 @@ impl NativeAppRuntime {
                 self.active_network_dns_servers()
             },
             dns_override_active: !config_unavailable && self.dns_override_active(),
+            dns_strict: !config_unavailable
+                && self
+                    .config
+                    .active_network_opt()
+                    .is_some_and(|n| n.dns_strict && !n.dns_servers.is_empty()),
             autoconnect: !config_unavailable && self.config.autoconnect,
             invite_broadcast_active: self.invite_broadcast_active(),
             invite_broadcast_remaining_secs: self.invite_broadcast_remaining_secs(),
@@ -1466,6 +1471,23 @@ impl NativeAppRuntime {
             }
             if let Some(network) = self.config.network_by_id_mut(&active_id) {
                 network.dns_servers = servers;
+            }
+            let _ = self.config.note_active_network_roster_local_change();
+        }
+        if let Some(strict) = patch.network_dns_strict {
+            let own_pubkey = self.config.own_nostr_pubkey_hex()?;
+            let active_id = self
+                .config
+                .active_network_opt()
+                .map(|n| n.id.clone())
+                .unwrap_or_default();
+            if !self.config.is_network_admin(&active_id, &own_pubkey) {
+                return Err(anyhow::anyhow!(
+                    "only a network admin can set DNS strict mode"
+                ));
+            }
+            if let Some(network) = self.config.network_by_id_mut(&active_id) {
+                network.dns_strict = strict;
             }
             let _ = self.config.note_active_network_roster_local_change();
         }

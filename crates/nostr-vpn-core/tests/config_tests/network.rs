@@ -509,6 +509,7 @@ fn active_network_helpers_ignore_inactive_networks() {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         },
         NetworkConfig {
             id: "network-2".to_string(),
@@ -525,6 +526,7 @@ fn active_network_helpers_ignore_inactive_networks() {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         },
     ];
     config.ensure_defaults();
