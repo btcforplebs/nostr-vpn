@@ -16,6 +16,10 @@ use jni::JNIEnv;
 use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString};
 #[cfg(target_os = "android")]
 use jni::sys::{jboolean, jint, jlong, jstring};
+use nostr_vpn_core::updater::{
+    ProductUpdateMode, ProductUpdateResult, ProductUpdateSource, check_product_update_blocking,
+    download_product_update_blocking,
+};
 use qrcode::QrCode;
 use serde::Serialize;
 
@@ -44,6 +48,12 @@ struct QrMatrixResult {
 #[serde(rename_all = "camelCase")]
 struct QrDecodeResult {
     value: String,
+    error: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateJsonError {
     error: String,
 }
 
@@ -212,6 +222,39 @@ pub extern "C" fn nostr_vpn_mobile_tunnel_new(
             ptr::null_mut()
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nostr_vpn_update_check_json(
+    current_version: *const c_char,
+    mode: *const c_char,
+    source: *const c_char,
+) -> *mut c_char {
+    let result = check_product_update_blocking(
+        &c_string_lossy(current_version),
+        parse_update_mode(&c_string_lossy(mode)),
+        parse_update_source(&c_string_lossy(source)),
+    );
+    update_result_json(result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nostr_vpn_update_download_json(
+    current_version: *const c_char,
+    mode: *const c_char,
+    source: *const c_char,
+    download_dir: *const c_char,
+) -> *mut c_char {
+    let download_dir = c_string_lossy(download_dir);
+    let download_dir =
+        (!download_dir.trim().is_empty()).then(|| std::path::Path::new(&download_dir));
+    let result = download_product_update_blocking(
+        &c_string_lossy(current_version),
+        parse_update_mode(&c_string_lossy(mode)),
+        parse_update_source(&c_string_lossy(source)),
+        download_dir,
+    );
+    update_result_json(result)
 }
 
 /// # Safety
@@ -518,11 +561,20 @@ pub extern "system" fn Java_org_nostrvpn_app_core_NativeCore_mobileTunnelSendPac
     let Some(tunnel) = tunnel_from_jlong(handle) else {
         return 0;
     };
-    let Ok(mut bytes) = env.convert_byte_array(&packet) else {
+    let Ok(capacity) = env.get_array_length(&packet) else {
         return 0;
     };
-    let len = usize::try_from(len).unwrap_or(0).min(bytes.len());
-    bytes.truncate(len);
+    let Some(len) = bounded_packet_copy_len(len, capacity) else {
+        return 0;
+    };
+    let mut signed = vec![0_i8; len];
+    if env.get_byte_array_region(&packet, 0, &mut signed).is_err() {
+        return 0;
+    }
+    let bytes = signed
+        .into_iter()
+        .map(|byte| byte as u8)
+        .collect::<Vec<_>>();
     u8::from(tunnel.tunnel.send_packet(&bytes))
 }
 
@@ -602,6 +654,16 @@ fn tunnel_from_jlong<'a>(handle: jlong) -> Option<&'a NvpnMobileTunnelHandle> {
     Some(unsafe { &*(handle as *const NvpnMobileTunnelHandle) })
 }
 
+#[cfg(any(target_os = "android", test))]
+fn bounded_packet_copy_len(requested: i32, capacity: i32) -> Option<usize> {
+    if requested <= 0 || capacity <= 0 {
+        return None;
+    }
+    let requested = usize::try_from(requested).ok()?;
+    let capacity = usize::try_from(capacity).ok()?;
+    Some(requested.min(capacity))
+}
+
 fn c_string_lossy(value: *const c_char) -> String {
     if value.is_null() {
         return String::new();
@@ -654,6 +716,33 @@ fn json_string(value: &impl Serialize) -> *mut c_char {
 
 fn json_raw_string(value: &str) -> *mut c_char {
     into_c_string(value)
+}
+
+fn update_result_json(result: Result<ProductUpdateResult>) -> *mut c_char {
+    match result {
+        Ok(result) => json_string(&result),
+        Err(error) => json_string(&UpdateJsonError {
+            error: error.to_string(),
+        }),
+    }
+}
+
+fn parse_update_mode(value: &str) -> ProductUpdateMode {
+    if value.eq_ignore_ascii_case("app") {
+        ProductUpdateMode::App
+    } else {
+        ProductUpdateMode::Cli
+    }
+}
+
+fn parse_update_source(value: &str) -> ProductUpdateSource {
+    if value.eq_ignore_ascii_case("github") {
+        ProductUpdateSource::Github
+    } else if value.eq_ignore_ascii_case("hashtree") || value.eq_ignore_ascii_case("htree") {
+        ProductUpdateSource::Hashtree
+    } else {
+        ProductUpdateSource::Auto
+    }
 }
 
 fn into_c_string(value: &str) -> *mut c_char {
@@ -728,6 +817,20 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+
+    #[test]
+    fn bounded_packet_copy_len_rejects_empty_or_invalid_lengths() {
+        assert_eq!(bounded_packet_copy_len(0, 65_535), None);
+        assert_eq!(bounded_packet_copy_len(-1, 65_535), None);
+        assert_eq!(bounded_packet_copy_len(64, 0), None);
+        assert_eq!(bounded_packet_copy_len(64, -1), None);
+    }
+
+    #[test]
+    fn bounded_packet_copy_len_uses_actual_packet_length() {
+        assert_eq!(bounded_packet_copy_len(84, 65_535), Some(84));
+        assert_eq!(bounded_packet_copy_len(65_536, 65_535), Some(65_535));
+    }
 
     #[test]
     fn c_abi_returns_json_state_and_action_errors() {

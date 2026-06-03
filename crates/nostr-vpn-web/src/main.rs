@@ -526,13 +526,45 @@ fn ensure_config_exists(path: &Path) -> Result<()> {
     let mut config = if path.exists() {
         AppConfig::load(path).with_context(|| format!("failed to load {}", path.display()))?
     } else {
-        AppConfig::generated()
+        generated_umbrel_config()
     };
-    config.ensure_defaults();
-    maybe_autoconfigure_node(&mut config);
+    prepare_config_for_save(&mut config);
     config
         .save(path)
         .with_context(|| format!("failed to save {}", path.display()))
+}
+
+fn generated_umbrel_config() -> AppConfig {
+    let mut config = AppConfig::generated_without_networks();
+    config.add_network("Network 1");
+    config
+}
+
+fn prepare_config_for_save(config: &mut AppConfig) {
+    config.ensure_defaults();
+    maybe_autoconfigure_node(config);
+    ensure_first_owned_network_selected(config);
+    if config.self_magic_dns_name().is_none() && config.ensure_self_magic_dns_alias().is_ok() {
+        config.ensure_defaults();
+    }
+}
+
+fn ensure_first_owned_network_selected(config: &mut AppConfig) {
+    if config.active_network_opt().is_some() || config.networks.len() != 1 {
+        return;
+    }
+
+    let Ok(own_pubkey) = config.own_nostr_pubkey_hex() else {
+        return;
+    };
+    let network = &config.networks[0];
+    if !network.participants.is_empty() || !network.admins.iter().any(|admin| admin == &own_pubkey)
+    {
+        return;
+    }
+
+    let network_id = network.id.clone();
+    let _ = config.set_network_enabled(&network_id, true);
 }
 
 fn default_config_path() -> PathBuf {
@@ -671,5 +703,46 @@ mod tests {
         let value = umbrel_state_value(state).expect("state value");
 
         assert_eq!(value["vpnStatus"], "VPN off");
+    }
+
+    #[test]
+    fn generated_umbrel_config_seeds_self_magic_dns_name() {
+        let mut config = generated_umbrel_config();
+        prepare_config_for_save(&mut config);
+
+        let name = config
+            .self_magic_dns_name()
+            .expect("first-run Umbrel config should have a self MagicDNS name");
+
+        assert!(name.ends_with(".nvpn"));
+    }
+
+    #[test]
+    fn existing_daemon_created_config_gets_self_magic_dns_name() {
+        let mut config = AppConfig::generated();
+        config.ensure_defaults();
+        assert!(config.active_network_opt().is_none());
+        assert!(config.self_magic_dns_name().is_none());
+
+        prepare_config_for_save(&mut config);
+
+        assert!(config.active_network_opt().is_some());
+        let name = config
+            .self_magic_dns_name()
+            .expect("web bootstrap should seed missing self MagicDNS names");
+        assert!(name.ends_with(".nvpn"));
+    }
+
+    #[test]
+    fn existing_joined_config_keeps_disabled_network_unselected() {
+        let mut config = AppConfig::generated();
+        config.ensure_defaults();
+        let own_pubkey = config.own_nostr_pubkey_hex().expect("own pubkey");
+        config.networks[0].participants.push(own_pubkey);
+        assert!(config.active_network_opt().is_none());
+
+        prepare_config_for_save(&mut config);
+
+        assert!(config.active_network_opt().is_none());
     }
 }
