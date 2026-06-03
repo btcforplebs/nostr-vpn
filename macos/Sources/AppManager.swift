@@ -1965,7 +1965,8 @@ func settingsPatch(
     autoconnect: Bool? = nil,
     launchOnStartup: Bool? = nil,
     closeToTrayOnClose: Bool? = nil,
-    networkDnsServers: [String]? = nil
+    networkDnsServers: [String]? = nil,
+    networkDnsStrict: Bool? = nil
 ) -> SettingsPatch {
     SettingsPatch(
         nodeName: nodeName,
@@ -1999,7 +2000,8 @@ func settingsPatch(
         autoconnect: autoconnect,
         launchOnStartup: launchOnStartup,
         closeToTrayOnClose: closeToTrayOnClose,
-        networkDnsServers: networkDnsServers
+        networkDnsServers: networkDnsServers,
+        networkDnsStrict: nil
     )
 }
 
