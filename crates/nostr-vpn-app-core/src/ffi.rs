@@ -710,7 +710,7 @@ impl NativeAppRuntime {
                 && self
                     .config
                     .active_network_opt()
-                    .is_some_and(|n| n.dns_strict && !n.dns_servers.is_empty()),
+                    .is_some_and(|n| !n.dns_servers.is_empty()),
             autoconnect: !config_unavailable && self.config.autoconnect,
             invite_broadcast_active: self.invite_broadcast_active(),
             invite_broadcast_remaining_secs: self.invite_broadcast_remaining_secs(),

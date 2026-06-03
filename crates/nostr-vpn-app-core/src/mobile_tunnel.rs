@@ -312,7 +312,7 @@ impl MobileTunnelConfig {
             } else if selected_peer_exit {
                 let dns_is_strict = app
                     .active_network_opt()
-                    .is_some_and(|n| n.dns_strict && !n.dns_servers.is_empty());
+                    .is_some_and(|n| !n.dns_servers.is_empty());
                 let exit_dns = if dns_is_strict {
                     // Strict DNS: admin DNS will be applied below, don't
                     // inject public resolvers.
@@ -409,7 +409,7 @@ impl MobileTunnelConfig {
             magic_dns_server,
             dns_strict: app
                 .active_network_opt()
-                .is_some_and(|n| n.dns_strict && !n.dns_servers.is_empty()),
+                .is_some_and(|n| !n.dns_servers.is_empty()),
             wireguard_exit,
             join_requests_enabled: app.join_requests_enabled(),
             pending_join_request_recipient,

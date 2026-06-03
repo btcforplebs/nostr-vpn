@@ -2546,7 +2546,7 @@ impl ConnectMagicDnsRuntime {
         }
         let dns_strict = app
             .active_network_opt()
-            .is_some_and(|n| n.dns_strict);
+            .is_some_and(|n| !n.dns_servers.is_empty());
         match DnsOverrideGuard::install(&dns_servers, dns_strict) {
             Ok(guard) => {
                 println!(
