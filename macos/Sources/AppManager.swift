@@ -1297,6 +1297,7 @@ final class AppManager: ObservableObject {
             magicDnsStatus: "Serving .nvpn names",
             networkDnsServers: [],
             dnsOverrideActive: false,
+            dnsStrict: false,
             autoconnect: true,
             inviteBroadcastActive: true,
             inviteBroadcastRemainingSecs: 417,
