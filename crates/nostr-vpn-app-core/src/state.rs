@@ -344,6 +344,8 @@ pub struct SettingsPatch {
     pub close_to_tray_on_close: Option<bool>,
     /// DNS server IPs for the active network (admin only). `Some(vec![])` clears.
     pub network_dns_servers: Option<Vec<String>>,
+    /// When true, peers use only admin-configured DNS with zero public fallback.
+    pub network_dns_strict: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

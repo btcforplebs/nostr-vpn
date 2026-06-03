@@ -34,6 +34,7 @@ fn participants_override_targets_the_active_network() {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         },
         NetworkConfig {
             id: "work".to_string(),
@@ -50,6 +51,7 @@ fn participants_override_targets_the_active_network() {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         },
     ];
     config.ensure_defaults();
@@ -292,6 +294,7 @@ fn inbound_fips_roster_accepts_admin_signed_event() {
             aliases: HashMap::new(),
             signed_at: 1_726_000_000,
             dns_servers: Vec::new(),
+            dns_strict: false,
         },
         &admin,
     )
@@ -339,6 +342,7 @@ fn inbound_fips_roster_rejects_tampered_signed_event() {
             aliases: HashMap::new(),
             signed_at: 1_726_000_000,
             dns_servers: Vec::new(),
+            dns_strict: false,
         },
         &admin,
     )
@@ -394,6 +398,7 @@ fn inbound_fips_roster_ignores_signed_event_from_non_admin_author() {
             aliases: HashMap::new(),
             signed_at: 1_726_000_000,
             dns_servers: Vec::new(),
+            dns_strict: false,
         },
         &outsider,
     )
@@ -604,6 +609,7 @@ fn config_overrides_set_the_active_network_mesh_id() {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         },
         NetworkConfig {
             id: "work".to_string(),
@@ -620,6 +626,7 @@ fn config_overrides_set_the_active_network_mesh_id() {
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
             dns_servers: Vec::new(),
+            dns_strict: false,
         },
     ];
     config.ensure_defaults();

@@ -213,6 +213,8 @@ pub struct NativeAppState {
     pub network_dns_servers: Vec<String>,
     #[serde(default)]
     pub dns_override_active: bool,
+    #[serde(default)]
+    pub dns_strict: bool,
     pub autoconnect: bool,
     pub invite_broadcast_active: bool,
     pub invite_broadcast_remaining_secs: u64,

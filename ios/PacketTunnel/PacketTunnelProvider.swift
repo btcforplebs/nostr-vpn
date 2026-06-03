@@ -126,10 +126,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if !dnsConfig.servers.isEmpty {
             let dns = NEDNSSettings(servers: dnsConfig.servers)
             dns.matchDomains = dnsConfig.matchDomains
-            dns.allowFailover = false
+            if #available(iOS 26.0, *) {
+                dns.allowFailover = false
+            }
             settings.dnsSettings = dns
             pktLog.log(
-                "nvpn-pkt: dns servers=\(dnsConfig.servers, privacy: .public) match=\(dnsConfig.matchDomains, privacy: .public) failover=false"
+                "nvpn-pkt: dns servers=\(dnsConfig.servers, privacy: .public) match=\(dnsConfig.matchDomains, privacy: .public) failover=false strict=\(parsedConfig.dnsStrict, privacy: .public)"
             )
         }
 
@@ -318,6 +320,7 @@ private struct MobileTunnelConfig {
     let routeTargets: [String]
     let excludedRoutes: [String]
     let dnsServers: [String]
+    let dnsStrict: Bool
     let magicDnsServer: String
     let firstWireGuardEndpointHost: String?
     let firstFipsEndpointHost: String?
@@ -332,6 +335,7 @@ private struct MobileTunnelConfig {
             routeTargets = []
             excludedRoutes = []
             dnsServers = []
+            dnsStrict = false
             magicDnsServer = ""
             firstWireGuardEndpointHost = nil
             firstFipsEndpointHost = nil
@@ -344,6 +348,7 @@ private struct MobileTunnelConfig {
         routeTargets = object["routeTargets"] as? [String] ?? []
         excludedRoutes = object["excludedRoutes"] as? [String] ?? []
         dnsServers = object["dnsServers"] as? [String] ?? []
+        dnsStrict = object["dnsStrict"] as? Bool ?? false
         magicDnsServer = object["magicDnsServer"] as? String ?? ""
         if let wg = object["wireguardExit"] as? [String: Any],
            let endpoint = wg["endpoint"] as? String

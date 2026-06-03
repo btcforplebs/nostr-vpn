@@ -677,9 +677,15 @@ fn run_windows_powershell(script: &str) -> Result<()> {
 /// Configure the system's global DNS to use the given servers. Called when the
 /// active roster carries a non-empty `dns_servers` list. MagicDNS split-DNS
 /// (`.nvpn`) continues to take priority for its own suffix.
-pub fn install_dns_override(servers: &[String]) -> Result<()> {
+pub fn install_dns_override(servers: &[String], dns_strict: bool) -> Result<()> {
     if servers.is_empty() {
         return Ok(());
+    }
+    if dns_strict {
+        eprintln!(
+            "dns_strict: installing exclusive DNS override ({}) — no public fallback",
+            servers.join(", ")
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -738,8 +744,8 @@ pub struct DnsOverrideGuard {
 
 impl DnsOverrideGuard {
     /// Install the override and return a guard that will clean it up on drop.
-    pub fn install(servers: &[String]) -> Result<Self> {
-        install_dns_override(servers)?;
+    pub fn install(servers: &[String], dns_strict: bool) -> Result<Self> {
+        install_dns_override(servers, dns_strict)?;
         Ok(Self { active: true })
     }
 
