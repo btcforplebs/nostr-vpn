@@ -30,9 +30,7 @@ use std::io::IoSlice;
 use std::io::{self, Write};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::mem::ManuallyDrop;
-#[cfg(target_os = "linux")]
-use std::net::Ipv4Addr;
-use std::net::{IpAddr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
@@ -369,7 +367,8 @@ fn peer_endpoint_hint_addr(hint: &PeerEndpointHint) -> Option<String> {
 }
 
 fn endpoint_addr_ip(addr: &str) -> Option<IpAddr> {
-    let trimmed = addr.trim();
+    let (_transport, trimmed) = split_peer_transport_addr(addr);
+    let trimmed = trimmed.trim();
     if let Ok(parsed) = trimmed.parse::<SocketAddr>() {
         return Some(parsed.ip());
     }
@@ -382,16 +381,90 @@ fn endpoint_uses_tunnel_ip(addr: &str, tunnel_ips: &HashSet<IpAddr>) -> bool {
     endpoint_addr_ip(addr).is_some_and(|ip| tunnel_ips.contains(&ip))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Ipv4Subnet {
+    network: Ipv4Addr,
+    prefix_len: u8,
+}
+
+impl Ipv4Subnet {
+    fn new(addr: Ipv4Addr, prefix_len: u8) -> Self {
+        Self {
+            network: mask_ipv4(addr, prefix_len),
+            prefix_len,
+        }
+    }
+
+    fn contains(&self, addr: Ipv4Addr) -> bool {
+        mask_ipv4(addr, self.prefix_len) == self.network
+    }
+}
+
+fn mask_ipv4(addr: Ipv4Addr, prefix_len: u8) -> Ipv4Addr {
+    if prefix_len == 0 {
+        return Ipv4Addr::UNSPECIFIED;
+    }
+    if prefix_len >= 32 {
+        return addr;
+    }
+    Ipv4Addr::from(u32::from(addr) & (u32::MAX << (32 - u32::from(prefix_len))))
+}
+
+fn local_private_ipv4_subnets() -> Vec<Ipv4Subnet> {
+    let mut subnets = Vec::new();
+    for iface in netdev::get_interfaces() {
+        if iface.is_loopback() {
+            continue;
+        }
+        for net in &iface.ipv4 {
+            let addr = net.addr();
+            if addr.is_loopback()
+                || addr.is_unspecified()
+                || addr.is_multicast()
+                || !(addr.is_private() || ipv4_is_cgnat_addr(addr) || addr.is_link_local())
+            {
+                continue;
+            }
+            subnets.push(Ipv4Subnet::new(addr, net.prefix_len()));
+        }
+    }
+    subnets.sort_by_key(|subnet| (u32::from(subnet.network), subnet.prefix_len));
+    subnets.dedup();
+    subnets
+}
+
+fn ipv4_static_hint_requires_local_subnet(addr: Ipv4Addr) -> bool {
+    addr.is_private() || ipv4_is_cgnat_addr(addr) || addr.is_link_local()
+}
+
+fn ipv4_is_cgnat_addr(addr: Ipv4Addr) -> bool {
+    let octets = addr.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+fn static_endpoint_allowed_on_current_underlay(addr: &str, local_subnets: &[Ipv4Subnet]) -> bool {
+    match endpoint_addr_ip(addr) {
+        Some(IpAddr::V4(ip)) if ipv4_static_hint_requires_local_subnet(ip) => {
+            local_subnets.iter().any(|subnet| subnet.contains(ip))
+        }
+        _ => true,
+    }
+}
+
 fn filter_static_tunnel_endpoints(
     groups: Vec<(String, Vec<String>)>,
     tunnel_ips: &HashSet<IpAddr>,
+    local_subnets: &[Ipv4Subnet],
 ) -> Vec<(String, Vec<String>)> {
     groups
         .into_iter()
         .filter_map(|(participant, addrs)| {
             let addrs = addrs
                 .into_iter()
-                .filter(|addr| !endpoint_uses_tunnel_ip(addr, tunnel_ips))
+                .filter(|addr| {
+                    !endpoint_uses_tunnel_ip(addr, tunnel_ips)
+                        && static_endpoint_allowed_on_current_underlay(addr, local_subnets)
+                })
                 .collect::<Vec<_>>();
             (!addrs.is_empty()).then_some((participant, addrs))
         })
@@ -1768,10 +1841,9 @@ impl FipsPrivateTunnelConfig {
         // Address hints feed into fips's unified `PeerConfig.addresses`:
         //   * operator-configured `fips_peer_endpoints` (unstamped)
         //   * recent-peers cache entries (stamped with `last_success_at`)
-        // fips's dialer keeps configured hints first, then races fresh Nostr
-        // overlay candidates inside the bounded candidate budget. Within the
-        // same priority tier, `seen_at_ms` lets recent observations beat
-        // unstamped hints.
+        // Persisted private static hints come from old invites and only make
+        // sense while we are still on that LAN, so drop them before fips gives
+        // configured addresses first shot over discovery/NAT candidates.
         let desired_endpoint_hint_npubs = app
             .active_network_signal_pubkeys_hex()
             .into_iter()
@@ -1779,9 +1851,11 @@ impl FipsPrivateTunnelConfig {
             .map(|participant| normalize_fips_endpoint_npub(&participant))
             .collect::<std::collections::HashSet<_>>();
         let tunnel_endpoint_hosts = fips_tunnel_endpoint_hosts(app, network_id);
+        let local_private_subnets = local_private_ipv4_subnets();
         let mut operator_static = filter_static_tunnel_endpoints(
             app.fips_static_peer_endpoints(),
             &tunnel_endpoint_hosts,
+            &local_private_subnets,
         );
         // Built-in public bootstrap nodes as fallback transit. They share the
         // same `discovery_fallback_transit` path as operator-configured static
@@ -1790,6 +1864,7 @@ impl FipsPrivateTunnelConfig {
         operator_static.extend(filter_static_tunnel_endpoints(
             app.fips_bootstrap_peer_endpoints(),
             &tunnel_endpoint_hosts,
+            &local_private_subnets,
         ));
         let static_non_roster_transit_seeds =
             non_roster_endpoint_group_count(&operator_static, &desired_endpoint_hint_npubs);
@@ -3967,16 +4042,16 @@ mod tests {
         FIPS_ENDPOINT_LINK_DEAD_TIMEOUT_SECS, FIPS_LAN_DISCOVERY_SCOPE_PREFIX,
         FIPS_MESH_EVENT_DRAIN_LIMIT, FIPS_NOSTR_DISCOVERY_APP, FIPS_NOSTR_EXTENDED_COOLDOWN_SECS,
         FIPS_NOSTR_FAILURE_STREAK_THRESHOLD, FIPS_NOSTR_OPEN_DISCOVERY_MAX_PENDING,
-        FIPS_NOSTR_STARTUP_SWEEP_MAX_AGE_SECS,
-        FIPS_RECENT_NON_ROSTER_TRANSIT_MAX_SEEDS, FIPS_RECONNECT_BACKOFF_BASE_SECS,
-        FIPS_RECONNECT_BACKOFF_MAX_SECS, FipsEndpointTransportConfig, FipsPeerAddressHint,
-        FipsPrivateMeshEvent, FipsPrivateMeshRuntime, FipsPrivateTunnelConfig,
+        FIPS_NOSTR_STARTUP_SWEEP_MAX_AGE_SECS, FIPS_RECENT_NON_ROSTER_TRANSIT_MAX_SEEDS,
+        FIPS_RECONNECT_BACKOFF_BASE_SECS, FIPS_RECONNECT_BACKOFF_MAX_SECS,
+        FipsEndpointTransportConfig, FipsPeerAddressHint, FipsPrivateMeshEvent,
+        FipsPrivateMeshRuntime, FipsPrivateTunnelConfig, Ipv4Subnet,
         cap_recent_non_roster_transit_endpoints, control_frame_destination_npub,
-        control_frame_source_pubkey, drain_event_batch, fips_endpoint_config,
-        fips_endpoint_peers_from_mesh, fips_lan_discovery_scope, fips_peer_address_from_hint,
-        linux_cap_eff_has_net_admin, linux_tun_setup_error, other_endpoint_peer_statuses,
-        parse_fips_nostr_discovery_policy, strip_cidr, tag_authenticated_transport_addr,
-        unix_timestamp,
+        control_frame_source_pubkey, drain_event_batch, filter_static_tunnel_endpoints,
+        fips_endpoint_config, fips_endpoint_peers_from_mesh, fips_lan_discovery_scope,
+        fips_peer_address_from_hint, linux_cap_eff_has_net_admin, linux_tun_setup_error,
+        other_endpoint_peer_statuses, parse_fips_nostr_discovery_policy, strip_cidr,
+        tag_authenticated_transport_addr, unix_timestamp,
     };
     use fips_endpoint::{
         Config, ConnectPolicy, FipsEndpointPeer, NostrDiscoveryPolicy,
@@ -3992,7 +4067,7 @@ mod tests {
     use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
     use nostr_vpn_core::join_requests::MeshJoinRequest;
     use std::collections::{HashMap, HashSet};
-    use std::net::{Ipv4Addr, UdpSocket};
+    use std::net::{IpAddr, Ipv4Addr, UdpSocket};
     use std::time::Duration;
 
     #[test]
@@ -5278,7 +5353,7 @@ mod tests {
             requested_at: 1,
         });
         app.fips_peer_endpoints
-            .insert(admin_npub.clone(), vec!["10.203.0.10:51820".to_string()]);
+            .insert(admin_npub.clone(), vec!["203.0.113.10:51820".to_string()]);
 
         let config = FipsPrivateTunnelConfig::from_app(
             &app,
@@ -5300,7 +5375,7 @@ mod tests {
             .find(|peer| peer.npub == admin_npub)
             .expect("admin endpoint peer");
         assert_eq!(admin.addresses.len(), 1);
-        assert_eq!(admin.addresses[0].addr, "10.203.0.10:51820");
+        assert_eq!(admin.addresses[0].addr, "203.0.113.10:51820");
         assert_eq!(admin.addresses[0].seen_at_ms, None);
     }
 
@@ -5455,6 +5530,43 @@ mod tests {
     }
 
     #[test]
+    fn static_endpoint_filter_drops_stale_private_hints() {
+        let mut tunnel_ips = HashSet::new();
+        tunnel_ips.insert(IpAddr::V4(Ipv4Addr::new(10, 44, 1, 2)));
+        let local_subnets = vec![Ipv4Subnet::new(Ipv4Addr::new(192, 168, 50, 10), 24)];
+
+        let filtered = filter_static_tunnel_endpoints(
+            vec![(
+                "peer".to_string(),
+                vec![
+                    "192.168.50.57:51820".to_string(),
+                    "udp:192.168.50.58:51820".to_string(),
+                    "192.168.51.57:51820".to_string(),
+                    "100.120.94.10:51820".to_string(),
+                    "10.44.1.2:51820".to_string(),
+                    "203.0.113.9:51820".to_string(),
+                    "peer.example.com:443".to_string(),
+                ],
+            )],
+            &tunnel_ips,
+            &local_subnets,
+        );
+
+        assert_eq!(
+            filtered,
+            vec![(
+                "peer".to_string(),
+                vec![
+                    "192.168.50.57:51820".to_string(),
+                    "udp:192.168.50.58:51820".to_string(),
+                    "203.0.113.9:51820".to_string(),
+                    "peer.example.com:443".to_string(),
+                ],
+            )]
+        );
+    }
+
+    #[test]
     fn tunnel_config_drops_overlay_tunnel_endpoint_hints() {
         let alice_keys = Keys::generate();
         let bob_keys = Keys::generate();
@@ -5475,7 +5587,7 @@ mod tests {
             bob_npub.clone(),
             vec![
                 bob_tunnel_endpoint.clone(),
-                "192.168.50.23:51820".to_string(),
+                "203.0.113.23:51820".to_string(),
             ],
         );
 
@@ -5505,7 +5617,7 @@ mod tests {
             .iter()
             .map(|hint| hint.addr.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(addrs, vec!["192.168.50.22:51820", "192.168.50.23:51820"]);
+        assert_eq!(addrs, vec!["192.168.50.22:51820", "203.0.113.23:51820"]);
     }
 
     /// Pin the open-discovery / closed-data-plane invariant.
