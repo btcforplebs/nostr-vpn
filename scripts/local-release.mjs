@@ -404,6 +404,7 @@ function syncRepoToWindowsHost({ host, guestRepo, dryRun }) {
     '--exclude=./target',
     '--exclude=./dist',
     '--exclude=./.git',
+    '--exclude=./.cargo/config.toml',
     '--exclude=./artifacts',
     '--exclude=./node_modules',
     '--exclude=./.env.release.local',
