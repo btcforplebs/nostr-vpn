@@ -727,8 +727,8 @@ impl MobileTunnel {
             let mesh_addr = mesh_ipv4;
             let inbound_tx_for_dns = inbound_tx.clone();
             let app_config_for_dns = Arc::clone(&app_config);
-            let dns_strict = config.dns_strict;
-            let dns_forwarders = {
+            let config_state_for_dns = Arc::clone(&config_state);
+            let initial_dns_forwarders = {
                 let mut forwarders = Vec::new();
                 for target in &config.dns_nat_targets {
                     if target.octets()[0] != 10 || target.octets()[1] != 44 {
@@ -737,7 +737,7 @@ impl MobileTunnel {
                 }
                 if forwarders.is_empty() {
                     if config.dns_nat_targets.is_empty() {
-                        mobile_magic_dns_forwarders(&config.dns_forwarders, dns_strict)
+                        mobile_magic_dns_forwarders(&config.dns_forwarders, config.dns_strict)
                     } else {
                         Vec::new()
                     }
@@ -746,7 +746,7 @@ impl MobileTunnel {
                 }
             };
 
-            let dns_nat_targets = config.dns_nat_targets.clone();
+            let initial_dns_nat_targets = config.dns_nat_targets.clone();
             let dns_ipv6_queries_send = Arc::clone(&dns_ipv6_queries);
             let config_path_for_log = config_path.clone();
             let dns_log_path = config.dns_log_path.clone();
@@ -771,6 +771,49 @@ impl MobileTunnel {
                     } else {
                         false
                     };
+
+                    // Read DNS config from the live config_state so that
+                    // roster updates (which arrive after tunnel start) take
+                    // effect immediately without a tunnel restart.
+                    let (dns_strict, dns_nat_targets, dns_forwarders) =
+                        if is_dns || is_dns_ipv6 {
+                            config_state_for_dns
+                                .read()
+                                .ok()
+                                .map(|cfg| {
+                                    let forwarders = {
+                                        let mut fwd = Vec::new();
+                                        for target in &cfg.dns_nat_targets {
+                                            if target.octets()[0] != 10
+                                                || target.octets()[1] != 44
+                                            {
+                                                fwd.push(SocketAddr::new(
+                                                    IpAddr::V4(*target),
+                                                    53,
+                                                ));
+                                            }
+                                        }
+                                        if fwd.is_empty() {
+                                            if cfg.dns_nat_targets.is_empty() {
+                                                mobile_magic_dns_forwarders(
+                                                    &cfg.dns_forwarders,
+                                                    cfg.dns_strict,
+                                                )
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        } else {
+                                            fwd
+                                        }
+                                    };
+                                    (cfg.dns_strict, cfg.dns_nat_targets.clone(), forwarders)
+                                })
+                                .unwrap_or_else(|| {
+                                    (false, initial_dns_nat_targets.clone(), initial_dns_forwarders.clone())
+                                })
+                        } else {
+                            (false, initial_dns_nat_targets.clone(), initial_dns_forwarders.clone())
+                        };
 
                     if is_dns {
                         let src = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
@@ -1118,7 +1161,8 @@ impl MobileTunnel {
             let dns_log_path = config.dns_log_path.clone();
             let join_request_active = Arc::clone(&join_request_active);
             let network_id = config.network_id.clone();
-            let dns_nat_targets_for_recv = config.dns_nat_targets.clone();
+            let initial_dns_nat_targets_for_recv = config.dns_nat_targets.clone();
+            let config_state_for_recv_dns = Arc::clone(&config_state);
             let dns_ipv6_queries_recv = Arc::clone(&dns_ipv6_queries);
             let magic_dns_enabled = !config.magic_dns_server.trim().is_empty();
             tokio::spawn(async move {
@@ -1220,10 +1264,17 @@ impl MobileTunnel {
                             dns_log(
                                 &dns_log_path,
                                 &config_path,
-                                &format!("INBOUND DNS RESPONSE RECEIVED: {src} -> {dst} (targets={:?})", dns_nat_targets_for_recv)
+                                &format!("INBOUND DNS RESPONSE RECEIVED: {src} -> {dst}")
                             );
                         }
 
+                        // Read live NAT targets from config_state so
+                        // roster updates take effect without a restart.
+                        let dns_nat_targets_for_recv = config_state_for_recv_dns
+                            .read()
+                            .ok()
+                            .map(|cfg| cfg.dns_nat_targets.clone())
+                            .unwrap_or_else(|| initial_dns_nat_targets_for_recv.clone());
                         dns_nat_rewrite_inbound(&mut bytes, &dns_nat_targets_for_recv, magic_dns_enabled);
 
                         if is_dns_inbound {
