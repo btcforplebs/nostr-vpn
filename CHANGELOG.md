@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 4.0.67 - 2026-06-05
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.39 and `fips-endpoint` 0.3.24.
+
+### Fixed
+
+- FIPS fallback routing now keeps established packets flowing when a direct
+  UDP path is marked link-dead, while direct probing continues in the
+  background.
+- Transit nodes no longer bounce learned fallback routes back to the previous
+  hop, preventing mesh loops that could exhaust packet TTL after direct-path
+  loss.
+- Fresh fallback discovery now warms established sessions immediately and keeps
+  coordinate-carrying warmup packets out of discardable bulk queues.
+
 ## 4.0.66 - 2026-06-05
 
 ### Changed
