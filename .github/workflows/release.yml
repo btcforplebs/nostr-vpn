@@ -36,8 +36,10 @@ jobs:
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        continue-on-error: true
         with:
           cache-bin: false
+          save-if: false
 
       - name: Run release gate
         run: ./scripts/release-gate.sh
@@ -80,8 +82,10 @@ jobs:
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        continue-on-error: true
         with:
           cache-bin: false
+          save-if: false
 
       - name: Build Linux musl CLI with Docker
         if: ${{ matrix.cross }}
@@ -185,8 +189,10 @@ jobs:
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        continue-on-error: true
         with:
           cache-bin: false
+          save-if: false
 
       - name: Import macOS signing certificate
         shell: bash
@@ -285,8 +291,10 @@ jobs:
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        continue-on-error: true
         with:
           cache-bin: false
+          save-if: false
 
       - name: Install Linux native package dependencies
         run: |
@@ -346,8 +354,10 @@ jobs:
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        continue-on-error: true
         with:
           cache-bin: false
+          save-if: false
 
       - name: Install Windows native package dependencies
         run: choco install llvm innosetup -y --no-progress
@@ -399,8 +409,10 @@ jobs:
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        continue-on-error: true
         with:
           cache-bin: false
+          save-if: false
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
