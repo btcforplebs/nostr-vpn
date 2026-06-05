@@ -250,6 +250,11 @@ fn wall_time_jump_detection_ignores_busy_loop_delays() {
     ));
 }
 
+#[test]
+fn daemon_network_refresh_interval_keeps_link_changes_low_latency() {
+    assert_eq!(DAEMON_NETWORK_REFRESH_INTERVAL_SECS, 1);
+}
+
 #[cfg(feature = "embedded-fips")]
 #[test]
 fn fips_link_events_restart_endpoint_for_major_link_changes() {
@@ -269,10 +274,10 @@ fn fips_link_events_restart_endpoint_for_major_link_changes() {
 
 #[cfg(feature = "embedded-fips")]
 #[test]
-fn fips_link_events_refresh_config_for_endpoint_only_changes() {
+fn fips_link_events_restart_endpoint_for_endpoint_only_changes() {
     assert_eq!(
         fips_link_event_refresh(false, true, false, false),
-        FipsLinkEventRefresh::RefreshConfig
+        FipsLinkEventRefresh::RestartEndpoint
     );
     assert_eq!(
         fips_link_event_refresh(false, false, false, false),
