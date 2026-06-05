@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## 4.0.61 - 2026-06-05
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.32 and `fips-endpoint` 0.3.24.
+
+### Fixed
+
+- Healthy-but-slow direct UDP paths no longer hide clearly better mesh
+  fallback routes; fallback can carry packets while direct probing continues.
+- Moderate direct-path loss now demotes traffic to fallback sooner instead of
+  waiting for severe loss or a link-dead timeout.
+- Stale macOS service plists with `FIPS_MACOS_CONNECTED_UDP=0` no longer
+  disable FIPS connected UDP.
+
 ## 4.0.60 - 2026-06-05
 
 ### Changed
