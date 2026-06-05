@@ -2,6 +2,77 @@
 
 All notable changes to this project are documented in this file.
 
+## 4.0.62 - 2026-06-05
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.33 and `fips-endpoint` 0.3.24.
+
+### Fixed
+
+- Link-dead direct UDP paths now stay as stale/probeable candidates instead
+  of making the FIPS peer non-sendable, so nvpn traffic can keep flowing over
+  mesh fallback while direct probes and late authenticated packets revive the
+  path.
+
+## 4.0.61 - 2026-06-05
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.32 and `fips-endpoint` 0.3.24.
+
+### Fixed
+
+- Healthy-but-slow direct UDP paths no longer hide clearly better mesh
+  fallback routes; fallback can carry packets while direct probing continues.
+- Moderate direct-path loss now demotes traffic to fallback sooner instead of
+  waiting for severe loss or a link-dead timeout.
+- Stale macOS service plists with `FIPS_MACOS_CONNECTED_UDP=0` no longer
+  disable FIPS connected UDP.
+
+## 4.0.60 - 2026-06-05
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.31 and `fips-endpoint` 0.3.24.
+
+### Fixed
+
+- Repeated direct UDP drops no longer let a reconnecting static path look
+  "fresh" enough to suppress direct re-probing, so mesh remains fallback
+  transport instead of becoming a sticky demotion after hotspot flaps.
+
+## 4.0.59 - 2026-06-05
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.30 and `fips-endpoint` 0.3.23.
+
+### Fixed
+
+- Direct-path retry maintenance now re-probes the last observed UDP endpoint
+  after link-dead, while mesh/relay stays only as fallback traffic transport.
+  This prevents transient hotspot liveness failures from pinning peers to
+  `runtime_endpoint: "fips"`.
+
+## 4.0.58 - 2026-06-04
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.29 and `fips-endpoint` 0.3.22.
+
+### Fixed
+
+- FIPS link-dead direct paths now immediately refresh fallback routing through
+  live transit peers while direct UDP reprobes continue in the background.
+- Daemon and mobile status now keep retry-only direct probe state separate from
+  authenticated direct-link connectivity, so `runtime_endpoint: "fips"` can
+  accurately mean fallback transport is carrying traffic while direct probing
+  is still active.
+- The release gate now includes a three-node roaming Docker scenario that
+  drops, restores, and drops direct Alice/Bob UDP again to catch sticky
+  fallback demotion regressions.
+
 ## 4.0.57 - 2026-06-03
 
 ### Changed

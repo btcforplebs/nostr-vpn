@@ -59,6 +59,12 @@ if [[ -n "$FIPS_REPO_PATH" ]]; then
 
   if [[ -f "$FIPS_PATCH_DIR/crates/fips-endpoint/Cargo.toml" ]]; then
     DOCKER_ENV+=(-e NVPN_FIPS_ENDPOINT_PATCH_PATH=/home/rust/src/.fips-patch/crates/fips-endpoint)
+    if [[ -f "$FIPS_PATCH_DIR/crates/fips-core/Cargo.toml" ]]; then
+      DOCKER_ENV+=(-e NVPN_FIPS_CORE_PATCH_PATH=/home/rust/src/.fips-patch/crates/fips-core)
+    fi
+    if [[ -f "$FIPS_PATCH_DIR/crates/fips-identity/Cargo.toml" ]]; then
+      DOCKER_ENV+=(-e NVPN_FIPS_IDENTITY_PATCH_PATH=/home/rust/src/.fips-patch/crates/fips-identity)
+    fi
   elif [[ -f "$FIPS_PATCH_DIR/Cargo.toml" ]]; then
     DOCKER_ENV+=(-e NVPN_FIPS_ENDPOINT_PATCH_PATH=/home/rust/src/.fips-patch)
   else
@@ -92,9 +98,23 @@ if [[ -n ${NVPN_FIPS_ENDPOINT_PATCH_PATH:-} ]]; then
   cargo_config_args+=(--config "patch.crates-io.fips-endpoint.path=\"${NVPN_FIPS_ENDPOINT_PATCH_PATH}\"")
   cargo_lock_args=()
 fi
+if [[ -n ${NVPN_FIPS_CORE_PATCH_PATH:-} ]]; then
+  cargo_config_args+=(--config "patch.crates-io.fips-core.path=\"${NVPN_FIPS_CORE_PATCH_PATH}\"")
+  cargo_lock_args=()
+fi
+if [[ -n ${NVPN_FIPS_IDENTITY_PATCH_PATH:-} ]]; then
+  cargo_config_args+=(--config "patch.crates-io.fips-identity.path=\"${NVPN_FIPS_IDENTITY_PATCH_PATH}\"")
+  cargo_lock_args=()
+fi
 
 if [[ -n ${NVPN_FIPS_ENDPOINT_PATCH_PATH:-} ]]; then
   cargo "${cargo_config_args[@]}" update -p fips-endpoint
+fi
+if [[ -n ${NVPN_FIPS_CORE_PATCH_PATH:-} ]]; then
+  cargo "${cargo_config_args[@]}" update -p fips-core
+fi
+if [[ -n ${NVPN_FIPS_IDENTITY_PATCH_PATH:-} ]]; then
+  cargo "${cargo_config_args[@]}" update -p fips-identity
 fi
 
 cargo "${cargo_config_args[@]}" fetch "${cargo_lock_args[@]}" --target "$TARGET"

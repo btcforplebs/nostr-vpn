@@ -404,6 +404,11 @@ function syncRepoToWindowsHost({ host, guestRepo, dryRun }) {
     '--exclude=./target',
     '--exclude=./dist',
     '--exclude=./.git',
+    '--exclude=./.cargo/config.toml',
+    '--exclude=./.claude',
+    '--exclude=./.codex',
+    '--exclude=./.codex_*',
+    '--exclude=./*.s9pk',
     '--exclude=./artifacts',
     '--exclude=./node_modules',
     '--exclude=./.env.release.local',
@@ -413,6 +418,8 @@ function syncRepoToWindowsHost({ host, guestRepo, dryRun }) {
     '--exclude=./android',
     '--exclude=./linux',
     '--exclude=./umbrel',
+    '--exclude=./windows/NostrVpn.Windows/bin',
+    '--exclude=./windows/NostrVpn.Windows/obj',
   ].join(' ')
 
   // Start from a clean destination. The Windows project uses broad wildcard
@@ -581,7 +588,7 @@ function buildLinuxArtifacts({ env, tag, dryRun, builtLines }) {
   const innerScript = [
     'set -euo pipefail',
     `rustup target add ${muslTriple}`,
-    'rsync -a --exclude target --exclude dist --exclude .git /work/ /build/',
+    'rsync -a --exclude target --exclude dist --exclude .git --exclude .cargo/config.toml /work/ /build/',
     'cd /build',
     'cargo build --release --locked --manifest-path linux/Cargo.toml',
     'cargo build --release --locked -p nvpn',
