@@ -1,6 +1,10 @@
 use super::*;
 #[cfg(target_os = "macos")]
 use std::io::Write;
+#[cfg(target_os = "macos")]
+use std::{io, thread};
+#[cfg(target_os = "macos")]
+use tokio::sync::mpsc;
 
 pub(super) fn macos_default_routes_from_netstat(output: &str) -> Vec<MacosRouteSpec> {
     let mut routes = Vec::new();
@@ -31,6 +35,72 @@ pub(super) fn macos_default_routes_from_netstat(output: &str) -> Vec<MacosRouteS
 
 pub(crate) fn macos_has_underlay_default_route(output: &str) -> bool {
     macos_underlay_default_route_from_routes(&macos_default_routes_from_netstat(output)).is_some()
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn spawn_macos_route_change_monitor() -> Option<mpsc::Receiver<()>> {
+    let fd = unsafe { libc::socket(libc::AF_ROUTE, libc::SOCK_RAW, libc::AF_UNSPEC) };
+    if fd < 0 {
+        eprintln!(
+            "daemon: failed to open macOS route monitor socket: {}",
+            io::Error::last_os_error()
+        );
+        return None;
+    }
+
+    let (tx, rx) = mpsc::channel(1);
+    let spawn_result = thread::Builder::new()
+        .name("nvpn-macos-route-monitor".to_string())
+        .spawn(move || {
+            let _fd = MacosRouteMonitorFd(fd);
+            let mut buf = [0_u8; 8192];
+            loop {
+                let read = unsafe {
+                    libc::read(
+                        fd,
+                        buf.as_mut_ptr().cast::<libc::c_void>(),
+                        buf.len() as libc::size_t,
+                    )
+                };
+                if read < 0 {
+                    eprintln!(
+                        "daemon: macOS route monitor read failed: {}",
+                        io::Error::last_os_error()
+                    );
+                    break;
+                }
+                if read == 0 {
+                    continue;
+                }
+                match tx.try_send(()) {
+                    Ok(()) | Err(mpsc::error::TrySendError::Full(())) => {}
+                    Err(mpsc::error::TrySendError::Closed(())) => break,
+                }
+            }
+        });
+
+    match spawn_result {
+        Ok(_) => Some(rx),
+        Err(error) => {
+            unsafe {
+                libc::close(fd);
+            }
+            eprintln!("daemon: failed to spawn macOS route monitor: {error}");
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct MacosRouteMonitorFd(libc::c_int);
+
+#[cfg(target_os = "macos")]
+impl Drop for MacosRouteMonitorFd {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.0);
+        }
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]

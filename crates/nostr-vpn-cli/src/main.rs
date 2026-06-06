@@ -8,6 +8,8 @@ mod diagnostics;
 mod fips_host_tunnel;
 #[cfg(feature = "embedded-fips")]
 mod fips_private_mesh;
+#[cfg(target_os = "linux")]
+mod linux_network;
 #[cfg(any(target_os = "macos", test))]
 mod macos_network;
 #[cfg(any(target_os = "macos", test))]
@@ -26,6 +28,8 @@ mod session_runtime;
 mod updater;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod wg_upstream_runtime;
+#[cfg(target_os = "windows")]
+mod windows_network;
 #[cfg(any(target_os = "windows", test))]
 mod windows_tunnel;
 #[cfg(target_os = "linux")]

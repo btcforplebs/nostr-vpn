@@ -251,8 +251,55 @@ fn wall_time_jump_detection_ignores_busy_loop_delays() {
 }
 
 #[test]
-fn daemon_network_refresh_interval_keeps_link_changes_low_latency() {
+fn daemon_network_refresh_cadence_keeps_link_changes_low_latency() {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    {
+        assert_eq!(DAEMON_NETWORK_REFRESH_INTERVAL_SECS, 15);
+        const {
+            assert!(DAEMON_NETWORK_EVENT_DEBOUNCE_MILLIS <= 1_000);
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     assert_eq!(DAEMON_NETWORK_REFRESH_INTERVAL_SECS, 1);
+}
+
+#[test]
+fn macos_underlay_route_check_throttles_route_event_storms() {
+    assert_eq!(MACOS_UNDERLAY_ROUTE_CHECK_INTERVAL_SECS, 5);
+
+    let start = Instant::now();
+    let mut last_check_at = start;
+
+    assert!(!macos_underlay_route_check_due(
+        &mut last_check_at,
+        false,
+        false,
+        start + Duration::from_secs(1),
+    ));
+    assert_eq!(last_check_at, start);
+
+    assert!(macos_underlay_route_check_due(
+        &mut last_check_at,
+        false,
+        false,
+        start + Duration::from_secs(5),
+    ));
+    assert_eq!(last_check_at, start + Duration::from_secs(5));
+
+    assert!(macos_underlay_route_check_due(
+        &mut last_check_at,
+        true,
+        false,
+        start + Duration::from_secs(6),
+    ));
+    assert_eq!(last_check_at, start + Duration::from_secs(6));
+
+    assert!(macos_underlay_route_check_due(
+        &mut last_check_at,
+        false,
+        true,
+        start + Duration::from_secs(7),
+    ));
 }
 
 #[cfg(feature = "embedded-fips")]
