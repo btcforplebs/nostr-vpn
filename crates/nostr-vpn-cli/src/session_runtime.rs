@@ -1,7 +1,12 @@
 use super::*;
 
 const DAEMON_STATE_PERSIST_INTERVAL_SECS: u64 = 1;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) const DAEMON_NETWORK_REFRESH_INTERVAL_SECS: u64 = 15;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) const DAEMON_NETWORK_REFRESH_INTERVAL_SECS: u64 = 1;
+pub(crate) const DAEMON_NETWORK_EVENT_DEBOUNCE_MILLIS: u64 = 250;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MACOS_UNDERLAY_ROUTE_CHECK_INTERVAL_SECS: u64 = 5;
 
 #[cfg(feature = "embedded-fips")]
@@ -344,6 +349,37 @@ async fn capture_network_snapshot_for_daemon() -> crate::diagnostics::NetworkSna
             crate::diagnostics::NetworkSnapshot::default()
         }
     }
+}
+
+fn spawn_platform_network_change_monitor() -> Option<tokio::sync::mpsc::Receiver<()>> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::linux_network::spawn_linux_route_change_monitor()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_network::spawn_macos_route_change_monitor()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+async fn recv_platform_network_change(
+    rx: &mut Option<tokio::sync::mpsc::Receiver<()>>,
+) -> Option<()> {
+    match rx.as_mut() {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn drain_platform_network_changes(rx: &mut Option<tokio::sync::mpsc::Receiver<()>>) {
+    let Some(rx) = rx.as_mut() else {
+        return;
+    };
+    while rx.try_recv().is_ok() {}
 }
 
 #[cfg(target_os = "macos")]
@@ -736,6 +772,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
     let mut network_interval =
         tokio::time::interval(Duration::from_secs(DAEMON_NETWORK_REFRESH_INTERVAL_SECS));
     network_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut platform_network_change_rx = spawn_platform_network_change_monitor();
 
     #[cfg(unix)]
     let mut terminate_signal =
@@ -919,6 +956,16 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         eprintln!("fips: join request send failed: {error}");
                     }
                 }
+            }
+            platform_network_change = recv_platform_network_change(&mut platform_network_change_rx) => {
+                if platform_network_change.is_none() {
+                    platform_network_change_rx = None;
+                    continue;
+                }
+                drain_platform_network_changes(&mut platform_network_change_rx);
+                network_interval.reset_after(Duration::from_millis(
+                    DAEMON_NETWORK_EVENT_DEBOUNCE_MILLIS,
+                ));
             }
             _ = network_interval.tick() => {
                 let now = unix_timestamp();

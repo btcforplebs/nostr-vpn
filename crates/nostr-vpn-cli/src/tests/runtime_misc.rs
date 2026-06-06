@@ -251,12 +251,18 @@ fn wall_time_jump_detection_ignores_busy_loop_delays() {
 }
 
 #[test]
-fn daemon_network_refresh_interval_keeps_link_changes_low_latency() {
+fn daemon_network_refresh_cadence_keeps_link_changes_low_latency() {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        assert_eq!(DAEMON_NETWORK_REFRESH_INTERVAL_SECS, 15);
+        assert!(DAEMON_NETWORK_EVENT_DEBOUNCE_MILLIS <= 1_000);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     assert_eq!(DAEMON_NETWORK_REFRESH_INTERVAL_SECS, 1);
 }
 
 #[test]
-fn macos_underlay_route_check_does_not_follow_idle_link_polling_rate() {
+fn macos_underlay_route_check_throttles_route_event_storms() {
     assert_eq!(MACOS_UNDERLAY_ROUTE_CHECK_INTERVAL_SECS, 5);
 
     let start = Instant::now();

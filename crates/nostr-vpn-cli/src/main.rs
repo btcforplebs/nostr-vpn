@@ -8,6 +8,8 @@ mod diagnostics;
 mod fips_host_tunnel;
 #[cfg(feature = "embedded-fips")]
 mod fips_private_mesh;
+#[cfg(target_os = "linux")]
+mod linux_network;
 #[cfg(any(target_os = "macos", test))]
 mod macos_network;
 #[cfg(any(target_os = "macos", test))]
