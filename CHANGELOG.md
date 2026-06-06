@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- FIPS now uses `fips-core` 0.3.51 and `fips-endpoint` 0.3.27.
 - Added the `osiris` public FIPS bootstrap peer as a second built-in bootstrap
   route alongside `lnvps`.
 - Release-gate smoke testing now launches the desktop GUI on Linux, macOS, and
@@ -15,6 +16,8 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- FIPS direct-path routing and macOS direct sends now use the latest upstream
+  throughput-stability fixes.
 - The Windows app no longer crashes during startup when WPF initializes the
   read-only public FIPS address field.
 
