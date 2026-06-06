@@ -187,7 +187,8 @@
                   </DockPanel>
 
                   <ListBox ItemsSource="{Binding ActiveNetwork.Participants}"
-                           SelectedItem="{Binding SelectedParticipant, Mode=TwoWay}"
+                           SelectedValue="{Binding SelectedParticipantKey, Mode=TwoWay}"
+                           SelectedValuePath="SelectionKey"
                            BorderThickness="0"
                            Background="Transparent"
                            Margin="0,14,0,0"

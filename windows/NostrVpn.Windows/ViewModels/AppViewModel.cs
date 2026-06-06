@@ -482,14 +482,13 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         set
         {
             var nextKey = value is null ? "" : ParticipantKey(value);
-            if (_selectedParticipantKey == nextKey)
-            {
-                return;
-            }
-            _selectedParticipantKey = nextKey;
-            OnPropertyChanged();
-            RaiseSelectedParticipantChanged();
+            SetSelectedParticipantKey(nextKey, ignoreTransientClear: true);
         }
+    }
+    public string SelectedParticipantKey
+    {
+        get => _selectedParticipantKey;
+        set => SetSelectedParticipantKey(value, ignoreTransientClear: true);
     }
     public bool SelectedParticipantCanRename => ActiveNetwork?.LocalIsAdmin == true
         && SelectedParticipant is not null;
@@ -1445,6 +1444,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(HasActiveNetwork));
         OnPropertyChanged(nameof(OfferExitNodeLabel));
         OnPropertyChanged(nameof(InactiveNetworks));
+        OnPropertyChanged(nameof(SelectedParticipantKey));
         OnPropertyChanged(nameof(SelectedParticipant));
         RaiseSelectedParticipantChanged();
         OnPropertyChanged(nameof(ActiveNetworkName));
@@ -1501,8 +1501,9 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
         if (!string.IsNullOrWhiteSpace(_selectedParticipantKey)
-            && network.Participants.Any(participant => ParticipantKey(participant) == _selectedParticipantKey))
+            && network.Participants.FirstOrDefault(participant => ParticipantMatchesKey(participant, _selectedParticipantKey)) is { } selected)
         {
+            _selectedParticipantKey = ParticipantKey(selected);
             return;
         }
         _selectedParticipantKey = SortedParticipants(network).FirstOrDefault() is { } first
@@ -1514,7 +1515,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     {
         if (!string.IsNullOrWhiteSpace(_selectedParticipantKey))
         {
-            var selected = network.Participants.FirstOrDefault(participant => ParticipantKey(participant) == _selectedParticipantKey);
+            var selected = network.Participants.FirstOrDefault(participant => ParticipantMatchesKey(participant, _selectedParticipantKey));
             if (selected is not null)
             {
                 return selected;
@@ -1530,7 +1531,45 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             .ThenBy(participant => participant.DisplayName, StringComparer.OrdinalIgnoreCase);
 
     private static string ParticipantKey(NativeParticipantState participant)
-        => string.IsNullOrWhiteSpace(participant.PubkeyHex) ? participant.Npub : participant.PubkeyHex;
+        => participant.SelectionKey;
+
+    private static bool ParticipantMatchesKey(NativeParticipantState participant, string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return false;
+        }
+        return string.Equals(participant.SelectionKey, key, StringComparison.Ordinal)
+            || (!string.IsNullOrWhiteSpace(participant.PubkeyHex)
+                && string.Equals(participant.PubkeyHex, key, StringComparison.OrdinalIgnoreCase))
+            || (!string.IsNullOrWhiteSpace(participant.Npub)
+                && string.Equals(participant.Npub, key, StringComparison.Ordinal));
+    }
+
+    private void SetSelectedParticipantKey(string? value, bool ignoreTransientClear)
+    {
+        var nextKey = (value ?? string.Empty).Trim();
+        if (nextKey.Length == 0 && ignoreTransientClear && CurrentSelectedParticipantStillExists())
+        {
+            return;
+        }
+        if (_selectedParticipantKey == nextKey)
+        {
+            return;
+        }
+        _selectedParticipantKey = nextKey;
+        OnPropertyChanged(nameof(SelectedParticipantKey));
+        OnPropertyChanged(nameof(SelectedParticipant));
+        RaiseSelectedParticipantChanged();
+    }
+
+    private bool CurrentSelectedParticipantStillExists()
+    {
+        var network = ActiveNetwork;
+        return network is not null
+            && !string.IsNullOrWhiteSpace(_selectedParticipantKey)
+            && network.Participants.Any(participant => ParticipantMatchesKey(participant, _selectedParticipantKey));
+    }
 
     private static string FirstNonEmpty(string first, string second, string fallback)
     {

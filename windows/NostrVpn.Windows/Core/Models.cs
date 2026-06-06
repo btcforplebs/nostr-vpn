@@ -154,6 +154,8 @@ public sealed class NativeParticipantState
     public string LastSeenText { get; set; } = "";
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsSelf { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string SelectionKey => string.IsNullOrWhiteSpace(PubkeyHex) ? Npub : PubkeyHex;
     public string DisplayName => FirstNonEmpty(
         MagicDnsName,
         Alias,
