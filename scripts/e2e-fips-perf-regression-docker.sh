@@ -39,6 +39,14 @@ RX_MAINT_MAX_PING_AVG_MS="${NVPN_PERF_RX_MAINT_MAX_PING_AVG_MS:-50}"
 RX_MAINT_MAX_PING_MAX_MS="${NVPN_PERF_RX_MAINT_MAX_PING_MAX_MS:-80}"
 RX_MAINT_POST_MAX_PING_AVG_MS="${NVPN_PERF_RX_MAINT_POST_MAX_PING_AVG_MS:-100}"
 RX_MAINT_POST_MAX_PING_MAX_MS="${NVPN_PERF_RX_MAINT_POST_MAX_PING_MAX_MS:-150}"
+WORKER_QUEUE_PRESSURE_CAP="${NVPN_PERF_WORKER_QUEUE_PRESSURE_CAP:-8}"
+WORKER_QUEUE_PRESSURE_MIN_TCP_MBIT="${NVPN_PERF_WORKER_QUEUE_PRESSURE_MIN_TCP_MBIT:-20}"
+WORKER_QUEUE_PRESSURE_MIN_REVERSE_TCP_MBIT="${NVPN_PERF_WORKER_QUEUE_PRESSURE_MIN_REVERSE_TCP_MBIT:-20}"
+WORKER_QUEUE_PRESSURE_MAX_PING_LOSS_PERCENT="${NVPN_PERF_WORKER_QUEUE_PRESSURE_MAX_PING_LOSS_PERCENT:-5}"
+WORKER_QUEUE_PRESSURE_MAX_PING_AVG_MS="${NVPN_PERF_WORKER_QUEUE_PRESSURE_MAX_PING_AVG_MS:-100}"
+WORKER_QUEUE_PRESSURE_MAX_PING_MAX_MS="${NVPN_PERF_WORKER_QUEUE_PRESSURE_MAX_PING_MAX_MS:-200}"
+WORKER_QUEUE_PRESSURE_POST_MAX_PING_AVG_MS="${NVPN_PERF_WORKER_QUEUE_PRESSURE_POST_MAX_PING_AVG_MS:-100}"
+WORKER_QUEUE_PRESSURE_POST_MAX_PING_MAX_MS="${NVPN_PERF_WORKER_QUEUE_PRESSURE_POST_MAX_PING_MAX_MS:-150}"
 
 if [[ -z "${NVPN_FIPS_REPO_PATH:-}" && -d "$ROOT_DIR/../fips/crates/fips-core" ]]; then
   export NVPN_FIPS_REPO_PATH="$ROOT_DIR/../fips"
@@ -301,15 +309,16 @@ stop_connects() {
 
 start_connects() {
   local rx_maint_fault_ms="$1"
+  local extra_env="${2:-}"
   local fault_env=""
   if [[ "$rx_maint_fault_ms" != "0" ]]; then
     fault_env="FIPS_FAULT_INJECT_RX_LOOP_SLOW_MAINTENANCE_MS='$rx_maint_fault_ms'"
   fi
 
   "${COMPOSE[@]}" exec -d node-a sh -lc \
-    "$fault_env NVPN_FIPS_NOSTR_DISCOVERY_POLICY='$FIPS_NOSTR_DISCOVERY_POLICY' nvpn connect > /tmp/connect.log 2>&1"
+    "$fault_env $extra_env NVPN_FIPS_NOSTR_DISCOVERY_POLICY='$FIPS_NOSTR_DISCOVERY_POLICY' nvpn connect > /tmp/connect.log 2>&1"
   "${COMPOSE[@]}" exec -d node-b sh -lc \
-    "$fault_env NVPN_FIPS_NOSTR_DISCOVERY_POLICY='$FIPS_NOSTR_DISCOVERY_POLICY' nvpn connect > /tmp/connect.log 2>&1"
+    "$fault_env $extra_env NVPN_FIPS_NOSTR_DISCOVERY_POLICY='$FIPS_NOSTR_DISCOVERY_POLICY' nvpn connect > /tmp/connect.log 2>&1"
 }
 
 underlay_dev_for_peer_cmd='peer="$1"; ip route get "$peer" | sed -n "s/.* dev \([^ ]*\).*/\1/p" | head -n1'
@@ -395,6 +404,28 @@ run_rx_maintenance_fault_phase() {
   done
 }
 
+run_worker_queue_pressure_phase() {
+  if [[ "$WORKER_QUEUE_PRESSURE_CAP" == "0" ]]; then
+    echo "Skipping worker-queue pressure phase because NVPN_PERF_WORKER_QUEUE_PRESSURE_CAP=0"
+    return
+  fi
+
+  echo "--- restarting mesh with worker queue pressure: FIPS_WORKER_CHANNEL_CAP=${WORKER_QUEUE_PRESSURE_CAP} ---"
+  stop_connects
+  start_connects 0 "FIPS_WORKER_CHANNEL_CAP='$WORKER_QUEUE_PRESSURE_CAP'"
+  wait_for_mesh
+  run_perf_phase \
+    "worker-queue-pressure" \
+    "$WORKER_QUEUE_PRESSURE_MIN_TCP_MBIT" \
+    "$WORKER_QUEUE_PRESSURE_MIN_REVERSE_TCP_MBIT" \
+    "$WORKER_QUEUE_PRESSURE_MAX_PING_LOSS_PERCENT" \
+    "$WORKER_QUEUE_PRESSURE_MAX_PING_AVG_MS" \
+    "$WORKER_QUEUE_PRESSURE_MAX_PING_MAX_MS" \
+    "$WORKER_QUEUE_PRESSURE_MAX_PING_LOSS_PERCENT" \
+    "$WORKER_QUEUE_PRESSURE_POST_MAX_PING_AVG_MS" \
+    "$WORKER_QUEUE_PRESSURE_POST_MAX_PING_MAX_MS"
+}
+
 cleanup
 BUILDKIT_PROGRESS=plain "${COMPOSE[@]}" build node-a node-b
 "${COMPOSE[@]}" up -d node-a node-b >/dev/null
@@ -462,6 +493,7 @@ run_perf_phase \
   "$MAX_PING_AVG_MS" \
   "$MAX_PING_MAX_MS"
 run_constrained_underlay_phase
+run_worker_queue_pressure_phase
 run_rx_maintenance_fault_phase
 
 echo "fips perf regression docker e2e passed: throughput stayed above floor and pings did not wedge under or after TCP load"
