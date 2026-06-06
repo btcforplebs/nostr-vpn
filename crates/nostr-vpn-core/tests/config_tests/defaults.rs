@@ -483,6 +483,96 @@ fn apply_admin_signed_shared_roster_replaces_members_from_known_admin() {
 }
 
 #[test]
+fn apply_admin_signed_shared_roster_preserves_dns_when_incoming_roster_is_empty() {
+    // Regression: a newer roster that carries NO dns servers (minted before DNS
+    // was configured, or by an older binary) must not wipe an already-set DNS
+    // override — doing so fails OPEN and leaks queries to public resolvers.
+    let own = Keys::generate();
+    let current_admin = Keys::generate();
+    let own_hex = own.public_key().to_hex();
+    let current_admin_hex = current_admin.public_key().to_hex();
+
+    let mut config = AppConfig::generated();
+    config.nostr.secret_key = own.secret_key().to_secret_hex();
+    config.nostr.public_key = own_hex.clone();
+    config.networks[0].network_id = "mesh-home".to_string();
+    config.networks[0].admins = vec![current_admin_hex.clone()];
+    config.networks[0].participants = vec![current_admin_hex.clone()];
+    config.networks[0].dns_servers = vec!["10.44.1.100".to_string()];
+    config.networks[0].dns_strict = true;
+    config.networks[0].shared_roster_updated_at = 1_726_000_000;
+    config.ensure_defaults();
+
+    let changed = config
+        .apply_admin_signed_shared_roster(
+            "mesh-home",
+            "Home",
+            vec![current_admin_hex.clone(), own_hex.clone()],
+            vec![current_admin_hex.clone()],
+            std::collections::HashMap::new(),
+            1_726_000_100,
+            &current_admin_hex,
+            Vec::new(),
+            false,
+        )
+        .expect("apply shared roster");
+
+    assert!(changed);
+    assert_eq!(
+        config.networks[0].dns_servers,
+        vec!["10.44.1.100".to_string()],
+        "empty incoming roster must not clear the admin's DNS override"
+    );
+    assert!(
+        config.networks[0].dns_strict,
+        "dns_strict must stay on while the override is preserved"
+    );
+}
+
+#[test]
+fn apply_admin_signed_shared_roster_overrides_dns_when_incoming_roster_is_nonempty() {
+    // The guard only protects against EMPTY rosters; a roster carrying new,
+    // non-empty servers must still override the existing override as normal.
+    let own = Keys::generate();
+    let current_admin = Keys::generate();
+    let own_hex = own.public_key().to_hex();
+    let current_admin_hex = current_admin.public_key().to_hex();
+
+    let mut config = AppConfig::generated();
+    config.nostr.secret_key = own.secret_key().to_secret_hex();
+    config.nostr.public_key = own_hex.clone();
+    config.networks[0].network_id = "mesh-home".to_string();
+    config.networks[0].admins = vec![current_admin_hex.clone()];
+    config.networks[0].participants = vec![current_admin_hex.clone()];
+    config.networks[0].dns_servers = vec!["10.44.1.100".to_string()];
+    config.networks[0].dns_strict = true;
+    config.networks[0].shared_roster_updated_at = 1_726_000_000;
+    config.ensure_defaults();
+
+    let changed = config
+        .apply_admin_signed_shared_roster(
+            "mesh-home",
+            "Home",
+            vec![current_admin_hex.clone(), own_hex.clone()],
+            vec![current_admin_hex.clone()],
+            std::collections::HashMap::new(),
+            1_726_000_100,
+            &current_admin_hex,
+            vec!["10.44.1.200".to_string()],
+            true,
+        )
+        .expect("apply shared roster");
+
+    assert!(changed);
+    assert_eq!(
+        config.networks[0].dns_servers,
+        vec!["10.44.1.200".to_string()],
+        "a non-empty roster must override the existing DNS override"
+    );
+    assert!(config.networks[0].dns_strict);
+}
+
+#[test]
 fn apply_admin_signed_shared_roster_clears_join_request_when_own_key_is_added() {
     let own = Keys::generate();
     let current_admin = Keys::generate();

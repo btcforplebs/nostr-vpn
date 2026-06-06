@@ -23,11 +23,10 @@ use fips_endpoint::{
     TransportInstances, UdpConfig,
 };
 use nostr_vpn_core::config::{
-    AppConfig, MESH_TUNNEL_IPV4_CIDR, WireGuardExitConfig, derive_mesh_tunnel_ip,
-    maybe_autoconfigure_node, normalize_nostr_pubkey, normalize_runtime_network_id,
-    split_peer_transport_addr,
+    AppConfig, MESH_TUNNEL_IPV4_CIDR, SharedNetworkRoster, WireGuardExitConfig,
+    derive_mesh_tunnel_ip, maybe_autoconfigure_node, normalize_nostr_pubkey,
+    normalize_runtime_network_id, split_peer_transport_addr,
 };
-#[cfg(test)]
 use nostr_vpn_core::fips_control::NetworkRoster;
 use nostr_vpn_core::fips_control::{
     FipsControlFragmentBuffer, FipsControlFrame, PeerCapabilities, PeerEndpointHint, SignedRoster,
@@ -37,7 +36,9 @@ use nostr_vpn_core::fips_control::{
 use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
 use nostr_vpn_core::join_requests::{FIPS_JOIN_REQUEST_RETRY_SECS, MeshJoinRequest};
 use nostr_vpn_core::magic_dns::{build_magic_dns_records, build_magic_dns_response_if_handled};
-use nostr_vpn_core::signed_rosters::{signed_rosters_file_path, upsert_signed_roster};
+use nostr_vpn_core::signed_rosters::{
+    load_signed_rosters, signed_rosters_file_path, upsert_signed_roster,
+};
 use nostr_vpn_core::wg_upstream::{DAEMON_WG_UPSTREAM_HANDSHAKE_TIMEOUT, WgUpstreamRuntime};
 use serde::{Deserialize, Serialize};
 
@@ -200,6 +201,7 @@ impl MobileTunnelConfig {
         };
         app.ensure_defaults();
         maybe_autoconfigure_node(&mut app);
+        rehydrate_mobile_config_from_stored_roster(&mut app, &config_path);
         app.save(&config_path)?;
         Self::from_app_with_config_path(&app, &config_path)
     }
@@ -451,6 +453,9 @@ fn mobile_app_config(config: &MobileTunnelConfig) -> Result<AppConfig> {
         let mut app: AppConfig =
             toml::from_str(&config.app_config_toml).context("failed to parse mobile app config")?;
         app.ensure_defaults();
+        if let Some(config_path) = non_empty_path(&config.config_path) {
+            rehydrate_mobile_config_from_stored_roster(&mut app, &config_path);
+        }
         return Ok(app);
     }
 
@@ -459,7 +464,45 @@ fn mobile_app_config(config: &MobileTunnelConfig) -> Result<AppConfig> {
     AppConfig::migrate_persisted_secrets(&config_path)?;
     let mut app = AppConfig::load(&config_path)?;
     app.ensure_defaults();
+    rehydrate_mobile_config_from_stored_roster(&mut app, &config_path);
     Ok(app)
+}
+
+/// At boot, restore roster-derived DNS fields (notably `dns_servers`) that may
+/// be missing from the on-disk config — because it was last written by an older
+/// binary that predated those fields, or because an empty roster transiently
+/// cleared them before the leak guard existed. The signed event stored in
+/// `signed-rosters.json` is authoritative: its Nostr tags carry the full roster
+/// even when the config file does not. Mirrors the CLI's
+/// `rehydrate_config_from_stored_roster`, but only ever RESTORES DNS (never
+/// clears it) to stay consistent with the fail-closed leak guard.
+fn rehydrate_mobile_config_from_stored_roster(app: &mut AppConfig, config_path: &Path) {
+    let store_path = signed_rosters_file_path(config_path);
+    let Ok(store) = load_signed_rosters(&store_path) else {
+        return;
+    };
+    let network_id = app.effective_network_id();
+    let Some(stored) = store.latest_for(&network_id) else {
+        return;
+    };
+    let Ok(roster) = stored.roster() else {
+        return;
+    };
+    let signed_at = stored.signed_at();
+    let Some(network) = app.networks.iter_mut().find(|n| n.enabled) else {
+        return;
+    };
+    // Only patch when the stored roster is the one already applied (timestamps
+    // match) — i.e. the config was serialized without the newer DNS fields.
+    if signed_at != network.shared_roster_updated_at {
+        return;
+    }
+    // Restore only; never let an empty stored roster clear a live override.
+    if roster.dns_servers.is_empty() || network.dns_servers == roster.dns_servers {
+        return;
+    }
+    network.dns_servers = roster.dns_servers;
+    network.dns_strict = network.dns_strict || !network.dns_servers.is_empty();
 }
 
 fn plaintext_app_config_toml(app: &AppConfig) -> Result<String> {
@@ -2338,6 +2381,22 @@ async fn sync_mobile_signed_roster_with_connected_peers(
     Ok(sent)
 }
 
+fn mobile_network_roster_from_shared(shared: &SharedNetworkRoster) -> NetworkRoster {
+    NetworkRoster {
+        network_name: shared.name.clone(),
+        participants: shared.participants.clone(),
+        admins: shared.admins.clone(),
+        aliases: shared.aliases.clone(),
+        signed_at: if shared.updated_at > 0 {
+            shared.updated_at
+        } else {
+            unix_timestamp()
+        },
+        dns_servers: shared.dns_servers.clone(),
+        dns_strict: shared.dns_strict,
+    }
+}
+
 fn mobile_current_signed_roster_from_store(
     app_config: &Arc<RwLock<AppConfig>>,
     config_path: &Path,
@@ -2353,18 +2412,42 @@ fn mobile_current_signed_roster_from_store(
     if network_id.is_empty() || signed_by.is_empty() || network.shared_roster_updated_at == 0 {
         return Ok(None);
     }
-    let store = nostr_vpn_core::signed_rosters::load_signed_rosters(&signed_rosters_file_path(
-        config_path,
-    ))?;
-    let Some(signed_roster) = store.latest_for(&network_id).cloned() else {
-        return Ok(None);
-    };
-    if signed_roster.signed_at() != network.shared_roster_updated_at {
+    let local_network_id = network.id.clone();
+    let store_path = signed_rosters_file_path(config_path);
+    let store = load_signed_rosters(&store_path)?;
+    if let Some(signed_roster) = store.latest_for(&network_id).cloned()
+        && signed_roster.signed_at() == network.shared_roster_updated_at
+        && signed_roster.signer_pubkey_hex()? == signed_by
+    {
+        return Ok(Some(signed_roster));
+    }
+
+    // No stored event matches the current (admin-bumped) roster state. If THIS
+    // device is the admin the roster is attributed to, mint and persist a fresh
+    // signed roster from the live config so the change (incl. dns_servers)
+    // actually propagates to peers. iOS previously had no roster signer at all
+    // — `note_active_network_roster_local_change` bumps `shared_roster_updated_at`
+    // on every DNS edit without storing a matching event, so an iOS admin could
+    // never publish their own DNS. We only sign when own_pubkey == signed_by, so
+    // a consumer device never impersonates another admin's roster.
+    let own_pubkey = app
+        .own_nostr_pubkey_hex()
+        .ok()
+        .and_then(|own| normalize_nostr_pubkey(&own).ok())
+        .unwrap_or_default();
+    if own_pubkey.is_empty() || own_pubkey != signed_by {
         return Ok(None);
     }
-    if signed_roster.signer_pubkey_hex()? != signed_by {
+    if !app.is_network_admin(&network_id, &own_pubkey) {
         return Ok(None);
     }
+    let shared = app.shared_network_roster(&local_network_id)?;
+    let signed_roster = SignedRoster::sign(
+        &shared.network_id,
+        mobile_network_roster_from_shared(&shared),
+        &app.nostr_keys()?,
+    )?;
+    upsert_signed_roster(&store_path, signed_roster.clone())?;
     Ok(Some(signed_roster))
 }
 

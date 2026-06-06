@@ -1764,8 +1764,21 @@ impl AppConfig {
         }
         network.shared_roster_updated_at = signed_at;
         network.shared_roster_signed_by = normalized_signed_by;
-        network.dns_servers = dns_servers;
-        network.dns_strict = dns_strict;
+        // DNS-leak guard: never let a roster that carries NO DNS servers wipe an
+        // already-configured network DNS override. "Empty" and "absent" are
+        // indistinguishable on the wire — a roster signed by an older binary, or
+        // one minted before DNS was set, both arrive with an empty list — so
+        // clearing here would fail OPEN and silently leak queries back to public
+        // resolvers (1.1.1.1 / 9.9.9.9), the exact bug this guards against. A
+        // roster carrying new, non-empty servers still overrides as normal. To
+        // intentionally disable the override, clear it locally on each device
+        // (apply_settings_patch writes an empty list directly, bypassing this).
+        if dns_servers.is_empty() && !network.dns_servers.is_empty() {
+            network.dns_strict = !network.dns_servers.is_empty();
+        } else {
+            network.dns_servers = dns_servers;
+            network.dns_strict = dns_strict;
+        }
         network.outbound_join_request = if own_join_completed {
             None
         } else {
