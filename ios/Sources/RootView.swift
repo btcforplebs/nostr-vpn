@@ -1765,13 +1765,33 @@ private struct DiagnosticsCard: View {
             .appendingPathComponent("dns_nat_debug.log")
     }
 
+    // The DNS NAT log is append-only and grows to thousands of lines, which
+    // the phone struggles to render. Only show the most recent tail.
+    private static let maxLogLines = 60
+
     private func loadLogs() {
-        if let url = logUrl,
-           let content = try? String(contentsOf: url, encoding: .utf8) {
-            dnsLogs = content
-        } else {
+        guard let url = logUrl,
+              let content = try? String(contentsOf: url, encoding: .utf8) else {
             dnsLogs = "No DNS NAT logs found yet."
+            return
         }
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
+        let tail = lines.suffix(Self.maxLogLines)
+        let omitted = lines.count - tail.count
+        var text = tail.joined(separator: "\n")
+        if omitted > 0 {
+            text = "… \(omitted) older lines hidden — tap Clear to reset …\n" + text
+        }
+        dnsLogs = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Log is empty. Reconnect and load a website, then Refresh."
+            : text
+    }
+
+    private func clearLogs() {
+        if let url = logUrl {
+            try? "".write(to: url, atomically: true, encoding: .utf8)
+        }
+        dnsLogs = "Log cleared. Reconnect, load one website, then Refresh."
     }
 
     var body: some View {
@@ -1785,7 +1805,7 @@ private struct DiagnosticsCard: View {
             Metric("MagicDNS", state.magicDnsStatus)
             Metric("Version", state.appVersion)
             Metric("Config", state.configPath)
-            
+
             Button(showingLogs ? "Hide DNS NAT Logs" : "View DNS NAT Logs") {
                 if !showingLogs {
                     loadLogs()
@@ -1794,11 +1814,20 @@ private struct DiagnosticsCard: View {
             }
             .buttonStyle(.bordered)
             .font(.footnote)
-            
+
             if showingLogs {
+                HStack(spacing: 8) {
+                    Button("Refresh") { loadLogs() }
+                    Button("Copy") { UIPasteboard.general.string = dnsLogs }
+                    Button("Clear") { clearLogs() }
+                }
+                .buttonStyle(.bordered)
+                .font(.footnote)
+
                 ScrollView {
                     Text(dnsLogs)
                         .font(.system(.footnote, design: .monospaced))
+                        .textSelection(.enabled)
                         .padding(8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.gray.opacity(0.1))
