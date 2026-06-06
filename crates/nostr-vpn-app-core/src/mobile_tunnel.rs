@@ -1462,6 +1462,15 @@ impl Drop for MobileTunnel {
 struct FipsPeerAddressHint {
     addr: String,
     seen_at_ms: Option<u64>,
+    #[serde(default = "default_fips_peer_address_priority")]
+    priority: u8,
+}
+
+const FIPS_STATIC_PEER_ENDPOINT_PRIORITY: u8 = 10;
+const FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY: u8 = 100;
+
+fn default_fips_peer_address_priority() -> u8 {
+    FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2133,6 +2142,7 @@ fn update_mobile_peer_hints(
         .map(|addr| FipsPeerAddressHint {
             addr,
             seen_at_ms: Some(seen_at_ms),
+            priority: FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY,
         })
         .collect::<Vec<_>>();
     hints.sort_by(|left, right| left.addr.cmp(&right.addr));
@@ -2511,7 +2521,7 @@ fn fips_peer_config_from_hint(
         .flatten()
         .map(|hint| {
             let (transport, addr) = split_peer_transport_addr(&hint.addr);
-            let mut addr = PeerAddress::new(transport, addr);
+            let mut addr = PeerAddress::with_priority(transport, addr, hint.priority);
             if let Some(seen_at_ms) = hint.seen_at_ms {
                 addr = addr.with_seen_at_ms(seen_at_ms);
             }
@@ -2569,6 +2579,7 @@ fn fips_address_hints(
                             format!("{transport}:{addr}")
                         },
                         seen_at_ms: None,
+                        priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -3565,6 +3576,7 @@ mod tests {
             vec![FipsPeerAddressHint {
                 addr: format!("127.0.0.1:{exit_port}"),
                 seen_at_ms: None,
+                priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
             }],
         );
 
@@ -3696,6 +3708,7 @@ mod tests {
             &vec![FipsPeerAddressHint {
                 addr: "192.168.50.10:51820".to_string(),
                 seen_at_ms: None,
+                priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
             }]
         );
     }
@@ -3751,6 +3764,7 @@ mod tests {
             &vec![FipsPeerAddressHint {
                 addr: "192.168.50.10:51820".to_string(),
                 seen_at_ms: None,
+                priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
             }]
         );
         let endpoint_config =
@@ -4096,6 +4110,7 @@ mod tests {
             vec![FipsPeerAddressHint {
                 addr: format!("127.0.0.1:{admin_port}"),
                 seen_at_ms: None,
+                priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
             }],
         );
         MobileTunnelConfig {
@@ -4508,6 +4523,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
@@ -4989,6 +5006,7 @@ mod tests {
             vec![FipsPeerAddressHint {
                 addr: "192.168.50.10:51820".to_string(),
                 seen_at_ms: None,
+                priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
             }],
         );
         let mobile = MobileTunnelConfig {
@@ -5007,6 +5025,10 @@ mod tests {
         assert_eq!(peer_config.addresses.len(), 1);
         assert_eq!(peer_config.addresses[0].transport, "udp");
         assert_eq!(peer_config.addresses[0].addr, "192.168.50.10:51820");
+        assert_eq!(
+            peer_config.addresses[0].priority,
+            FIPS_STATIC_PEER_ENDPOINT_PRIORITY
+        );
     }
 
     #[test]
@@ -5027,6 +5049,7 @@ mod tests {
             vec![FipsPeerAddressHint {
                 addr: "192.168.50.33:51820".to_string(),
                 seen_at_ms: Some(1234),
+                priority: FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY,
             }],
         );
         let mobile = MobileTunnelConfig {
@@ -5045,6 +5068,10 @@ mod tests {
         assert_eq!(transit_config.addresses[0].transport, "udp");
         assert_eq!(transit_config.addresses[0].addr, "192.168.50.33:51820");
         assert_eq!(transit_config.addresses[0].seen_at_ms, Some(1234));
+        assert_eq!(
+            transit_config.addresses[0].priority,
+            FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY
+        );
         assert!(
             transit_config.discovery_fallback_transit,
             "hinted non-roster peers should be usable as fallback transit"

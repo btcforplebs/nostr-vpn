@@ -2,6 +2,54 @@
 
 All notable changes to this project are documented in this file.
 
+## 4.0.67 - 2026-06-05
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.39 and `fips-endpoint` 0.3.24.
+
+### Fixed
+
+- FIPS fallback routing now keeps established packets flowing when a direct
+  UDP path is marked link-dead, while direct probing continues in the
+  background.
+- Transit nodes no longer bounce learned fallback routes back to the previous
+  hop, preventing mesh loops that could exhaust packet TTL after direct-path
+  loss.
+- Fresh fallback discovery now warms established sessions immediately and keeps
+  coordinate-carrying warmup packets out of discardable bulk queues.
+
+## 4.0.66 - 2026-06-05
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.38 and `fips-endpoint` 0.3.24.
+
+### Fixed
+
+- Direct-path failures no longer reinstall a stale UDP fast path after
+  link-dead. Mesh can carry traffic as fallback while direct UDP keeps
+  probing and upgrades back when the path recovers.
+
+## 4.0.65 - 2026-06-05
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.37 and `fips-endpoint` 0.3.24.
+
+### Fixed
+
+- Direct UDP liveness failures now make only the dead link stale. Stale direct
+  links remain probe targets, but FIPS no longer selects them for payload or
+  lookup routing, so packets rediscover and use fallback instead of
+  blackholing on the old UDP path.
+- Nostr/STUN-discovered UDP paths now fall back after a short liveness window
+  when they go quiet, even if they previously carried traffic. Mesh stays a
+  fallback transport while direct UDP keeps probing.
+- Fresh fallback discovery now flushes queued traffic through existing
+  sessions, so fallback starts carrying packets immediately after direct UDP is
+  marked stale.
+
 ## 4.0.62 - 2026-06-05
 
 ### Changed

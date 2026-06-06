@@ -34,7 +34,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Command as ProcessCommand;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
@@ -67,6 +67,7 @@ const FIPS_NOSTR_EXTENDED_COOLDOWN_SECS: u64 = 60;
 const FIPS_NOSTR_STARTUP_SWEEP_MAX_AGE_SECS: u64 = 300;
 const FIPS_ENDPOINT_HEARTBEAT_INTERVAL_SECS: u64 = 2;
 const FIPS_ENDPOINT_LINK_DEAD_TIMEOUT_SECS: u64 = 30;
+const FIPS_ENDPOINT_FAST_LINK_DEAD_TIMEOUT_SECS: u64 = 5;
 const FIPS_ENDPOINT_SESSION_IDLE_TIMEOUT_SECS: u64 = 0;
 const FIPS_ENDPOINT_PENDING_PACKETS_PER_DEST: usize = 64;
 const FIPS_ENDPOINT_REKEY_AFTER_SECS: u64 = 3600;
@@ -417,6 +418,14 @@ fn mask_ipv4(addr: Ipv4Addr, prefix_len: u8) -> Ipv4Addr {
 }
 
 fn local_private_ipv4_subnets() -> Vec<Ipv4Subnet> {
+    let mut subnets = local_private_ipv4_interface_subnets();
+    subnets.extend(local_private_ipv4_route_subnets(&subnets));
+    subnets.sort_by_key(|subnet| (u32::from(subnet.network), subnet.prefix_len));
+    subnets.dedup();
+    subnets
+}
+
+fn local_private_ipv4_interface_subnets() -> Vec<Ipv4Subnet> {
     let mut subnets = Vec::new();
     for iface in netdev::get_interfaces() {
         if iface.is_loopback() {
@@ -437,6 +446,167 @@ fn local_private_ipv4_subnets() -> Vec<Ipv4Subnet> {
     subnets.sort_by_key(|subnet| (u32::from(subnet.network), subnet.prefix_len));
     subnets.dedup();
     subnets
+}
+
+#[cfg(target_os = "linux")]
+fn local_private_ipv4_route_subnets(interface_subnets: &[Ipv4Subnet]) -> Vec<Ipv4Subnet> {
+    let Ok(output) = ProcessCommand::new("ip")
+        .arg("-4")
+        .arg("route")
+        .arg("show")
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    linux_private_ipv4_route_subnets_from_ip_route(&stdout, interface_subnets)
+}
+
+#[cfg(target_os = "macos")]
+fn local_private_ipv4_route_subnets(interface_subnets: &[Ipv4Subnet]) -> Vec<Ipv4Subnet> {
+    let Ok(output) = ProcessCommand::new("netstat")
+        .arg("-rn")
+        .arg("-f")
+        .arg("inet")
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    macos_private_ipv4_route_subnets_from_netstat(&stdout, interface_subnets)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn local_private_ipv4_route_subnets(_interface_subnets: &[Ipv4Subnet]) -> Vec<Ipv4Subnet> {
+    Vec::new()
+}
+
+fn private_route_gateway_is_local(gateway: Ipv4Addr, interface_subnets: &[Ipv4Subnet]) -> bool {
+    interface_subnets
+        .iter()
+        .any(|subnet| subnet.contains(gateway))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_private_ipv4_route_subnets_from_ip_route(
+    output: &str,
+    interface_subnets: &[Ipv4Subnet],
+) -> Vec<Ipv4Subnet> {
+    let mut subnets = Vec::new();
+    for line in output.lines().map(str::trim) {
+        if line.is_empty()
+            || line.starts_with("default ")
+            || line.starts_with("blackhole ")
+            || line.starts_with("unreachable ")
+            || line.starts_with("throw ")
+        {
+            continue;
+        }
+        let tokens = line.split_whitespace().collect::<Vec<_>>();
+        let Some(route) = parse_ipv4_route_target(tokens[0]) else {
+            continue;
+        };
+        if !ipv4_static_hint_requires_local_subnet(route.network) {
+            continue;
+        }
+        let gateway = tokens
+            .windows(2)
+            .find(|pair| pair[0] == "via")
+            .and_then(|pair| pair[1].parse::<Ipv4Addr>().ok());
+        let dev = tokens
+            .windows(2)
+            .find(|pair| pair[0] == "dev")
+            .map(|pair| pair[1]);
+        if gateway.is_none() && dev.is_some_and(route_interface_is_tunnel_like) {
+            continue;
+        }
+        if gateway.is_none_or(|gateway| private_route_gateway_is_local(gateway, interface_subnets))
+        {
+            subnets.push(route);
+        }
+    }
+    subnets.sort_by_key(|subnet| (u32::from(subnet.network), subnet.prefix_len));
+    subnets.dedup();
+    subnets
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn route_interface_is_tunnel_like(interface: &str) -> bool {
+    interface.starts_with("utun")
+        || interface.starts_with("tun")
+        || interface.starts_with("wg")
+        || interface.starts_with("tailscale")
+        || interface == "lo"
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_private_ipv4_route_subnets_from_netstat(
+    output: &str,
+    interface_subnets: &[Ipv4Subnet],
+) -> Vec<Ipv4Subnet> {
+    let mut subnets = Vec::new();
+    for line in output.lines().map(str::trim) {
+        let tokens = line.split_whitespace().collect::<Vec<_>>();
+        if tokens.len() < 3 || tokens[0] == "default" {
+            continue;
+        }
+        let Some(route) = parse_macos_ipv4_route_target(tokens[0]) else {
+            continue;
+        };
+        if !ipv4_static_hint_requires_local_subnet(route.network) {
+            continue;
+        }
+        let gateway = tokens[1].parse::<Ipv4Addr>().ok();
+        let direct = tokens[1].starts_with("link#");
+        if direct
+            || gateway
+                .is_some_and(|gateway| private_route_gateway_is_local(gateway, interface_subnets))
+        {
+            subnets.push(route);
+        }
+    }
+    subnets.sort_by_key(|subnet| (u32::from(subnet.network), subnet.prefix_len));
+    subnets.dedup();
+    subnets
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn parse_ipv4_route_target(target: &str) -> Option<Ipv4Subnet> {
+    let (addr, prefix_len) = target
+        .split_once('/')
+        .map(|(addr, prefix)| (addr, prefix.parse::<u8>().ok()))
+        .unwrap_or((target, Some(32)));
+    let prefix_len = prefix_len?;
+    if prefix_len > 32 {
+        return None;
+    }
+    Some(Ipv4Subnet::new(addr.parse().ok()?, prefix_len))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_ipv4_route_target(target: &str) -> Option<Ipv4Subnet> {
+    if target.contains('/') {
+        return parse_ipv4_route_target(target);
+    }
+    let parts = target.split('.').collect::<Vec<_>>();
+    let prefix_len = match parts.len() {
+        1 => 8,
+        2 => 16,
+        3 => 24,
+        4 => 32,
+        _ => return None,
+    };
+    let mut octets = [0u8; 4];
+    for (index, part) in parts.iter().enumerate() {
+        octets[index] = part.parse::<u8>().ok()?;
+    }
+    Some(Ipv4Subnet::new(Ipv4Addr::from(octets), prefix_len))
 }
 
 fn ipv4_static_hint_requires_local_subnet(addr: Ipv4Addr) -> bool {
@@ -1491,10 +1661,14 @@ struct FipsEndpointTransportConfig {
 /// recent-peers cache entries, `None` for operator-supplied static hints.
 /// fips's dialer uses this field as a recency tiebreaker inside the same
 /// priority tier.
+const FIPS_STATIC_PEER_ENDPOINT_PRIORITY: u8 = 10;
+const FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY: u8 = 100;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FipsPeerAddressHint {
     pub(crate) addr: String,
     pub(crate) seen_at_ms: Option<u64>,
+    pub(crate) priority: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1506,7 +1680,7 @@ pub(crate) struct FipsEndpointPeerTransportConfig {
 
 fn fips_peer_address_from_hint(hint: &FipsPeerAddressHint) -> PeerAddress {
     let (transport, addr) = split_peer_transport_addr(&hint.addr);
-    let mut peer_address = PeerAddress::new(transport, addr);
+    let mut peer_address = PeerAddress::with_priority(transport, addr, hint.priority);
     if let Some(seen_at_ms) = hint.seen_at_ms {
         peer_address = peer_address.with_seen_at_ms(seen_at_ms);
     }
@@ -1545,6 +1719,7 @@ fn fips_endpoint_config_with_open_discovery_limit(
     config.node.retry.max_backoff_secs = FIPS_RECONNECT_BACKOFF_MAX_SECS;
     config.node.heartbeat_interval_secs = FIPS_ENDPOINT_HEARTBEAT_INTERVAL_SECS;
     config.node.link_dead_timeout_secs = FIPS_ENDPOINT_LINK_DEAD_TIMEOUT_SECS;
+    config.node.fast_link_dead_timeout_secs = FIPS_ENDPOINT_FAST_LINK_DEAD_TIMEOUT_SECS;
     config.node.session.idle_timeout_secs = FIPS_ENDPOINT_SESSION_IDLE_TIMEOUT_SECS;
     config.node.session.pending_packets_per_dest = FIPS_ENDPOINT_PENDING_PACKETS_PER_DEST;
     config.node.rekey.after_secs = FIPS_ENDPOINT_REKEY_AFTER_SECS;
@@ -1695,6 +1870,7 @@ fn fips_endpoint_peers_from_mesh(
             peer.addresses.push(FipsPeerAddressHint {
                 addr: trimmed.to_string(),
                 seen_at_ms: None,
+                priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
             });
         }
     }
@@ -1732,6 +1908,7 @@ fn fips_endpoint_peers_from_mesh(
             peer.addresses.push(FipsPeerAddressHint {
                 addr: trimmed.to_string(),
                 seen_at_ms: Some(seen_at_ms),
+                priority: FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY,
             });
         }
     }
@@ -4059,22 +4236,25 @@ fn unix_timestamp() -> u64 {
 mod tests {
     use super::{
         ControlFragmentBuffer, FIPS_DISCOVERY_BACKOFF_BASE_SECS, FIPS_DISCOVERY_BACKOFF_MAX_SECS,
-        FIPS_DISCOVERY_FORWARD_MIN_INTERVAL_SECS, FIPS_ENDPOINT_HEARTBEAT_INTERVAL_SECS,
+        FIPS_DISCOVERY_FORWARD_MIN_INTERVAL_SECS, FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY,
+        FIPS_ENDPOINT_FAST_LINK_DEAD_TIMEOUT_SECS, FIPS_ENDPOINT_HEARTBEAT_INTERVAL_SECS,
         FIPS_ENDPOINT_LINK_DEAD_TIMEOUT_SECS, FIPS_ENDPOINT_PENDING_PACKETS_PER_DEST,
         FIPS_ENDPOINT_REKEY_AFTER_SECS, FIPS_ENDPOINT_SESSION_IDLE_TIMEOUT_SECS,
         FIPS_LAN_DISCOVERY_SCOPE_PREFIX, FIPS_MESH_EVENT_DRAIN_LIMIT, FIPS_NOSTR_DISCOVERY_APP,
         FIPS_NOSTR_EXTENDED_COOLDOWN_SECS, FIPS_NOSTR_FAILURE_STREAK_THRESHOLD,
         FIPS_NOSTR_OPEN_DISCOVERY_MAX_PENDING, FIPS_NOSTR_STARTUP_SWEEP_MAX_AGE_SECS,
         FIPS_RECENT_NON_ROSTER_TRANSIT_MAX_SEEDS, FIPS_RECONNECT_BACKOFF_BASE_SECS,
-        FIPS_RECONNECT_BACKOFF_MAX_SECS, FipsEndpointTransportConfig, FipsPeerAddressHint,
-        FipsPrivateMeshEvent, FipsPrivateMeshRuntime, FipsPrivateTunnelConfig, Ipv4Subnet,
+        FIPS_RECONNECT_BACKOFF_MAX_SECS, FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
+        FipsEndpointTransportConfig, FipsPeerAddressHint, FipsPrivateMeshEvent,
+        FipsPrivateMeshRuntime, FipsPrivateTunnelConfig, Ipv4Subnet,
         cap_recent_non_roster_transit_endpoints, control_frame_destination_npub,
         control_frame_source_pubkey, drain_event_batch, filter_stamped_tunnel_endpoints,
         filter_static_tunnel_endpoints, fips_endpoint_config, fips_endpoint_peers_from_mesh,
         fips_lan_discovery_scope, fips_peer_address_from_hint, linux_cap_eff_has_net_admin,
-        linux_tun_setup_error, mesh_status_from_endpoint_peer, other_endpoint_peer_statuses,
-        parse_fips_nostr_discovery_policy, strip_cidr, tag_authenticated_transport_addr,
-        unix_timestamp,
+        linux_private_ipv4_route_subnets_from_ip_route, linux_tun_setup_error,
+        macos_private_ipv4_route_subnets_from_netstat, mesh_status_from_endpoint_peer,
+        other_endpoint_peer_statuses, parse_fips_nostr_discovery_policy, strip_cidr,
+        tag_authenticated_transport_addr, unix_timestamp,
     };
     use fips_endpoint::{
         Config, ConnectPolicy, FipsEndpointPeer, NostrDiscoveryPolicy,
@@ -4141,17 +4321,21 @@ mod tests {
         let tcp = fips_peer_address_from_hint(&FipsPeerAddressHint {
             addr: "tcp:203.0.113.20:443".to_string(),
             seen_at_ms: Some(123_000),
+            priority: FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY,
         });
         assert_eq!(tcp.transport, "tcp");
         assert_eq!(tcp.addr, "203.0.113.20:443");
         assert_eq!(tcp.seen_at_ms, Some(123_000));
+        assert_eq!(tcp.priority, FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY);
 
         let udp = fips_peer_address_from_hint(&FipsPeerAddressHint {
             addr: "udp:203.0.113.21:2121".to_string(),
             seen_at_ms: None,
+            priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
         });
         assert_eq!(udp.transport, "udp");
         assert_eq!(udp.addr, "203.0.113.21:2121");
+        assert_eq!(udp.priority, FIPS_STATIC_PEER_ENDPOINT_PRIORITY);
     }
 
     #[test]
@@ -5042,6 +5226,10 @@ mod tests {
             FIPS_ENDPOINT_LINK_DEAD_TIMEOUT_SECS
         );
         assert_eq!(
+            config.node.fast_link_dead_timeout_secs,
+            FIPS_ENDPOINT_FAST_LINK_DEAD_TIMEOUT_SECS
+        );
+        assert_eq!(
             config.node.session.idle_timeout_secs,
             FIPS_ENDPOINT_SESSION_IDLE_TIMEOUT_SECS
         );
@@ -5602,6 +5790,44 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_peer_hints_mark_static_addresses_as_preferred_priority() {
+        let endpoint_peers = fips_endpoint_peers_from_mesh(
+            &[],
+            vec![("peer".to_string(), vec!["192.168.178.91:51830".to_string()])],
+            vec![(
+                "peer".to_string(),
+                vec![("89.27.103.157:33838".to_string(), 123_000)],
+            )],
+        );
+
+        let peer = endpoint_peers
+            .iter()
+            .find(|peer| peer.npub == "peer")
+            .expect("peer");
+        let static_hint = peer
+            .addresses
+            .iter()
+            .find(|hint| hint.addr == "192.168.178.91:51830")
+            .expect("static hint");
+        let recent_hint = peer
+            .addresses
+            .iter()
+            .find(|hint| hint.addr == "89.27.103.157:33838")
+            .expect("recent hint");
+
+        assert_eq!(static_hint.priority, FIPS_STATIC_PEER_ENDPOINT_PRIORITY);
+        assert_eq!(recent_hint.priority, FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY);
+        assert_eq!(
+            fips_peer_address_from_hint(static_hint).priority,
+            FIPS_STATIC_PEER_ENDPOINT_PRIORITY
+        );
+        assert_eq!(
+            fips_peer_address_from_hint(recent_hint).priority,
+            FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY
+        );
+    }
+
+    #[test]
     fn static_endpoint_filter_drops_stale_private_hints() {
         let mut tunnel_ips = HashSet::new();
         tunnel_ips.insert(IpAddr::V4(Ipv4Addr::new(10, 44, 1, 2)));
@@ -5636,6 +5862,76 @@ mod tests {
                 ],
             )]
         );
+    }
+
+    #[test]
+    fn static_endpoint_filter_keeps_private_hints_on_explicit_local_routes() {
+        let tunnel_ips = HashSet::new();
+        let local_subnets = vec![
+            Ipv4Subnet::new(Ipv4Addr::new(192, 168, 178, 57), 24),
+            Ipv4Subnet::new(Ipv4Addr::new(192, 168, 122, 0), 24),
+        ];
+
+        let filtered = filter_static_tunnel_endpoints(
+            vec![(
+                "peer".to_string(),
+                vec![
+                    "192.168.122.103:51820".to_string(),
+                    "192.168.123.103:51820".to_string(),
+                ],
+            )],
+            &tunnel_ips,
+            &local_subnets,
+        );
+
+        assert_eq!(
+            filtered,
+            vec![(
+                "peer".to_string(),
+                vec!["192.168.122.103:51820".to_string()],
+            )]
+        );
+    }
+
+    #[test]
+    fn linux_route_parser_keeps_private_routes_via_local_underlay_gateway() {
+        let interface_subnets = vec![Ipv4Subnet::new(Ipv4Addr::new(192, 168, 178, 57), 24)];
+        let routes = linux_private_ipv4_route_subnets_from_ip_route(
+            "\
+default via 192.168.178.1 dev eno1
+192.168.122.0/24 via 192.168.178.91 dev eno1
+192.168.123.0/24 via 10.0.0.1 dev eno1
+172.19.0.0/16 dev virbr0 proto kernel scope link src 172.19.0.1
+10.44.4.97 dev utun100 scope link src 10.44.67.51
+",
+            &interface_subnets,
+        );
+
+        assert!(routes.contains(&Ipv4Subnet::new(Ipv4Addr::new(192, 168, 122, 0), 24)));
+        assert!(routes.contains(&Ipv4Subnet::new(Ipv4Addr::new(172, 19, 0, 0), 16)));
+        assert!(!routes.contains(&Ipv4Subnet::new(Ipv4Addr::new(192, 168, 123, 0), 24)));
+        assert!(!routes.contains(&Ipv4Subnet::new(Ipv4Addr::new(10, 44, 4, 97), 32)));
+    }
+
+    #[test]
+    fn macos_route_parser_keeps_private_routes_via_local_underlay_gateway() {
+        let interface_subnets = vec![Ipv4Subnet::new(Ipv4Addr::new(192, 168, 178, 57), 24)];
+        let routes = macos_private_ipv4_route_subnets_from_netstat(
+            "\
+Destination        Gateway            Flags               Netif Expire
+default            192.168.178.1      UGScg                 en0
+10.44.4.97         utun5              UHS                 utun5
+192.168.122        192.168.178.91     UGSc                  en0
+192.168.123        10.0.0.1           UGSc                  en0
+192.168.178        link#7             UCS                   en0      !
+",
+            &interface_subnets,
+        );
+
+        assert!(routes.contains(&Ipv4Subnet::new(Ipv4Addr::new(192, 168, 122, 0), 24)));
+        assert!(routes.contains(&Ipv4Subnet::new(Ipv4Addr::new(192, 168, 178, 0), 24)));
+        assert!(!routes.contains(&Ipv4Subnet::new(Ipv4Addr::new(192, 168, 123, 0), 24)));
+        assert!(!routes.contains(&Ipv4Subnet::new(Ipv4Addr::new(10, 44, 4, 97), 32)));
     }
 
     #[test]

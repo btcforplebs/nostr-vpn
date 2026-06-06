@@ -1,6 +1,7 @@
 use super::*;
 
 const DAEMON_STATE_PERSIST_INTERVAL_SECS: u64 = 1;
+pub(crate) const DAEMON_NETWORK_REFRESH_INTERVAL_SECS: u64 = 1;
 
 #[cfg(feature = "embedded-fips")]
 macro_rules! current_fips_peer_statuses {
@@ -146,7 +147,6 @@ struct FipsRestartContext<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FipsLinkEventRefresh {
     None,
-    RefreshConfig,
     RestartEndpoint,
 }
 
@@ -157,10 +157,8 @@ pub(crate) fn fips_link_event_refresh(
     underlay_repaired: bool,
     resumed_after_sleep: bool,
 ) -> FipsLinkEventRefresh {
-    if network_changed || underlay_repaired || resumed_after_sleep {
+    if network_changed || endpoint_changed || underlay_repaired || resumed_after_sleep {
         FipsLinkEventRefresh::RestartEndpoint
-    } else if endpoint_changed {
-        FipsLinkEventRefresh::RefreshConfig
     } else {
         FipsLinkEventRefresh::None
     }
@@ -691,7 +689,8 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
     state_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut tunnel_heartbeat_interval = tokio::time::interval(Duration::from_secs(2));
     tunnel_heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut network_interval = tokio::time::interval(Duration::from_secs(5));
+    let mut network_interval =
+        tokio::time::interval(Duration::from_secs(DAEMON_NETWORK_REFRESH_INTERVAL_SECS));
     network_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     #[cfg(unix)]
@@ -1015,19 +1014,6 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                                             &mut last_fips_endpoint_peer_signature,
                                     },
                                     refresh_reason,
-                                )
-                                .await
-                            } else {
-                                Ok(())
-                            }
-                        }
-                        FipsLinkEventRefresh::RefreshConfig => {
-                            if let Some(runtime) = fips_tunnel_runtime.as_mut() {
-                                refresh_fips_tunnel_config(
-                                    runtime,
-                                    &app,
-                                    &network_id,
-                                    own_pubkey.as_deref(),
                                 )
                                 .await
                             } else {
