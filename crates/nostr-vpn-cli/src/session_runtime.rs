@@ -2,6 +2,7 @@ use super::*;
 
 const DAEMON_STATE_PERSIST_INTERVAL_SECS: u64 = 1;
 pub(crate) const DAEMON_NETWORK_REFRESH_INTERVAL_SECS: u64 = 1;
+pub(crate) const MACOS_UNDERLAY_ROUTE_CHECK_INTERVAL_SECS: u64 = 5;
 
 #[cfg(feature = "embedded-fips")]
 macro_rules! current_fips_peer_statuses {
@@ -316,6 +317,25 @@ fn prefer_nonself_tunnel_snapshot(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn macos_underlay_route_check_due(
+    last_check_at: &mut Instant,
+    network_changed: bool,
+    resumed_after_sleep: bool,
+    now: Instant,
+) -> bool {
+    if network_changed
+        || resumed_after_sleep
+        || now.saturating_duration_since(*last_check_at)
+            >= Duration::from_secs(MACOS_UNDERLAY_ROUTE_CHECK_INTERVAL_SECS)
+    {
+        *last_check_at = now;
+        true
+    } else {
+        false
+    }
+}
+
 async fn capture_network_snapshot_for_daemon() -> crate::diagnostics::NetworkSnapshot {
     match tokio::task::spawn_blocking(capture_network_snapshot).await {
         Ok(snapshot) => snapshot,
@@ -331,6 +351,30 @@ async fn ensure_macos_underlay_default_route_for_daemon() -> Result<bool> {
     tokio::task::spawn_blocking(crate::macos_network::ensure_macos_underlay_default_route)
         .await
         .context("macOS underlay route check task failed")?
+}
+
+#[cfg(target_os = "macos")]
+async fn maybe_ensure_macos_underlay_default_route_for_daemon(
+    last_check_at: &mut Instant,
+    network_changed: bool,
+    resumed_after_sleep: bool,
+    now: Instant,
+) -> bool {
+    if !macos_underlay_route_check_due(last_check_at, network_changed, resumed_after_sleep, now) {
+        return false;
+    }
+
+    match ensure_macos_underlay_default_route_for_daemon().await {
+        Ok(true) => {
+            eprintln!("daemon: restored missing macOS underlay default route");
+            true
+        }
+        Ok(false) => false,
+        Err(error) => {
+            eprintln!("daemon: failed to ensure macOS underlay default route: {error}");
+            false
+        }
+    }
 }
 
 pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
@@ -739,6 +783,9 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
     )?;
     let mut last_state_persisted_at = Instant::now();
     let daemon_state_persist_interval = Duration::from_secs(DAEMON_STATE_PERSIST_INTERVAL_SECS);
+    #[cfg(target_os = "macos")]
+    let mut last_macos_underlay_route_check_at =
+        Instant::now() - Duration::from_secs(MACOS_UNDERLAY_ROUTE_CHECK_INTERVAL_SECS);
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let supervised_service_executable = if args.service {
@@ -875,41 +922,43 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
             }
             _ = network_interval.tick() => {
                 let now = unix_timestamp();
+                let observed_at = Instant::now();
                 let resumed_after_sleep = observe_wall_time_jump(
                     &mut last_network_check_at,
                     now,
-                    Instant::now(),
+                    observed_at,
                     MAJOR_LINK_CHANGE_TIME_JUMP_SECS,
                 );
                 if resumed_after_sleep {
                     eprintln!("daemon: sleep/wake detected; refreshing FIPS endpoint state");
                 }
-                #[cfg(target_os = "macos")]
-                let underlay_repaired =
-                    match ensure_macos_underlay_default_route_for_daemon().await {
-                        Ok(true) => {
-                            eprintln!("daemon: restored missing macOS underlay default route");
-                            true
-                        }
-                        Ok(false) => false,
-                        Err(error) => {
-                            eprintln!(
-                                "daemon: failed to ensure macOS underlay default route: {error}"
-                            );
-                            false
-                        }
-                    };
-                #[cfg(not(target_os = "macos"))]
-                let underlay_repaired = false;
-                let latest_snapshot = prefer_nonself_tunnel_snapshot(
+                let mut latest_snapshot = prefer_nonself_tunnel_snapshot(
                     &tunnel_runtime,
                     &network_snapshot,
                     capture_network_snapshot_for_daemon().await,
                 );
+                let mut network_changed = latest_snapshot.changed_since(&network_snapshot);
+                #[cfg(target_os = "macos")]
+                let underlay_repaired = maybe_ensure_macos_underlay_default_route_for_daemon(
+                    &mut last_macos_underlay_route_check_at,
+                    network_changed,
+                    resumed_after_sleep,
+                    observed_at,
+                )
+                .await;
+                #[cfg(not(target_os = "macos"))]
+                let underlay_repaired = false;
+                if underlay_repaired {
+                    latest_snapshot = prefer_nonself_tunnel_snapshot(
+                        &tunnel_runtime,
+                        &network_snapshot,
+                        capture_network_snapshot_for_daemon().await,
+                    );
+                    network_changed = latest_snapshot.changed_since(&network_snapshot);
+                }
                 let runtime_listen_port =
                     tunnel_runtime.active_listen_port.unwrap_or(app.node.listen_port);
                 let vpn_active = daemon_vpn_active(vpn_enabled, expected_peers);
-                let network_changed = latest_snapshot.changed_since(&network_snapshot);
                 let endpoint_changed = if network_changed {
                     network_snapshot = latest_snapshot.clone();
                     network_changed_at = Some(unix_timestamp());
