@@ -3052,6 +3052,9 @@ public struct SettingsPatch {
      * DNS server IPs for the active network (admin only). `Some(vec![])` clears.
      */
     public var networkDnsServers: [String]?
+    /**
+     * When true, peers use only admin-configured DNS with zero public fallback.
+     */
     public var networkDnsStrict: Bool?
 
     // Default memberwise initializers are never public by default, so we
@@ -3059,7 +3062,10 @@ public struct SettingsPatch {
     public init(nodeName: String?, endpoint: String?, tunnelIp: String?, listenPort: UInt16?, relays: [String]?, disabledRelays: [String]?, exitNode: String?, exitNodeLeakProtection: Bool?, advertiseExitNode: Bool?, advertisedRoutes: String?, wireguardExitEnabled: Bool?, wireguardExitInterface: String?, wireguardExitAddress: String?, wireguardExitPrivateKey: String?, wireguardExitPeerPublicKey: String?, wireguardExitPeerPresharedKey: String?, wireguardExitEndpoint: String?, wireguardExitAllowedIps: String?, wireguardExitDns: String?, wireguardExitMtu: UInt16?, wireguardExitPersistentKeepaliveSecs: UInt16?, wireguardExitConfig: String?, fipsHostTunnelEnabled: Bool?, connectToNonRosterFipsPeers: Bool?, fipsNostrDiscoveryEnabled: Bool?, fipsBootstrapEnabled: Bool?, fipsBootstrapPeers: [String: [String]]?, fipsHostInboundTcpPorts: String?, autoconnect: Bool?, launchOnStartup: Bool?, closeToTrayOnClose: Bool?,
         /**
          * DNS server IPs for the active network (admin only). `Some(vec![])` clears.
-         */networkDnsServers: [String]?, networkDnsStrict: Bool?) {
+         */networkDnsServers: [String]?,
+        /**
+         * When true, peers use only admin-configured DNS with zero public fallback.
+         */networkDnsStrict: Bool?) {
         self.nodeName = nodeName
         self.endpoint = endpoint
         self.tunnelIp = tunnelIp
