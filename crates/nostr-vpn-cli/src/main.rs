@@ -100,8 +100,8 @@ use nostr_vpn_core::fips_mesh::FipsPaidRouteAdmission;
 #[cfg(feature = "embedded-fips")]
 use nostr_vpn_core::join_requests::{FIPS_JOIN_REQUEST_RETRY_SECS, MeshJoinRequest};
 use nostr_vpn_core::magic_dns::{
-    MagicDnsResolverConfig, MagicDnsServer, build_magic_dns_records, install_system_resolver,
-    uninstall_system_resolver,
+    DnsOverrideGuard, MagicDnsResolverConfig, MagicDnsServer, build_magic_dns_records,
+    install_system_resolver, uninstall_system_resolver,
 };
 #[cfg(feature = "paid-exit")]
 use nostr_vpn_core::paid_route_probe::{
@@ -176,8 +176,8 @@ use crate::diagnostics::{
 use crate::network_signaling::NETWORK_INVITE_PREFIX;
 use crate::network_signaling::{
     RosterEditAction, active_network_invite_code, apply_network_invite_to_active_network,
-    maybe_reload_running_daemon, parse_network_invite, queue_active_network_join_request,
-    update_active_network_roster,
+    clear_network_dns, maybe_reload_running_daemon, parse_network_invite,
+    queue_active_network_join_request, set_network_dns, update_active_network_roster,
 };
 #[cfg(any(test, not(target_os = "windows")))]
 pub(crate) use crate::platform_routing::*;
@@ -244,6 +244,7 @@ const WINDOWS_SERVICE_DESCRIPTION: &str = "Nostr VPN background mesh and tunnel 
 static WINDOWS_SERVICE_DAEMON_ARGS: OnceLock<DaemonArgs> = OnceLock::new();
 #[cfg(target_os = "windows")]
 define_windows_service!(ffi_windows_service_main, windows_service_main);
+
 
 include!("main/cli_args.rs");
 include!("main/command_dispatch.rs");

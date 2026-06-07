@@ -100,6 +100,11 @@ enum Command {
     AddAdmin(UpdateRosterArgs),
     /// Remove one or more admins from the active network roster.
     RemoveAdmin(UpdateRosterArgs),
+    /// Set DNS server IPs for the active network (admin only).
+    /// All peers will auto-configure these as their system DNS.
+    SetNetworkDns(SetNetworkDnsArgs),
+    /// Remove DNS server override from the active network (admin only).
+    ClearNetworkDns(ClearNetworkDnsArgs),
     /// Ping a peer by node ID or tunnel IP.
     Ping(PingArgs),
     /// Diagnose runtime/network issues and optionally write a support bundle.
@@ -368,6 +373,29 @@ struct StopArgs {
 struct RepairNetworkArgs {
     #[arg(long)]
     config: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct SetNetworkDnsArgs {
+    #[arg(long)]
+    config: Option<PathBuf>,
+    #[arg(long)]
+    network_id: Option<String>,
+    /// DNS server IP addresses (e.g. 1.1.1.1 192.168.1.53).
+    #[arg(required = true)]
+    servers: Vec<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ClearNetworkDnsArgs {
+    #[arg(long)]
+    config: Option<PathBuf>,
+    #[arg(long)]
+    network_id: Option<String>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]

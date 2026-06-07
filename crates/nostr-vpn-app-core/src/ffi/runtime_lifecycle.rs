@@ -409,6 +409,13 @@ impl NativeAppRuntime {
             } else {
                 self.magic_dns_status()
             },
+            network_dns_servers: if config_unavailable {
+                Vec::new()
+            } else {
+                self.active_network_dns_servers()
+            },
+            dns_override_active: !config_unavailable && self.dns_override_active(),
+            dns_strict: !config_unavailable && self.active_network_dns_strict(),
             autoconnect: !config_unavailable && self.config.autoconnect,
             invite_broadcast_active: self.invite_broadcast_active(),
             invite_broadcast_remaining_secs: self.invite_broadcast_remaining_secs(),

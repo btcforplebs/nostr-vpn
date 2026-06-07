@@ -130,6 +130,10 @@ final class PacketTunnelController {
     private func loadOrCreateManager() async throws -> NETunnelProviderManager {
         let managers = try await loadAllManagers()
         debugLog("loaded managers count=\(managers.count)")
+        // Remove stale managers that don't match our current bundle identifier
+        for manager in managers where (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier != providerBundleIdentifier {
+            try? await remove(manager)
+        }
         if let existing = managers.first(where: { manager in
             (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier
                 == providerBundleIdentifier
@@ -156,6 +160,18 @@ final class PacketTunnelController {
     private func save(_ manager: NETunnelProviderManager) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             manager.saveToPreferences { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: ())
+                }
+            }
+        }
+    }
+
+    private func remove(_ manager: NETunnelProviderManager) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            manager.removeFromPreferences { error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else {

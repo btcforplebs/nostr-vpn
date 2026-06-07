@@ -18,6 +18,8 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         Arc::new(RwLock::new(app))
     }
@@ -90,6 +92,8 @@
                 admins: vec![known_admin_hex, outsider_hex],
                 aliases: HashMap::new(),
                 signed_at: 1_726_000_000,
+                dns_servers: Vec::new(),
+                dns_strict: false,
             },
             &outsider,
         )
@@ -131,6 +135,8 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
 
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
@@ -186,6 +192,8 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.exit_node = peer.to_string();
 
@@ -345,6 +353,8 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.set_peer_alias(peer, "fixture-peer")
             .expect("peer alias");
@@ -402,6 +412,8 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.fips_peer_endpoints
             .insert(peer.to_string(), vec!["192.168.50.10:51820".to_string()]);
@@ -447,6 +459,8 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.fips_peer_endpoints
             .insert(admin.clone(), vec!["192.168.50.10:51820".to_string()]);
@@ -513,6 +527,8 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         // Isolate the admin-listener behavior from the built-in bootstrap nodes,
         // which would otherwise populate config.peers as fallback transit.

@@ -6,7 +6,7 @@ use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -669,6 +669,322 @@ fn run_windows_powershell(script: &str) -> Result<()> {
     };
     Err(anyhow!("powershell NRPT update failed: {details}"))
 }
+
+// ---------------------------------------------------------------------------
+// DNS override: admin-specified DNS servers for the whole mesh
+// ---------------------------------------------------------------------------
+
+/// Configure the system's global DNS to use the given servers. Called when the
+/// active roster carries a non-empty `dns_servers` list. MagicDNS split-DNS
+/// (`.nvpn`) continues to take priority for its own suffix.
+pub fn install_dns_override(servers: &[String], dns_strict: bool) -> Result<()> {
+    if servers.is_empty() {
+        return Ok(());
+    }
+    if dns_strict {
+        eprintln!(
+            "dns_strict: installing exclusive DNS override ({}) — no public fallback",
+            servers.join(", ")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        install_macos_dns_override(servers)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        install_linux_dns_override(servers)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        install_windows_dns_override(servers)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = servers;
+        Err(anyhow!(
+            "DNS override is unsupported on this platform"
+        ))
+    }
+}
+
+/// Remove the DNS override previously installed by [`install_dns_override`].
+pub fn uninstall_dns_override() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        uninstall_macos_dns_override()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        uninstall_linux_dns_override()
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        uninstall_windows_dns_override()
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        Err(anyhow!(
+            "DNS override uninstall is unsupported on this platform"
+        ))
+    }
+}
+
+/// RAII guard that calls [`uninstall_dns_override`] on drop.
+pub struct DnsOverrideGuard {
+    active: bool,
+}
+
+impl DnsOverrideGuard {
+    /// Install the override and return a guard that will clean it up on drop.
+    pub fn install(servers: &[String], dns_strict: bool) -> Result<Self> {
+        install_dns_override(servers, dns_strict)?;
+        Ok(Self { active: true })
+    }
+
+    /// Explicitly deactivate without uninstalling (e.g. when handing off to
+    /// a new guard with updated servers).
+    pub fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for DnsOverrideGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = uninstall_dns_override();
+        }
+    }
+}
+
+// -- macOS DNS override -----------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn install_macos_dns_override(servers: &[String]) -> Result<()> {
+    let services = list_macos_network_services()?;
+    if services.is_empty() {
+        return Err(anyhow!("no active network services found for DNS override"));
+    }
+    let server_args: Vec<&str> = servers.iter().map(String::as_str).collect();
+    for service in &services {
+        let mut args = vec!["-setdnsservers", service];
+        args.extend_from_slice(&server_args);
+        run_macos_networksetup(&args)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn uninstall_macos_dns_override() -> Result<()> {
+    let services = list_macos_network_services().unwrap_or_default();
+    for service in &services {
+        // "empty" resets to DHCP-provided DNS.
+        let _ = run_macos_networksetup(&["-setdnsservers", service, "empty"]);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn list_macos_network_services() -> Result<Vec<String>> {
+    let output = Command::new("networksetup")
+        .arg("-listallnetworkservices")
+        .output()
+        .map_err(|error| {
+            if error.kind() == ErrorKind::NotFound {
+                anyhow!("networksetup not found")
+            } else {
+                anyhow!("failed to execute networksetup: {error}")
+            }
+        })?;
+
+    if !output.status.success() {
+        return Err(anyhow!("networksetup -listallnetworkservices failed"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let services: Vec<String> = stdout
+        .lines()
+        .skip(1) // first line is a header
+        .filter(|line| !line.starts_with('*')) // asterisk = disabled
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    Ok(services)
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_networksetup(args: &[&str]) -> Result<()> {
+    let output = Command::new("networksetup")
+        .args(args)
+        .output()
+        .map_err(|error| {
+            if error.kind() == ErrorKind::NotFound {
+                anyhow!("networksetup not found")
+            } else {
+                anyhow!("failed to execute networksetup: {error}")
+            }
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "networksetup {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
+// -- Linux DNS override -----------------------------------------------------
+
+#[cfg(target_os = "linux")]
+const LINUX_DNS_OVERRIDE_IFACE: &str = "lo";
+
+#[cfg(target_os = "linux")]
+fn install_linux_dns_override(servers: &[String]) -> Result<()> {
+    // Try systemd-resolved first (catch-all route domain ~.)
+    let resolved = (|| -> Result<()> {
+        let dns_arg = servers.join(" ");
+        run_linux_resolvectl(&["dns", LINUX_DNS_OVERRIDE_IFACE, &dns_arg])?;
+        // ~. makes this the default route for *all* domains
+        run_linux_resolvectl(&["domain", LINUX_DNS_OVERRIDE_IFACE, "~."])?;
+        let _ = run_linux_resolvectl(&["flush-caches"]);
+        Ok(())
+    })();
+
+    match resolved {
+        Ok(()) => Ok(()),
+        Err(resolved_error) => {
+            // Fallback: write /etc/resolv.conf
+            install_linux_resolvconf_override(servers).with_context(|| {
+                format!(
+                    "systemd-resolved override failed ({resolved_error}) and resolv.conf fallback failed"
+                )
+            })
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn uninstall_linux_dns_override() -> Result<()> {
+    let resolved = run_linux_resolvectl(&["revert", LINUX_DNS_OVERRIDE_IFACE]);
+    let resolvconf = uninstall_linux_resolvconf_override();
+    match (resolved, resolvconf) {
+        (Ok(()), _) => Ok(()),
+        (Err(_), Ok(())) => Ok(()),
+        (Err(re), Err(rc)) => Err(anyhow!(
+            "resolvectl revert failed ({re}); resolv.conf restore failed ({rc})"
+        )),
+    }
+}
+
+#[cfg(target_os = "linux")]
+const LINUX_RESOLVCONF_BEGIN: &str = "# BEGIN nostr-vpn DNS override";
+#[cfg(target_os = "linux")]
+const LINUX_RESOLVCONF_END: &str = "# END nostr-vpn DNS override";
+#[cfg(target_os = "linux")]
+const LINUX_RESOLVCONF_PATH: &str = "/etc/resolv.conf";
+
+#[cfg(target_os = "linux")]
+fn install_linux_resolvconf_override(servers: &[String]) -> Result<()> {
+    let current = fs::read_to_string(LINUX_RESOLVCONF_PATH).unwrap_or_default();
+    let mut next = remove_block(&current, LINUX_RESOLVCONF_BEGIN, LINUX_RESOLVCONF_END);
+    if !next.ends_with('\n') && !next.is_empty() {
+        next.push('\n');
+    }
+    next.push_str(LINUX_RESOLVCONF_BEGIN);
+    next.push('\n');
+    for server in servers {
+        next.push_str(&format!("nameserver {server}\n"));
+    }
+    next.push_str(LINUX_RESOLVCONF_END);
+    next.push('\n');
+
+    fs::write(LINUX_RESOLVCONF_PATH, next).map_err(|error| {
+        if error.kind() == ErrorKind::PermissionDenied {
+            anyhow!(
+                "permission denied writing {LINUX_RESOLVCONF_PATH}; run with admin privileges"
+            )
+        } else {
+            anyhow!("failed to write {LINUX_RESOLVCONF_PATH}: {error}")
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn uninstall_linux_resolvconf_override() -> Result<()> {
+    let current = match fs::read_to_string(LINUX_RESOLVCONF_PATH) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+    if !current.contains(LINUX_RESOLVCONF_BEGIN) {
+        return Ok(());
+    }
+    let next = remove_block(&current, LINUX_RESOLVCONF_BEGIN, LINUX_RESOLVCONF_END);
+    fs::write(LINUX_RESOLVCONF_PATH, next).map_err(|error| {
+        anyhow!("failed to write {LINUX_RESOLVCONF_PATH}: {error}")
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn remove_block(contents: &str, begin: &str, end: &str) -> String {
+    let mut out = String::new();
+    let mut in_block = false;
+    for line in contents.lines() {
+        if line.trim() == begin {
+            in_block = true;
+            continue;
+        }
+        if line.trim() == end {
+            in_block = false;
+            continue;
+        }
+        if !in_block {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+// -- Windows DNS override ---------------------------------------------------
+
+#[cfg(target_os = "windows")]
+fn install_windows_dns_override(servers: &[String]) -> Result<()> {
+    let server_list = servers.join(",");
+    let script = format!(
+        concat!(
+            "$ErrorActionPreference = 'Stop'\n",
+            "$adapters = Get-NetAdapter | Where-Object {{ $_.Status -eq 'Up' }}\n",
+            "foreach ($adapter in $adapters) {{\n",
+            "  Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses {}\n",
+            "}}\n",
+        ),
+        windows_powershell_quote(&server_list),
+    );
+    run_windows_powershell(&script)
+}
+
+#[cfg(target_os = "windows")]
+fn uninstall_windows_dns_override() -> Result<()> {
+    let script = concat!(
+        "$adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }\n",
+        "foreach ($adapter in $adapters) {\n",
+        "  Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ResetServerAddresses\n",
+        "}\n",
+    );
+    run_windows_powershell(script)
+}
+
+// ---------------------------------------------------------------------------
 
 fn strip_cidr(value: &str) -> &str {
     value.split('/').next().unwrap_or(value)

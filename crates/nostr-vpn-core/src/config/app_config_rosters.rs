@@ -40,6 +40,8 @@ impl AppConfig {
             aliases,
             updated_at: network.shared_roster_updated_at,
             signed_by: network.shared_roster_signed_by.clone(),
+            dns_servers: network.dns_servers.clone(),
+            dns_strict: network.dns_strict,
         })
     }
 
