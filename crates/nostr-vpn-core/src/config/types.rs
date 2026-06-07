@@ -677,6 +677,14 @@ pub struct NetworkConfig {
     pub shared_roster_updated_at: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shared_roster_signed_by: String,
+    /// DNS server IPs for this network, set by an admin and distributed via
+    /// the signed roster. Peers auto-configure their system resolver to these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns_servers: Vec<String>,
+    /// When true, peers MUST use only the admin-configured DNS servers
+    /// with zero fallback to public resolvers.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dns_strict: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -715,6 +723,8 @@ pub struct SharedNetworkRoster {
     pub aliases: HashMap<String, String>,
     pub updated_at: u64,
     pub signed_by: String,
+    pub dns_servers: Vec<String>,
+    pub dns_strict: bool,
 }
 
 impl Default for AppConfig {
@@ -734,6 +744,8 @@ impl Default for AppConfig {
                 inbound_join_requests: Vec::new(),
                 shared_roster_updated_at: 0,
                 shared_roster_signed_by: String::new(),
+                dns_servers: Vec::new(),
+                dns_strict: false,
             }],
             node_name: default_node_name(),
             lan_discovery_enabled: default_lan_discovery_enabled(),

@@ -56,6 +56,7 @@
   let meshIdDrafts: Record<string, string> = {};
   let wireguardExitConfigDraft = '';
   let wireguardDirty = false;
+  let dnsInput = '';
   let wireguardConfigFileInput: HTMLInputElement | null = null;
   let noticeTimer: number | undefined;
 
@@ -218,6 +219,7 @@
       fipsHostInboundTcpPorts: next.fipsHostInboundTcpPorts,
       autoconnect: next.autoconnect,
     };
+    dnsInput = (next.networkDnsServers ?? []).join(', ');
   }
 
   function resetBootstrapPeers() {
@@ -493,6 +495,11 @@
     devicePane = 'list';
   }
 
+  function isNetworkDns(participant: ParticipantView): boolean {
+    const ip = participant.tunnelIp.split('/')[0].trim();
+    return ip !== '' && (state?.networkDnsServers ?? []).includes(ip);
+  }
+
   function deviceRoleText(participant: ParticipantView): string {
     const roles = [];
     if (isSelf(participant)) {
@@ -500,6 +507,9 @@
     }
     if (participant.isAdmin) {
       roles.push('Admin');
+    }
+    if (isNetworkDns(participant)) {
+      roles.push('DNS');
     }
     const exitRole = exitNodeBadgeText(participant);
     if (exitRole) {
@@ -672,6 +682,7 @@
     );
   }
 
+
   async function removeParticipant(network: NetworkView, participant: ParticipantView) {
     if (!window.confirm(`Remove ${participantName(participant)} from ${network.name}?`)) {
       return;
@@ -684,6 +695,16 @@
       },
       'Removing device',
     );
+  }
+
+  async function saveNetworkDns() {
+    const servers = dnsInput.split(',').map((s) => s.trim()).filter((s) => s !== '');
+    await run('/api/update_settings', { patch: { networkDnsServers: servers } }, 'Setting DNS');
+  }
+
+  async function clearNetworkDns() {
+    dnsInput = '';
+    await run('/api/update_settings', { patch: { networkDnsServers: [] } }, 'Clearing DNS');
   }
 
   async function setJoinRequests(network: NetworkView, enabled: boolean) {
@@ -1408,6 +1429,9 @@
                         {#if participant.isAdmin}
                           <span class="badge muted">Admin</span>
                         {/if}
+                        {#if isNetworkDns(participant)}
+                          <span class="badge active">DNS</span>
+                        {/if}
                         {#if exitNodeBadgeText(participant)}
                           <span
                             class="badge"
@@ -1479,13 +1503,16 @@
                   </button>
                   <div>
                     <h2>{participantName(selectedParticipant)}</h2>
-                    {#if isSelf(selectedParticipant) || selectedParticipant.isAdmin || exitNodeBadgeText(selectedParticipant) || fipsPathBadgeText(selectedParticipant)}
+                    {#if isSelf(selectedParticipant) || selectedParticipant.isAdmin || isNetworkDns(selectedParticipant) || exitNodeBadgeText(selectedParticipant) || fipsPathBadgeText(selectedParticipant)}
                       <div class="badge-row">
                         {#if isSelf(selectedParticipant)}
                           <span class="badge active">Self</span>
                         {/if}
                         {#if selectedParticipant.isAdmin}
                           <span class="badge muted">Admin</span>
+                        {/if}
+                        {#if isNetworkDns(selectedParticipant)}
+                          <span class="badge active">DNS</span>
                         {/if}
                         {#if exitNodeBadgeText(selectedParticipant)}
                           <span
@@ -1866,6 +1893,34 @@
                 <textarea bind:value={settingsDraft.relays} on:input={() => (settingsDirty = true)} rows="4"></textarea>
               </label>
             </div>
+
+            {#if shownNetwork?.localIsAdmin}
+            <div class="panel wide">
+              <div class="section-heading">
+                <div>
+                  <h3>DNS Override</h3>
+                  <p>Override DNS for all devices in this network</p>
+                </div>
+              </div>
+
+              <label class="switch-row">
+                <span>DNS Override</span>
+                <input
+                  type="checkbox"
+                  checked={(state?.networkDnsServers ?? []).length > 0}
+                  on:change={(e) => { if (!e.currentTarget.checked) clearNetworkDns(); }}
+                />
+              </label>
+
+              <label>
+                <span>DNS Override IPs (comma-separated)</span>
+                <input type="text" bind:value={dnsInput} />
+              </label>
+              <button type="button" class="small-button" disabled={Boolean(busyAction)} on:click={saveNetworkDns}>
+                Save DNS Override
+              </button>
+            </div>
+            {/if}
 
             <div class="panel wide">
               <div class="section-heading">

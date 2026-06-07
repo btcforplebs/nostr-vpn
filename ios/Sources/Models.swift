@@ -53,6 +53,8 @@ struct AppState: Decodable {
     var fipsBootstrapEnabled = true
     var magicDnsSuffix = ""
     var magicDnsStatus = ""
+    var networkDnsServers: [String] = []
+    var dnsOverrideActive = false
     var autoconnect = false
     var inviteBroadcastActive = false
     var inviteBroadcastRemainingSecs: UInt64 = 0
@@ -83,7 +85,7 @@ struct AppState: Decodable {
         case paidExitSeller, paidRouteMarket
         case connectToNonRosterFipsPeers
         case fipsNostrDiscoveryEnabled, fipsBootstrapEnabled
-        case magicDnsSuffix, magicDnsStatus, autoconnect
+        case magicDnsSuffix, magicDnsStatus, networkDnsServers, dnsOverrideActive, autoconnect
         case inviteBroadcastActive, inviteBroadcastRemainingSecs
         case nearbyDiscoveryActive, nearbyDiscoveryRemainingSecs, configPath
         case networks, lanPeers, health
@@ -145,6 +147,8 @@ struct AppState: Decodable {
         fipsBootstrapEnabled = container.bool(.fipsBootstrapEnabled, default: true)
         magicDnsSuffix = container.string(.magicDnsSuffix)
         magicDnsStatus = container.string(.magicDnsStatus)
+        networkDnsServers = container.array(.networkDnsServers)
+        dnsOverrideActive = container.bool(.dnsOverrideActive)
         autoconnect = container.bool(.autoconnect)
         inviteBroadcastActive = container.bool(.inviteBroadcastActive)
         inviteBroadcastRemainingSecs = container.uint64(.inviteBroadcastRemainingSecs)

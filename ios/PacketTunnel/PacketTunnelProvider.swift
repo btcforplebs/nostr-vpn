@@ -1,8 +1,10 @@
 import Foundation
 import NetworkExtension
 import Darwin
+import os
 
 private let appGroupIdentifier = "group.to.iris.nvpn"
+private let pktLog = Logger(subsystem: "to.iris.nvpn.PacketTunnel", category: "tunnel")
 private let defaultMobileMtu = 1150
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
@@ -18,28 +20,44 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         options: [String: NSObject]?,
         completionHandler: @escaping (Error?) -> Void
     ) {
-        NSLog("nvpn-pkt: startTunnel entered")
+        pktLog.log("nvpn-pkt: startTunnel entered")
         packetDebugLog("startTunnel entered options=\(options.map { Array($0.keys).sorted() } ?? [])")
         let configuration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
         packetDebugLog("providerConfiguration keys=\(Array(configuration.keys).sorted())")
         let optionConfigJson = options?["mobileTunnelConfigJson"] as? String
-        let configJson = optionConfigJson ?? configuration["mobileTunnelConfigJson"] as? String ?? ""
+        var configJson = optionConfigJson ?? configuration["mobileTunnelConfigJson"] as? String ?? ""
+
+        // Inject dnsLogPath into configJson for Rust tunnel to write logs directly to shared container
+        if let sharedDir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)?
+            .appendingPathComponent("Nostr VPN", isDirectory: true) {
+            try? FileManager.default.createDirectory(at: sharedDir, withIntermediateDirectories: true)
+            let dnsLogPath = sharedDir.appendingPathComponent("dns_nat_debug.log").path
+            if let data = configJson.data(using: .utf8),
+               var jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                jsonObject["dnsLogPath"] = dnsLogPath
+                if let updatedData = try? JSONSerialization.data(withJSONObject: jsonObject, options: []),
+                   let updatedJson = String(data: updatedData, encoding: .utf8) {
+                    configJson = updatedJson
+                }
+            }
+        }
+
         let parsedConfig = MobileTunnelConfig(json: configJson)
         if let error = parsedConfig.errorText {
-            NSLog("nvpn-pkt: config parse failed: \(error)")
+            pktLog.log("nvpn-pkt: config parse failed: \(error.localizedDescription, privacy: .public)")
             packetDebugLog("config parse failed: \(error)")
             completionHandler(error)
             return
         }
-        NSLog("nvpn-pkt: calling nostr_vpn_mobile_tunnel_new (configLen=\(configJson.count))")
+        pktLog.log("nvpn-pkt: calling nostr_vpn_mobile_tunnel_new (configLen=\(configJson.count, privacy: .public))")
         packetDebugLog("calling nostr_vpn_mobile_tunnel_new configLen=\(configJson.count)")
         guard let handle = configJson.withCString({ nostr_vpn_mobile_tunnel_new($0) }) else {
-            NSLog("nvpn-pkt: nostr_vpn_mobile_tunnel_new returned NULL")
+            pktLog.log("nvpn-pkt: nostr_vpn_mobile_tunnel_new returned NULL")
             packetDebugLog("nostr_vpn_mobile_tunnel_new returned NULL")
             completionHandler(PacketTunnelError.startFailed)
             return
         }
-        NSLog("nvpn-pkt: rust runtime up, handle=\(handle)")
+        pktLog.log("nvpn-pkt: rust runtime up, handle=\(String(describing: handle), privacy: .public)")
         packetDebugLog("rust runtime up")
         tunnelCondition.lock()
         tunnelHandle = handle
@@ -83,12 +101,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 ipv4.excludedRoutes = excludedRoutes.compactMap(ipv4Route)
             }
             settings.ipv4Settings = ipv4
-            NSLog(
-                "nvpn-pkt: ipv4 addr=\(parsed.address)/\(parsed.mask) "
-                    + "included=\(parsedConfig.routeTargets) "
-                    + "excluded=\(excludedRoutes)"
+            pktLog.log(
+                "nvpn-pkt: ipv4 addr=\(parsed.address, privacy: .public)/\(parsed.mask, privacy: .public) included=\(parsedConfig.routeTargets, privacy: .public) excluded=\(excludedRoutes, privacy: .public)"
             )
         }
+
+        // Configure IPv6 to prevent leaks (blackhole IPv6 DNS queries only)
+        let ipv6 = NEIPv6Settings(addresses: ["fd00::1"], networkPrefixLengths: [64 as NSNumber])
+        ipv6.includedRoutes = [NEIPv6Route(destinationAddress: "fd00::53", networkPrefixLength: 128 as NSNumber)]
+        settings.ipv6Settings = ipv6
 
         // DNS resolvers — Mullvad/Proton ship their own (e.g.
         // 10.64.0.1) which lives behind the tunnel. Without
@@ -105,32 +126,29 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if !dnsConfig.servers.isEmpty {
             let dns = NEDNSSettings(servers: dnsConfig.servers)
             dns.matchDomains = dnsConfig.matchDomains
-            if dnsConfig.allowFailover {
-                if #available(iOS 26.0, *) {
-                    dns.allowFailover = true
-                }
+            if #available(iOS 26.0, *) {
+                dns.allowFailover = false
             }
             settings.dnsSettings = dns
             NSLog(
-                "nvpn-pkt: dns servers=\(dnsConfig.servers) "
-                    + "match=\(dnsConfig.matchDomains) failover=\(dnsConfig.allowFailover)"
+                "nvpn-pkt: dns servers=\(dnsConfig.servers) match=\(dnsConfig.matchDomains) failover=false strict=\(parsedConfig.dnsStrict)"
             )
         }
 
-        NSLog("nvpn-pkt: calling setTunnelNetworkSettings")
+        pktLog.log("nvpn-pkt: calling setTunnelNetworkSettings")
         packetDebugLog("calling setTunnelNetworkSettings")
         setTunnelNetworkSettings(settings) { [weak self] error in
             if let error {
-                NSLog("nvpn-pkt: setTunnelNetworkSettings failed: \(error)")
+                pktLog.log("nvpn-pkt: setTunnelNetworkSettings failed: \(error.localizedDescription, privacy: .public)")
                 packetDebugLog("setTunnelNetworkSettings failed: \(error)")
                 self?.stopRustTunnel()
                 completionHandler(error)
                 return
             }
-            NSLog("nvpn-pkt: setTunnelNetworkSettings succeeded — starting packet loops")
+            pktLog.log("nvpn-pkt: setTunnelNetworkSettings succeeded — starting packet loops")
             packetDebugLog("setTunnelNetworkSettings succeeded")
             self?.startPacketLoops()
-            NSLog("nvpn-pkt: completionHandler(nil) — VPN should transition to connected")
+            pktLog.log("nvpn-pkt: completionHandler(nil) — VPN should transition to connected")
             packetDebugLog("completionHandler nil")
             completionHandler(nil)
         }
@@ -170,19 +188,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         from servers: [String],
         magicDnsServer: String
     ) -> (servers: [String], matchDomains: [String], allowFailover: Bool) {
-        let normalized = servers
+        var normalized = servers
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        let magicDnsServer = magicDnsServer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !magicDnsServer.isEmpty else {
-            return (normalized, [""], false)
-        }
-        guard normalized.contains(magicDnsServer) else {
-            return (normalized, [""], false)
-        }
-        if #available(iOS 26.0, *) {
-            return ([magicDnsServer], [""], true)
-        }
+        normalized.append("fd00::53")
         return (normalized, [""], false)
     }
 
@@ -289,6 +298,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         return body(handle)
     }
+
 }
 
 private enum PacketTunnelError: LocalizedError {
@@ -310,6 +320,7 @@ private struct MobileTunnelConfig {
     let routeTargets: [String]
     let excludedRoutes: [String]
     let dnsServers: [String]
+    let dnsStrict: Bool
     let magicDnsServer: String
     let firstWireGuardEndpointHost: String?
     let firstFipsEndpointHost: String?
@@ -324,6 +335,7 @@ private struct MobileTunnelConfig {
             routeTargets = []
             excludedRoutes = []
             dnsServers = []
+            dnsStrict = false
             magicDnsServer = ""
             firstWireGuardEndpointHost = nil
             firstFipsEndpointHost = nil
@@ -336,6 +348,7 @@ private struct MobileTunnelConfig {
         routeTargets = object["routeTargets"] as? [String] ?? []
         excludedRoutes = object["excludedRoutes"] as? [String] ?? []
         dnsServers = object["dnsServers"] as? [String] ?? []
+        dnsStrict = object["dnsStrict"] as? Bool ?? false
         magicDnsServer = object["magicDnsServer"] as? String ?? ""
         if let wg = object["wireguardExit"] as? [String: Any],
            let endpoint = wg["endpoint"] as? String
