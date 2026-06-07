@@ -380,6 +380,11 @@ impl MobileTunnelConfig {
                     })
                 })
                 .unwrap_or_default();
+        // Don't enforce strict DNS while the device is still joining —
+        // admin DNS servers are only reachable through the mesh, and the
+        // mesh can't connect without relay access which requires public
+        // DNS resolution.
+        let joining = !pending_join_request_recipient.is_empty();
 
         Ok(Self {
             config_path: config_path.to_string_lossy().to_string(),
@@ -409,9 +414,10 @@ impl MobileTunnelConfig {
             dns_nat_targets,
             dns_log_path: String::new(),
             magic_dns_server,
-            dns_strict: app
-                .active_network_opt()
-                .is_some_and(|n| !n.dns_servers.is_empty()),
+            dns_strict: !joining
+                && app
+                    .active_network_opt()
+                    .is_some_and(|n| !n.dns_servers.is_empty()),
             wireguard_exit,
             join_requests_enabled: app.join_requests_enabled(),
             pending_join_request_recipient,
@@ -781,6 +787,11 @@ impl MobileTunnel {
                 if forwarders.is_empty() {
                     if config.dns_nat_targets.is_empty() {
                         mobile_magic_dns_forwarders(&config.dns_forwarders, config.dns_strict)
+                    } else if !config.dns_strict {
+                        // Admin DNS targets are all mesh IPs but strict
+                        // mode is relaxed (device still joining) — use
+                        // public forwarders until the mesh connects.
+                        mobile_magic_dns_forwarders(&config.dns_forwarders, false)
                     } else {
                         Vec::new()
                     }
@@ -841,6 +852,11 @@ impl MobileTunnel {
                                                 mobile_magic_dns_forwarders(
                                                     &cfg.dns_forwarders,
                                                     cfg.dns_strict,
+                                                )
+                                            } else if !cfg.dns_strict {
+                                                mobile_magic_dns_forwarders(
+                                                    &cfg.dns_forwarders,
+                                                    false,
                                                 )
                                             } else {
                                                 Vec::new()
