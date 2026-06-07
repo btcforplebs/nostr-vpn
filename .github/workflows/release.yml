@@ -24,7 +24,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
@@ -42,6 +42,9 @@ jobs:
           save-if: false
 
       - name: Run release gate
+        env:
+          NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE: '0'
+          NVPN_RELEASE_GATE_WINDOWS_WG_EXIT_E2E: '0'
         run: ./scripts/release-gate.sh
 
   build-cli:
@@ -71,7 +74,7 @@ jobs:
             cross: false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
@@ -94,6 +97,29 @@ jobs:
       - name: Build CLI natively
         if: ${{ !matrix.cross }}
         run: cargo build --release --target ${{ matrix.target }} -p nvpn
+
+      - name: Test macOS WireGuard exit native dataplane
+        if: ${{ runner.os == 'macOS' }}
+        env:
+          NVPN_WG_EXIT_HOST_PROFILE: release
+        run: ./scripts/e2e-wireguard-exit-host.sh
+
+      - name: Test Windows WireGuard exit native dataplane
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          if (!$IsAdmin) {
+            throw "Windows WireGuard exit release gate requires an elevated/Admin runner for Wintun and route changes"
+          }
+          $Bin = "target\${{ matrix.target }}\release\nvpn.exe"
+          if (!(Test-Path $Bin)) {
+            throw "Missing nvpn binary: $Bin"
+          }
+          & $Bin wg-upstream-test --self-test --timeout-secs 15 --scoped-host 10.99.99.1 --ping-count 3
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Package CLI artifact
         shell: bash
@@ -175,7 +201,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
@@ -265,6 +291,12 @@ jobs:
           MACOS_NOTARIZE_TEAM_ID: ${{ secrets.MACOS_NOTARIZE_TEAM_ID }}
         run: ./scripts/macos-build macos-release-artifacts
 
+      - name: Smoke launch macOS app
+        env:
+          NVPN_MACOS_APP_PATH: dist/macos/Nostr VPN.app
+          NVPN_MACOS_APP_SMOKE_BUILD: '0'
+        run: ./scripts/macos-app-launch-smoke.sh
+
       - name: Upload native macOS app
         uses: actions/upload-artifact@v4
         with:
@@ -282,7 +314,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
@@ -312,6 +344,9 @@ jobs:
       - name: Install cargo-deb
         run: cargo install cargo-deb --locked
 
+      - name: Smoke launch Linux GUI
+        run: ./tools/run-linux ./scripts/e2e-smoke.sh
+
       - name: Build Linux desktop package
         run: |
           set -euo pipefail
@@ -340,7 +375,7 @@ jobs:
         shell: pwsh
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
@@ -371,6 +406,9 @@ jobs:
             throw "Windows setup artifact was not produced"
           }
 
+      - name: Smoke launch installed Windows app
+        run: .\scripts\windows-installer-smoke.ps1 -InstallerPath "dist\nostr-vpn-${{ github.event.inputs.tag || github.ref_name }}-windows-x64-setup.exe" -ArtifactRoot artifacts
+
       - name: Upload native Windows app
         uses: actions/upload-artifact@v4
         with:
@@ -392,7 +430,7 @@ jobs:
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
@@ -499,7 +537,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 

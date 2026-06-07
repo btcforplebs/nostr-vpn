@@ -187,7 +187,8 @@
                   </DockPanel>
 
                   <ListBox ItemsSource="{Binding ActiveNetwork.Participants}"
-                           SelectedItem="{Binding SelectedParticipant, Mode=TwoWay}"
+                           SelectedValue="{Binding SelectedParticipantKey, Mode=TwoWay}"
+                           SelectedValuePath="SelectionKey"
                            BorderThickness="0"
                            Background="Transparent"
                            Margin="0,14,0,0"
@@ -735,7 +736,7 @@
                     <RowDefinition Height="Auto" />
                   </Grid.RowDefinitions>
                   <TextBlock Text="Your public FIPS address" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,0,8" />
-                  <TextBox Grid.Column="1" Text="{Binding PublicFipsAddress}" IsReadOnly="True" Margin="0,0,0,8" />
+                  <TextBox Grid.Column="1" Text="{Binding PublicFipsAddress, Mode=OneWay}" IsReadOnly="True" Margin="0,0,0,8" />
                   <TextBlock Grid.Row="1" Text="Public .fips inbound TCP ports" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" />
                   <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding FipsHostInboundTcpPorts, UpdateSourceTrigger=PropertyChanged}" ToolTip="Comma-separated port numbers" />
                 </Grid>

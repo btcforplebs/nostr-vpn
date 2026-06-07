@@ -4755,6 +4755,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mobile_config_wireguard_exit_preserves_custom_dns_with_magic_dns() {
+        let mut app = AppConfig::generated();
+        app.ensure_defaults();
+        let own = app.own_nostr_pubkey_hex().expect("own pubkey");
+        app.networks = vec![NetworkConfig {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            enabled: true,
+            network_id: "test".to_string(),
+            invite_secret: "join-secret".to_string(),
+            participants: vec![own.clone()],
+            admins: vec![own],
+            listen_for_join_requests: true,
+            invite_inviter: String::new(),
+            outbound_join_request: None,
+            inbound_join_requests: Vec::new(),
+            shared_roster_updated_at: 0,
+            shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
+        }];
+        app.wireguard_exit = WireGuardExitConfig {
+            enabled: true,
+            address: "10.99.99.2/32".to_string(),
+            private_key: "client-private-key".to_string(),
+            peer_public_key: "server-public-key".to_string(),
+            endpoint: "198.51.100.20:51820".to_string(),
+            allowed_ips: vec!["0.0.0.0/0".to_string()],
+            dns: vec!["94.140.14.14".to_string()],
+            ..WireGuardExitConfig::default()
+        };
+
+        let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
+
+        assert_eq!(
+            config.dns_servers,
+            vec!["94.140.14.14", nostr_vpn_core::MESH_MAGIC_DNS_SERVER]
+        );
+        assert_eq!(
+            config.magic_dns_server,
+            nostr_vpn_core::MESH_MAGIC_DNS_SERVER
+        );
+    }
+
+    #[test]
+    fn mobile_dns_forwarders_non_strict_includes_fallback() {
+        let configured = vec!["94.140.14.14".to_string()];
+
+        let forwarders = mobile_magic_dns_forwarders(&configured, false);
+
+        // Non-strict: configured + public fallbacks
+        assert!(forwarders.contains(&"94.140.14.14:53".parse().unwrap()));
+        assert!(forwarders.len() > 1); // includes fallbacks
+    }
+
+    #[test]
+    fn mobile_dns_forwarders_strict_excludes_fallback() {
+        let configured = vec!["94.140.14.14".to_string()];
+
+        let forwarders = mobile_magic_dns_forwarders(&configured, true);
+
+        // Strict: only configured, no public fallbacks
+        assert_eq!(forwarders, vec!["94.140.14.14:53".parse().unwrap()]);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mobile_wireguard_start_returns_before_handshake_watchdog() {
         let keys = Keys::generate();

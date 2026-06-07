@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -29,4 +29,7 @@ jobs:
           cache-bin: false
 
       - name: Run release gate
+        env:
+          NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE: '0'
+          NVPN_RELEASE_GATE_WINDOWS_WG_EXIT_E2E: '0'
         run: ./scripts/release-gate.sh

@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented in this file.
 
+## 4.0.70 - 2026-06-07
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.52 and `fips-endpoint` 0.3.28.
+- The FIPS perf regression gate now stresses encrypt-worker queue pressure
+  while checking throughput and latency under bulk TCP load.
+- The Docker FIPS perf gate now uses the pinned published FIPS crates by
+  default, retries empty iperf samples, and gives the synthetic worker-pressure
+  ping check a CI-sized during-load loss budget while still checking post-load
+  recovery tightly.
+
+### Fixed
+
+- FIPS TCP bulk endpoint-data traffic no longer starves queued session
+  handshakes or mesh control packets under sustained throughput.
+- The macOS test-daemon installer now resolves Cargo's configured output path
+  before swapping binaries.
+
+## 4.0.69 - 2026-06-06
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.51 and `fips-endpoint` 0.3.27.
+- Added the `osiris` public FIPS bootstrap peer as a second built-in bootstrap
+  route alongside `lnvps`.
+- Release-gate smoke testing now launches the desktop GUI on Linux, macOS, and
+  Windows so app startup regressions fail before tagging.
+- Windows VM release helpers now sync source through Git SSH remotes instead
+  of tar streams.
+
+### Fixed
+
+- FIPS direct-path routing and macOS direct sends now use the latest upstream
+  throughput-stability fixes.
+- The Windows app no longer crashes during startup when WPF initializes the
+  read-only public FIPS address field.
+
 ## 4.0.68 - 2026-06-06
 
 ### Changed

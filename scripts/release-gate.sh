@@ -17,9 +17,123 @@ cargo test --locked --workspace
 # startup ordering before VpnService.protect(fd).
 cargo test --locked -p nostr-vpn-app-core mobile_join_request_sends_and_records_over_real_fips_endpoint
 cargo test --locked -p nostr-vpn-app-core mobile_magic_dns_answers_peer_name_from_tun_packet
+cargo test --locked -p nostr-vpn-app-core mobile_wireguard_exit_dns_forwarders_prefer_configured_tunnel_dns
 cargo test --locked -p nostr-vpn-app-core mobile_wireguard_start_returns_before_handshake_watchdog
 cargo test --locked -p nostr-vpn-app-core mobile_fips_exit_node_routes_default_traffic_to_selected_member
+# Shared userspace WG dataplane, including the mpsc channel path used by
+# Android VpnService and iOS NEPacketTunnelProvider.
+cargo test --locked -p nostr-vpn-core channels_round_trip_plaintext_packets_against_paired_responder
 ./scripts/e2e-update-cli.sh
+
+run_auto_windows_vm_app_smoke() {
+  local host="${NVPN_WINDOWS_SSH_HOST:-win11-dev}"
+  if ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" hostname >/dev/null 2>&1; then
+    ./scripts/windows-vm-app-launch-smoke.sh "$host"
+  else
+    echo "Skipping Windows VM app launch smoke because ssh $host is unreachable."
+  fi
+}
+
+run_auto_windows_vm_wireguard_exit_e2e() {
+  local host="${NVPN_WINDOWS_SSH_HOST:-win11-dev}"
+  if ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" hostname >/dev/null 2>&1; then
+    ./scripts/windows-vm-wireguard-exit-e2e.sh "$host"
+  else
+    echo "Skipping Windows WG exit e2e because ssh $host is unreachable."
+  fi
+}
+
+run_wireguard_exit_platform_gates() {
+  case "${NVPN_RELEASE_GATE_MACOS_WG_EXIT_E2E:-auto}" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
+      echo "Skipping macOS WG exit e2e because NVPN_RELEASE_GATE_MACOS_WG_EXIT_E2E=${NVPN_RELEASE_GATE_MACOS_WG_EXIT_E2E}"
+      ;;
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On)
+      ./scripts/e2e-wireguard-exit-host.sh
+      ;;
+    auto|AUTO|Auto|"")
+      if [[ "$(uname -s)" == "Darwin" ]]; then
+        ./scripts/e2e-wireguard-exit-host.sh
+      else
+        echo "Skipping macOS WG exit e2e on this host."
+      fi
+      ;;
+    *)
+      echo "Unsupported NVPN_RELEASE_GATE_MACOS_WG_EXIT_E2E=${NVPN_RELEASE_GATE_MACOS_WG_EXIT_E2E}" >&2
+      exit 2
+      ;;
+  esac
+
+  case "${NVPN_RELEASE_GATE_WINDOWS_WG_EXIT_E2E:-auto}" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
+      echo "Skipping Windows WG exit e2e because NVPN_RELEASE_GATE_WINDOWS_WG_EXIT_E2E=${NVPN_RELEASE_GATE_WINDOWS_WG_EXIT_E2E}"
+      ;;
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On|windows-vm)
+      ./scripts/windows-vm-wireguard-exit-e2e.sh "${NVPN_WINDOWS_SSH_HOST:-win11-dev}"
+      ;;
+    auto|AUTO|Auto|"")
+      run_auto_windows_vm_wireguard_exit_e2e
+      ;;
+    *)
+      echo "Unsupported NVPN_RELEASE_GATE_WINDOWS_WG_EXIT_E2E=${NVPN_RELEASE_GATE_WINDOWS_WG_EXIT_E2E}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+run_desktop_app_launch_smokes() {
+  local linux_gui_smoke_default=1
+  case "${NVPN_RELEASE_GATE_DOCKER_E2E:-1}" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
+      linux_gui_smoke_default=0
+      ;;
+  esac
+
+  case "${NVPN_RELEASE_GATE_LINUX_GUI_SMOKE:-$linux_gui_smoke_default}" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
+      echo "Skipping Linux GUI launch smoke because NVPN_RELEASE_GATE_LINUX_GUI_SMOKE=${NVPN_RELEASE_GATE_LINUX_GUI_SMOKE}"
+      ;;
+    *)
+      ./tools/run-linux ./scripts/e2e-smoke.sh
+      ;;
+  esac
+
+  case "${NVPN_RELEASE_GATE_MACOS_GUI_SMOKE:-auto}" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
+      echo "Skipping macOS app launch smoke because NVPN_RELEASE_GATE_MACOS_GUI_SMOKE=${NVPN_RELEASE_GATE_MACOS_GUI_SMOKE}"
+      ;;
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On)
+      ./scripts/macos-app-launch-smoke.sh
+      ;;
+    auto|AUTO|Auto|"")
+      if [[ "$(uname -s)" == "Darwin" && -d "$ROOT_DIR/macos/Sources" ]]; then
+        ./scripts/macos-app-launch-smoke.sh
+      else
+        echo "Skipping macOS app launch smoke on this host."
+      fi
+      ;;
+    *)
+      echo "Unsupported NVPN_RELEASE_GATE_MACOS_GUI_SMOKE=${NVPN_RELEASE_GATE_MACOS_GUI_SMOKE}" >&2
+      exit 2
+      ;;
+  esac
+
+  case "${NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE:-auto}" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
+      echo "Skipping Windows app launch smoke because NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE=${NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE}"
+      ;;
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On|windows-vm)
+      ./scripts/windows-vm-app-launch-smoke.sh "${NVPN_WINDOWS_SSH_HOST:-win11-dev}"
+      ;;
+    auto|AUTO|Auto|"")
+      run_auto_windows_vm_app_smoke
+      ;;
+    *)
+      echo "Unsupported NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE=${NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE}" >&2
+      exit 2
+      ;;
+  esac
+}
 
 case "${NVPN_RELEASE_GATE_DOCKER_E2E:-1}" in
   0|false|FALSE|False|no|NO|No|off|OFF|Off)
@@ -38,6 +152,8 @@ case "${NVPN_RELEASE_GATE_DOCKER_E2E:-1}" in
       ./scripts/e2e-fips-roaming-docker.sh
     NVPN_FIPS_NOSTR_DISCOVERY_POLICY="${NVPN_FIPS_NOSTR_DISCOVERY_POLICY:-configured_only}" \
       ./scripts/e2e-fips-nat-safe-mtu-docker.sh
+    ./scripts/e2e-wireguard-exit-docker.sh
+    ./scripts/e2e-wireguard-exit-userspace-docker.sh
     case "${NVPN_RELEASE_GATE_PERF_E2E:-1}" in
       0|false|FALSE|False|no|NO|No|off|OFF|Off)
         echo "Skipping Docker perf regression e2e because NVPN_RELEASE_GATE_PERF_E2E=${NVPN_RELEASE_GATE_PERF_E2E}"
@@ -49,3 +165,6 @@ case "${NVPN_RELEASE_GATE_DOCKER_E2E:-1}" in
     esac
     ;;
 esac
+
+run_wireguard_exit_platform_gates
+run_desktop_app_launch_smokes

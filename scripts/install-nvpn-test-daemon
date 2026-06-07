@@ -19,7 +19,21 @@ if [[ ! -x "$INSTALLER" ]]; then
 fi
 
 cd "$ROOT"
-cargo build -p nvpn --bin nvpn --release
+cargo_config_args=()
+if [[ "${NVPN_PATCH_LOCAL_FIPS:-0}" =~ ^(1|true|TRUE|True|yes|YES|Yes|on|ON|On)$ ]]; then
+  FIPS_REPO_PATH="${NVPN_FIPS_REPO_PATH:-$ROOT/../fips}"
+  if [[ ! -f "$FIPS_REPO_PATH/crates/fips-core/Cargo.toml" \
+        || ! -f "$FIPS_REPO_PATH/crates/fips-endpoint/Cargo.toml" \
+        || ! -f "$FIPS_REPO_PATH/crates/fips-identity/Cargo.toml" ]]; then
+    echo "NVPN_PATCH_LOCAL_FIPS=1 requires NVPN_FIPS_REPO_PATH to point at a fips checkout" >&2
+    exit 1
+  fi
+  cargo_config_args+=(--config "patch.crates-io.fips-core.path=\"$FIPS_REPO_PATH/crates/fips-core\"")
+  cargo_config_args+=(--config "patch.crates-io.fips-endpoint.path=\"$FIPS_REPO_PATH/crates/fips-endpoint\"")
+  cargo_config_args+=(--config "patch.crates-io.fips-identity.path=\"$FIPS_REPO_PATH/crates/fips-identity\"")
+fi
+
+cargo "${cargo_config_args[@]}" build -p nvpn --bin nvpn --release
 
 BIN="$("$ROOT/scripts/build-output-path" --raw nvpn --release)"
 if [[ ! -x "$BIN" ]]; then
@@ -28,7 +42,7 @@ if [[ ! -x "$BIN" ]]; then
 fi
 
 EXPECTED_VERSION="$(
-  cargo metadata --no-deps --format-version=1 \
+  cargo "${cargo_config_args[@]}" metadata --no-deps --format-version=1 \
     | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "nvpn"))'
 )"
 ACTUAL_VERSION="$("$BIN" version)"
