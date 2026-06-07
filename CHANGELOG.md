@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## 4.0.71 - 2026-06-07
+
+### Changed
+
+- FIPS now uses `fips-core` 0.3.53 and `fips-endpoint` 0.3.29.
+
+### Fixed
+
+- FIPS now includes the latest upstream triage fixes for authenticated FMP
+  K-bit rekey promotion, bounded FMP msg1 retransmission, dual Nostr
+  traversal election, TCP/Tor inbound accounting, overlapping Bloom mesh-size
+  estimates, and selected poisoned mutex/logging panic hardening.
+
 ## 4.0.70 - 2026-06-07
 
 ### Changed
