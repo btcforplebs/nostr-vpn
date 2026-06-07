@@ -227,6 +227,7 @@
                                 <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                                 <TextBlock Text="This device" Margin="8,0,0,0" Foreground="{StaticResource Ok}" Visibility="{Binding IsSelf, Converter={StaticResource BoolToVisibility}}" />
                                 <TextBlock Text="Admin" Margin="8,0,0,0" Foreground="{StaticResource Accent}" Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}" />
+                                <TextBlock Text="DNS" Margin="8,0,0,0" Foreground="{StaticResource Ok}" Visibility="{Binding IsNetworkDns, Converter={StaticResource BoolToVisibility}}" />
                                 <TextBlock Text="Exit" Margin="8,0,0,0" Foreground="{StaticResource Warn}" Visibility="{Binding OffersExitNode, Converter={StaticResource BoolToVisibility}}" />
                                 <TextBlock Text="via mesh" Margin="8,0,0,0" Foreground="{StaticResource TextSecondary}" Visibility="{Binding IsFipsRouted, Converter={StaticResource BoolToVisibility}}" />
                               </WrapPanel>
@@ -256,6 +257,7 @@
                         <WrapPanel Margin="0,8,0,0">
                           <TextBlock Text="This device" Foreground="{StaticResource Ok}" Margin="0,0,10,0" Visibility="{Binding SelectedParticipant.IsSelf, Converter={StaticResource BoolToVisibility}}" />
                           <TextBlock Text="Admin" Foreground="{StaticResource Accent}" Margin="0,0,10,0" Visibility="{Binding SelectedParticipant.IsAdmin, Converter={StaticResource BoolToVisibility}}" />
+                          <TextBlock Text="DNS" Foreground="{StaticResource Ok}" Margin="0,0,10,0" Visibility="{Binding SelectedParticipant.IsNetworkDns, Converter={StaticResource BoolToVisibility}}" />
                           <TextBlock Text="Exit" Foreground="{StaticResource Warn}" Margin="0,0,10,0" Visibility="{Binding SelectedParticipant.OffersExitNode, Converter={StaticResource BoolToVisibility}}" />
                           <TextBlock Text="direct connection" Foreground="{StaticResource Ok}" Margin="0,0,10,0" Visibility="{Binding SelectedParticipant.IsFipsDirect, Converter={StaticResource BoolToVisibility}}" />
                           <TextBlock Text="via mesh" Foreground="{StaticResource TextSecondary}" Margin="0,0,10,0" Visibility="{Binding SelectedParticipant.IsFipsRouted, Converter={StaticResource BoolToVisibility}}" />
@@ -688,6 +690,22 @@
                 <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Start VPN automatically" IsChecked="{Binding State.Autoconnect, Mode=OneWay}" Click="Autoconnect_Click" />
                 <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Launch on startup" IsChecked="{Binding State.LaunchOnStartup, Mode=OneWay}" Click="LaunchOnStartup_Click" />
                 <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Tray on close" IsChecked="{Binding State.CloseToTrayOnClose, Mode=OneWay}" Click="CloseToTray_Click" />
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}" Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}">
+              <StackPanel>
+                <TextBlock Text="DNS Override" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
+                <CheckBox Style="{StaticResource SwitchCheckBox}" Content="DNS Override" IsChecked="{Binding DnsEnabled, Mode=OneWay}" Click="DnsEnabled_Click" />
+                <Grid Margin="0,8,0,0" Visibility="{Binding DnsEnabled, Converter={StaticResource BoolToVisibility}}">
+                  <Grid.ColumnDefinitions>
+                    <Grid.ColumnDefinition Width="*" />
+                    <Grid.ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBox x:Name="DnsInput" Text="{Binding DnsServersText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
+                  <Button Grid.Column="1" Content="Save" Click="SaveDns_Click" />
+                </Grid>
+                <TextBlock Foreground="{StaticResource TextSecondary}" FontSize="11" Text="DNS Override IPs (comma-separated)" Margin="0,4,0,0" />
               </StackPanel>
             </Border>
 

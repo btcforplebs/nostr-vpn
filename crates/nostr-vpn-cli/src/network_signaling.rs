@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
@@ -13,9 +14,10 @@ pub(crate) use nostr_vpn_core::invite::{
 use serde_json::json;
 
 use super::{
-    DaemonControlRequest, UpdateRosterArgs, clear_daemon_control_result, daemon_status,
-    default_config_path, load_or_default_config, request_daemon_reload, unix_timestamp,
-    wait_for_daemon_control_ack, wait_for_daemon_control_result,
+    ClearNetworkDnsArgs, DaemonControlRequest, SetNetworkDnsArgs, UpdateRosterArgs,
+    clear_daemon_control_result, daemon_status, default_config_path, load_or_default_config,
+    request_daemon_reload, unix_timestamp, wait_for_daemon_control_ack,
+    wait_for_daemon_control_result,
 };
 
 pub(crate) fn apply_network_invite_to_active_network(
@@ -384,4 +386,101 @@ pub(crate) async fn update_active_network_roster(
 fn network_should_adopt_invite(network: &nostr_vpn_core::config::NetworkConfig) -> bool {
     let trimmed = network.name.trim();
     network.participants.is_empty() && (trimmed.is_empty() || trimmed.starts_with("Network "))
+}
+
+pub(crate) async fn set_network_dns(args: SetNetworkDnsArgs) -> Result<()> {
+    // Validate all IPs upfront.
+    for server in &args.servers {
+        server
+            .parse::<IpAddr>()
+            .map_err(|_| anyhow!("invalid IP address: {server}"))?;
+    }
+
+    let config_path = args.config.unwrap_or_else(default_config_path);
+    let mut app = load_or_default_config(&config_path)?;
+    if let Some(network_id) = args.network_id {
+        app.set_active_network_id(&network_id)?;
+    }
+    let active_network_id = app
+        .active_network_opt()
+        .ok_or_else(|| anyhow!("create or join a network first"))?
+        .id
+        .clone();
+
+    let own_pubkey = app.own_nostr_pubkey_hex()?;
+    if !app.is_network_admin(&active_network_id, &own_pubkey) {
+        return Err(anyhow!("only a network admin can set DNS servers"));
+    }
+
+    let network = app
+        .network_by_id_mut(&active_network_id)
+        .ok_or_else(|| anyhow!("network not found"))?;
+    network.dns_servers = args.servers.clone();
+
+    app.note_active_network_roster_local_change()?;
+    app.ensure_defaults();
+    maybe_autoconfigure_node(&mut app);
+    app.save(&config_path)?;
+    maybe_reload_running_daemon(&config_path);
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "network_id": app.effective_network_id(),
+                "dns_servers": args.servers,
+            }))?
+        );
+    } else {
+        println!("saved {}", config_path.display());
+        println!("network_id={}", app.effective_network_id());
+        println!("dns_servers={}", args.servers.join(","));
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn clear_network_dns(args: ClearNetworkDnsArgs) -> Result<()> {
+    let config_path = args.config.unwrap_or_else(default_config_path);
+    let mut app = load_or_default_config(&config_path)?;
+    if let Some(network_id) = args.network_id {
+        app.set_active_network_id(&network_id)?;
+    }
+    let active_network_id = app
+        .active_network_opt()
+        .ok_or_else(|| anyhow!("create or join a network first"))?
+        .id
+        .clone();
+
+    let own_pubkey = app.own_nostr_pubkey_hex()?;
+    if !app.is_network_admin(&active_network_id, &own_pubkey) {
+        return Err(anyhow!("only a network admin can clear DNS servers"));
+    }
+
+    let network = app
+        .network_by_id_mut(&active_network_id)
+        .ok_or_else(|| anyhow!("network not found"))?;
+    network.dns_servers.clear();
+
+    app.note_active_network_roster_local_change()?;
+    app.ensure_defaults();
+    maybe_autoconfigure_node(&mut app);
+    app.save(&config_path)?;
+    maybe_reload_running_daemon(&config_path);
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "network_id": app.effective_network_id(),
+                "dns_servers": [],
+            }))?
+        );
+    } else {
+        println!("saved {}", config_path.display());
+        println!("network_id={}", app.effective_network_id());
+        println!("dns_servers=");
+    }
+
+    Ok(())
 }

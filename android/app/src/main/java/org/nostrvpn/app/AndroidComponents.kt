@@ -84,6 +84,7 @@ internal fun ParticipantRow(
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (isSelf) Pill("This device", Color(0xFFECFDF5), Ok)
                     if (participant.isAdmin) Pill("Admin", Color(0xFFF5F3FF), Accent)
+                    if (participant.isNetworkDns(state)) Pill("DNS", Color(0xFFECFDF5), Ok)
                     if (participant.offersExitNode) {
                         Pill(
                             participant.exitNodeLabel(state),
@@ -136,6 +137,7 @@ private fun DeviceDetailDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (isSelf) Pill("This device", Color(0xFFECFDF5), Ok)
                     if (participant.isAdmin) Pill("Admin", Color(0xFFF5F3FF), Accent)
+                    if (participant.isNetworkDns(state)) Pill("DNS", Color(0xFFECFDF5), Ok)
                     if (participant.offersExitNode) {
                         Pill(
                             participant.exitNodeLabel(state),
@@ -385,6 +387,47 @@ internal fun GeneralSettingsCard(state: AppState, dispatch: (JSONObject) -> Unit
                 },
             )
             Text("Block internet if exit node disconnects")
+        }
+    }
+}
+
+@Composable
+internal fun NetworkDnsSettingsCard(state: AppState, dispatch: (JSONObject) -> Unit) {
+    val isAdmin = state.activeNetwork?.localIsAdmin == true
+    if (!isAdmin) return
+    var dnsInput by remember { mutableStateOf(state.networkDnsServers.joinToString(", ")) }
+    AppCard {
+        Text("DNS Override", style = MaterialTheme.typography.titleMedium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = state.networkDnsServers.isNotEmpty(),
+                onCheckedChange = { enabled ->
+                    if (!enabled) {
+                        dnsInput = ""
+                        val arr = JSONArray()
+                        dispatch(JSONObject().put("type", "update_settings")
+                            .put("patch", JSONObject().put("networkDnsServers", arr)))
+                    }
+                },
+            )
+            Text("DNS Override")
+        }
+        if (state.networkDnsServers.isNotEmpty() || dnsInput.isNotBlank()) {
+            OutlinedTextField(
+                value = dnsInput,
+                onValueChange = { dnsInput = it },
+                label = { Text("DNS Override IPs (comma-separated)") },
+                singleLine = true,
+            )
+            OutlinedButton(onClick = {
+                val servers = dnsInput.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                val arr = JSONArray()
+                servers.forEach { arr.put(it) }
+                dispatch(JSONObject().put("type", "update_settings")
+                    .put("patch", JSONObject().put("networkDnsServers", arr)))
+            }) {
+                Text("Save")
+            }
         }
     }
 }
@@ -830,6 +873,11 @@ private fun ParticipantState.fipsPathLabel(appState: AppState): String {
 
 private fun ParticipantState.isFipsRouted(state: AppState): Boolean =
     !isSelf(state) && reachable && fipsTransportAddr.isBlank()
+
+private fun ParticipantState.isNetworkDns(state: AppState): Boolean {
+    val ip = tunnelIp.split("/")[0].trim()
+    return ip.isNotEmpty() && state.networkDnsServers.contains(ip)
+}
 
 private fun ParticipantState.isActiveExitNode(state: AppState): Boolean =
     state.exitNodeActive && state.exitNode.isNotBlank() && npub == state.exitNode

@@ -270,6 +270,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         });
 
         let code = active_network_invite_code_with_endpoints(
@@ -318,6 +320,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         });
 
         let error = active_network_invite_code_with_endpoints(&config, &[])

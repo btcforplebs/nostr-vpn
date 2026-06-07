@@ -67,4 +67,5 @@ public sealed class SettingsPatch
     public bool? Autoconnect { get; set; }
     public bool? LaunchOnStartup { get; set; }
     public bool? CloseToTrayOnClose { get; set; }
+    public List<string>? NetworkDnsServers { get; set; }
 }

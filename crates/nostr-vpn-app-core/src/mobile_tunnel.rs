@@ -23,11 +23,10 @@ use fips_endpoint::{
     TransportInstances, UdpConfig,
 };
 use nostr_vpn_core::config::{
-    AppConfig, MESH_TUNNEL_IPV4_CIDR, WireGuardExitConfig, derive_mesh_tunnel_ip,
-    maybe_autoconfigure_node, normalize_nostr_pubkey, normalize_runtime_network_id,
-    split_peer_transport_addr,
+    AppConfig, MESH_TUNNEL_IPV4_CIDR, SharedNetworkRoster, WireGuardExitConfig,
+    derive_mesh_tunnel_ip, maybe_autoconfigure_node, normalize_nostr_pubkey,
+    normalize_runtime_network_id, split_peer_transport_addr,
 };
-#[cfg(test)]
 use nostr_vpn_core::fips_control::NetworkRoster;
 use nostr_vpn_core::fips_control::{
     FipsControlFragmentBuffer, FipsControlFrame, PeerCapabilities, PeerEndpointHint, SignedRoster,
@@ -37,7 +36,9 @@ use nostr_vpn_core::fips_control::{
 use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
 use nostr_vpn_core::join_requests::{FIPS_JOIN_REQUEST_RETRY_SECS, MeshJoinRequest};
 use nostr_vpn_core::magic_dns::{build_magic_dns_records, build_magic_dns_response_if_handled};
-use nostr_vpn_core::signed_rosters::{signed_rosters_file_path, upsert_signed_roster};
+use nostr_vpn_core::signed_rosters::{
+    load_signed_rosters, signed_rosters_file_path, upsert_signed_roster,
+};
 use nostr_vpn_core::wg_upstream::{DAEMON_WG_UPSTREAM_HANDSHAKE_TIMEOUT, WgUpstreamRuntime};
 use serde::{Deserialize, Serialize};
 
@@ -152,9 +153,20 @@ pub(crate) struct MobileTunnelConfig {
     /// the native tunnel; other mobile hosts use public fallback DNS.
     #[serde(default)]
     dns_forwarders: Vec<String>,
+    /// Admin-configured DNS peer IPs. When set, MagicDNS rewrites
+    /// unresolved queries to these IPs and lets mesh routing deliver them.
+    #[serde(default)]
+    dns_nat_targets: Vec<Ipv4Addr>,
+    /// Shared App Group log file path for writing DNS NAT logs.
+    #[serde(default)]
+    pub(crate) dns_log_path: String,
     /// In-tunnel `MagicDNS` responder address. Empty when `MagicDNS` is disabled.
     #[serde(default)]
     pub(crate) magic_dns_server: String,
+    /// When true, only admin-configured DNS servers are used with zero
+    /// fallback to public resolvers (1.1.1.1, 9.9.9.9, etc.).
+    #[serde(default)]
+    pub(crate) dns_strict: bool,
     /// The WG upstream config to drive boringtun against. None when
     /// the user hasn't enabled WG upstream — in which case the mobile
     /// tunnel runs in pure FIPS-mesh mode.
@@ -189,6 +201,7 @@ impl MobileTunnelConfig {
         };
         app.ensure_defaults();
         maybe_autoconfigure_node(&mut app);
+        rehydrate_mobile_config_from_stored_roster(&mut app, &config_path);
         app.save(&config_path)?;
         Self::from_app_with_config_path(&app, &config_path)
     }
@@ -299,25 +312,62 @@ impl MobileTunnelConfig {
                 }
                 (Some(wg), excluded, dns)
             } else if selected_peer_exit {
-                (
-                    None,
-                    Vec::new(),
+                let dns_is_strict = app
+                    .active_network_opt()
+                    .is_some_and(|n| !n.dns_servers.is_empty());
+                let exit_dns = if dns_is_strict {
+                    // Strict DNS: admin DNS will be applied below, don't
+                    // inject public resolvers.
+                    Vec::new()
+                } else {
                     MOBILE_EXIT_NODE_DNS_SERVERS
                         .iter()
                         .map(|server| (*server).to_string())
-                        .collect(),
-                )
+                        .collect()
+                };
+                (None, Vec::new(), exit_dns)
             } else {
                 (None, Vec::new(), Vec::new())
             };
+        let admin_dns = app
+            .active_network_opt()
+            .map(|n| n.dns_servers.clone())
+            .unwrap_or_default();
+        // When the admin has configured DNS servers, clear the hardcoded
+        // public resolvers (1.1.1.1 / 9.9.9.9) so that MagicDNS is the
+        // only DNS the OS sees.  This forces all queries through the
+        // in-tunnel MagicDNS responder, which then NAT-rewrites them to
+        // the admin's DNS peer via the mesh.  Without this, the OS
+        // resolves via 1.1.1.1 through the exit node and the admin DNS
+        // override never fires.
+        if !admin_dns.is_empty() {
+            dns_servers.clear();
+        }
+        let mut excluded_routes = excluded_routes;
+        for ip_str in &admin_dns {
+            if let Ok(ip) = ip_str.trim().parse::<Ipv4Addr>() {
+                if ip.octets()[0] != 10 || ip.octets()[1] != 44 {
+                    excluded_routes.push(ip_str.clone());
+                }
+            }
+        }
+        excluded_routes.sort();
+        excluded_routes.dedup();
         let magic_dns_server = if app.magic_dns_suffix.trim().is_empty() {
+            if !admin_dns.is_empty() {
+                dns_servers.extend(admin_dns.clone());
+            }
             String::new()
         } else {
             dns_servers.retain(|server| server.trim() != nostr_vpn_core::MESH_MAGIC_DNS_SERVER);
-            dns_servers.insert(0, nostr_vpn_core::MESH_MAGIC_DNS_SERVER.to_string());
+            dns_servers.push(nostr_vpn_core::MESH_MAGIC_DNS_SERVER.to_string());
             nostr_vpn_core::MESH_MAGIC_DNS_SERVER.to_string()
         };
         dns_servers.dedup();
+        let dns_nat_targets: Vec<Ipv4Addr> = admin_dns
+            .iter()
+            .filter_map(|ip| strip_cidr(ip.trim()).parse().ok())
+            .collect();
         let (pending_join_request_recipient, pending_join_invite_secret, pending_join_requested_at) =
             app.active_network_opt()
                 .and_then(|network| {
@@ -330,6 +380,11 @@ impl MobileTunnelConfig {
                     })
                 })
                 .unwrap_or_default();
+        // Don't enforce strict DNS while the device is still joining —
+        // admin DNS servers are only reachable through the mesh, and the
+        // mesh can't connect without relay access which requires public
+        // DNS resolution.
+        let joining = !pending_join_request_recipient.is_empty();
 
         Ok(Self {
             config_path: config_path.to_string_lossy().to_string(),
@@ -356,7 +411,13 @@ impl MobileTunnelConfig {
             excluded_routes,
             dns_servers,
             dns_forwarders: Vec::new(),
+            dns_nat_targets,
+            dns_log_path: String::new(),
             magic_dns_server,
+            dns_strict: !joining
+                && app
+                    .active_network_opt()
+                    .is_some_and(|n| !n.dns_servers.is_empty()),
             wireguard_exit,
             join_requests_enabled: app.join_requests_enabled(),
             pending_join_request_recipient,
@@ -398,6 +459,9 @@ fn mobile_app_config(config: &MobileTunnelConfig) -> Result<AppConfig> {
         let mut app: AppConfig =
             toml::from_str(&config.app_config_toml).context("failed to parse mobile app config")?;
         app.ensure_defaults();
+        if let Some(config_path) = non_empty_path(&config.config_path) {
+            rehydrate_mobile_config_from_stored_roster(&mut app, &config_path);
+        }
         return Ok(app);
     }
 
@@ -406,7 +470,45 @@ fn mobile_app_config(config: &MobileTunnelConfig) -> Result<AppConfig> {
     AppConfig::migrate_persisted_secrets(&config_path)?;
     let mut app = AppConfig::load(&config_path)?;
     app.ensure_defaults();
+    rehydrate_mobile_config_from_stored_roster(&mut app, &config_path);
     Ok(app)
+}
+
+/// At boot, restore roster-derived DNS fields (notably `dns_servers`) that may
+/// be missing from the on-disk config — because it was last written by an older
+/// binary that predated those fields, or because an empty roster transiently
+/// cleared them before the leak guard existed. The signed event stored in
+/// `signed-rosters.json` is authoritative: its Nostr tags carry the full roster
+/// even when the config file does not. Mirrors the CLI's
+/// `rehydrate_config_from_stored_roster`, but only ever RESTORES DNS (never
+/// clears it) to stay consistent with the fail-closed leak guard.
+fn rehydrate_mobile_config_from_stored_roster(app: &mut AppConfig, config_path: &Path) {
+    let store_path = signed_rosters_file_path(config_path);
+    let Ok(store) = load_signed_rosters(&store_path) else {
+        return;
+    };
+    let network_id = app.effective_network_id();
+    let Some(stored) = store.latest_for(&network_id) else {
+        return;
+    };
+    let Ok(roster) = stored.roster() else {
+        return;
+    };
+    let signed_at = stored.signed_at();
+    let Some(network) = app.networks.iter_mut().find(|n| n.enabled) else {
+        return;
+    };
+    // Only patch when the stored roster is the one already applied (timestamps
+    // match) — i.e. the config was serialized without the newer DNS fields.
+    if signed_at != network.shared_roster_updated_at {
+        return;
+    }
+    // Restore only; never let an empty stored roster clear a live override.
+    if roster.dns_servers.is_empty() || network.dns_servers == roster.dns_servers {
+        return;
+    }
+    network.dns_servers = roster.dns_servers;
+    network.dns_strict = network.dns_strict || !network.dns_servers.is_empty();
 }
 
 fn plaintext_app_config_toml(app: &AppConfig) -> Result<String> {
@@ -560,6 +662,7 @@ impl MobileTunnel {
         let (outbound_tx, mut outbound_rx) =
             tokio_mpsc::channel::<Vec<u8>>(TUNNEL_CHANNEL_CAPACITY);
         let (inbound_tx, inbound_rx) = mpsc::sync_channel::<Vec<u8>>(TUNNEL_CHANNEL_CAPACITY);
+        let dns_ipv6_queries = Arc::new(Mutex::new(HashMap::<u16, ([u8; 16], u16)>::new()));
 
         // If the user has WG upstream enabled, stand up the boringtun
         // pump alongside the FIPS endpoint. The WG runtime is fed via
@@ -673,17 +776,206 @@ impl MobileTunnel {
             let mesh_addr = mesh_ipv4;
             let inbound_tx_for_dns = inbound_tx.clone();
             let app_config_for_dns = Arc::clone(&app_config);
-            let dns_forwarders = mobile_magic_dns_forwarders(
-                &config.dns_forwarders,
-                &config.dns_servers,
-                &config.magic_dns_server,
-            );
+            let config_state_for_dns = Arc::clone(&config_state);
+            let initial_dns_forwarders = {
+                let mut forwarders = Vec::new();
+                for target in &config.dns_nat_targets {
+                    if target.octets()[0] != 10 || target.octets()[1] != 44 {
+                        forwarders.push(SocketAddr::new(IpAddr::V4(*target), 53));
+                    }
+                }
+                if forwarders.is_empty() {
+                    if config.dns_nat_targets.is_empty() {
+                        mobile_magic_dns_forwarders(&config.dns_forwarders, config.dns_strict)
+                    } else if !config.dns_strict {
+                        // Admin DNS targets are all mesh IPs but strict
+                        // mode is relaxed (device still joining) — use
+                        // public forwarders until the mesh connects.
+                        mobile_magic_dns_forwarders(&config.dns_forwarders, false)
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    forwarders
+                }
+            };
+
+            let initial_dns_nat_targets = config.dns_nat_targets.clone();
+            let dns_ipv6_queries_send = Arc::clone(&dns_ipv6_queries);
+            let config_path_for_log = config_path.clone();
+            let dns_log_path = config.dns_log_path.clone();
             tokio::spawn(async move {
                 let mut outbound_count: u32 = 0;
                 while let Some(packet) = outbound_rx.recv().await {
-                    // Local MagicDNS responder. The well-known DNS address is
-                    // owned by this tunnel instance, so answer before mesh/WG
-                    // routing and never treat it as a remote nvpn node.
+                    let is_dns = if packet.len() >= 28 && packet[0] >> 4 == 4 && packet[9] == 17 {
+                        let header_len = usize::from(packet[0] & 0x0f) * 4;
+                        if packet.len() >= header_len + 4 {
+                            let dst_port = u16::from_be_bytes([packet[header_len + 2], packet[header_len + 3]]);
+                            dst_port == 53
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    let is_dns_ipv6 = if packet.len() >= 48 && packet[0] >> 4 == 6 && packet[6] == 17 {
+                        let dst_port = u16::from_be_bytes([packet[42], packet[43]]);
+                        dst_port == 53
+                    } else {
+                        false
+                    };
+
+                    // Read DNS config from the live config_state so that
+                    // roster updates (which arrive after tunnel start) take
+                    // effect immediately without a tunnel restart.
+                    let (dns_strict, dns_nat_targets, dns_forwarders) =
+                        if is_dns || is_dns_ipv6 {
+                            config_state_for_dns
+                                .read()
+                                .ok()
+                                .map(|cfg| {
+                                    let forwarders = {
+                                        let mut fwd = Vec::new();
+                                        for target in &cfg.dns_nat_targets {
+                                            if target.octets()[0] != 10
+                                                || target.octets()[1] != 44
+                                            {
+                                                fwd.push(SocketAddr::new(
+                                                    IpAddr::V4(*target),
+                                                    53,
+                                                ));
+                                            }
+                                        }
+                                        if fwd.is_empty() {
+                                            if cfg.dns_nat_targets.is_empty() {
+                                                mobile_magic_dns_forwarders(
+                                                    &cfg.dns_forwarders,
+                                                    cfg.dns_strict,
+                                                )
+                                            } else if !cfg.dns_strict {
+                                                mobile_magic_dns_forwarders(
+                                                    &cfg.dns_forwarders,
+                                                    false,
+                                                )
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        } else {
+                                            fwd
+                                        }
+                                    };
+                                    (cfg.dns_strict, cfg.dns_nat_targets.clone(), forwarders)
+                                })
+                                .unwrap_or_else(|| {
+                                    (false, initial_dns_nat_targets.clone(), initial_dns_forwarders.clone())
+                                })
+                        } else {
+                            (false, initial_dns_nat_targets.clone(), initial_dns_forwarders.clone())
+                        };
+
+                    if is_dns {
+                        let src = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+                        let dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+                        dns_log(
+                            &dns_log_path,
+                            &config_path_for_log,
+                            &format!("OUTBOUND DNS RECEIVED: {src} -> {dst} (targets={:?})", dns_nat_targets)
+                        );
+                    }
+
+                    if is_dns_ipv6 {
+                        dns_log(
+                            &dns_log_path,
+                            &config_path_for_log,
+                            "OUTBOUND DNS (IPv6) RECEIVED"
+                        );
+                        if let Some(query) = parse_mobile_magic_dns_query_ipv6(&packet) {
+                            // Check local MagicDNS first
+                            let records = {
+                                let app = app_config_for_dns.read().ok();
+                                app.map(|a| build_magic_dns_records(&a))
+                            };
+                            let local_response = records.and_then(|r| {
+                                build_magic_dns_response_if_handled(query.payload, &r)
+                            });
+                            if let Some(response) = local_response {
+                                if let Some(resp_packet) = build_mobile_dns_response_packet_ipv6(&query, &response) {
+                                    dns_log(
+                                        &dns_log_path,
+                                        &config_path_for_log,
+                                        "OUTBOUND DNS (IPv6): Answered by local MagicDNS responder"
+                                    );
+                                    if inbound_tx_for_dns.send(resp_packet).is_err() {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                            }
+                            
+                            // Not resolved locally. Do we have a NAT target (Pi-hole)?
+                            if let Some(&target) = dns_nat_targets.first() {
+                                if let Some(local_mesh_ip) = mesh_addr {
+                                    // Record original IPv6 details in our queries map
+                                    if let Ok(mut queries) = dns_ipv6_queries_send.lock() {
+                                        queries.insert(query.source_port, (query.source, query.source_port));
+                                    }
+                                    
+                                    // Construct IPv4 UDP packet
+                                    let udp_len = 8 + query.payload.len();
+                                    let total_len = 20 + udp_len;
+                                    let mut ipv4_packet = vec![0_u8; total_len];
+                                    
+                                    // IPv4 Header
+                                    ipv4_packet[0] = 0x45;
+                                    ipv4_packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+                                    ipv4_packet[8] = 64; // TTL
+                                    ipv4_packet[9] = 17; // Protocol UDP
+                                    ipv4_packet[12..16].copy_from_slice(&local_mesh_ip.octets());
+                                    ipv4_packet[16..20].copy_from_slice(&target.octets());
+                                    let chk = ipv4_header_checksum(&ipv4_packet[..20]);
+                                    ipv4_packet[10..12].copy_from_slice(&chk.to_be_bytes());
+                                    
+                                    // UDP Header
+                                    ipv4_packet[20..22].copy_from_slice(&query.source_port.to_be_bytes());
+                                    ipv4_packet[22..24].copy_from_slice(&(53 as u16).to_be_bytes());
+                                    ipv4_packet[24..26].copy_from_slice(&(udp_len as u16).to_be_bytes());
+                                    ipv4_packet[28..].copy_from_slice(query.payload);
+                                    
+                                    nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut ipv4_packet);
+                                    
+                                    dns_log(
+                                        &dns_log_path,
+                                        &config_path_for_log,
+                                        &format!("OUTBOUND DNS (IPv6 -> IPv4 NAT64): Translated query from port {} to {} over mesh", query.source_port, target)
+                                    );
+                                    
+                                    // Route the translated IPv4 packet over the FIPS mesh!
+                                    let outgoing = mesh
+                                        .read()
+                                        .ok()
+                                        .and_then(|mesh| mesh.route_outbound_packet(&ipv4_packet));
+                                    if let Some(outgoing) = outgoing {
+                                        let _ = endpoint.send(outgoing.endpoint_npub, outgoing.bytes).await;
+                                    } else {
+                                        dns_log(
+                                            &dns_log_path,
+                                            &config_path_for_log,
+                                            "OUTBOUND DNS (IPv6 -> IPv4 NAT64): No mesh route for target! Dropping query."
+                                        );
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        dns_log(
+                            &dns_log_path,
+                            &config_path_for_log,
+                            "OUTBOUND DNS (IPv6): Drop (No match / Pi-hole not configured)"
+                        );
+                        continue;
+                    }
+
                     if let Some(response) = mobile_magic_dns_response_packet(
                         &packet,
                         &app_config_for_dns,
@@ -691,60 +983,107 @@ impl MobileTunnel {
                     )
                     .await
                     {
+                        if is_dns {
+                            dns_log(
+                                &dns_log_path,
+                                &config_path_for_log,
+                                "OUTBOUND DNS: Answered by local MagicDNS responder"
+                            );
+                        }
                         if inbound_tx_for_dns.send(response).is_err() {
                             break;
                         }
                         continue;
+                    }
+                    let packet = dns_nat_rewrite_outbound(packet, &dns_nat_targets);
+                    if is_dns {
+                        let new_dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+                        dns_log(
+                            &dns_log_path,
+                            &config_path_for_log,
+                            &format!("OUTBOUND DNS AFTER NAT REWRITE: dst={new_dst}")
+                        );
+                        // DNS leak guard: in strict mode, drop any DNS
+                        // packet not destined for an approved admin DNS
+                        // server or the MagicDNS responder.
+                        if dns_strict {
+                            let approved = dns_nat_targets.contains(&new_dst)
+                                || new_dst.octets()[0] == 10 && new_dst.octets()[1] == 44;
+                            if !approved {
+                                dns_log(
+                                    &dns_log_path,
+                                    &config_path_for_log,
+                                    &format!("OUTBOUND DNS BLOCKED (strict): dst={new_dst} not in approved DNS servers")
+                                );
+                                continue;
+                            }
+                        }
                     }
                     let outgoing = mesh
                         .read()
                         .ok()
                         .and_then(|mesh| mesh.route_outbound_packet(&packet));
                     if let Some(outgoing) = outgoing {
+                        if is_dns {
+                            dns_log(
+                                &dns_log_path,
+                                &config_path_for_log,
+                                &format!("OUTBOUND DNS: Routed to peer {}", outgoing.endpoint_npub)
+                            );
+                        }
                         let _ = endpoint.send(outgoing.endpoint_npub, outgoing.bytes).await;
-                    } else if let Some(wg_tx) = wg_send_tx_for_dispatch.as_ref() {
-                        // No matching mesh peer route: hand the
-                        // plaintext off to the WG runtime, which will
-                        // boringtun-encapsulate and send out via the
-                        // upstream UDP socket. SNAT first so the inner
-                        // source IP matches the WG peer's configured
-                        // address — Mullvad / Proton silently drop
-                        // packets whose inner source isn't an allowed
-                        // peer IP.
-                        let mut packet = packet;
-                        let len_before = packet.len();
-                        let pre_log =
-                            if outbound_count <= 10 && packet.len() >= 20 && packet[0] >> 4 == 4 {
-                                outbound_count = outbound_count.saturating_add(1);
-                                let proto = packet[9];
-                                let src_before = format!(
+                    } else {
+                        if is_dns {
+                            dns_log(
+                                &dns_log_path,
+                                &config_path_for_log,
+                                "OUTBOUND DNS: Drop (No mesh peer route found!)"
+                            );
+                        }
+                        if let Some(wg_tx) = wg_send_tx_for_dispatch.as_ref() {
+                            // No matching mesh peer route: hand the
+                            // plaintext off to the WG runtime, which will
+                            // boringtun-encapsulate and send out via the
+                            // upstream UDP socket. SNAT first so the inner
+                            // source IP matches the WG peer's configured
+                            // address — Mullvad / Proton silently drop
+                            // packets whose inner source isn't an allowed
+                            // peer IP.
+                            let mut packet = packet;
+                            let len_before = packet.len();
+                            let pre_log =
+                                if outbound_count <= 10 && packet.len() >= 20 && packet[0] >> 4 == 4 {
+                                    outbound_count = outbound_count.saturating_add(1);
+                                    let proto = packet[9];
+                                    let src_before = format!(
+                                        "{}.{}.{}.{}",
+                                        packet[12], packet[13], packet[14], packet[15]
+                                    );
+                                    let dst = format!(
+                                        "{}.{}.{}.{}",
+                                        packet[16], packet[17], packet[18], packet[19]
+                                    );
+                                    Some((proto, src_before, dst))
+                                } else {
+                                    None
+                                };
+                            if let (Some(wg), Some(mesh)) = (wg_addr, mesh_addr) {
+                                rewrite_ipv4_source(&mut packet, mesh, wg);
+                                nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(
+                                    &mut packet,
+                                );
+                            }
+                            if let Some((proto, src_before, dst)) = pre_log {
+                                let src_after = format!(
                                     "{}.{}.{}.{}",
                                     packet[12], packet[13], packet[14], packet[15]
                                 );
-                                let dst = format!(
-                                    "{}.{}.{}.{}",
-                                    packet[16], packet[17], packet[18], packet[19]
-                                );
-                                Some((proto, src_before, dst))
-                            } else {
-                                None
-                            };
-                        if let (Some(wg), Some(mesh)) = (wg_addr, mesh_addr) {
-                            rewrite_ipv4_source(&mut packet, mesh, wg);
-                            nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(
-                                &mut packet,
-                            );
+                                log_pump_packet(&format!(
+                                    "outbound #{outbound_count} {len_before}B proto={proto} src={src_before}->{src_after} dst={dst}"
+                                ));
+                            }
+                            let _ = wg_tx.try_send(packet);
                         }
-                        if let Some((proto, src_before, dst)) = pre_log {
-                            let src_after = format!(
-                                "{}.{}.{}.{}",
-                                packet[12], packet[13], packet[14], packet[15]
-                            );
-                            log_pump_packet(&format!(
-                                "outbound #{outbound_count} {len_before}B proto={proto} src={src_before}->{src_after} dst={dst}"
-                            ));
-                        }
-                        let _ = wg_tx.try_send(packet);
                     }
                 }
             })
@@ -878,8 +1217,13 @@ impl MobileTunnel {
             let app_config = Arc::clone(&app_config);
             let app_config_dirty = Arc::clone(&app_config_dirty);
             let config_path = config_path.clone();
+            let dns_log_path = config.dns_log_path.clone();
             let join_request_active = Arc::clone(&join_request_active);
             let network_id = config.network_id.clone();
+            let initial_dns_nat_targets_for_recv = config.dns_nat_targets.clone();
+            let config_state_for_recv_dns = Arc::clone(&config_state);
+            let dns_ipv6_queries_recv = Arc::clone(&dns_ipv6_queries);
+            let magic_dns_enabled = !config.magic_dns_server.trim().is_empty();
             tokio::spawn(async move {
                 let mut control_fragments = FipsControlFragmentBuffer::default();
                 loop {
@@ -916,6 +1260,91 @@ impl MobileTunnel {
                     if let Some(packet) = packet {
                         note_mobile_peer_rx(&presence, &packet.source_pubkey, message.data.len());
                         let mut bytes = packet.bytes;
+                        let is_dns_inbound = if bytes.len() >= 28 && bytes[0] >> 4 == 4 && bytes[9] == 17 {
+                            let header_len = usize::from(bytes[0] & 0x0f) * 4;
+                            if bytes.len() >= header_len + 4 {
+                                let src_port = u16::from_be_bytes([bytes[header_len], bytes[header_len + 1]]);
+                                src_port == 53
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        if is_dns_inbound {
+                            let header_len = usize::from(bytes[0] & 0x0f) * 4;
+                            let dst_port = u16::from_be_bytes([bytes[header_len + 2], bytes[header_len + 3]]);
+                            
+                            let original_query = {
+                                if let Ok(queries) = dns_ipv6_queries_recv.lock() {
+                                    queries.get(&dst_port).cloned()
+                                } else {
+                                    None
+                                }
+                            };
+                            
+                            if let Some((orig_src_ip, orig_src_port)) = original_query {
+                                if let Ok(mut queries) = dns_ipv6_queries_recv.lock() {
+                                    queries.remove(&dst_port);
+                                }
+                                
+                                let udp_len = usize::from(u16::from_be_bytes([bytes[header_len + 4], bytes[header_len + 5]]));
+                                if udp_len >= 8 && bytes.len() >= header_len + udp_len {
+                                    let dns_payload = &bytes[header_len + 8..header_len + udp_len];
+                                    let dummy_dns_ip: [u8; 16] = [
+                                        0xfd, 0x00, 0, 0, 0, 0, 0, 0,
+                                        0, 0, 0, 0, 0, 0, 0, 0x53,
+                                    ];
+                                    let query_ipv6 = MobileDnsQueryIpv6 {
+                                        source: orig_src_ip,
+                                        destination: dummy_dns_ip,
+                                        source_port: orig_src_port,
+                                        destination_port: 53,
+                                        payload: dns_payload,
+                                    };
+                                    
+                                    if let Some(ipv6_resp_packet) = build_mobile_dns_response_packet_ipv6(&query_ipv6, dns_payload) {
+                                        dns_log(
+                                            &dns_log_path,
+                                            &config_path,
+                                            &format!("INBOUND DNS (IPv4 -> IPv6 NAT64): Translated response for port {} back to IPv6", orig_src_port)
+                                        );
+                                        if inbound_tx.send(ipv6_resp_packet).is_err() {
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            let src = Ipv4Addr::new(bytes[12], bytes[13], bytes[14], bytes[15]);
+                            let dst = Ipv4Addr::new(bytes[16], bytes[17], bytes[18], bytes[19]);
+                            dns_log(
+                                &dns_log_path,
+                                &config_path,
+                                &format!("INBOUND DNS RESPONSE RECEIVED: {src} -> {dst}")
+                            );
+                        }
+
+                        // Read live NAT targets from config_state so
+                        // roster updates take effect without a restart.
+                        let dns_nat_targets_for_recv = config_state_for_recv_dns
+                            .read()
+                            .ok()
+                            .map(|cfg| cfg.dns_nat_targets.clone())
+                            .unwrap_or_else(|| initial_dns_nat_targets_for_recv.clone());
+                        dns_nat_rewrite_inbound(&mut bytes, &dns_nat_targets_for_recv, magic_dns_enabled);
+
+                        if is_dns_inbound {
+                            let new_src = Ipv4Addr::new(bytes[12], bytes[13], bytes[14], bytes[15]);
+                            dns_log(
+                                &dns_log_path,
+                                &config_path,
+                                &format!("INBOUND DNS AFTER NAT REWRITE: src={new_src}")
+                            );
+                        }
+
                         nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(
                             &mut bytes,
                         );
@@ -1968,6 +2397,22 @@ async fn sync_mobile_signed_roster_with_connected_peers(
     Ok(sent)
 }
 
+fn mobile_network_roster_from_shared(shared: &SharedNetworkRoster) -> NetworkRoster {
+    NetworkRoster {
+        network_name: shared.name.clone(),
+        participants: shared.participants.clone(),
+        admins: shared.admins.clone(),
+        aliases: shared.aliases.clone(),
+        signed_at: if shared.updated_at > 0 {
+            shared.updated_at
+        } else {
+            unix_timestamp()
+        },
+        dns_servers: shared.dns_servers.clone(),
+        dns_strict: shared.dns_strict,
+    }
+}
+
 fn mobile_current_signed_roster_from_store(
     app_config: &Arc<RwLock<AppConfig>>,
     config_path: &Path,
@@ -1983,18 +2428,42 @@ fn mobile_current_signed_roster_from_store(
     if network_id.is_empty() || signed_by.is_empty() || network.shared_roster_updated_at == 0 {
         return Ok(None);
     }
-    let store = nostr_vpn_core::signed_rosters::load_signed_rosters(&signed_rosters_file_path(
-        config_path,
-    ))?;
-    let Some(signed_roster) = store.latest_for(&network_id).cloned() else {
-        return Ok(None);
-    };
-    if signed_roster.signed_at() != network.shared_roster_updated_at {
+    let local_network_id = network.id.clone();
+    let store_path = signed_rosters_file_path(config_path);
+    let store = load_signed_rosters(&store_path)?;
+    if let Some(signed_roster) = store.latest_for(&network_id).cloned()
+        && signed_roster.signed_at() == network.shared_roster_updated_at
+        && signed_roster.signer_pubkey_hex()? == signed_by
+    {
+        return Ok(Some(signed_roster));
+    }
+
+    // No stored event matches the current (admin-bumped) roster state. If THIS
+    // device is the admin the roster is attributed to, mint and persist a fresh
+    // signed roster from the live config so the change (incl. dns_servers)
+    // actually propagates to peers. iOS previously had no roster signer at all
+    // — `note_active_network_roster_local_change` bumps `shared_roster_updated_at`
+    // on every DNS edit without storing a matching event, so an iOS admin could
+    // never publish their own DNS. We only sign when own_pubkey == signed_by, so
+    // a consumer device never impersonates another admin's roster.
+    let own_pubkey = app
+        .own_nostr_pubkey_hex()
+        .ok()
+        .and_then(|own| normalize_nostr_pubkey(&own).ok())
+        .unwrap_or_default();
+    if own_pubkey.is_empty() || own_pubkey != signed_by {
         return Ok(None);
     }
-    if signed_roster.signer_pubkey_hex()? != signed_by {
+    if !app.is_network_admin(&network_id, &own_pubkey) {
         return Ok(None);
     }
+    let shared = app.shared_network_roster(&local_network_id)?;
+    let signed_roster = SignedRoster::sign(
+        &shared.network_id,
+        mobile_network_roster_from_shared(&shared),
+        &app.nostr_keys()?,
+    )?;
+    upsert_signed_roster(&store_path, signed_roster.clone())?;
     Ok(Some(signed_roster))
 }
 
@@ -2523,6 +2992,121 @@ async fn mobile_magic_dns_response_packet(
     build_mobile_dns_response_packet(&query, &response)
 }
 
+struct MobileDnsQueryIpv6<'a> {
+    source: [u8; 16],
+    destination: [u8; 16],
+    source_port: u16,
+    destination_port: u16,
+    payload: &'a [u8],
+}
+
+
+fn parse_mobile_magic_dns_query_ipv6(packet: &[u8]) -> Option<MobileDnsQueryIpv6<'_>> {
+    if packet.len() < 48 || packet[0] >> 4 != 6 {
+        return None;
+    }
+    let next_header = packet[6];
+    if next_header != 17 {
+        return None;
+    }
+    let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
+    if packet.len() < 40 + payload_len {
+        return None;
+    }
+    let mut source = [0_u8; 16];
+    source.copy_from_slice(&packet[8..24]);
+    let mut destination = [0_u8; 16];
+    destination.copy_from_slice(&packet[24..40]);
+
+    let dummy_dns_ip: [u8; 16] = [
+        0xfd, 0x00, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0x53,
+    ];
+    if destination != dummy_dns_ip {
+        return None;
+    }
+
+    let source_port = u16::from_be_bytes([packet[40], packet[41]]);
+    let destination_port = u16::from_be_bytes([packet[42], packet[43]]);
+    if destination_port != 53 {
+        return None;
+    }
+    let udp_len = usize::from(u16::from_be_bytes([packet[44], packet[45]]));
+    if udp_len < 8 || udp_len - 8 > payload_len {
+        return None;
+    }
+    Some(MobileDnsQueryIpv6 {
+        source,
+        destination,
+        source_port,
+        destination_port,
+        payload: &packet[48..40 + udp_len],
+    })
+}
+
+fn build_mobile_dns_response_packet_ipv6(
+    query: &MobileDnsQueryIpv6<'_>,
+    dns_response: &[u8],
+) -> Option<Vec<u8>> {
+    let udp_len = 8_usize.checked_add(dns_response.len())?;
+    let total_len = 40_usize.checked_add(udp_len)?;
+    let udp_len_u16 = u16::try_from(udp_len).ok()?;
+    let payload_len_u16 = u16::try_from(udp_len).ok()?;
+    
+    let mut packet = vec![0_u8; total_len];
+    packet[0] = 0x60;
+    packet[4..6].copy_from_slice(&payload_len_u16.to_be_bytes());
+    packet[6] = 17;
+    packet[7] = 64;
+    packet[8..24].copy_from_slice(&query.destination);
+    packet[24..40].copy_from_slice(&query.source);
+
+    packet[40..42].copy_from_slice(&query.destination_port.to_be_bytes());
+    packet[42..44].copy_from_slice(&query.source_port.to_be_bytes());
+    packet[44..46].copy_from_slice(&udp_len_u16.to_be_bytes());
+    packet[48..].copy_from_slice(dns_response);
+    
+    let checksum = ipv6_udp_checksum(&packet, &query.destination, &query.source);
+    packet[46..48].copy_from_slice(&checksum.to_be_bytes());
+    
+    Some(packet)
+}
+
+fn ipv6_udp_checksum(packet: &[u8], source: &[u8; 16], destination: &[u8; 16]) -> u16 {
+    let mut sum = 0_u32;
+    for i in 0..8 {
+        sum += u32::from(u16::from_be_bytes([source[i * 2], source[i * 2 + 1]]));
+    }
+    for i in 0..8 {
+        sum += u32::from(u16::from_be_bytes([destination[i * 2], destination[i * 2 + 1]]));
+    }
+    let udp_len = u32::from(u16::from_be_bytes([packet[44], packet[45]]));
+    sum += udp_len;
+    sum += 17_u32;
+
+    let udp_part = &packet[40..];
+    for chunk in udp_part.chunks(2) {
+        if chunk.len() == 2 {
+            if chunk == &udp_part[6..8] {
+                continue;
+            }
+            sum += u32::from(u16::from_be_bytes([chunk[0], chunk[1]]));
+        } else {
+            sum += u32::from(chunk[0]) << 8;
+        }
+    }
+
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    let folded = !u16::try_from(sum).unwrap_or(0xffff);
+    if folded == 0 {
+        0xffff
+    } else {
+        folded
+    }
+}
+
 fn parse_mobile_magic_dns_query(packet: &[u8]) -> Option<MobileDnsQuery<'_>> {
     if packet.len() < 28 || packet[0] >> 4 != 4 {
         return None;
@@ -2588,6 +3172,75 @@ fn build_mobile_dns_response_packet(
     Some(packet)
 }
 
+fn dns_nat_rewrite_outbound(mut packet: Vec<u8>, targets: &[Ipv4Addr]) -> Vec<u8> {
+    let Some(&target) = targets.first() else {
+        return packet;
+    };
+    if target.octets()[0] != 10 || target.octets()[1] != 44 {
+        return packet;
+    }
+    if packet.len() < 28 || packet[0] >> 4 != 4 || packet[9] != 17 {
+        return packet;
+    }
+    let dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+    let Some(magic) = parse_ipv4(nostr_vpn_core::MESH_MAGIC_DNS_SERVER) else {
+        return packet;
+    };
+    if dst != magic {
+        return packet;
+    }
+    let header_len = usize::from(packet[0] & 0x0f) * 4;
+    if packet.len() < header_len + 4 {
+        return packet;
+    }
+    let dst_port = u16::from_be_bytes([packet[header_len + 2], packet[header_len + 3]]);
+    if dst_port != 53 {
+        return packet;
+    }
+    packet[16..20].copy_from_slice(&target.octets());
+    packet[10] = 0;
+    packet[11] = 0;
+    let checksum = ipv4_header_checksum(&packet[..header_len]);
+    packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+    nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut packet);
+    packet
+}
+
+fn dns_nat_rewrite_inbound(packet: &mut [u8], targets: &[Ipv4Addr], magic_dns_enabled: bool) {
+    if !magic_dns_enabled {
+        return;
+    }
+    let Some(&target) = targets.first() else {
+        return;
+    };
+    if target.octets()[0] != 10 || target.octets()[1] != 44 {
+        return;
+    }
+    if packet.len() < 28 || packet[0] >> 4 != 4 || packet[9] != 17 {
+        return;
+    }
+    let src = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+    if !targets.contains(&src) {
+        return;
+    }
+    let header_len = usize::from(packet[0] & 0x0f) * 4;
+    if packet.len() < header_len + 2 {
+        return;
+    }
+    let src_port = u16::from_be_bytes([packet[header_len], packet[header_len + 1]]);
+    if src_port != 53 {
+        return;
+    }
+    let Some(magic) = parse_ipv4(nostr_vpn_core::MESH_MAGIC_DNS_SERVER) else {
+        return;
+    };
+    packet[12..16].copy_from_slice(&magic.octets());
+    packet[10] = 0;
+    packet[11] = 0;
+    let checksum = ipv4_header_checksum(&packet[..header_len]);
+    packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+}
+
 fn ipv4_header_checksum(header: &[u8]) -> u16 {
     let mut sum = 0_u32;
     for chunk in header.chunks(2) {
@@ -2632,28 +3285,25 @@ async fn forward_mobile_dns_query(query: &[u8], forwarders: &[SocketAddr]) -> Op
     None
 }
 
-fn mobile_magic_dns_forwarders(
-    configured: &[String],
-    tunnel_dns_servers: &[String],
-    magic_dns_server: &str,
-) -> Vec<SocketAddr> {
+fn mobile_magic_dns_forwarders(configured: &[String], strict: bool) -> Vec<SocketAddr> {
     let mut seen = HashSet::new();
-    tunnel_dns_servers
+    let configured_iter = configured
         .iter()
-        .filter(|server| server.trim() != magic_dns_server.trim())
-        .filter_map(|server| parse_dns_forwarder(server))
-        .chain(
-            configured
-                .iter()
-                .filter_map(|server| parse_dns_forwarder(server)),
-        )
-        .chain(
-            MOBILE_MAGIC_DNS_FORWARDERS
-                .iter()
-                .filter_map(|server| parse_dns_forwarder(server)),
-        )
-        .filter(|server| seen.insert(*server))
-        .collect()
+        .filter_map(|server| parse_dns_forwarder(server));
+    if strict {
+        // Strict DNS: only use explicitly configured forwarders, never
+        // fall back to hardcoded public resolvers.
+        configured_iter.filter(|server| seen.insert(*server)).collect()
+    } else {
+        configured_iter
+            .chain(
+                MOBILE_MAGIC_DNS_FORWARDERS
+                    .iter()
+                    .filter_map(|server| parse_dns_forwarder(server)),
+            )
+            .filter(|server| seen.insert(*server))
+            .collect()
+    }
 }
 
 fn parse_dns_forwarder(value: &str) -> Option<SocketAddr> {
@@ -2745,7 +3395,10 @@ fn empty_config() -> MobileTunnelConfig {
         nostr_discovery_enabled: true,
         excluded_routes: Vec::new(),
         dns_servers: Vec::new(),
+        dns_strict: false,
         dns_forwarders: Vec::new(),
+        dns_nat_targets: Vec::new(),
+        dns_log_path: String::new(),
         magic_dns_server: String::new(),
         wireguard_exit: None,
         join_requests_enabled: false,
@@ -2778,6 +3431,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         Arc::new(RwLock::new(app))
     }
@@ -2850,6 +3505,8 @@ mod tests {
                 admins: vec![known_admin_hex, outsider_hex],
                 aliases: HashMap::new(),
                 signed_at: 1_726_000_000,
+                dns_servers: Vec::new(),
+                dns_strict: false,
             },
             &outsider,
         )
@@ -2891,6 +3548,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
 
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
@@ -2946,6 +3605,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.exit_node = peer.to_string();
 
@@ -2973,7 +3634,7 @@ mod tests {
         assert_eq!(config.mtu, nostr_vpn_core::MESH_TUNNEL_MTU);
         assert_eq!(
             config.dns_servers,
-            vec![nostr_vpn_core::MESH_MAGIC_DNS_SERVER, "1.1.1.1", "9.9.9.9"]
+            vec!["1.1.1.1", "9.9.9.9", nostr_vpn_core::MESH_MAGIC_DNS_SERVER]
         );
         assert_eq!(
             config.magic_dns_server,
@@ -3069,6 +3730,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.set_peer_alias(peer, "fixture-peer")
             .expect("peer alias");
@@ -3126,6 +3789,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.fips_peer_endpoints
             .insert(peer.to_string(), vec!["192.168.50.10:51820".to_string()]);
@@ -3171,6 +3836,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.fips_peer_endpoints
             .insert(admin.clone(), vec!["192.168.50.10:51820".to_string()]);
@@ -3228,6 +3895,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         // Isolate the admin-listener behavior from the built-in bootstrap nodes,
         // which would otherwise populate config.peers as fallback transit.
@@ -3378,6 +4047,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         let requester = Keys::generate().public_key().to_hex();
         let app_config = Arc::new(RwLock::new(app));
@@ -3499,6 +4170,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         admin_app.ensure_defaults();
         admin_app
@@ -3593,6 +4266,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.exit_node = exit_pubkey.to_string();
         app.ensure_defaults();
@@ -3837,6 +4512,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
@@ -3895,6 +4572,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
@@ -3943,6 +4622,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
@@ -4036,6 +4717,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -4080,7 +4763,7 @@ mod tests {
         assert_eq!(config.excluded_routes, vec!["198.51.100.20/32"]);
         assert_eq!(
             config.dns_servers,
-            vec![nostr_vpn_core::MESH_MAGIC_DNS_SERVER, "10.64.0.1"]
+            vec!["10.64.0.1", nostr_vpn_core::MESH_MAGIC_DNS_SERVER]
         );
         assert_eq!(
             config.magic_dns_server,
@@ -4107,6 +4790,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -4123,7 +4808,7 @@ mod tests {
 
         assert_eq!(
             config.dns_servers,
-            vec![nostr_vpn_core::MESH_MAGIC_DNS_SERVER, "94.140.14.14"]
+            vec!["94.140.14.14", nostr_vpn_core::MESH_MAGIC_DNS_SERVER]
         );
         assert_eq!(
             config.magic_dns_server,
@@ -4132,18 +4817,10 @@ mod tests {
     }
 
     #[test]
-    fn mobile_wireguard_exit_dns_forwarders_prefer_configured_tunnel_dns() {
-        let platform_dns = vec!["1.1.1.1".to_string()];
-        let tunnel_dns = vec![
-            nostr_vpn_core::MESH_MAGIC_DNS_SERVER.to_string(),
-            "94.140.14.14".to_string(),
-        ];
+    fn mobile_wireguard_exit_dns_forwarders_prefer_configured() {
+        let configured = vec!["94.140.14.14".to_string(), "1.1.1.1".to_string()];
 
-        let forwarders = mobile_magic_dns_forwarders(
-            &platform_dns,
-            &tunnel_dns,
-            nostr_vpn_core::MESH_MAGIC_DNS_SERVER,
-        );
+        let forwarders = mobile_magic_dns_forwarders(&configured, false);
 
         assert_eq!(
             forwarders,
@@ -4243,6 +4920,8 @@ mod tests {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -4596,3 +5275,31 @@ mod tests {
         assert!(config.peers.is_empty());
     }
 }
+
+fn dns_log(dns_log_path: &str, config_path: &Option<std::path::PathBuf>, message: &str) {
+    let log_path = if !dns_log_path.is_empty() {
+        std::path::PathBuf::from(dns_log_path)
+    } else {
+        let Some(path) = config_path else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        parent.join("dns_nat_debug.log")
+    };
+    
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        use std::io::Write;
+        let _ = writeln!(file, "[{timestamp}] {message}");
+    }
+}
+

@@ -969,6 +969,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settingsPage(
 ) {
     item { DeviceSettingsCard(state, dispatch) }
     item { GeneralSettingsCard(state, dispatch) }
+    item { NetworkDnsSettingsCard(state, dispatch) }
     item { FipsSettingsCard(state, dispatch) }
     item { RelaySettingsCard(state, dispatch) }
     if (selfUpdateState.supported) {

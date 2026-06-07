@@ -173,6 +173,8 @@ mod tests {
             admins: vec![admin.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at,
+            dns_servers: Vec::new(),
+            dns_strict: false,
         };
         SignedRoster::sign("mesh", roster, &admin).expect("sign roster")
     }

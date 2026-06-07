@@ -730,6 +730,14 @@ pub struct NetworkConfig {
     pub shared_roster_updated_at: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shared_roster_signed_by: String,
+    /// DNS server IPs for this network, set by an admin and distributed via
+    /// the signed roster. Peers auto-configure their system resolver to these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns_servers: Vec<String>,
+    /// When true, peers MUST use only the admin-configured DNS servers
+    /// with zero fallback to public resolvers.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dns_strict: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -768,6 +776,8 @@ pub struct SharedNetworkRoster {
     pub aliases: HashMap<String, String>,
     pub updated_at: u64,
     pub signed_by: String,
+    pub dns_servers: Vec<String>,
+    pub dns_strict: bool,
 }
 
 impl Default for AppConfig {
@@ -787,6 +797,8 @@ impl Default for AppConfig {
                 inbound_join_requests: Vec::new(),
                 shared_roster_updated_at: 0,
                 shared_roster_signed_by: String::new(),
+                dns_servers: Vec::new(),
+                dns_strict: false,
             }],
             node_name: default_node_name(),
             lan_discovery_enabled: default_lan_discovery_enabled(),
@@ -1253,6 +1265,8 @@ impl AppConfig {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),
+            dns_strict: false,
         });
         let _ = self.note_network_roster_local_change(&id);
         id
@@ -1650,6 +1664,8 @@ impl AppConfig {
             aliases,
             updated_at: network.shared_roster_updated_at,
             signed_by: network.shared_roster_signed_by.clone(),
+            dns_servers: network.dns_servers.clone(),
+            dns_strict: network.dns_strict,
         })
     }
 
@@ -1663,6 +1679,8 @@ impl AppConfig {
         aliases: HashMap<String, String>,
         signed_at: u64,
         signed_by: &str,
+        dns_servers: Vec<String>,
+        dns_strict: bool,
     ) -> Result<bool> {
         let normalized_network_id = normalize_runtime_network_id(network_id);
         if normalized_network_id.is_empty() {
@@ -1751,6 +1769,21 @@ impl AppConfig {
         }
         network.shared_roster_updated_at = signed_at;
         network.shared_roster_signed_by = normalized_signed_by;
+        // DNS-leak guard: never let a roster that carries NO DNS servers wipe an
+        // already-configured network DNS override. "Empty" and "absent" are
+        // indistinguishable on the wire — a roster signed by an older binary, or
+        // one minted before DNS was set, both arrive with an empty list — so
+        // clearing here would fail OPEN and silently leak queries back to public
+        // resolvers (1.1.1.1 / 9.9.9.9), the exact bug this guards against. A
+        // roster carrying new, non-empty servers still overrides as normal. To
+        // intentionally disable the override, clear it locally on each device
+        // (apply_settings_patch writes an empty list directly, bypassing this).
+        if dns_servers.is_empty() && !network.dns_servers.is_empty() {
+            network.dns_strict = !network.dns_servers.is_empty();
+        } else {
+            network.dns_servers = dns_servers;
+            network.dns_strict = dns_strict;
+        }
         network.outbound_join_request = if own_join_completed {
             None
         } else {
@@ -1808,6 +1841,8 @@ impl AppConfig {
             roster.aliases,
             roster.signed_at,
             &signed_by,
+            roster.dns_servers,
+            roster.dns_strict,
         )
     }
 

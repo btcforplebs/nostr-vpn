@@ -34,6 +34,7 @@ struct RootView: View {
     @State private var manualJoinMeshId = ""
     @State private var lastSyncedNodeName = ""
     @State private var lastSyncedEndpoint = ""
+    @State private var dnsInput = ""
     @State private var lastSyncedTunnelIp = ""
     @State private var lastSyncedListenPort: UInt32 = 0
     @State private var lastSyncedFipsHostInboundTcpPorts = ""
@@ -604,6 +605,9 @@ struct RootView: View {
                     if participant.isAdmin {
                         badge("Admin", style: selected ? .selected : .muted)
                     }
+                    if isNetworkDns(participant) {
+                        badge("DNS", style: selected ? .selected : .ok)
+                    }
                     if participant.offersExitNode {
                         badge(exitNodeBadgeText(participant), style: selected ? .selected : exitNodeBadgeStyle(participant))
                     }
@@ -672,13 +676,16 @@ struct RootView: View {
                     Text(deviceName(participant))
                         .font(.system(size: 24, weight: .semibold))
                         .lineLimit(2)
-                    if isSelf(participant) || participant.isAdmin || participant.offersExitNode || participant.reachable {
+                    if isSelf(participant) || participant.isAdmin || isNetworkDns(participant) || participant.offersExitNode || participant.reachable {
                         HStack(spacing: 6) {
                             if isSelf(participant) {
                                 badge("This device", style: .ok)
                             }
                             if participant.isAdmin {
                                 badge("Admin", style: .muted)
+                            }
+                            if isNetworkDns(participant) {
+                                badge("DNS", style: .ok)
                             }
                             if participant.offersExitNode {
                                 badge(exitNodeBadgeText(participant), style: exitNodeBadgeStyle(participant))
@@ -769,6 +776,11 @@ struct RootView: View {
                     .textSelection(.enabled)
             }
         }
+    }
+
+    private func isNetworkDns(_ participant: NativeParticipantState) -> Bool {
+        let ip = cleanIp(participant.tunnelIp)
+        return !ip.isEmpty && state.networkDnsServers.contains(ip)
     }
 
     private func deviceActionButtons(_ participant: NativeParticipantState, network: NativeNetworkState) -> some View {
@@ -1573,6 +1585,46 @@ struct RootView: View {
                             .foregroundStyle(.secondary)
                     }
                     GridRow {
+                        label("Custom DNS")
+                        Toggle("", isOn: Binding(
+                            get: { !state.networkDnsServers.isEmpty },
+                            set: { enabled in
+                                if !enabled {
+                                    dnsInput = ""
+                                    manager.clearNetworkDns()
+                                }
+                            }
+                        ))
+                        .labelsHidden()
+                        .disabled(!network.localIsAdmin || manager.actionInFlight)
+                        Text(!state.networkDnsServers.isEmpty ? "Enabled" : "Disabled")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if !state.networkDnsServers.isEmpty || network.localIsAdmin {
+                        GridRow {
+                            label("DNS IPs")
+                            HStack(spacing: 8) {
+                                TextField("DNS IPs (comma-separated)", text: $dnsInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .disabled(!network.localIsAdmin || manager.actionInFlight)
+                                    .onAppear {
+                                        dnsInput = state.networkDnsServers.joined(separator: ", ")
+                                    }
+                                if network.localIsAdmin {
+                                    Button("Save") {
+                                        let servers = dnsInput
+                                            .split(separator: ",")
+                                            .map { $0.trimmingCharacters(in: .whitespaces) }
+                                            .filter { !$0.isEmpty }
+                                        manager.saveNetworkDns(servers)
+                                    }
+                                    .disabled(manager.actionInFlight)
+                                }
+                            }
+                        }
+                    }
+                    GridRow {
                         label("")
                         Button(role: .destructive) {
                             pendingNetworkRemoval = network
@@ -1926,7 +1978,6 @@ struct RootView: View {
             wireguardExitConfig = state.wireguardExitConfig
             lastSyncedWireguardExitConfig = state.wireguardExitConfig
         }
-
         for network in state.networks {
             if networkNameDrafts[network.id] == nil {
                 networkNameDrafts[network.id] = network.name
@@ -2093,6 +2144,9 @@ struct RootView: View {
         }
         if participant.isAdmin {
             roles.append("Admin")
+        }
+        if isNetworkDns(participant) {
+            roles.append("DNS")
         }
         if participant.offersExitNode {
             roles.append(exitNodeBadgeText(participant))

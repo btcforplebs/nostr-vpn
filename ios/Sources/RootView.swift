@@ -741,6 +741,7 @@ private struct InviteToMyNetworkCard: View {
                 }
             ))
             .disabled(!network.localIsAdmin || model.actionInFlight)
+
             Button {
                 if model.state.inviteBroadcastActive {
                     model.dispatch(NativeActions.stopInviteBroadcast(), status: "Stopped nearby sharing")
@@ -952,6 +953,7 @@ private struct SettingsPage: View {
                 GeneralSettingsCard(model: model)
                 FipsSettingsCard(model: model)
                 RelaySettingsCard(model: model)
+                DnsSettingsCard(model: model)
                 DiagnosticsCard(state: model.state)
             }
             .padding()
@@ -983,6 +985,9 @@ private struct ParticipantRow: View {
                                 .fixedSize(horizontal: false, vertical: true)
                             if participant.isAdmin {
                                 Pill("Admin", tint: AppColors.accent)
+                            }
+                            if isNetworkDns(participant, state: model.state) {
+                                Pill("DNS", tint: AppColors.ok)
                             }
                             if isSelf(participant, state: model.state) {
                                 Pill("This device", tint: AppColors.ok)
@@ -1051,6 +1056,9 @@ private struct DeviceDetailSheet: View {
                         Spacer()
                         if participant.isAdmin {
                             Pill("Admin", tint: AppColors.accent)
+                        }
+                        if isNetworkDns(participant, state: model.state) {
+                            Pill("DNS", tint: AppColors.ok)
                         }
                         if isMe {
                             Pill("This device", tint: AppColors.ok)
@@ -1135,6 +1143,7 @@ private struct DeviceDetailSheet: View {
                                 Label(participant.isAdmin ? "Remove admin" : "Make admin", systemImage: participant.isAdmin ? "person.fill.badge.minus" : "person.fill.badge.plus")
                             }
                             .buttonStyle(.bordered)
+
 
                             Button(role: .destructive) {
                                 pendingRemove = true
@@ -1570,6 +1579,79 @@ private struct RelaySettingsCard: View {
     }
 }
 
+private struct DnsSettingsCard: View {
+    @ObservedObject var model: AppModel
+    @State private var dnsInput: String = ""
+
+    private var activeNetwork: NetworkState? {
+        model.state.networks.first { $0.enabled } ?? model.state.networks.first
+    }
+
+    private var isAdmin: Bool {
+        activeNetwork?.localIsAdmin ?? false
+    }
+
+    var body: some View {
+        AppCard {
+            Text("DNS Override")
+                .font(.headline)
+            
+            if let network = activeNetwork {
+                Toggle("DNS Override", isOn: Binding(
+                    get: { !model.state.networkDnsServers.isEmpty },
+                    set: { enabled in
+                        if !enabled {
+                            dnsInput = ""
+                            model.dispatch(
+                                NativeActions.updateSettings(["networkDnsServers": [] as [String]]),
+                                status: "Clearing DNS Override"
+                            )
+                        }
+                    }
+                ))
+                .disabled(!isAdmin || model.actionInFlight)
+                
+                if !model.state.networkDnsServers.isEmpty || isAdmin {
+                    HStack {
+                        TextField("DNS Override IPs (comma-separated)", text: $dnsInput)
+                            .textFieldStyle(.roundedBorder)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .disabled(!isAdmin || model.actionInFlight)
+                            .onAppear {
+                                dnsInput = model.state.networkDnsServers.joined(separator: ", ")
+                            }
+                        
+                        Button("Save") {
+                            let servers = dnsInput
+                                .split(separator: ",")
+                                .map { $0.trimmingCharacters(in: .whitespaces) }
+                                .filter { !$0.isEmpty }
+                            model.dispatch(
+                                NativeActions.updateSettings(["networkDnsServers": servers]),
+                                status: "Setting DNS Override"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!isAdmin || model.actionInFlight)
+                    }
+                }
+                
+                if !isAdmin {
+                    Text("Only network administrators can configure DNS override.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("No active network to configure DNS override.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+
 private struct WireGuardSettingsCard: View {
     @ObservedObject var model: AppModel
     @State private var config = ""
@@ -1664,6 +1746,44 @@ private struct WireGuardSettingsCard: View {
 
 private struct DiagnosticsCard: View {
     let state: AppState
+    @State private var dnsLogs: String = ""
+    @State private var showingLogs = false
+
+    private var logUrl: URL? {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: AppModel.appGroupIdentifier)?
+            .appendingPathComponent("Nostr VPN", isDirectory: true)
+            .appendingPathComponent("dns_nat_debug.log")
+    }
+
+    // The DNS NAT log is append-only and grows to thousands of lines, which
+    // the phone struggles to render. Only show the most recent tail.
+    private static let maxLogLines = 60
+
+    private func loadLogs() {
+        guard let url = logUrl,
+              let content = try? String(contentsOf: url, encoding: .utf8) else {
+            dnsLogs = "No DNS NAT logs found yet."
+            return
+        }
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
+        let tail = lines.suffix(Self.maxLogLines)
+        let omitted = lines.count - tail.count
+        var text = tail.joined(separator: "\n")
+        if omitted > 0 {
+            text = "… \(omitted) older lines hidden — tap Clear to reset …\n" + text
+        }
+        dnsLogs = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Log is empty. Reconnect and load a website, then Refresh."
+            : text
+    }
+
+    private func clearLogs() {
+        if let url = logUrl {
+            try? "".write(to: url, atomically: true, encoding: .utf8)
+        }
+        dnsLogs = "Log cleared. Reconnect, load one website, then Refresh."
+    }
 
     var body: some View {
         AppCard {
@@ -1676,6 +1796,37 @@ private struct DiagnosticsCard: View {
             Metric("MagicDNS", state.magicDnsStatus)
             Metric("Version", state.appVersion)
             Metric("Config", state.configPath)
+
+            Button(showingLogs ? "Hide DNS NAT Logs" : "View DNS NAT Logs") {
+                if !showingLogs {
+                    loadLogs()
+                }
+                showingLogs.toggle()
+            }
+            .buttonStyle(.bordered)
+            .font(.footnote)
+
+            if showingLogs {
+                HStack(spacing: 8) {
+                    Button("Refresh") { loadLogs() }
+                    Button("Copy") { UIPasteboard.general.string = dnsLogs }
+                    Button("Clear") { clearLogs() }
+                }
+                .buttonStyle(.bordered)
+                .font(.footnote)
+
+                ScrollView {
+                    Text(dnsLogs)
+                        .font(.system(.footnote, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(6)
+                }
+                .frame(maxHeight: 200)
+            }
+            
             ForEach(state.health) { issue in
                 VStack(alignment: .leading, spacing: 3) {
                     Text(issue.severity)
@@ -1982,6 +2133,11 @@ private func sortedParticipants(_ participants: [ParticipantState], state: AppSt
 
 private func isSelf(_ participant: ParticipantState, state: AppState) -> Bool {
     (!state.ownNpub.isEmpty && participant.npub == state.ownNpub) || participant.meshState == "local"
+}
+
+private func isNetworkDns(_ participant: ParticipantState, state: AppState) -> Bool {
+    let ip = cleanIp(participant.tunnelIp)
+    return !ip.isEmpty && state.networkDnsServers.contains(ip)
 }
 
 private func isActiveExitParticipant(_ participant: ParticipantState, state: AppState) -> Bool {

@@ -74,8 +74,8 @@ use nostr_vpn_core::fips_control::{
 #[cfg(feature = "embedded-fips")]
 use nostr_vpn_core::join_requests::{FIPS_JOIN_REQUEST_RETRY_SECS, MeshJoinRequest};
 use nostr_vpn_core::magic_dns::{
-    MagicDnsResolverConfig, MagicDnsServer, build_magic_dns_records, install_system_resolver,
-    uninstall_system_resolver,
+    DnsOverrideGuard, MagicDnsResolverConfig, MagicDnsServer, build_magic_dns_records,
+    install_system_resolver, uninstall_system_resolver,
 };
 #[cfg(target_os = "windows")]
 use nostr_vpn_core::platform_paths::{
@@ -116,8 +116,8 @@ use crate::diagnostics::{
 use crate::network_signaling::NETWORK_INVITE_PREFIX;
 use crate::network_signaling::{
     RosterEditAction, active_network_invite_code, apply_network_invite_to_active_network,
-    maybe_reload_running_daemon, parse_network_invite, queue_active_network_join_request,
-    update_active_network_roster,
+    clear_network_dns, maybe_reload_running_daemon, parse_network_invite,
+    queue_active_network_join_request, set_network_dns, update_active_network_roster,
 };
 #[cfg(any(test, not(target_os = "windows")))]
 pub(crate) use crate::platform_routing::*;
@@ -272,6 +272,11 @@ enum Command {
     AddAdmin(UpdateRosterArgs),
     /// Remove one or more admins from the active network roster.
     RemoveAdmin(UpdateRosterArgs),
+    /// Set DNS server IPs for the active network (admin only).
+    /// All peers will auto-configure these as their system DNS.
+    SetNetworkDns(SetNetworkDnsArgs),
+    /// Remove DNS server override from the active network (admin only).
+    ClearNetworkDns(ClearNetworkDnsArgs),
     /// Ping a peer by node ID or tunnel IP.
     Ping(PingArgs),
     /// Diagnose runtime/network issues and optionally write a support bundle.
@@ -698,6 +703,29 @@ struct UpdateRosterArgs {
 }
 
 #[derive(Debug, Args)]
+struct SetNetworkDnsArgs {
+    #[arg(long)]
+    config: Option<PathBuf>,
+    #[arg(long)]
+    network_id: Option<String>,
+    /// DNS server IP addresses (e.g. 1.1.1.1 192.168.1.53).
+    #[arg(required = true)]
+    servers: Vec<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ClearNetworkDnsArgs {
+    #[arg(long)]
+    config: Option<PathBuf>,
+    #[arg(long)]
+    network_id: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
 struct PingArgs {
     target: String,
     #[arg(long)]
@@ -954,6 +982,8 @@ async fn run_command(command: Command) -> Result<()> {
                         "fips_nostr_discovery_enabled": app.fips_nostr_discovery_enabled,
                         "fips_bootstrap_enabled": app.fips_bootstrap_enabled,
                         "fips_host_inbound_tcp_ports": app.fips_host_inbound_tcp_ports,
+                        "network_dns_servers": app.active_network_opt()
+                            .map(|n| n.dns_servers.clone()).unwrap_or_default(),
                         "wireguard_exit": wireguard_exit_status_json(&app),
                         "daemon": daemon_status_json_value(&daemon),
                         "expected_peer_count": expected_peers,
@@ -1024,6 +1054,15 @@ async fn run_command(command: Command) -> Result<()> {
                     println!("wireguard_exit_interface: {}", app.wireguard_exit.interface);
                     println!("wireguard_exit_address: {}", app.wireguard_exit.address);
                     println!("wireguard_exit_endpoint: {}", app.wireguard_exit.endpoint);
+                }
+                let dns_servers = app
+                    .active_network_opt()
+                    .map(|n| n.dns_servers.clone())
+                    .unwrap_or_default();
+                if dns_servers.is_empty() {
+                    println!("network_dns: none");
+                } else {
+                    println!("network_dns: {}", dns_servers.join(", "));
                 }
                 let effective_routes = runtime_effective_advertised_routes(&app);
                 if effective_routes.is_empty() {
@@ -1259,6 +1298,12 @@ async fn run_command(command: Command) -> Result<()> {
         }
         Command::RemoveAdmin(args) => {
             update_active_network_roster(args, RosterEditAction::RemoveAdmin).await?;
+        }
+        Command::SetNetworkDns(args) => {
+            set_network_dns(args).await?;
+        }
+        Command::ClearNetworkDns(args) => {
+            clear_network_dns(args).await?;
         }
         Command::Ping(args) => {
             let config_path = args.config.unwrap_or_else(default_config_path);
@@ -2206,6 +2251,8 @@ fn network_roster_from_shared(shared: &SharedNetworkRoster) -> NetworkRoster {
         } else {
             unix_timestamp()
         },
+        dns_servers: shared.dns_servers.clone(),
+        dns_strict: shared.dns_strict,
     }
 }
 
@@ -2535,10 +2582,45 @@ fn load_config_with_overrides(
     if let Some(network_id) = network_id {
         app.set_active_network_id(&network_id)?;
     }
+    rehydrate_config_from_stored_roster(&mut app, path);
     maybe_autoconfigure_node(&mut app);
 
     let network_id = app.effective_network_id();
     Ok((app, network_id))
+}
+
+/// At boot, rehydrate roster fields (e.g. `dns_servers`) that may be absent
+/// from the config file because it was last written by an older binary that
+/// predates those fields.  The signed event stored in `signed-rosters.json`
+/// is the authoritative source — its Nostr tags carry the full roster even
+/// when the local binary at the time of receipt didn't know about every field.
+fn rehydrate_config_from_stored_roster(app: &mut AppConfig, config_path: &Path) {
+    let store_path = signed_rosters_file_path(config_path);
+    let Ok(store) = load_signed_rosters(&store_path) else {
+        return;
+    };
+    let network_id = app.effective_network_id();
+    let Some(stored) = store.latest_for(&network_id) else {
+        return;
+    };
+    let Ok(roster) = stored.roster() else {
+        return;
+    };
+    let Some(network) = app.networks.iter_mut().find(|n| n.enabled) else {
+        return;
+    };
+    // Only patch when the timestamps match — this means the same roster was
+    // already applied but the config was serialized without the newer fields.
+    if stored.signed_at() != network.shared_roster_updated_at {
+        return;
+    }
+    if network.dns_servers == roster.dns_servers {
+        return;
+    }
+    network.dns_servers = roster.dns_servers;
+    if let Err(error) = app.save(config_path) {
+        eprintln!("config: failed to persist rehydrated roster fields: {error}");
+    }
 }
 
 fn build_daemon_reload_config(app: AppConfig, network_id: String) -> DaemonReloadConfig {
@@ -2557,6 +2639,7 @@ struct ConnectMagicDnsRuntime {
     suffix: String,
     resolver_installed: bool,
     server: MagicDnsServer,
+    dns_override_guard: Option<DnsOverrideGuard>,
 }
 
 impl ConnectMagicDnsRuntime {
@@ -2603,6 +2686,7 @@ impl ConnectMagicDnsRuntime {
                 suffix,
                 resolver_installed: false,
                 server,
+                dns_override_guard: Self::try_install_dns_override(app),
             });
         }
 
@@ -2614,6 +2698,7 @@ impl ConnectMagicDnsRuntime {
                     suffix,
                     resolver_installed: false,
                     server,
+                    dns_override_guard: Self::try_install_dns_override(app),
                 });
             }
         };
@@ -2625,6 +2710,8 @@ impl ConnectMagicDnsRuntime {
             records,
         };
 
+        let dns_override_guard = Self::try_install_dns_override(app);
+
         match install_system_resolver(&resolver_config) {
             Ok(()) => {
                 println!(
@@ -2635,6 +2722,7 @@ impl ConnectMagicDnsRuntime {
                     suffix,
                     resolver_installed: true,
                     server,
+                    dns_override_guard,
                 })
             }
             Err(error) => {
@@ -2645,6 +2733,7 @@ impl ConnectMagicDnsRuntime {
                     suffix,
                     resolver_installed: false,
                     server,
+                    dns_override_guard,
                 })
             }
         }
@@ -2656,7 +2745,7 @@ impl ConnectMagicDnsRuntime {
     /// daemon-start time and any peer added later (via `add-participant`,
     /// invite acceptance, FIPS roster event, or peer-alias rename) returns
     /// NXDOMAIN until the daemon is restarted.
-    fn refresh_records(&self, app: &AppConfig) {
+    fn refresh_records(&mut self, app: &AppConfig) {
         let records = build_magic_dns_records(app);
         self.server.update_records(records.clone());
         #[cfg(target_os = "linux")]
@@ -2669,6 +2758,63 @@ impl ConnectMagicDnsRuntime {
             eprintln!("magicdns: failed to refresh hosts fallback: {error}");
         }
         let _ = records; // suppress unused-binding on non-Linux
+
+        // Re-evaluate DNS override from the (possibly updated) roster.
+        self.refresh_dns_override(app);
+    }
+
+    /// Install DNS override if the active network's roster has dns_servers set.
+    fn try_install_dns_override(app: &AppConfig) -> Option<DnsOverrideGuard> {
+        let dns_servers = Self::active_roster_dns_servers(app);
+        if dns_servers.is_empty() {
+            return None;
+        }
+        let dns_strict = app
+            .active_network_opt()
+            .is_some_and(|n| !n.dns_servers.is_empty());
+        match DnsOverrideGuard::install(&dns_servers, dns_strict) {
+            Ok(guard) => {
+                println!(
+                    "dns-override: active with servers {}",
+                    dns_servers.join(", ")
+                );
+                Some(guard)
+            }
+            Err(error) => {
+                eprintln!("dns-override: failed to install: {error}");
+                None
+            }
+        }
+    }
+
+    /// Re-evaluate and update the DNS override after a roster or config change.
+    fn refresh_dns_override(&mut self, app: &AppConfig) {
+        let dns_servers = Self::active_roster_dns_servers(app);
+        let currently_active = self.dns_override_guard.is_some();
+
+        if dns_servers.is_empty() {
+            if currently_active {
+                println!("dns-override: removed (roster dns_servers cleared)");
+                self.dns_override_guard = None; // Drop triggers uninstall
+            }
+            return;
+        }
+
+        // (Re-)install even if already active, in case the server list changed.
+        if let Some(ref mut guard) = self.dns_override_guard {
+            guard.disarm(); // Don't uninstall the old one; we're replacing it.
+        }
+        self.dns_override_guard = Self::try_install_dns_override(app);
+    }
+
+    /// Read dns_servers from the active network's config. These come from the
+    /// admin-signed roster and are stored in `NetworkConfig.dns_servers`.
+    fn active_roster_dns_servers(app: &AppConfig) -> Vec<String> {
+        app.networks
+            .iter()
+            .find(|n| n.enabled)
+            .map(|n| n.dns_servers.clone())
+            .unwrap_or_default()
     }
 }
 

@@ -477,6 +477,8 @@ fn apply_admin_signed_shared_roster_replaces_members_from_known_admin() {
             std::collections::HashMap::new(),
             1_726_000_000,
             &current_admin_hex,
+            Vec::new(),
+            false,
         )
         .expect("apply shared roster");
 
@@ -489,6 +491,96 @@ fn apply_admin_signed_shared_roster_replaces_members_from_known_admin() {
     expected_admins.sort();
     assert_eq!(config.networks[0].admins, expected_admins);
     assert_eq!(config.networks[0].shared_roster_updated_at, 1_726_000_000);
+}
+
+#[test]
+fn apply_admin_signed_shared_roster_preserves_dns_when_incoming_roster_is_empty() {
+    // Regression: a newer roster that carries NO dns servers (minted before DNS
+    // was configured, or by an older binary) must not wipe an already-set DNS
+    // override — doing so fails OPEN and leaks queries to public resolvers.
+    let own = Keys::generate();
+    let current_admin = Keys::generate();
+    let own_hex = own.public_key().to_hex();
+    let current_admin_hex = current_admin.public_key().to_hex();
+
+    let mut config = AppConfig::generated();
+    config.nostr.secret_key = own.secret_key().to_secret_hex();
+    config.nostr.public_key = own_hex.clone();
+    config.networks[0].network_id = "mesh-home".to_string();
+    config.networks[0].admins = vec![current_admin_hex.clone()];
+    config.networks[0].participants = vec![current_admin_hex.clone()];
+    config.networks[0].dns_servers = vec!["10.44.1.100".to_string()];
+    config.networks[0].dns_strict = true;
+    config.networks[0].shared_roster_updated_at = 1_726_000_000;
+    config.ensure_defaults();
+
+    let changed = config
+        .apply_admin_signed_shared_roster(
+            "mesh-home",
+            "Home",
+            vec![current_admin_hex.clone(), own_hex.clone()],
+            vec![current_admin_hex.clone()],
+            std::collections::HashMap::new(),
+            1_726_000_100,
+            &current_admin_hex,
+            Vec::new(),
+            false,
+        )
+        .expect("apply shared roster");
+
+    assert!(changed);
+    assert_eq!(
+        config.networks[0].dns_servers,
+        vec!["10.44.1.100".to_string()],
+        "empty incoming roster must not clear the admin's DNS override"
+    );
+    assert!(
+        config.networks[0].dns_strict,
+        "dns_strict must stay on while the override is preserved"
+    );
+}
+
+#[test]
+fn apply_admin_signed_shared_roster_overrides_dns_when_incoming_roster_is_nonempty() {
+    // The guard only protects against EMPTY rosters; a roster carrying new,
+    // non-empty servers must still override the existing override as normal.
+    let own = Keys::generate();
+    let current_admin = Keys::generate();
+    let own_hex = own.public_key().to_hex();
+    let current_admin_hex = current_admin.public_key().to_hex();
+
+    let mut config = AppConfig::generated();
+    config.nostr.secret_key = own.secret_key().to_secret_hex();
+    config.nostr.public_key = own_hex.clone();
+    config.networks[0].network_id = "mesh-home".to_string();
+    config.networks[0].admins = vec![current_admin_hex.clone()];
+    config.networks[0].participants = vec![current_admin_hex.clone()];
+    config.networks[0].dns_servers = vec!["10.44.1.100".to_string()];
+    config.networks[0].dns_strict = true;
+    config.networks[0].shared_roster_updated_at = 1_726_000_000;
+    config.ensure_defaults();
+
+    let changed = config
+        .apply_admin_signed_shared_roster(
+            "mesh-home",
+            "Home",
+            vec![current_admin_hex.clone(), own_hex.clone()],
+            vec![current_admin_hex.clone()],
+            std::collections::HashMap::new(),
+            1_726_000_100,
+            &current_admin_hex,
+            vec!["10.44.1.200".to_string()],
+            true,
+        )
+        .expect("apply shared roster");
+
+    assert!(changed);
+    assert_eq!(
+        config.networks[0].dns_servers,
+        vec!["10.44.1.200".to_string()],
+        "a non-empty roster must override the existing DNS override"
+    );
+    assert!(config.networks[0].dns_strict);
 }
 
 #[test]
@@ -519,6 +611,8 @@ fn apply_admin_signed_shared_roster_clears_join_request_when_own_key_is_added() 
             std::collections::HashMap::new(),
             1_726_000_000,
             &current_admin_hex,
+            Vec::new(),
+            false,
         )
         .expect("apply accepted roster");
 
@@ -552,6 +646,8 @@ fn apply_admin_signed_shared_roster_drops_network_when_own_key_is_evicted() {
             std::collections::HashMap::new(),
             1_726_000_000,
             &current_admin_hex,
+            Vec::new(),
+            false,
         )
         .expect("apply removal roster");
 
@@ -591,6 +687,8 @@ fn apply_admin_signed_shared_roster_keeps_network_when_own_key_was_never_in_rost
             std::collections::HashMap::new(),
             1_726_000_000,
             &current_admin_hex,
+            Vec::new(),
+            false,
         )
         .expect("apply roster with own absent");
 
@@ -622,6 +720,8 @@ fn apply_admin_signed_shared_roster_ignores_unknown_signer() {
             std::collections::HashMap::new(),
             1_726_000_000,
             &unknown_admin.public_key().to_hex(),
+            Vec::new(),
+            false,
         )
         .expect("ignore unknown signer");
 
@@ -646,6 +746,8 @@ fn apply_verified_admin_signed_shared_roster_rejects_tampered_event() {
         admins: vec![current_admin_hex],
         aliases: std::collections::HashMap::new(),
         signed_at: 1_726_000_000,
+        dns_servers: Vec::new(),
+        dns_strict: false,
     };
     let signed = SignedRoster::sign("mesh-home", roster, &current_admin).expect("sign roster");
     let mut event = signed.event.clone();
@@ -685,6 +787,8 @@ fn apply_verified_admin_signed_shared_roster_ignores_non_admin_author() {
         admins: vec![known_admin_hex, outsider_hex],
         aliases: std::collections::HashMap::new(),
         signed_at: 1_726_000_000,
+        dns_servers: Vec::new(),
+        dns_strict: false,
     };
     let signed = SignedRoster::sign("mesh-home", roster, &outsider).expect("sign roster");
     let changed = config
@@ -721,6 +825,8 @@ fn apply_admin_signed_shared_roster_clears_data_peers_when_own_key_is_removed() 
             std::collections::HashMap::new(),
             1_726_000_000,
             &current_admin_hex,
+            Vec::new(),
+            false,
         )
         .expect("apply removal roster");
 
@@ -803,6 +909,8 @@ fn apply_admin_signed_shared_roster_applies_aliases_for_members() {
             ]),
             1_726_000_000,
             &current_admin_hex,
+            Vec::new(),
+            false,
         )
         .expect("apply shared roster");
 
@@ -845,6 +953,8 @@ fn apply_admin_signed_shared_roster_clears_removed_exit_node() {
             std::collections::HashMap::new(),
             1_726_000_000,
             &current_admin_hex,
+            Vec::new(),
+            false,
         )
         .expect("apply shared roster");
 

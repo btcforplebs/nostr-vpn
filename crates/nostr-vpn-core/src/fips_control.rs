@@ -19,6 +19,14 @@ pub struct NetworkRoster {
     pub aliases: HashMap<String, String>,
     #[serde(default)]
     pub signed_at: u64,
+    /// DNS server IPs set by the network admin. When non-empty, peers
+    /// auto-configure their system DNS to use these addresses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns_servers: Vec<String>,
+    /// When true, peers MUST use only the admin-configured DNS servers
+    /// with zero fallback to public resolvers (1.1.1.1, 9.9.9.9, etc.).
+    #[serde(default)]
+    pub dns_strict: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +145,17 @@ fn signed_roster_tags(network_id: &str, roster: &NetworkRoster) -> Result<Vec<Ta
         }
     }
 
+    for dns_server in &roster.dns_servers {
+        let trimmed = dns_server.trim();
+        if !trimmed.is_empty() {
+            tags.push(roster_tag(&["dns", trimmed])?);
+        }
+    }
+
+    if roster.dns_strict {
+        tags.push(roster_tag(&["dns-strict", "true"])?);
+    }
+
     Ok(tags)
 }
 
@@ -148,6 +167,8 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
     let mut participants = Vec::new();
     let mut admins = Vec::new();
     let mut aliases = HashMap::new();
+    let mut dns_servers = Vec::new();
+    let mut dns_strict = false;
 
     for tag in tags {
         let parts = tag.as_slice();
@@ -186,6 +207,17 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
                     }
                 }
             }
+            "dns" => {
+                if let Some(value) = parts.get(1) {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() && trimmed.parse::<IpAddr>().is_ok() {
+                        dns_servers.push(trimmed.to_string());
+                    }
+                }
+            }
+            "dns-strict" => {
+                dns_strict = parts.get(1).is_some_and(|v| v == "true");
+            }
             _ => {}
         }
     }
@@ -201,6 +233,7 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
     participants.dedup();
     admins.sort();
     admins.dedup();
+    dns_servers.dedup();
 
     let network_id = network_id
         .filter(|value| !value.is_empty())
@@ -213,6 +246,8 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
             admins,
             aliases,
             signed_at,
+            dns_servers,
+            dns_strict,
         },
     ))
 }
@@ -591,6 +626,8 @@ pub fn signed_roster_control_frame(signed_roster: SignedRoster) -> FipsControlFr
         admins: Vec::new(),
         aliases: HashMap::new(),
         signed_at: signed_roster.signed_at(),
+        dns_servers: Vec::new(),
+        dns_strict: false,
     });
     FipsControlFrame::Roster {
         network_id,
@@ -615,6 +652,8 @@ pub fn network_roster_from_shared(
     admins: Vec<String>,
     aliases: HashMap<String, String>,
     signed_at: u64,
+    dns_servers: Vec<String>,
+    dns_strict: bool,
 ) -> NetworkRoster {
     NetworkRoster {
         network_name,
@@ -622,6 +661,8 @@ pub fn network_roster_from_shared(
         admins,
         aliases,
         signed_at,
+        dns_servers,
+        dns_strict,
     }
 }
 
@@ -699,6 +740,8 @@ mod tests {
             admins: vec![admin.public_key().to_hex()],
             aliases,
             signed_at: 123,
+            dns_servers: Vec::new(),
+            dns_strict: false,
         };
 
         let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
@@ -726,6 +769,8 @@ mod tests {
             admins: vec![admin.public_key().to_hex()],
             aliases,
             signed_at: 123,
+            dns_servers: Vec::new(),
+            dns_strict: false,
         };
 
         let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
@@ -746,6 +791,49 @@ mod tests {
     }
 
     #[test]
+    fn signed_roster_dns_servers_survive_round_trip() {
+        let admin = Keys::generate();
+        let member = Keys::generate().public_key().to_hex();
+        let roster = NetworkRoster {
+            network_name: "Home".to_string(),
+            participants: vec![member.clone()],
+            admins: vec![admin.public_key().to_hex()],
+            aliases: HashMap::new(),
+            signed_at: 123,
+            dns_servers: vec!["10.44.1.100".to_string(), "10.44.1.200".to_string()],
+            dns_strict: false,
+        };
+
+        let signed = SignedRoster::sign("mesh", roster.clone(), &admin).expect("sign roster");
+        signed.verify().expect("verify roster");
+        let decoded = signed.roster().expect("decode roster");
+
+        assert_eq!(decoded.dns_servers, vec!["10.44.1.100", "10.44.1.200"]);
+        assert_eq!(decoded.network_name, roster.network_name);
+        assert_eq!(decoded.participants, roster.participants);
+        assert_eq!(decoded.admins, roster.admins);
+    }
+
+    #[test]
+    fn signed_roster_empty_dns_servers_round_trip() {
+        let admin = Keys::generate();
+        let member = Keys::generate().public_key().to_hex();
+        let roster = NetworkRoster {
+            network_name: "Home".to_string(),
+            participants: vec![member],
+            admins: vec![admin.public_key().to_hex()],
+            aliases: HashMap::new(),
+            signed_at: 123,
+            dns_servers: Vec::new(),
+            dns_strict: false,
+        };
+
+        let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
+        let decoded = signed.roster().expect("decode roster");
+        assert!(decoded.dns_servers.is_empty());
+    }
+
+    #[test]
     fn signed_roster_rejects_tampered_content() {
         let admin = Keys::generate();
         let member = Keys::generate().public_key().to_hex();
@@ -755,6 +843,8 @@ mod tests {
             admins: vec![admin.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at: 123,
+            dns_servers: Vec::new(),
+            dns_strict: false,
         };
         let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
         let mut event = signed.event.clone();
@@ -841,6 +931,8 @@ mod tests {
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))
                 .collect(),
             signed_at: 123,
+            dns_servers: Vec::new(),
+            dns_strict: false,
         };
         let frame = FipsControlFrame::Roster {
             network_id: "mesh".to_string(),
@@ -870,6 +962,8 @@ mod tests {
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))
                 .collect(),
             signed_at: 123,
+            dns_servers: Vec::new(),
+            dns_strict: false,
         };
         let frame = FipsControlFrame::Roster {
             network_id: "mesh".to_string(),
