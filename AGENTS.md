@@ -36,5 +36,6 @@ For the Linux GTK app (`linux/`, outside the workspace), also run:
 1. Change `CHANGELOG.md` `## Unreleased` to `## X.Y.Z - YYYY-MM-DD`; `scripts/render-release-notes.mjs` / `extractChangelogSection` requires that exact pattern for the GitHub Release body.
 2. Bump root `[workspace.package].version` in `Cargo.toml`, the single source of truth. Propagate with `node scripts/sync-versions.mjs` to Linux Cargo.toml, macOS/iOS `project.yml`, Android `build.gradle.kts`, and Windows `.csproj`; verify with `node scripts/sync-versions.mjs --check`.
 3. Run the local release gate above.
-4. Commit, create a lightweight `git tag vX.Y.Z` at the bump commit, push the tag to `github`, and push `master` to both `github` and htree `origin`.
-5. Watch with `gh run list --workflow=release.yml --limit 3`.
+4. For draft-only publishing, use `node scripts/local-release.mjs --publish`; do not push a GitHub `v*` tag until a final GitHub release is intended.
+5. For final publishing, commit, create a lightweight `git tag vX.Y.Z` at the bump commit, push the tag to `github`, and push `master` to both `github` and htree `origin`. Run the local htree build/publish path in parallel with GitHub workflow watching, then reconcile both before final promotion.
+6. Watch with `gh run list --workflow=release.yml --limit 3`.
