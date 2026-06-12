@@ -14,8 +14,6 @@ RUN case "$NVPN_E2E_BUILDER_APT_INSTALL" in \
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY --from=hashtree Cargo.toml Cargo.lock /app/hashtree/rust/
-COPY --from=hashtree crates /app/hashtree/rust/crates
 COPY --from=fips . /app/fips
 
 ARG NVPN_PATCH_LOCAL_FIPS=0

@@ -11,7 +11,6 @@ services:
         NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
         fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
-        hashtree: ${NVPN_HASHTREE_REPO_PATH:-../hashtree/rust}
     entrypoint: ["sleep", "infinity"]
     environment:
       FIPS_PEER_ACTOR: "${FIPS_PEER_ACTOR:-0}"
@@ -35,7 +34,6 @@ services:
         NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
         fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
-        hashtree: ${NVPN_HASHTREE_REPO_PATH:-../hashtree/rust}
     entrypoint: ["sleep", "infinity"]
     environment:
       FIPS_PEER_ACTOR: "${FIPS_PEER_ACTOR:-0}"
@@ -59,7 +57,6 @@ services:
         NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
         fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
-        hashtree: ${NVPN_HASHTREE_REPO_PATH:-../hashtree/rust}
     entrypoint: ["sleep", "infinity"]
     environment:
       FIPS_PEER_ACTOR: "${FIPS_PEER_ACTOR:-0}"

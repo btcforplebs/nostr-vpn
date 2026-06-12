@@ -17,7 +17,6 @@ services:
       - ..:/workspace/nostr-vpn
       - ../../nostr-pubsub:/workspace/nostr-pubsub
       - ../../fips:/workspace/fips
-      - ../../hashtree:/workspace/hashtree
       - nostr_vpn_linux_cargo_registry:/root/.cargo/registry
       - nostr_vpn_linux_cargo_git:/root/.cargo/git
       - nostr_vpn_linux_target:/workspace/nostr-vpn/linux/target

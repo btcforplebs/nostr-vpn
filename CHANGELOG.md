@@ -18,6 +18,8 @@ All notable changes to this project are documented in this file.
 - Windows builds now pick up the FIPS patch that keeps shared dataplane worker
   state available on non-Unix targets while leaving Unix raw-socket batching
   platform-gated.
+- Release Docker and Linux dev builds no longer require a sibling hashtree
+  checkout now that the updater dependency is pinned to published crates.
 
 ## 4.0.72 - 2026-06-07
 
