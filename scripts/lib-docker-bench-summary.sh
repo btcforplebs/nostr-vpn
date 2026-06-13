@@ -72,6 +72,23 @@ docker_bench_cpu_stress_workers() {
   }'
 }
 
+docker_bench_git_head() {
+  local dir="$1"
+  command -v git >/dev/null 2>&1 || return 0
+  git -C "$dir" rev-parse --short=12 HEAD 2>/dev/null || true
+}
+
+docker_bench_git_dirty() {
+  local dir="$1"
+  command -v git >/dev/null 2>&1 || return 0
+  git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  if [[ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ]]; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
+}
+
 docker_bench_start_cpu_stress_for_service() {
   local service="$1"
   local workers="$2"
@@ -136,6 +153,11 @@ docker_bench_write_metadata() {
   local remote_workers=0
   local pipeline_trace_enabled=0
   local pipeline_trace_interval_secs=""
+  local patch_local_fips_enabled=0
+  local nvpn_git_head=""
+  local nvpn_git_dirty=""
+  local fips_git_head=""
+  local fips_git_dirty=""
   if docker_bench_cpu_stress_enabled; then
     stress_enabled=1
     if docker_bench_cpu_stress_side_enabled local; then
@@ -149,6 +171,17 @@ docker_bench_write_metadata() {
     pipeline_trace_enabled=1
     pipeline_trace_interval_secs="${NVPN_DOCKER_PIPELINE_INTERVAL_SECS:-5}"
   fi
+  if docker_bench_bool_enabled "${NVPN_PATCH_LOCAL_FIPS:-0}"; then
+    patch_local_fips_enabled=1
+  fi
+  if [[ -n "${ROOT_DIR:-}" ]]; then
+    nvpn_git_head="$(docker_bench_git_head "$ROOT_DIR")"
+    nvpn_git_dirty="$(docker_bench_git_dirty "$ROOT_DIR")"
+  fi
+  if [[ -n "${NVPN_FIPS_REPO_PATH:-}" ]]; then
+    fips_git_head="$(docker_bench_git_head "$NVPN_FIPS_REPO_PATH")"
+    fips_git_dirty="$(docker_bench_git_dirty "$NVPN_FIPS_REPO_PATH")"
+  fi
   jq -n \
     --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg backend "$backend" \
@@ -159,10 +192,25 @@ docker_bench_write_metadata() {
     --arg remote_workers "$remote_workers" \
     --arg pipeline_trace_enabled "$pipeline_trace_enabled" \
     --arg pipeline_trace_interval_secs "$pipeline_trace_interval_secs" \
-    '{
+    --arg extra_connect_env "${NVPN_DOCKER_EXTRA_ENV:-}" \
+    --arg patch_local_fips_enabled "$patch_local_fips_enabled" \
+    --arg nvpn_git_head "$nvpn_git_head" \
+    --arg nvpn_git_dirty "$nvpn_git_dirty" \
+    --arg fips_git_head "$fips_git_head" \
+    --arg fips_git_dirty "$fips_git_dirty" \
+    'def bool_or_null($v):
+       if $v == "" then null
+       elif $v == "true" then true
+       elif $v == "false" then false
+       else null
+       end;
+     {
       generated_at: $generated_at,
       backend: $backend,
       duration_secs: ($duration_secs | tonumber),
+      run_env: {
+        extra_connect_env: $extra_connect_env
+      },
       cpu_stress: {
         enabled: ($stress_enabled == "1"),
         sides: $stress_sides,
@@ -176,6 +224,17 @@ docker_bench_write_metadata() {
           else ($pipeline_trace_interval_secs | tonumber)
           end
         )
+      },
+      source: {
+        nvpn: {
+          git_head: (if $nvpn_git_head == "" then null else $nvpn_git_head end),
+          dirty: bool_or_null($nvpn_git_dirty)
+        },
+        local_fips_patch: {
+          enabled: ($patch_local_fips_enabled == "1"),
+          git_head: (if $fips_git_head == "" then null else $fips_git_head end),
+          dirty: bool_or_null($fips_git_dirty)
+        }
       }
     }' >"$metadata_path"
 }

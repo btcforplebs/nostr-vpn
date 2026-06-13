@@ -147,6 +147,7 @@ test_metadata_writer_records_cpu_stress() {
   assert_eq "$(jq -r '.cpu_stress.sides' "$metadata")" "remote" "metadata stress sides"
   assert_eq "$(jq -r '.cpu_stress.local_workers' "$metadata")" "0" "metadata local workers"
   assert_eq "$(jq -r '.cpu_stress.remote_workers' "$metadata")" "5" "metadata remote workers"
+  assert_eq "$(jq -r '.source.local_fips_patch.enabled' "$metadata")" "false" "metadata local FIPS default"
 
   rm -rf "$dir"
 }
@@ -166,6 +167,27 @@ test_metadata_writer_records_pipeline_trace() {
 
   assert_eq "$(jq -r '.pipeline_trace.enabled' "$metadata")" "true" "metadata pipeline trace enabled"
   assert_eq "$(jq -r '.pipeline_trace.interval_secs' "$metadata")" "2" "metadata pipeline trace interval"
+
+  rm -rf "$dir"
+}
+
+test_metadata_writer_records_run_provenance() {
+  local dir metadata
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR"
+
+  (
+    export NVPN_DOCKER_EXTRA_ENV="FIPS_LINUX_BULK_CONTAINERS=1 NVPN_FIPS_LINUX_TUN_VNET=1"
+    export NVPN_PATCH_LOCAL_FIPS=1
+    docker_bench_write_metadata nvpn 3
+  )
+
+  assert_eq "$(jq -r '.run_env.extra_connect_env' "$metadata")" "FIPS_LINUX_BULK_CONTAINERS=1 NVPN_FIPS_LINUX_TUN_VNET=1" "metadata extra env"
+  assert_eq "$(jq -r '.source.local_fips_patch.enabled' "$metadata")" "true" "metadata local FIPS enabled"
+  assert_eq "$(jq -r '.source.nvpn | has("git_head")' "$metadata")" "true" "metadata nvpn head field"
+  assert_eq "$(jq -r '.source.local_fips_patch | has("git_head")' "$metadata")" "true" "metadata FIPS head field"
 
   rm -rf "$dir"
 }
@@ -273,6 +295,12 @@ write_metadata_fixture() {
   local remote_workers="$6"
   local pipeline_trace_enabled="${7:-false}"
   local pipeline_trace_interval_secs="${8:-}"
+  local extra_connect_env="${9:-}"
+  local local_fips_patch_enabled="${10:-false}"
+  local nvpn_git_head="${11:-}"
+  local nvpn_git_dirty="${12:-false}"
+  local fips_git_head="${13:-}"
+  local fips_git_dirty="${14:-false}"
   mkdir -p "$dir"
   jq -n \
     --arg backend "$backend" \
@@ -282,8 +310,17 @@ write_metadata_fixture() {
     --arg remote_workers "$remote_workers" \
     --arg pipeline_trace_enabled "$pipeline_trace_enabled" \
     --arg pipeline_trace_interval_secs "$pipeline_trace_interval_secs" \
+    --arg extra_connect_env "$extra_connect_env" \
+    --arg local_fips_patch_enabled "$local_fips_patch_enabled" \
+    --arg nvpn_git_head "$nvpn_git_head" \
+    --arg nvpn_git_dirty "$nvpn_git_dirty" \
+    --arg fips_git_head "$fips_git_head" \
+    --arg fips_git_dirty "$fips_git_dirty" \
     '{
       backend: $backend,
+      run_env: {
+        extra_connect_env: $extra_connect_env
+      },
       cpu_stress: {
         enabled: ($enabled == "true"),
         sides: $sides,
@@ -297,6 +334,17 @@ write_metadata_fixture() {
           else ($pipeline_trace_interval_secs | tonumber)
           end
         )
+      },
+      source: {
+        nvpn: {
+          git_head: (if $nvpn_git_head == "" then null else $nvpn_git_head end),
+          dirty: ($nvpn_git_dirty == "true")
+        },
+        local_fips_patch: {
+          enabled: ($local_fips_patch_enabled == "true"),
+          git_head: (if $fips_git_head == "" then null else $fips_git_head end),
+          dirty: ($fips_git_dirty == "true")
+        }
       }
     }' >"$dir/metadata.json"
 }
@@ -304,7 +352,7 @@ write_metadata_fixture() {
 test_docker_comparison_outputs() {
   local dir out comparison_fields ratio_fields threshold_fields tcp_ratio ping_delta json_metric
   local threshold_tcp_4 threshold_status threshold_failures effective_udp_delta enforce_output stress_fields stress_json
-  local pipeline_fields pipeline_json
+  local pipeline_fields pipeline_json provenance_json
   dir="$(mktemp -d)"
   write_summary_fixture \
     "$dir/nvpn/summary.tsv" \
@@ -316,7 +364,7 @@ test_docker_comparison_outputs() {
     990 1 \
     0 0.8 \
     "$dir/nvpn/raw"
-  write_metadata_fixture "$dir/nvpn" nvpn true remote 0 4 true 2
+  write_metadata_fixture "$dir/nvpn" nvpn true remote 0 4 true 2 "FIPS_LINUX_BULK_CONTAINERS=1" true nvpnabc false fipsabc true
   write_summary_fixture \
     "$dir/reference/summary.tsv" \
     boringtun 1 \
@@ -346,6 +394,7 @@ test_docker_comparison_outputs() {
   stress_json="$(jq -r '.cpu_stress.nvpn.enabled, .cpu_stress.nvpn.remote_workers, .cpu_stress.reference.enabled' "$out/comparison.json" | paste -sd ':' -)"
   pipeline_fields="$(awk -F '\t' '$1 == "nvpn" { print $10 "\t" $11 }' "$out/comparison.tsv")"
   pipeline_json="$(jq -r '.pipeline_trace.mismatch, .pipeline_trace.nvpn.enabled, .pipeline_trace.nvpn.interval_secs, .pipeline_trace.reference.enabled' "$out/comparison.json" | paste -sd ':' -)"
+  provenance_json="$(jq -r '.provenance.nvpn.run_env.extra_connect_env, .provenance.nvpn.local_fips_patch.enabled, .provenance.nvpn.local_fips_patch.git_head, .provenance.nvpn.local_fips_patch.dirty' "$out/comparison.json" | paste -sd ':' -)"
 
   assert_eq "$comparison_fields" "24" "Docker comparison field count"
   assert_eq "$ratio_fields" "7" "Docker ratio field count"
@@ -361,6 +410,7 @@ test_docker_comparison_outputs() {
   assert_eq "$stress_json" "true:4:false" "Docker comparison stress JSON"
   assert_eq "$pipeline_fields" $'true\t2' "Docker comparison pipeline columns"
   assert_eq "$pipeline_json" "true:true:2:false" "Docker comparison pipeline JSON"
+  assert_eq "$provenance_json" "FIPS_LINUX_BULK_CONTAINERS=1:true:fipsabc:true" "Docker comparison provenance JSON"
 
   if NVPN_DOCKER_COMPARISON_ENFORCE_THRESHOLDS=1 "$COMPARE_SCRIPT" "$dir/nvpn" "$dir/reference" "$dir/enforced" >"$dir/enforced.stdout" 2>"$dir/enforced.stderr"; then
     fail "Docker comparison enforcement should fail on threshold violations"
@@ -465,6 +515,7 @@ test_json_and_ping_parsers
 test_summary_row
 test_metadata_writer_records_cpu_stress
 test_metadata_writer_records_pipeline_trace
+test_metadata_writer_records_run_provenance
 test_pipeline_summary_helpers
 test_nvpn_tun_write_summary_prefers_coalesced_frame_interval
 test_docker_comparison_outputs
