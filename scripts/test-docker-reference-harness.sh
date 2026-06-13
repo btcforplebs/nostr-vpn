@@ -171,6 +171,23 @@ test_metadata_writer_records_pipeline_trace() {
   rm -rf "$dir"
 }
 
+test_metadata_writer_records_iperf_interval() {
+  local dir metadata
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR"
+
+  (
+    export NVPN_DOCKER_IPERF_INTERVAL_SECS=1
+    docker_bench_write_metadata nvpn 3
+  )
+
+  assert_eq "$(jq -r '.iperf.interval_secs' "$metadata")" "1" "metadata iperf interval"
+
+  rm -rf "$dir"
+}
+
 test_metadata_writer_records_run_provenance() {
   local dir metadata
   dir="$(mktemp -d)"
@@ -515,6 +532,7 @@ test_json_and_ping_parsers
 test_summary_row
 test_metadata_writer_records_cpu_stress
 test_metadata_writer_records_pipeline_trace
+test_metadata_writer_records_iperf_interval
 test_metadata_writer_records_run_provenance
 test_pipeline_summary_helpers
 test_nvpn_tun_write_summary_prefers_coalesced_frame_interval

@@ -153,6 +153,7 @@ docker_bench_write_metadata() {
   local remote_workers=0
   local pipeline_trace_enabled=0
   local pipeline_trace_interval_secs=""
+  local iperf_interval_secs="${NVPN_DOCKER_IPERF_INTERVAL_SECS:-0}"
   local patch_local_fips_enabled=0
   local nvpn_git_head=""
   local nvpn_git_dirty=""
@@ -192,6 +193,7 @@ docker_bench_write_metadata() {
     --arg remote_workers "$remote_workers" \
     --arg pipeline_trace_enabled "$pipeline_trace_enabled" \
     --arg pipeline_trace_interval_secs "$pipeline_trace_interval_secs" \
+    --arg iperf_interval_secs "$iperf_interval_secs" \
     --arg extra_connect_env "${NVPN_DOCKER_EXTRA_ENV:-}" \
     --arg patch_local_fips_enabled "$patch_local_fips_enabled" \
     --arg nvpn_git_head "$nvpn_git_head" \
@@ -224,6 +226,9 @@ docker_bench_write_metadata() {
           else ($pipeline_trace_interval_secs | tonumber)
           end
         )
+      },
+      iperf: {
+        interval_secs: ($iperf_interval_secs | tonumber)
       },
       source: {
         nvpn: {

@@ -20,6 +20,7 @@ COMPOSE=(docker compose -p "$PROJECT_NAME" -f "$ROOT_DIR/docker-compose.e2e.yml"
 
 NETWORK_ID="docker-perf"
 DURATION="${DURATION:-10}"
+IPERF_INTERVAL_SECS="${NVPN_DOCKER_IPERF_INTERVAL_SECS:-0}"
 SKIP_BUILD="${NVPN_DOCKER_SKIP_BUILD:-0}"
 OUTPUT_DIR="${NVPN_DOCKER_OUTPUT_DIR:-$ROOT_DIR/artifacts/nvpn-docker/$(date -u +%Y%m%dT%H%M%SZ)}"
 RAW_DIR="$OUTPUT_DIR/raw"
@@ -296,7 +297,7 @@ run_test_json() {
   # --connect-timeout caps the 3WHS so a broken path bails out fast
   # instead of hanging on tcp_synack_retries.
   local err_path="$json_path.stderr"
-  if ! "${COMPOSE[@]}" exec -T node-a iperf3 -c "$BOB_TUNNEL_IP" -t "$DURATION" -i 0 -f m \
+  if ! "${COMPOSE[@]}" exec -T node-a iperf3 -c "$BOB_TUNNEL_IP" -t "$DURATION" -i "$IPERF_INTERVAL_SECS" -f m \
     --connect-timeout 3000 --json "$@" >"$json_path" 2>"$err_path"; then
     cat "$err_path" >&2
     cat "$json_path" >&2
