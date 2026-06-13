@@ -95,7 +95,7 @@ pipeline_line_count() {
 
 write_pipeline_summary_header() {
   local path="$1"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     service \
     pipeline_line_count \
     benchmark_pipeline_line_count \
@@ -104,6 +104,7 @@ write_pipeline_summary_header() {
     fmp_worker_batch \
     decrypt_worker_batch \
     udp_send_batch \
+    nvpn_tun_read_batch \
     hard_events \
     selected_load_pipeline >"$path"
 }
@@ -119,7 +120,7 @@ capture_pipeline_for_service() {
   local load_path="$prefix-pipeline-load-selected.txt"
   local peak_path="$prefix-pipeline-peak-wait-selected.txt"
   local all_count bench_count load_line peak_line
-  local load_top peak_top fmp_batch decrypt_batch udp_send_batch hard_events
+  local load_top peak_top fmp_batch decrypt_batch udp_send_batch nvpn_tun_read_batch hard_events
 
   grep -E '^\[(pipe|nvpn-pipe) ' "$log_path" >"$all_lines_path" 2>/dev/null || true
   docker_bench_pipeline_lines_after_start_from_stdin "$start_line" <"$all_lines_path" >"$bench_lines_path"
@@ -135,9 +136,10 @@ capture_pipeline_for_service() {
   fmp_batch="$(docker_bench_pipeline_fmp_worker_batch_summary "$load_line")"
   decrypt_batch="$(docker_bench_pipeline_decrypt_worker_batch_summary "$load_line")"
   udp_send_batch="$(docker_bench_pipeline_udp_send_batch_summary "$load_line")"
+  nvpn_tun_read_batch="$(docker_bench_pipeline_nvpn_tun_read_batch_summary "$load_line")"
   hard_events="$(docker_bench_pipeline_hard_event_summary_from_stdin "$start_line" <"$all_lines_path")"
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$service" \
     "$all_count" \
     "$bench_count" \
@@ -146,6 +148,7 @@ capture_pipeline_for_service() {
     "$(docker_bench_tsv_field "$fmp_batch")" \
     "$(docker_bench_tsv_field "$decrypt_batch")" \
     "$(docker_bench_tsv_field "$udp_send_batch")" \
+    "$(docker_bench_tsv_field "$nvpn_tun_read_batch")" \
     "$(docker_bench_tsv_field "$hard_events")" \
     "$(docker_bench_tsv_field "$load_line")" >>"$summary_path"
 }

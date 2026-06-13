@@ -69,6 +69,7 @@ fn spawn_tun_read_task(
 
             batch.clear();
             let mut drained = 0;
+            let mut drained_bytes = 0usize;
             let mut sleep_after_error = false;
             loop {
                 let read_result = {
@@ -90,6 +91,7 @@ fn spawn_tun_read_task(
                         nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(
                             &mut bytes,
                         );
+                        drained_bytes = drained_bytes.saturating_add(bytes.len());
                         batch.push(TunPipelinePacket::new(bytes));
                         drained += 1;
                         if drained >= FIPS_TUN_READ_BURST {
@@ -115,6 +117,11 @@ fn spawn_tun_read_task(
             drop(guard);
 
             if !batch.is_empty() {
+                crate::pipeline_profile::record_tun_read_batch(
+                    batch.len(),
+                    drained_bytes,
+                    FIPS_TUN_READ_BURST,
+                );
                 let pending =
                     std::mem::replace(&mut batch, Vec::with_capacity(FIPS_TUN_READ_BURST));
                 match submit_tun_packet_batch_to_mesh_queue(&packet_tx, pending) {

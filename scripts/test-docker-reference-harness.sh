@@ -171,12 +171,12 @@ test_metadata_writer_records_pipeline_trace() {
 }
 
 test_pipeline_summary_helpers() {
-  local dir lines all after load peak top fmp udp hard
+  local dir lines all after load peak top fmp udp tun hard
   dir="$(mktemp -d)"
   lines="$dir/pipeline.txt"
   cat >"$lines" <<'EOF'
 [pipe 5s] fmp_worker_batch_flush=2/s fmp_worker_batch_packets=20/s udp_send_connected=20/s endpoint_event_wait=2/s avg=40.0us p50<=32.8us p95<=262.1us p99<=524.3us max<=1.0ms allmax=5.7ms
-[pipe 5s] fmp_worker_batch_flush=10/s fmp_worker_batch_packets=420/s fmp_worker_batch_priority_packets=105/s fmp_worker_batch_bulk_packets=315/s fmp_worker_batch_full=9/s fmp_worker_batch_single=0.5/s fmp_send_group=12/s fmp_send_group_packets=420/s fmp_send_group_single=3/s udp_send_gso_batch=10/s udp_send_gso_packets=420/s udp_send_gso_batch_ge32=7/s udp_send_gso_batch_ge48=3/s udp_send_gso_batch_eq64=1/s udp_send_sendmmsg_batch=2/s udp_send_sendmmsg_packets=4/s udp_send_sendmmsg_batch_ge32=1/s udp_send_sendmmsg_batch_ge48=0/s udp_send_sendmmsg_batch_eq64=0/s fmp_worker_bulk_queue_wait=10/s avg=1.1ms p50<=2.1ms p95<=2.1ms p99<=8.4ms max<=16.8ms allmax=11.1ms encrypt_worker_bulk_queue_full=2/s total=10 | [nvpn-pipe 5s] nvpn_tun_read=300/s nvpn_mesh_send=300/s nvpn_tun_to_mesh_queue_wait=10/s avg=31.0us p50<=32.8us p95<=131.1us p99<=524.3us max<=1.0ms allmax=2.5ms
+[pipe 5s] fmp_worker_batch_flush=10/s fmp_worker_batch_packets=420/s fmp_worker_batch_priority_packets=105/s fmp_worker_batch_bulk_packets=315/s fmp_worker_batch_full=9/s fmp_worker_batch_single=0.5/s fmp_send_group=12/s fmp_send_group_packets=420/s fmp_send_group_single=3/s udp_send_gso_batch=10/s udp_send_gso_packets=420/s udp_send_gso_batch_ge32=7/s udp_send_gso_batch_ge48=3/s udp_send_gso_batch_eq64=1/s udp_send_sendmmsg_batch=2/s udp_send_sendmmsg_packets=4/s udp_send_sendmmsg_batch_ge32=1/s udp_send_sendmmsg_batch_ge48=0/s udp_send_sendmmsg_batch_eq64=0/s fmp_worker_bulk_queue_wait=10/s avg=1.1ms p50<=2.1ms p95<=2.1ms p99<=8.4ms max<=16.8ms allmax=11.1ms encrypt_worker_bulk_queue_full=2/s total=10 | [nvpn-pipe 5s] nvpn_tun_read=300/s nvpn_mesh_send=300/s nvpn_tun_to_mesh_queue_wait=10/s avg=31.0us p50<=32.8us p95<=131.1us p99<=524.3us max<=1.0ms allmax=2.5ms nvpn_tun_read_batch_flush=12/s total=60 nvpn_tun_read_batch_packets=300/s total=1500 nvpn_tun_read_batch_full=3/s total=15 nvpn_tun_read_batch_single=1/s total=5 nvpn_tun_read_packet_bytes=360000/s total=1800000
 [nvpn-pipe 5s] nvpn_tun_read=1/s nvpn_mesh_send=1/s nvpn_tun_to_mesh_queue_wait=1/s avg=9.0ms p50<=8.4ms p95<=16.8ms p99<=33.6ms max<=67.1ms allmax=67.1ms
 EOF
 
@@ -186,6 +186,7 @@ EOF
   top="$(docker_bench_pipeline_queue_wait_top_summary "$load")"
   fmp="$(docker_bench_pipeline_fmp_worker_batch_summary "$load")"
   udp="$(docker_bench_pipeline_udp_send_batch_summary "$load")"
+  tun="$(docker_bench_pipeline_nvpn_tun_read_batch_summary "$load")"
   hard="$(docker_bench_pipeline_hard_event_summary_from_stdin 0 <"$lines")"
 
   assert_eq "$after" "2" "pipeline lines after start"
@@ -200,6 +201,7 @@ EOF
   assert_eq "$top" "fmp_worker_bulk_queue_wait:rate_per_sec=10,p95_ms=2.1,p99_ms=8.4,max_ms=16.8,allmax_ms=11.1" "pipeline top queue wait"
   assert_eq "$fmp" "avg_packets=42.0,full_pct=90.0,single_pct=5.0,priority_pct=25.0,bulk_pct=75.0,flush_per_sec=10,packets_per_sec=420,priority_packets_per_sec=105,bulk_packets_per_sec=315,send_groups_per_flush=1.2,send_group_avg_packets=35.0,send_group_single_pct=25.0,send_groups_per_sec=12,send_group_packets_per_sec=420" "FMP worker batch summary"
   assert_eq "$udp" "gso_packet_pct=99.1,sendmmsg_packet_pct=0.9,avg_packets=35.3,gso_avg_packets=42.0,sendmmsg_avg_packets=2.0,gso_ge32_pct=70.0,gso_ge48_pct=30.0,gso_eq64_pct=10.0,sendmmsg_ge32_pct=50.0,sendmmsg_ge48_pct=0.0,sendmmsg_eq64_pct=0.0,gso_batch_per_sec=10,gso_packets_per_sec=420,sendmmsg_batch_per_sec=2,sendmmsg_packets_per_sec=4,total_packets_per_sec=424" "UDP send batch summary"
+  assert_eq "$tun" "avg_packets=25.0,full_pct=25.0,single_pct=8.3,avg_packet_bytes=1200.0,flush_per_sec=12,packets_per_sec=300,bytes_per_sec=360000" "nvpn TUN read batch summary"
   assert_eq "$hard" "encrypt_worker_bulk_queue_full:max_rate_per_sec=2,total=10" "pipeline hard event summary"
 
   rm -rf "$dir"

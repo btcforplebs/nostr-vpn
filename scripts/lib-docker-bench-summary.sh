@@ -631,6 +631,39 @@ docker_bench_pipeline_udp_send_batch_summary() {
   '
 }
 
+docker_bench_pipeline_nvpn_tun_read_batch_summary() {
+  local line="$1"
+  printf '%s\n' "$line" | awk '
+    function parse_rate(line, metric, start, rest, parts, value) {
+      start = index(line, metric "=")
+      if (start == 0) {
+        return ""
+      }
+      rest = substr(line, start + length(metric) + 1)
+      split(rest, parts, " ")
+      value = parts[1]
+      sub(/\/s$/, "", value)
+      return value + 0
+    }
+    {
+      flush = parse_rate($0, "nvpn_tun_read_batch_flush")
+      packets = parse_rate($0, "nvpn_tun_read_batch_packets")
+      full = parse_rate($0, "nvpn_tun_read_batch_full")
+      single = parse_rate($0, "nvpn_tun_read_batch_single")
+      bytes = parse_rate($0, "nvpn_tun_read_packet_bytes")
+      if (flush <= 0 && packets <= 0 && bytes <= 0) {
+        next
+      }
+      avg_packets = flush > 0 ? packets / flush : 0
+      full_pct = flush > 0 ? (full / flush) * 100 : 0
+      single_pct = flush > 0 ? (single / flush) * 100 : 0
+      avg_bytes = packets > 0 ? bytes / packets : 0
+      printf "avg_packets=%.1f,full_pct=%.1f,single_pct=%.1f,avg_packet_bytes=%.1f,flush_per_sec=%g,packets_per_sec=%g,bytes_per_sec=%g\n", avg_packets, full_pct, single_pct, avg_bytes, flush, packets, bytes
+      exit
+    }
+  '
+}
+
 docker_bench_pipeline_hard_event_summary_from_stdin() {
   local start_line="${1:-0}"
   awk -v start_line="$start_line" '

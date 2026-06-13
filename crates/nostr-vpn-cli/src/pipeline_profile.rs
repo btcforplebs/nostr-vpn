@@ -6,7 +6,7 @@ use std::sync::atomic::{
 use std::time::Instant;
 
 const N_STAGES: usize = 4;
-const N_COUNTERS: usize = 1;
+const N_COUNTERS: usize = 6;
 const HIST_BUCKETS: usize = 48;
 
 #[derive(Copy, Clone)]
@@ -33,12 +33,22 @@ impl Stage {
 #[repr(usize)]
 pub(crate) enum Counter {
     TunToMeshBulkDropped = 0,
+    TunReadBatchFlush = 1,
+    TunReadBatchPackets = 2,
+    TunReadBatchFull = 3,
+    TunReadBatchSingle = 4,
+    TunReadPacketBytes = 5,
 }
 
 impl Counter {
     fn name(self) -> &'static str {
         match self {
             Counter::TunToMeshBulkDropped => "nvpn_tun_to_mesh_bulk_dropped",
+            Counter::TunReadBatchFlush => "nvpn_tun_read_batch_flush",
+            Counter::TunReadBatchPackets => "nvpn_tun_read_batch_packets",
+            Counter::TunReadBatchFull => "nvpn_tun_read_batch_full",
+            Counter::TunReadBatchSingle => "nvpn_tun_read_batch_single",
+            Counter::TunReadPacketBytes => "nvpn_tun_read_packet_bytes",
         }
     }
 }
@@ -46,6 +56,11 @@ impl Counter {
 fn counter_from_index(idx: usize) -> Counter {
     match idx {
         0 => Counter::TunToMeshBulkDropped,
+        1 => Counter::TunReadBatchFlush,
+        2 => Counter::TunReadBatchPackets,
+        3 => Counter::TunReadBatchFull,
+        4 => Counter::TunReadBatchSingle,
+        5 => Counter::TunReadPacketBytes,
         _ => unreachable!(),
     }
 }
@@ -107,6 +122,21 @@ pub(crate) fn record(stage: Stage, elapsed_ns: u64) {
 pub(crate) fn increment_counter_by(counter: Counter, amount: u64) {
     if amount > 0 && enabled() {
         COUNTERS[counter as usize].fetch_add(amount, Relaxed);
+    }
+}
+
+pub(crate) fn record_tun_read_batch(packets: usize, bytes: usize, max_batch: usize) {
+    if packets == 0 || !enabled() {
+        return;
+    }
+    increment_counter_by(Counter::TunReadBatchFlush, 1);
+    increment_counter_by(Counter::TunReadBatchPackets, packets as u64);
+    increment_counter_by(Counter::TunReadPacketBytes, bytes as u64);
+    if packets >= max_batch.max(1) {
+        increment_counter_by(Counter::TunReadBatchFull, 1);
+    }
+    if packets == 1 {
+        increment_counter_by(Counter::TunReadBatchSingle, 1);
     }
 }
 
