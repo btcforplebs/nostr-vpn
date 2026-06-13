@@ -78,11 +78,17 @@ const MESH_LAN_TUNNEL_MTU: u16 = 1290;
 const MESH_MIN_UNDERLAY_UDP_MTU: u16 = 1280;
 const MESH_MIN_TUNNEL_MTU: u16 = 576;
 const MESH_MAX_MTU: u16 = 9000;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+// Linux Docker/vnet benchmarks benefit slightly from wider app-side drains.
+// Keep Darwin at the smaller, Wi-Fi-proven burst until Mac-to-Mac evidence says otherwise.
+#[cfg(target_os = "linux")]
+const FIPS_TUN_READ_BURST: usize = 128;
+#[cfg(target_os = "macos")]
 const FIPS_TUN_READ_BURST: usize = 64;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const FIPS_MESH_SEND_BURST: usize = 64;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
+const FIPS_MESH_RECV_BURST: usize = 256;
+#[cfg(target_os = "macos")]
 const FIPS_MESH_RECV_BURST: usize = 128;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 const FIPS_MESH_EVENT_DRAIN_LIMIT: usize = 256;
