@@ -6,7 +6,7 @@ use std::sync::atomic::{
 use std::time::Instant;
 
 const N_STAGES: usize = 4;
-const N_COUNTERS: usize = 6;
+const N_COUNTERS: usize = 15;
 const HIST_BUCKETS: usize = 48;
 
 #[derive(Copy, Clone)]
@@ -38,6 +38,15 @@ pub(crate) enum Counter {
     TunReadBatchFull = 3,
     TunReadBatchSingle = 4,
     TunReadPacketBytes = 5,
+    MeshRecvBatchFlush = 6,
+    MeshRecvBatchEvents = 7,
+    MeshRecvBatchPackets = 8,
+    MeshRecvPacketBytes = 9,
+    MeshRecvBatchFull = 10,
+    MeshRecvBatchSinglePacket = 11,
+    TunWritePackets = 12,
+    TunWritePacketBytes = 13,
+    TunWriteWouldBlock = 14,
 }
 
 impl Counter {
@@ -49,6 +58,15 @@ impl Counter {
             Counter::TunReadBatchFull => "nvpn_tun_read_batch_full",
             Counter::TunReadBatchSingle => "nvpn_tun_read_batch_single",
             Counter::TunReadPacketBytes => "nvpn_tun_read_packet_bytes",
+            Counter::MeshRecvBatchFlush => "nvpn_mesh_recv_batch_flush",
+            Counter::MeshRecvBatchEvents => "nvpn_mesh_recv_batch_events",
+            Counter::MeshRecvBatchPackets => "nvpn_mesh_recv_batch_packets",
+            Counter::MeshRecvPacketBytes => "nvpn_mesh_recv_packet_bytes",
+            Counter::MeshRecvBatchFull => "nvpn_mesh_recv_batch_full",
+            Counter::MeshRecvBatchSinglePacket => "nvpn_mesh_recv_batch_single_packet",
+            Counter::TunWritePackets => "nvpn_tun_write_packets",
+            Counter::TunWritePacketBytes => "nvpn_tun_write_packet_bytes",
+            Counter::TunWriteWouldBlock => "nvpn_tun_write_would_block",
         }
     }
 }
@@ -61,6 +79,15 @@ fn counter_from_index(idx: usize) -> Counter {
         3 => Counter::TunReadBatchFull,
         4 => Counter::TunReadBatchSingle,
         5 => Counter::TunReadPacketBytes,
+        6 => Counter::MeshRecvBatchFlush,
+        7 => Counter::MeshRecvBatchEvents,
+        8 => Counter::MeshRecvBatchPackets,
+        9 => Counter::MeshRecvPacketBytes,
+        10 => Counter::MeshRecvBatchFull,
+        11 => Counter::MeshRecvBatchSinglePacket,
+        12 => Counter::TunWritePackets,
+        13 => Counter::TunWritePacketBytes,
+        14 => Counter::TunWriteWouldBlock,
         _ => unreachable!(),
     }
 }
@@ -138,6 +165,39 @@ pub(crate) fn record_tun_read_batch(packets: usize, bytes: usize, max_batch: usi
     if packets == 1 {
         increment_counter_by(Counter::TunReadBatchSingle, 1);
     }
+}
+
+pub(crate) fn record_mesh_recv_batch(
+    events: usize,
+    packets: usize,
+    packet_bytes: usize,
+    max_batch: usize,
+) {
+    if events == 0 || !enabled() {
+        return;
+    }
+    increment_counter_by(Counter::MeshRecvBatchFlush, 1);
+    increment_counter_by(Counter::MeshRecvBatchEvents, events as u64);
+    increment_counter_by(Counter::MeshRecvBatchPackets, packets as u64);
+    increment_counter_by(Counter::MeshRecvPacketBytes, packet_bytes as u64);
+    if events >= max_batch.max(1) {
+        increment_counter_by(Counter::MeshRecvBatchFull, 1);
+    }
+    if packets == 1 {
+        increment_counter_by(Counter::MeshRecvBatchSinglePacket, 1);
+    }
+}
+
+pub(crate) fn record_tun_write_packet(bytes: usize) {
+    if bytes == 0 || !enabled() {
+        return;
+    }
+    increment_counter_by(Counter::TunWritePackets, 1);
+    increment_counter_by(Counter::TunWritePacketBytes, bytes as u64);
+}
+
+pub(crate) fn record_tun_write_would_block() {
+    increment_counter_by(Counter::TunWriteWouldBlock, 1);
 }
 
 pub(crate) struct Timer {

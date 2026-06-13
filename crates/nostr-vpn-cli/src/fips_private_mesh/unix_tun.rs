@@ -221,6 +221,13 @@ fn spawn_mesh_recv_task(
                 .await
             {
                 Ok(Some(drained)) => {
+                    let (packet_count, packet_bytes) = mesh_event_packet_stats(&events);
+                    crate::pipeline_profile::record_mesh_recv_batch(
+                        drained,
+                        packet_count,
+                        packet_bytes,
+                        FIPS_MESH_RECV_BURST,
+                    );
                     for event in events.drain(..) {
                         if !forward_mesh_event_to_tun_and_cooperate(event, &tun_fd, &event_tx).await
                         {
@@ -253,10 +260,16 @@ fn spawn_blocking_mesh_recv_worker(
     let thread = std::thread::spawn(move || {
         let tun_fd = tun_fd.get_ref().as_raw_fd();
         while !thread_stop.load(Ordering::Acquire) {
+            let mut packet_count = 0usize;
+            let mut packet_bytes = 0usize;
             match mesh.recv_mesh_event_batch_blocking_for_each(
                 FIPS_MESH_RECV_BURST,
                 &thread_stop,
                 |event| {
+                    if let FipsPrivateMeshEvent::Packet(packet) = &event {
+                        packet_count += 1;
+                        packet_bytes = packet_bytes.saturating_add(packet.len());
+                    }
                     !thread_stop.load(Ordering::Acquire)
                         && forward_mesh_event_to_tun_blocking(
                             event,
@@ -266,7 +279,14 @@ fn spawn_blocking_mesh_recv_worker(
                         )
                 },
             ) {
-                Ok(Some(_drained)) => {}
+                Ok(Some(drained)) => {
+                    crate::pipeline_profile::record_mesh_recv_batch(
+                        drained,
+                        packet_count,
+                        packet_bytes,
+                        FIPS_MESH_RECV_BURST,
+                    );
+                }
                 Ok(None) => break,
                 Err(error) => {
                     eprintln!("fips: failed to receive tunnel packet: {error}");
@@ -276,6 +296,19 @@ fn spawn_blocking_mesh_recv_worker(
         }
     });
     FipsMeshRecvWorker::Blocking { stop, thread }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn mesh_event_packet_stats(events: &[FipsPrivateMeshEvent]) -> (usize, usize) {
+    let mut packets = 0usize;
+    let mut bytes = 0usize;
+    for event in events {
+        if let FipsPrivateMeshEvent::Packet(packet) = event {
+            packets += 1;
+            bytes = bytes.saturating_add(packet.len());
+        }
+    }
+    (packets, bytes)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -349,9 +382,13 @@ async fn write_packet_to_tun(tun_fd: &AsyncFd<BorrowedTunFd>, packet: &[u8]) {
     let _t = crate::pipeline_profile::Timer::start(crate::pipeline_profile::Stage::TunWrite);
     loop {
         match raw_write_packet_to_tun(tun_fd.get_ref().as_raw_fd(), packet, address_family) {
-            Ok(()) => return,
+            Ok(()) => {
+                crate::pipeline_profile::record_tun_write_packet(packet.len());
+                return;
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                crate::pipeline_profile::record_tun_write_would_block();
                 match tun_fd.writable().await {
                     Ok(mut guard) => guard.clear_ready(),
                     Err(error) => {
@@ -380,9 +417,13 @@ fn write_packet_to_tun_blocking(fd: RawFd, packet: &[u8], stop: &AtomicBool) {
             return;
         }
         match raw_write_packet_to_tun(fd, packet, address_family) {
-            Ok(()) => return,
+            Ok(()) => {
+                crate::pipeline_profile::record_tun_write_packet(packet.len());
+                return;
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                crate::pipeline_profile::record_tun_write_would_block();
                 if !wait_fd_writable_blocking(fd, stop) {
                     return;
                 }
