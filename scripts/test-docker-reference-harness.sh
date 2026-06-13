@@ -249,6 +249,8 @@ write_metadata_fixture() {
   local sides="$4"
   local local_workers="$5"
   local remote_workers="$6"
+  local pipeline_trace_enabled="${7:-false}"
+  local pipeline_trace_interval_secs="${8:-}"
   mkdir -p "$dir"
   jq -n \
     --arg backend "$backend" \
@@ -256,6 +258,8 @@ write_metadata_fixture() {
     --arg sides "$sides" \
     --arg local_workers "$local_workers" \
     --arg remote_workers "$remote_workers" \
+    --arg pipeline_trace_enabled "$pipeline_trace_enabled" \
+    --arg pipeline_trace_interval_secs "$pipeline_trace_interval_secs" \
     '{
       backend: $backend,
       cpu_stress: {
@@ -263,6 +267,14 @@ write_metadata_fixture() {
         sides: $sides,
         local_workers: ($local_workers | tonumber),
         remote_workers: ($remote_workers | tonumber)
+      },
+      pipeline_trace: {
+        enabled: ($pipeline_trace_enabled == "true"),
+        interval_secs: (
+          if $pipeline_trace_interval_secs == "" then null
+          else ($pipeline_trace_interval_secs | tonumber)
+          end
+        )
       }
     }' >"$dir/metadata.json"
 }
@@ -270,6 +282,7 @@ write_metadata_fixture() {
 test_docker_comparison_outputs() {
   local dir out comparison_fields ratio_fields threshold_fields tcp_ratio ping_delta json_metric
   local threshold_tcp_4 threshold_status threshold_failures effective_udp_delta enforce_output stress_fields stress_json
+  local pipeline_fields pipeline_json
   dir="$(mktemp -d)"
   write_summary_fixture \
     "$dir/nvpn/summary.tsv" \
@@ -281,7 +294,7 @@ test_docker_comparison_outputs() {
     990 1 \
     0 0.8 \
     "$dir/nvpn/raw"
-  write_metadata_fixture "$dir/nvpn" nvpn true remote 0 4
+  write_metadata_fixture "$dir/nvpn" nvpn true remote 0 4 true 2
   write_summary_fixture \
     "$dir/reference/summary.tsv" \
     boringtun 1 \
@@ -292,7 +305,7 @@ test_docker_comparison_outputs() {
     980 2 \
     0 0.4 \
     "$dir/reference/raw"
-  write_metadata_fixture "$dir/reference" boringtun false both 0 0
+  write_metadata_fixture "$dir/reference" boringtun false both 0 0 false
   out="$dir/out"
 
   "$COMPARE_SCRIPT" "$dir/nvpn" "$dir/reference" "$out" >/dev/null
@@ -309,8 +322,10 @@ test_docker_comparison_outputs() {
   effective_udp_delta="$(jq -r '.threshold_policy.effective_udp_loss_delta_pct' "$out/comparison.json")"
   stress_fields="$(awk -F '\t' '$1 == "nvpn" { print $6 "\t" $7 "\t" $8 "\t" $9 }' "$out/comparison.tsv")"
   stress_json="$(jq -r '.cpu_stress.nvpn.enabled, .cpu_stress.nvpn.remote_workers, .cpu_stress.reference.enabled' "$out/comparison.json" | paste -sd ':' -)"
+  pipeline_fields="$(awk -F '\t' '$1 == "nvpn" { print $10 "\t" $11 }' "$out/comparison.tsv")"
+  pipeline_json="$(jq -r '.pipeline_trace.mismatch, .pipeline_trace.nvpn.enabled, .pipeline_trace.nvpn.interval_secs, .pipeline_trace.reference.enabled' "$out/comparison.json" | paste -sd ':' -)"
 
-  assert_eq "$comparison_fields" "22" "Docker comparison field count"
+  assert_eq "$comparison_fields" "24" "Docker comparison field count"
   assert_eq "$ratio_fields" "7" "Docker ratio field count"
   assert_eq "$threshold_fields" "7" "Docker threshold field count"
   assert_eq "$tcp_ratio" $'120.0\t50.000' "Docker TCP single ratio"
@@ -322,6 +337,8 @@ test_docker_comparison_outputs() {
   assert_eq "$effective_udp_delta" "1" "Docker clean/default UDP loss threshold"
   assert_eq "$stress_fields" $'true\tremote\t0\t4' "Docker comparison stress columns"
   assert_eq "$stress_json" "true:4:false" "Docker comparison stress JSON"
+  assert_eq "$pipeline_fields" $'true\t2' "Docker comparison pipeline columns"
+  assert_eq "$pipeline_json" "true:true:2:false" "Docker comparison pipeline JSON"
 
   if NVPN_DOCKER_COMPARISON_ENFORCE_THRESHOLDS=1 "$COMPARE_SCRIPT" "$dir/nvpn" "$dir/reference" "$dir/enforced" >"$dir/enforced.stdout" 2>"$dir/enforced.stderr"; then
     fail "Docker comparison enforcement should fail on threshold violations"
