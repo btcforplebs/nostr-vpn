@@ -5,6 +5,7 @@ services:
       dockerfile: linux/Dockerfile
     image: nostr-vpn-linux-dev
     container_name: nostr-vpn-linux-dev
+    command: ["sleep", "infinity"]
     environment:
       DISPLAY: :99
       GDK_BACKEND: x11
