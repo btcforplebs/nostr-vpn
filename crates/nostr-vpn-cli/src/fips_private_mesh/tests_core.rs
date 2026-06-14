@@ -27,7 +27,8 @@
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::{
         DEFAULT_FIPS_TUN_TO_MESH_QUEUE_CAP, MAX_FIPS_TUN_TO_MESH_QUEUE_CAP,
-        MAX_FIPS_UDP_SEND_BUF_SIZE, MIN_FIPS_TUN_TO_MESH_QUEUE_CAP,
+        FIPS_MESH_BULK_SEND_BURST, FIPS_MESH_PRIORITY_SEND_BURST, MAX_FIPS_UDP_SEND_BUF_SIZE,
+        MIN_FIPS_TUN_TO_MESH_QUEUE_CAP,
         MIN_FIPS_UDP_SEND_BUF_SIZE, TunPipelineLane, TunPipelinePacket, TunPipelineQueueTx,
         TunQueueSubmit, parse_fips_tun_bulk_coalesce_micros, parse_fips_tun_to_mesh_queue_cap,
         parse_fips_udp_send_buf_size, raw_write_packet_to_tun, release_tun_bulk_packet_slots,
@@ -641,6 +642,12 @@
             tun_pipeline_packet_lane(&test_ipv6_tcp_packet(0x02, 0)),
             TunPipelineLane::Priority
         );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv6_tcp_packet(0x18, 64)),
+            TunPipelineLane::Bulk
+        );
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             tun_pipeline_packet_lane(&test_ipv6_tcp_packet(0x18, 64)),
             TunPipelineLane::Priority
@@ -718,6 +725,71 @@
         let queued = rx.bulk.try_recv().expect("first batch should stay queued");
         assert_eq!(queued.len(), 2);
         assert!(rx.bulk.try_recv().is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn tun_to_mesh_queue_splits_large_lane_batches_before_enqueue() {
+        let priority_count = FIPS_MESH_PRIORITY_SEND_BURST + 2;
+        let (tx, mut rx) = TunPipelineQueueTx::channel(1);
+        let priority = (0..priority_count)
+            .map(|sequence| {
+                let mut packet = test_ipv6_tcp_packet(0x10, 0);
+                packet.push(u8::try_from(sequence).expect("sequence fits in test packet marker"));
+                test_pipeline_packet(packet)
+            })
+            .collect();
+
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(&tx, priority),
+            TunQueueSubmit::Enqueued
+        );
+        let first_priority = rx.priority.try_recv().expect("first priority chunk");
+        assert_eq!(first_priority.len(), FIPS_MESH_PRIORITY_SEND_BURST);
+        assert_eq!(
+            first_priority
+                .last()
+                .and_then(|packet| packet.bytes.last())
+                .copied(),
+            Some((FIPS_MESH_PRIORITY_SEND_BURST - 1) as u8)
+        );
+        let second_priority = rx.priority.try_recv().expect("remaining priority chunk");
+        assert_eq!(second_priority.len(), 2);
+        assert_eq!(
+            second_priority[0].bytes.last().copied(),
+            Some(FIPS_MESH_PRIORITY_SEND_BURST as u8)
+        );
+
+        let bulk_count = FIPS_MESH_BULK_SEND_BURST + 2;
+        let (tx, mut rx) = TunPipelineQueueTx::channel(bulk_count);
+        let bulk = (0..bulk_count)
+            .map(|sequence| {
+                let mut packet = test_ipv6_tcp_packet(0x18, 512 + sequence);
+                packet.push(u8::try_from(sequence).expect("sequence fits in test packet marker"));
+                test_pipeline_packet(packet)
+            })
+            .collect();
+
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(&tx, bulk),
+            TunQueueSubmit::Enqueued
+        );
+        assert_eq!(tx.bulk_queued_packets.load(Ordering::Relaxed), bulk_count);
+        let first_bulk = rx.bulk.try_recv().expect("first bulk chunk");
+        assert_eq!(first_bulk.len(), FIPS_MESH_BULK_SEND_BURST);
+        assert_eq!(
+            first_bulk
+                .last()
+                .and_then(|packet| packet.bytes.last())
+                .copied(),
+            Some((FIPS_MESH_BULK_SEND_BURST - 1) as u8)
+        );
+        let second_bulk = rx.bulk.try_recv().expect("remaining bulk chunk");
+        assert_eq!(second_bulk.len(), 2);
+        assert_eq!(
+            second_bulk[0].bytes.last().copied(),
+            Some(FIPS_MESH_BULK_SEND_BURST as u8)
+        );
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -801,6 +873,44 @@
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
+    async fn tun_to_mesh_queue_caps_ready_bulk_batches_on_recv() {
+        let packet_count = FIPS_MESH_BULK_SEND_BURST + 2;
+        let (tx, mut rx) = TunPipelineQueueTx::channel(packet_count);
+        rx.set_bulk_coalesce_delay_for_tests(Duration::ZERO);
+
+        for sequence in 0..packet_count {
+            let mut packet = test_ipv6_tcp_packet(0x18, 512 + sequence);
+            packet.push(u8::try_from(sequence).expect("sequence fits in test packet marker"));
+            assert_eq!(
+                submit_tun_packet_batch_to_mesh_queue(&tx, vec![test_pipeline_packet(packet)],),
+                TunQueueSubmit::Enqueued
+            );
+        }
+        assert_eq!(tx.bulk_queued_packets.load(Ordering::Relaxed), packet_count);
+
+        let first = rx.recv().await.expect("first bulk batch");
+        assert_eq!(first.len(), FIPS_MESH_BULK_SEND_BURST);
+        assert_eq!(
+            first.last().and_then(|packet| packet.bytes.last()).copied(),
+            Some((FIPS_MESH_BULK_SEND_BURST - 1) as u8)
+        );
+        assert_eq!(tx.bulk_queued_packets.load(Ordering::Relaxed), 2);
+
+        let second = rx.recv().await.expect("remaining bulk batch");
+        assert_eq!(second.len(), 2);
+        assert_eq!(
+            second[0].bytes.last().copied(),
+            Some(FIPS_MESH_BULK_SEND_BURST as u8)
+        );
+        assert_eq!(
+            second[1].bytes.last().copied(),
+            Some((FIPS_MESH_BULK_SEND_BURST + 1) as u8)
+        );
+        assert_eq!(tx.bulk_queued_packets.load(Ordering::Relaxed), 0);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
     async fn tun_to_mesh_queue_coalesces_delayed_bulk_batch_within_window() {
         let (tx, mut rx) = TunPipelineQueueTx::channel(8);
         rx.set_bulk_coalesce_delay_for_tests(Duration::from_millis(100));
@@ -834,7 +944,7 @@
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
-    async fn tun_to_mesh_queue_stops_bulk_coalesce_when_priority_arrives() {
+    async fn tun_to_mesh_queue_preempts_bulk_coalesce_when_priority_arrives() {
         let (tx, mut rx) = TunPipelineQueueTx::channel(8);
         rx.set_bulk_coalesce_delay_for_tests(Duration::from_millis(250));
         let bulk = test_ipv6_tcp_packet(0x18, 512);
@@ -859,17 +969,65 @@
         });
 
         let started = std::time::Instant::now();
-        let queued_bulk = rx.recv().await.expect("bulk batch should return");
+        let queued_priority = rx.recv().await.expect("priority batch should return");
         assert!(
             started.elapsed() < Duration::from_millis(200),
             "priority arrival should cut the bulk coalesce window short"
         );
-        assert_eq!(queued_bulk.len(), 1);
-        assert_eq!(queued_bulk[0].bytes, bulk);
-
-        let queued_priority = rx.recv().await.expect("deferred priority batch");
         assert_eq!(queued_priority.len(), 1);
         assert_eq!(queued_priority[0].bytes, priority);
+
+        let queued_bulk = rx.recv().await.expect("deferred bulk batch");
+        assert_eq!(queued_bulk.len(), 1);
+        assert_eq!(queued_bulk[0].bytes, bulk);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn tun_to_mesh_queue_keeps_deferred_bulk_behind_later_priority() {
+        let (tx, mut rx) = TunPipelineQueueTx::channel(8);
+        rx.set_bulk_coalesce_delay_for_tests(Duration::from_millis(250));
+        let bulk = test_ipv6_tcp_packet(0x18, 512);
+        let first_priority = test_ipv4_icmp_packet();
+        let second_priority = test_ipv6_tcp_packet(0x10, 0);
+
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(&tx, vec![test_pipeline_packet(bulk.clone())],),
+            TunQueueSubmit::Enqueued
+        );
+
+        let delayed_tx = tx.clone();
+        let delayed_priority = first_priority.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            assert_eq!(
+                submit_tun_packet_batch_to_mesh_queue(
+                    &delayed_tx,
+                    vec![test_pipeline_packet(delayed_priority)],
+                ),
+                TunQueueSubmit::Enqueued
+            );
+        });
+
+        let queued_first_priority = rx.recv().await.expect("first priority batch");
+        assert_eq!(queued_first_priority.len(), 1);
+        assert_eq!(queued_first_priority[0].bytes, first_priority);
+
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(
+                &tx,
+                vec![test_pipeline_packet(second_priority.clone())],
+            ),
+            TunQueueSubmit::Enqueued
+        );
+
+        let queued_second_priority = rx.recv().await.expect("second priority batch");
+        assert_eq!(queued_second_priority.len(), 1);
+        assert_eq!(queued_second_priority[0].bytes, second_priority);
+
+        let queued_bulk = rx.recv().await.expect("deferred bulk batch");
+        assert_eq!(queued_bulk.len(), 1);
+        assert_eq!(queued_bulk[0].bytes, bulk);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -893,6 +1051,40 @@
         assert_eq!(queued.len(), 2);
         assert_eq!(queued[0].bytes, first);
         assert_eq!(queued[1].bytes, second);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn tun_to_mesh_queue_caps_ready_priority_batches_on_recv() {
+        let (tx, mut rx) = TunPipelineQueueTx::channel(8);
+        let packet_count = FIPS_MESH_PRIORITY_SEND_BURST + 2;
+
+        for sequence in 0..packet_count {
+            let mut packet = test_ipv6_tcp_packet(0x10, 0);
+            packet.push(u8::try_from(sequence).expect("sequence fits in test packet marker"));
+            assert_eq!(
+                submit_tun_packet_batch_to_mesh_queue(&tx, vec![test_pipeline_packet(packet)],),
+                TunQueueSubmit::Enqueued
+            );
+        }
+
+        let first = rx.recv().await.expect("first priority batch");
+        assert_eq!(first.len(), FIPS_MESH_PRIORITY_SEND_BURST);
+        assert_eq!(
+            first
+                .last()
+                .and_then(|packet| packet.bytes.last())
+                .copied(),
+            Some((FIPS_MESH_PRIORITY_SEND_BURST - 1) as u8)
+        );
+
+        let second = rx.recv().await.expect("remaining priority batch");
+        assert_eq!(second.len(), 2);
+        assert_eq!(second[0].bytes.last().copied(), Some(FIPS_MESH_PRIORITY_SEND_BURST as u8));
+        assert_eq!(
+            second[1].bytes.last().copied(),
+            Some((FIPS_MESH_PRIORITY_SEND_BURST + 1) as u8)
+        );
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
