@@ -146,9 +146,9 @@ EOF
 
 test_pipeline_hard_events() {
   local line got
-  line="[pipe 10s] udp_send_backpressure=12/s encrypt_worker_queue_full=0/s total=0 decrypt_worker_bulk_dropped=2.5/s total=0 decrypt_fallback_backlog_high=1/s endpoint_event_backlog_high=1/s endpoint_event_bulk_dropped=5/s transport_channel_backlog_high=1/s transport_bulk_dropped=3/s udp_send_bulk_dropped=0/s total=4 nvpn_tun_to_mesh_bulk_dropped=0/s total=0"
+  line="[pipe 10s] udp_send_backpressure=12/s encrypt_worker_queue_full=0/s total=0 decrypt_worker_bulk_dropped=2.5/s total=0 decrypt_fallback_backlog_high=1/s endpoint_direct_fmp_receive_dropped=2/s total=2 endpoint_event_backlog_high=1/s endpoint_event_bulk_dropped=5/s transport_channel_backlog_high=1/s transport_bulk_dropped=3/s udp_send_bulk_dropped=0/s total=4 nvpn_tun_to_mesh_bulk_dropped=0/s total=0"
   got="$(pipeline_hard_events "$line")"
-  assert_eq "$got" "decrypt_worker_bulk_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped,udp_send_bulk_dropped" "hard pipeline events"
+  assert_eq "$got" "decrypt_worker_bulk_dropped,endpoint_direct_fmp_receive_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped,udp_send_bulk_dropped" "hard pipeline events"
 
   line="[pipe 10s] encrypt_worker_queue_full=0/s total=0 decrypt_worker_bulk_dropped=0/s total=0"
   got="$(pipeline_hard_events "$line")"

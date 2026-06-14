@@ -458,12 +458,12 @@ test_pipeline_priority_queue_wait_guard() {
 
 test_pipeline_hard_event_policy() {
   local sample got
-  sample="$(pipeline_lines_to_json '[pipe 10s] connected_udp_activation_failed=1/s connected_udp_peer_cap_skipped=4/s connected_udp_fd_budget_skipped=7/s encrypt_worker_queue_full=0/s total=0 encrypt_worker_bulk_queue_full=2/s total=2 decrypt_worker_bulk_dropped=2/s decrypt_fallback_backlog_high=1/s decrypt_fallback_priority_gated=1/s decrypt_fsp_bulk_queue_full_fallback=1/s decrypt_authenticated_session_bulk_dropped=1/s endpoint_event_backlog_high=1/s endpoint_event_bulk_dropped=5/s transport_channel_backlog_high=1/s transport_bulk_dropped=3/s udp_send_bulk_dropped=0/s total=0 nvpn_tun_to_mesh_bulk_dropped=0/s total=0')"
+  sample="$(pipeline_lines_to_json '[pipe 10s] connected_udp_activation_failed=1/s connected_udp_peer_cap_skipped=4/s connected_udp_fd_budget_skipped=7/s encrypt_worker_queue_full=0/s total=0 encrypt_worker_bulk_queue_full=2/s total=2 decrypt_worker_bulk_dropped=2/s decrypt_fallback_backlog_high=1/s decrypt_fallback_priority_gated=1/s decrypt_fsp_bulk_queue_full_fallback=1/s decrypt_authenticated_session_bulk_dropped=1/s endpoint_direct_fmp_receive_dropped=2/s total=2 endpoint_direct_fmp_receive_dropped_packets=12/s total=12 endpoint_event_backlog_high=1/s endpoint_event_bulk_dropped=5/s transport_channel_backlog_high=1/s transport_bulk_dropped=3/s udp_send_bulk_dropped=0/s total=0 nvpn_tun_to_mesh_bulk_dropped=0/s total=0')"
 
   got="$(pipeline_hard_events "$sample")"
   assert_eq \
     "$got" \
-    "connected_udp_activation_failed,decrypt_worker_bulk_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped" \
+    "connected_udp_activation_failed,decrypt_worker_bulk_dropped,endpoint_direct_fmp_receive_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped" \
     "hard pipeline events"
 
   got="$(jq -r '.seen.decrypt_fallback_backlog_high' <<<"$sample")"
@@ -493,9 +493,12 @@ test_pipeline_hard_event_policy() {
   got="$(jq -r '.rates_per_sec.endpoint_event_bulk_dropped' <<<"$sample")"
   assert_eq "$got" "5" "endpoint event bulk dropped rate"
 
+  got="$(jq -r '.rates_per_sec.endpoint_direct_fmp_receive_dropped_packets' <<<"$sample")"
+  assert_eq "$got" "12" "direct-FMP receive dropped packets rate"
+
   assert_fails_with \
     "hard event policy" \
-    "fixture observed hard pipeline events: connected_udp_activation_failed,decrypt_worker_bulk_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped" \
+    "fixture observed hard pipeline events: connected_udp_activation_failed,decrypt_worker_bulk_dropped,endpoint_direct_fmp_receive_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped" \
     bash -c 'source "$1"; ALLOW_QUEUE_EVENTS=0; assert_pipeline_ok "fixture" "$2"' \
     bash "$SOAK_SCRIPT" "$sample"
 
