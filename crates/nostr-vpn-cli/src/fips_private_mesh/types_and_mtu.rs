@@ -37,7 +37,7 @@ struct TunPipelineQueueRx {
     bulk: mpsc::Receiver<TunPipelineBatch>,
     bulk_queued_packets: Arc<AtomicUsize>,
     bulk_coalesce_delay: std::time::Duration,
-    deferred_priority: Option<TunPipelineBatch>,
+    deferred_bulk: Option<TunPipelineBatch>,
     priority_closed: bool,
     bulk_closed: bool,
 }
@@ -96,7 +96,7 @@ impl TunPipelineQueueTx {
                 bulk: bulk_rx,
                 bulk_queued_packets,
                 bulk_coalesce_delay: fips_tun_bulk_coalesce_delay(),
-                deferred_priority: None,
+                deferred_bulk: None,
                 priority_closed: false,
                 bulk_closed: false,
             },
@@ -108,12 +108,16 @@ impl TunPipelineQueueTx {
 impl TunPipelineQueueRx {
     async fn recv(&mut self) -> Option<TunPipelineBatch> {
         loop {
-            if let Some(mut batch) = self.deferred_priority.take() {
-                self.drain_ready_priority_batches(&mut batch);
+            if let Some(batch) = self.take_ready_priority_batch() {
                 return Some(batch);
             }
 
-            if let Some(batch) = self.take_ready_priority_batch() {
+            if let Some(mut batch) = self.deferred_bulk.take() {
+                self.drain_ready_bulk_batches(&mut batch);
+                if let Some(priority) = self.coalesce_bulk_batches(&mut batch).await {
+                    self.deferred_bulk = Some(batch);
+                    return Some(priority);
+                }
                 return Some(batch);
             }
 
@@ -137,7 +141,10 @@ impl TunPipelineQueueRx {
                         Some(mut batch) => {
                             release_tun_bulk_packet_slots(&self.bulk_queued_packets, batch.len());
                             self.drain_ready_bulk_batches(&mut batch);
-                            self.coalesce_bulk_batches(&mut batch).await;
+                            if let Some(priority) = self.coalesce_bulk_batches(&mut batch).await {
+                                self.deferred_bulk = Some(batch);
+                                return Some(priority);
+                            }
                             return Some(batch);
                         }
                         None => self.bulk_closed = true,
@@ -162,7 +169,7 @@ impl TunPipelineQueueRx {
     }
 
     fn drain_ready_priority_batches(&mut self, batch: &mut TunPipelineBatch) {
-        while batch.len() < FIPS_MESH_SEND_BURST {
+        while batch.len() < FIPS_MESH_PRIORITY_SEND_BURST {
             match self.priority.try_recv() {
                 Ok(mut next) => batch.append(&mut next),
                 Err(mpsc::error::TryRecvError::Empty) => return,
@@ -175,7 +182,7 @@ impl TunPipelineQueueRx {
     }
 
     fn drain_ready_bulk_batches(&mut self, batch: &mut TunPipelineBatch) {
-        while batch.len() < FIPS_MESH_SEND_BURST {
+        while batch.len() < FIPS_MESH_BULK_SEND_BURST {
             match self.bulk.try_recv() {
                 Ok(mut next) => {
                     release_tun_bulk_packet_slots(&self.bulk_queued_packets, next.len());
@@ -190,23 +197,25 @@ impl TunPipelineQueueRx {
         }
     }
 
-    async fn coalesce_bulk_batches(&mut self, batch: &mut TunPipelineBatch) {
+    async fn coalesce_bulk_batches(
+        &mut self,
+        batch: &mut TunPipelineBatch,
+    ) -> Option<TunPipelineBatch> {
         if self.bulk_coalesce_delay.is_zero()
-            || batch.len() >= FIPS_MESH_SEND_BURST
+            || batch.len() >= FIPS_MESH_BULK_SEND_BURST
             || self.bulk_closed
         {
-            return;
+            return None;
         }
 
         let deadline = tokio::time::Instant::now() + self.bulk_coalesce_delay;
         loop {
             self.drain_ready_bulk_batches(batch);
-            if batch.len() >= FIPS_MESH_SEND_BURST || self.bulk_closed {
-                return;
+            if batch.len() >= FIPS_MESH_BULK_SEND_BURST || self.bulk_closed {
+                return None;
             }
             if let Some(priority) = self.take_ready_priority_batch() {
-                self.deferred_priority = Some(priority);
-                return;
+                return Some(priority);
             }
 
             tokio::select! {
@@ -215,8 +224,7 @@ impl TunPipelineQueueRx {
                     match priority {
                         Some(mut priority) => {
                             self.drain_ready_priority_batches(&mut priority);
-                            self.deferred_priority = Some(priority);
-                            return;
+                            return Some(priority);
                         }
                         None => self.priority_closed = true,
                     }
@@ -232,13 +240,13 @@ impl TunPipelineQueueRx {
                         }
                         None => {
                             self.bulk_closed = true;
-                            return;
+                            return None;
                         }
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
                     self.drain_ready_bulk_batches(batch);
-                    return;
+                    return None;
                 }
             }
         }

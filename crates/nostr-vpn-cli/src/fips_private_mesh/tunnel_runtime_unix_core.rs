@@ -60,7 +60,7 @@ impl FipsPrivateTunnelRuntime {
                     let drained = batch.len();
                     send_mesh_packet_batch_or_log(&mesh, &mut batch).await;
 
-                    if drained >= FIPS_MESH_SEND_BURST {
+                    if drained >= FIPS_MESH_PRIORITY_SEND_BURST {
                         tokio::task::yield_now().await;
                     }
                 }
