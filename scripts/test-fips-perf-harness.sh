@@ -586,6 +586,12 @@ test_pipeline_queue_wait_top_summary() {
     "decrypt_fsp_worker_priority_queue_wait:rate_per_sec=0.2,p95_ms=16.8,p99_ms=33.6,max_ms=67.1,allmax_ms=67.1" \
     "pipeline top queue wait includes authenticated/FSP worker waits"
 
+  got="$(pipeline_queue_wait_top_summary '[pipe 5s] fmp_worker_bulk_queue_wait=10/s avg=1.0ms p50<=1.0ms p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_linux_bulk_container_ready_wait=10/s avg=2.0ms p50<=2.1ms p95<=4.2ms p99<=16.8ms max<=33.6ms allmax=33.6ms')"
+  assert_eq \
+    "$got" \
+    "fmp_linux_bulk_container_ready_wait:rate_per_sec=10,p95_ms=4.2,p99_ms=16.8,max_ms=33.6,allmax_ms=33.6" \
+    "pipeline top queue wait includes Linux bulk container waits"
+
   got="$(pipeline_queue_wait_top_summary '[pipe 5s] transport_priority_queue_wait=0.2/s avg=14.5us p50<=16.4us p95<=65.5us p99<=65.5us max<=65.5us allmax=2.1ms')"
   assert_eq \
     "$got" \

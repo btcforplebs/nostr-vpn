@@ -379,6 +379,14 @@ docker_bench_peak_wait_pipeline_line_from_stdin() {
       if (value > score) score = value
       value = metric_avg_us(line, "fmp_worker_bulk_queue_wait")
       if (value > score) score = value
+      value = metric_avg_us(line, "fmp_linux_bulk_container_queue_wait")
+      if (value > score) score = value
+      value = metric_avg_us(line, "fmp_linux_bulk_container_ready_wait")
+      if (value > score) score = value
+      value = metric_avg_us(line, "fmp_linux_bulk_container_first_slot_wait")
+      if (value > score) score = value
+      value = metric_avg_us(line, "fmp_linux_bulk_container_all_slots_wait")
+      if (value > score) score = value
       value = metric_avg_us(line, "decrypt_fallback_wait")
       if (value > score) score = value
       value = metric_avg_us(line, "decrypt_fallback_priority_wait")
@@ -562,7 +570,7 @@ docker_bench_pipeline_queue_wait_top_summary() {
       return 0
     }
     BEGIN {
-      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait nvpn_mesh_to_tun_queue_wait"
+      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait fmp_linux_bulk_container_queue_wait fmp_linux_bulk_container_ready_wait fmp_linux_bulk_container_first_slot_wait fmp_linux_bulk_container_all_slots_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait nvpn_mesh_to_tun_queue_wait"
       metric_count = split(metrics, names, " ")
       best_p99 = -1
       best_p95 = -1
