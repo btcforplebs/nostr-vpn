@@ -560,6 +560,18 @@
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn test_ipv4_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
+        let total_len = 20 + 20 + tcp_payload_len;
+        let mut packet = vec![0u8; total_len];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+        packet[9] = 6;
+        packet[20 + 12] = 5 << 4;
+        packet[20 + 13] = flags;
+        packet
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn test_ipv4_icmp_packet() -> Vec<u8> {
         let mut packet = vec![0u8; 28];
         packet[0] = 0x45;
@@ -587,6 +599,23 @@
         icmpv6[4..6].copy_from_slice(&8u16.to_be_bytes());
         icmpv6[6] = 58;
         assert_eq!(tun_pipeline_packet_lane(&icmpv6), TunPipelineLane::Priority);
+
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv4_tcp_packet(0x10, 0)),
+            TunPipelineLane::Priority
+        );
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv4_tcp_packet(0x02, 0)),
+            TunPipelineLane::Priority
+        );
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv4_tcp_packet(0x18, 64)),
+            TunPipelineLane::Priority
+        );
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv4_tcp_packet(0x18, 512)),
+            TunPipelineLane::Bulk
+        );
 
         assert_eq!(
             tun_pipeline_packet_lane(&test_ipv6_tcp_packet(0x10, 0)),
@@ -771,7 +800,7 @@
     fn tun_to_mesh_queue_splits_mixed_batch_into_priority_and_bulk_lanes() {
         let (tx, mut rx) = TunPipelineQueueTx::channel(2);
         let bulk = test_ipv6_tcp_packet(0x18, 512);
-        let ack = test_ipv6_tcp_packet(0x10, 0);
+        let ack = test_ipv4_tcp_packet(0x10, 0);
         let ping = test_ipv4_icmp_packet();
 
         assert_eq!(

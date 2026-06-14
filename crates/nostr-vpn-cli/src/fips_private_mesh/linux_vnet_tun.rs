@@ -227,6 +227,20 @@ struct LinuxVnetTcp4GroCandidate {
 }
 
 fn linux_vnet_prepare_write_frames(packets: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    linux_vnet_prepare_write_frames_with_gro(packets, linux_vnet_tcp4_gro_write_enabled())
+}
+
+fn linux_vnet_prepare_write_frames_with_gro(
+    packets: &[Vec<u8>],
+    tcp4_gro_enabled: bool,
+) -> Vec<Vec<u8>> {
+    if !tcp4_gro_enabled {
+        return packets
+            .iter()
+            .map(|packet| linux_vnet_start_write_frame(packet).bytes)
+            .collect();
+    }
+
     let mut frames = Vec::with_capacity(packets.len());
     let mut current: Option<LinuxVnetWriteFrame> = None;
 
@@ -425,6 +439,27 @@ fn linux_vnet_tun_enabled() -> bool {
 fn linux_vnet_tun_enabled_from_env(value: Option<&str>) -> bool {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return false;
+    };
+    !(value == "0"
+        || value.eq_ignore_ascii_case("false")
+        || value.eq_ignore_ascii_case("no")
+        || value.eq_ignore_ascii_case("off"))
+}
+
+fn linux_vnet_tcp4_gro_write_enabled() -> bool {
+    static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        linux_vnet_tcp4_gro_write_enabled_from_env(
+            std::env::var("NVPN_FIPS_LINUX_TUN_VNET_TCP4_GRO_WRITE")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+fn linux_vnet_tcp4_gro_write_enabled_from_env(value: Option<&str>) -> bool {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
     };
     !(value == "0"
         || value.eq_ignore_ascii_case("false")
@@ -715,6 +750,16 @@ mod linux_vnet_tun_tests {
     }
 
     #[test]
+    fn linux_vnet_tcp4_gro_write_env_parser_defaults_on() {
+        assert!(linux_vnet_tcp4_gro_write_enabled_from_env(None));
+        assert!(linux_vnet_tcp4_gro_write_enabled_from_env(Some("")));
+        assert!(linux_vnet_tcp4_gro_write_enabled_from_env(Some("1")));
+        assert!(linux_vnet_tcp4_gro_write_enabled_from_env(Some("true")));
+        assert!(!linux_vnet_tcp4_gro_write_enabled_from_env(Some("0")));
+        assert!(!linux_vnet_tcp4_gro_write_enabled_from_env(Some("off")));
+    }
+
+    #[test]
     fn linux_vnet_plain_read_strips_virtio_header() {
         let packet = ipv4_tcp_gso_packet(16, 16, 0x10);
         let mut frame = vec![0_u8; LINUX_VIRTIO_NET_HDR_LEN + packet.len()];
@@ -779,6 +824,47 @@ mod linux_vnet_tun_tests {
     }
 
     #[test]
+    fn linux_vnet_tcp4_gso_read_wraps_sequence_numbers() {
+        let first_seq = u32::MAX - 599;
+        let packet = ipv4_tcp_packet(first_seq, 2400, 0x18);
+        let mut frame = vec![0_u8; LINUX_VIRTIO_NET_HDR_LEN + packet.len()];
+        LinuxVirtioNetHdr {
+            flags: LINUX_VIRTIO_NET_HDR_F_NEEDS_CSUM,
+            gso_type: LINUX_VIRTIO_NET_HDR_GSO_TCPV4,
+            hdr_len: 40,
+            gso_size: 1200,
+            csum_start: 20,
+            csum_offset: 16,
+        }
+        .encode(&mut frame[..LINUX_VIRTIO_NET_HDR_LEN]);
+        frame[LINUX_VIRTIO_NET_HDR_LEN..].copy_from_slice(&packet);
+
+        let mut batch = Vec::new();
+        let count = handle_linux_vnet_read(&mut frame, &mut batch).expect("tcp4 gso read");
+        assert_eq!(count, 2);
+        assert_eq!(
+            u32::from_be_bytes([
+                batch[0].bytes[24],
+                batch[0].bytes[25],
+                batch[0].bytes[26],
+                batch[0].bytes[27]
+            ]),
+            first_seq
+        );
+        assert_eq!(
+            u32::from_be_bytes([
+                batch[1].bytes[24],
+                batch[1].bytes[25],
+                batch[1].bytes[26],
+                batch[1].bytes[27]
+            ]),
+            first_seq.wrapping_add(1200)
+        );
+        assert_eq!(ipv4_transport_sum(&batch[0].bytes), 0xffff);
+        assert_eq!(ipv4_transport_sum(&batch[1].bytes), 0xffff);
+    }
+
+    #[test]
     fn linux_vnet_tcp4_gro_write_coalesces_adjacent_segments() {
         let mut first = ipv4_tcp_packet(1000, 800, LINUX_TCP_FLAG_ACK);
         let mut second = ipv4_tcp_packet(1800, 600, LINUX_TCP_FLAG_ACK | LINUX_TCP_FLAG_PSH);
@@ -817,6 +903,37 @@ mod linux_vnet_tun_tests {
     }
 
     #[test]
+    fn linux_vnet_tcp4_gro_write_coalesces_wrapped_sequences() {
+        let first_seq = u32::MAX - 399;
+        let mut first = ipv4_tcp_packet(first_seq, 800, LINUX_TCP_FLAG_ACK);
+        let mut second = ipv4_tcp_packet(
+            first_seq.wrapping_add(800),
+            600,
+            LINUX_TCP_FLAG_ACK | LINUX_TCP_FLAG_PSH,
+        );
+        nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut first);
+        nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut second);
+
+        let packets = vec![first, second];
+        let frames = linux_vnet_prepare_write_frames(&packets);
+        assert_eq!(frames.len(), 1);
+
+        let hdr = LinuxVirtioNetHdr::decode(&frames[0]).expect("virtio header");
+        assert_eq!(hdr.gso_type, LINUX_VIRTIO_NET_HDR_GSO_TCPV4);
+        assert_eq!(hdr.gso_size, 800);
+
+        let packet = &frames[0][LINUX_VIRTIO_NET_HDR_LEN..];
+        assert_eq!(
+            u32::from_be_bytes([packet[24], packet[25], packet[26], packet[27]]),
+            first_seq
+        );
+        assert_eq!(packet.len(), 20 + 20 + 1400);
+        assert_eq!(u16::from_be_bytes([packet[2], packet[3]]), 1440);
+        assert_ne!(packet[33] & LINUX_TCP_FLAG_PSH, 0);
+        assert_eq!(linux_vnet_checksum(&packet[..20], 0), 0xffff);
+    }
+
+    #[test]
     fn linux_vnet_tcp4_gro_write_keeps_sequence_gap_separate() {
         let mut first = ipv4_tcp_packet(1000, 800, LINUX_TCP_FLAG_ACK);
         let mut second = ipv4_tcp_packet(2000, 600, LINUX_TCP_FLAG_ACK);
@@ -830,6 +947,25 @@ mod linux_vnet_tun_tests {
             let hdr = LinuxVirtioNetHdr::decode(&frame).expect("virtio header");
             assert_eq!(hdr.gso_type, LINUX_VIRTIO_NET_HDR_GSO_NONE);
             assert_eq!(hdr.gso_size, 0);
+        }
+    }
+
+    #[test]
+    fn linux_vnet_tcp4_gro_write_can_be_disabled() {
+        let mut first = ipv4_tcp_packet(1000, 800, LINUX_TCP_FLAG_ACK);
+        let mut second = ipv4_tcp_packet(1800, 600, LINUX_TCP_FLAG_ACK | LINUX_TCP_FLAG_PSH);
+        nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut first);
+        nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut second);
+
+        let packets = vec![first.clone(), second.clone()];
+        let frames = linux_vnet_prepare_write_frames_with_gro(&packets, false);
+        assert_eq!(frames.len(), 2);
+
+        for (frame, packet) in frames.iter().zip([first, second]) {
+            let hdr = LinuxVirtioNetHdr::decode(frame).expect("virtio header");
+            assert_eq!(hdr.gso_type, LINUX_VIRTIO_NET_HDR_GSO_NONE);
+            assert_eq!(hdr.gso_size, 0);
+            assert_eq!(&frame[LINUX_VIRTIO_NET_HDR_LEN..], packet.as_slice());
         }
     }
 
