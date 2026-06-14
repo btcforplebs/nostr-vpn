@@ -24,6 +24,13 @@ assert_eq() {
   [[ "$got" == "$want" ]] || fail "$label: got '$got', want '$want'"
 }
 
+assert_file_contains() {
+  local path="$1"
+  local needle="$2"
+  local label="$3"
+  grep -Fq "$needle" "$path" || fail "$label: missing '$needle' in $path"
+}
+
 write_tcp_json() {
   local path="$1"
   cat >"$path" <<'EOF'
@@ -201,6 +208,36 @@ test_metadata_writer_records_iperf_timeout() {
   )
 
   assert_eq "$(jq -r '.iperf.timeout_secs' "$metadata")" "11" "metadata iperf timeout"
+
+  rm -rf "$dir"
+}
+
+test_metadata_writer_records_guard_thresholds() {
+  local dir metadata
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR"
+
+  (
+    export NVPN_DOCKER_MIN_TCP_MBPS=1000
+    export NVPN_DOCKER_MIN_TCP_SINGLE_MBPS=1200
+    export NVPN_DOCKER_MAX_TCP_RETRANS=9000
+    export NVPN_DOCKER_MAX_TCP_8_RETRANS=12000
+    export NVPN_DOCKER_MAX_UDP_LOSS_PCT=2
+    export NVPN_DOCKER_MAX_UDP1000_LOSS_PCT=5
+    export NVPN_DOCKER_MAX_PING_LOSS_PCT=0
+    docker_bench_write_metadata nvpn 3
+  )
+
+  assert_eq "$(jq -r '.guard_thresholds.min_tcp_mbps' "$metadata")" "1000" "metadata common TCP min guard"
+  assert_eq "$(jq -r '.guard_thresholds.min_tcp_single_mbps' "$metadata")" "1200" "metadata TCP single min guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_tcp_retrans' "$metadata")" "9000" "metadata common retrans guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_tcp_8_retrans' "$metadata")" "12000" "metadata TCP 8 retrans guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_udp_loss_pct' "$metadata")" "2" "metadata common UDP loss guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_udp1000_loss_pct' "$metadata")" "5" "metadata UDP1000 loss guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_loss_pct' "$metadata")" "0" "metadata ping loss guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_udp200_loss_pct' "$metadata")" "null" "metadata unset guard"
 
   rm -rf "$dir"
 }
@@ -488,6 +525,79 @@ test_docker_comparison_outputs() {
   rm -rf "$dir"
 }
 
+test_docker_benchmark_summary_guards_are_opt_in() {
+  local dir summary failure_path
+  dir="$(mktemp -d)"
+  summary="$dir/summary.tsv"
+  write_summary_fixture \
+    "$summary" \
+    nvpn "" \
+    650 4500 \
+    700 5000 \
+    800 6000 \
+    197 1.5 \
+    200 80 \
+    2.5 0.8 \
+    "$dir/raw"
+
+  (
+    OUTPUT_DIR="$dir/no-guard"
+    docker_bench_assert_summary_guards "$summary"
+  )
+
+  if (
+    OUTPUT_DIR="$dir/guarded"
+    export NVPN_DOCKER_MIN_TCP_MBPS=1000
+    export NVPN_DOCKER_MAX_TCP_SINGLE_RETRANS=1000
+    export NVPN_DOCKER_MAX_UDP1000_LOSS_PCT=10
+    export NVPN_DOCKER_MAX_PING_LOSS_PCT=1
+    docker_bench_assert_summary_guards "$summary"
+  ) 2>"$dir/guarded.stderr"; then
+    fail "Docker benchmark guard should fail collapsed fixture"
+  fi
+
+  failure_path="$dir/guarded/guard-failures.tsv"
+  assert_file_contains "$failure_path" $'tcp_single_mbps\t>=\t650\t1000' "guard TCP single throughput failure"
+  assert_file_contains "$failure_path" $'tcp_4_mbps\t>=\t700\t1000' "guard TCP 4 throughput failure"
+  assert_file_contains "$failure_path" $'tcp_8_mbps\t>=\t800\t1000' "guard TCP 8 throughput failure"
+  assert_file_contains "$failure_path" $'tcp_single_retrans\t<=\t4500\t1000' "guard TCP single retrans failure"
+  assert_file_contains "$failure_path" $'udp_1000_loss_pct\t<=\t80\t10' "guard UDP1000 loss failure"
+  assert_file_contains "$failure_path" $'ping_loss_pct\t<=\t2.5\t1' "guard ping loss failure"
+  assert_file_contains "$dir/guarded.stderr" "docker bench guard failed: wrote $failure_path" "guard stderr failure path"
+
+  rm -rf "$dir"
+}
+
+test_docker_benchmark_summary_guards_accept_healthy_fixture() {
+  local dir summary
+  dir="$(mktemp -d)"
+  summary="$dir/summary.tsv"
+  write_summary_fixture \
+    "$summary" \
+    nvpn "" \
+    3300 200 \
+    3200 1200 \
+    3100 5500 \
+    199 0 \
+    995 0.5 \
+    0 0.8 \
+    "$dir/raw"
+
+  (
+    OUTPUT_DIR="$dir/guarded"
+    export NVPN_DOCKER_MIN_TCP_MBPS=1000
+    export NVPN_DOCKER_MAX_TCP_SINGLE_RETRANS=1000
+    export NVPN_DOCKER_MAX_UDP1000_LOSS_PCT=10
+    export NVPN_DOCKER_MAX_PING_LOSS_PCT=1
+    docker_bench_assert_summary_guards "$summary"
+  )
+
+  [[ ! -f "$dir/guarded/guard-failures.tsv" ]] \
+    || fail "healthy guarded fixture unexpectedly wrote guard failures"
+
+  rm -rf "$dir"
+}
+
 test_docker_comparison_relaxes_udp_bulk_loss_under_cpu_stress() {
   local dir out threshold_status threshold_failures udp_threshold ping_threshold effective_udp_delta
   dir="$(mktemp -d)"
@@ -581,11 +691,14 @@ test_metadata_writer_records_cpu_stress
 test_metadata_writer_records_pipeline_trace
 test_metadata_writer_records_iperf_interval
 test_metadata_writer_records_iperf_timeout
+test_metadata_writer_records_guard_thresholds
 test_metadata_writer_records_run_provenance
 test_metadata_writer_records_direct_fmp_guard
 test_pipeline_summary_helpers
 test_nvpn_tun_write_summary_prefers_coalesced_frame_interval
 test_docker_comparison_outputs
+test_docker_benchmark_summary_guards_are_opt_in
+test_docker_benchmark_summary_guards_accept_healthy_fixture
 test_docker_comparison_relaxes_udp_bulk_loss_under_cpu_stress
 test_docker_comparison_selects_wireguard_go_reference
 

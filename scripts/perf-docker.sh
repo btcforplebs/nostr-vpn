@@ -356,5 +356,6 @@ docker_bench_append_summary_row \
   "$udp_1000_json" \
   "$ping_output"
 
+docker_bench_assert_summary_guards "$SUMMARY_TSV"
 capture_nvpn_diagnostics 0
 printf 'nvpn docker bench passed: wrote summary to %s\n' "$SUMMARY_TSV"

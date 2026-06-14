@@ -234,12 +234,26 @@ docker_bench_write_metadata() {
     --arg nvpn_git_dirty "$nvpn_git_dirty" \
     --arg fips_git_head "$fips_git_head" \
     --arg fips_git_dirty "$fips_git_dirty" \
+    --arg guard_min_tcp_mbps "${NVPN_DOCKER_MIN_TCP_MBPS:-}" \
+    --arg guard_min_tcp_single_mbps "${NVPN_DOCKER_MIN_TCP_SINGLE_MBPS:-}" \
+    --arg guard_min_tcp_4_mbps "${NVPN_DOCKER_MIN_TCP_4_MBPS:-}" \
+    --arg guard_min_tcp_8_mbps "${NVPN_DOCKER_MIN_TCP_8_MBPS:-}" \
+    --arg guard_max_tcp_retrans "${NVPN_DOCKER_MAX_TCP_RETRANS:-}" \
+    --arg guard_max_tcp_single_retrans "${NVPN_DOCKER_MAX_TCP_SINGLE_RETRANS:-}" \
+    --arg guard_max_tcp_4_retrans "${NVPN_DOCKER_MAX_TCP_4_RETRANS:-}" \
+    --arg guard_max_tcp_8_retrans "${NVPN_DOCKER_MAX_TCP_8_RETRANS:-}" \
+    --arg guard_max_udp_loss_pct "${NVPN_DOCKER_MAX_UDP_LOSS_PCT:-}" \
+    --arg guard_max_udp200_loss_pct "${NVPN_DOCKER_MAX_UDP200_LOSS_PCT:-}" \
+    --arg guard_max_udp1000_loss_pct "${NVPN_DOCKER_MAX_UDP1000_LOSS_PCT:-}" \
+    --arg guard_max_ping_loss_pct "${NVPN_DOCKER_MAX_PING_LOSS_PCT:-}" \
     'def bool_or_null($v):
        if $v == "" then null
        elif $v == "true" then true
        elif $v == "false" then false
        else null
        end;
+     def string_or_null($v):
+       if $v == "" then null else $v end;
      {
       generated_at: $generated_at,
       backend: $backend,
@@ -270,6 +284,20 @@ docker_bench_write_metadata() {
           else ($iperf_timeout_secs | tonumber)
           end
         )
+      },
+      guard_thresholds: {
+        min_tcp_mbps: string_or_null($guard_min_tcp_mbps),
+        min_tcp_single_mbps: string_or_null($guard_min_tcp_single_mbps),
+        min_tcp_4_mbps: string_or_null($guard_min_tcp_4_mbps),
+        min_tcp_8_mbps: string_or_null($guard_min_tcp_8_mbps),
+        max_tcp_retrans: string_or_null($guard_max_tcp_retrans),
+        max_tcp_single_retrans: string_or_null($guard_max_tcp_single_retrans),
+        max_tcp_4_retrans: string_or_null($guard_max_tcp_4_retrans),
+        max_tcp_8_retrans: string_or_null($guard_max_tcp_8_retrans),
+        max_udp_loss_pct: string_or_null($guard_max_udp_loss_pct),
+        max_udp200_loss_pct: string_or_null($guard_max_udp200_loss_pct),
+        max_udp1000_loss_pct: string_or_null($guard_max_udp1000_loss_pct),
+        max_ping_loss_pct: string_or_null($guard_max_ping_loss_pct)
       },
       source: {
         nvpn: {
@@ -357,6 +385,133 @@ docker_bench_append_summary_row() {
     "$ping_loss" \
     "$ping_avg" \
     "$raw_dir" >>"$SUMMARY_TSV"
+}
+
+docker_bench_guard_threshold() {
+  local specific_name="$1"
+  local common_name="$2"
+  local specific_value="${!specific_name:-}"
+  local common_value="${!common_name:-}"
+  if [[ -n "$specific_value" ]]; then
+    printf '%s' "$specific_value"
+  else
+    printf '%s' "$common_value"
+  fi
+}
+
+docker_bench_is_number() {
+  [[ "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]
+}
+
+docker_bench_guard_record_failure() {
+  local failure_path="$1"
+  local label="$2"
+  local comparison="$3"
+  local actual="$4"
+  local threshold="$5"
+  if [[ ! -f "$failure_path" ]]; then
+    printf '%s\t%s\t%s\t%s\n' label comparison actual threshold >"$failure_path"
+  fi
+  printf '%s\t%s\t%s\t%s\n' \
+    "$(docker_bench_tsv_field "$label")" \
+    "$comparison" \
+    "$(docker_bench_tsv_field "$actual")" \
+    "$(docker_bench_tsv_field "$threshold")" >>"$failure_path"
+  printf 'docker bench guard failed: %s %s %s (threshold %s)\n' \
+    "$label" "$actual" "$comparison" "$threshold" >&2
+}
+
+docker_bench_guard_check_at_least() {
+  local failure_path="$1"
+  local label="$2"
+  local actual="$3"
+  local threshold="$4"
+  [[ -n "$threshold" ]] || return 0
+  if ! docker_bench_is_number "$threshold"; then
+    docker_bench_guard_record_failure "$failure_path" "$label" ">=" "$actual" "invalid:$threshold"
+    return 1
+  fi
+  if ! docker_bench_is_number "$actual"; then
+    docker_bench_guard_record_failure "$failure_path" "$label" ">=" "missing:$actual" "$threshold"
+    return 1
+  fi
+  if ! awk -v actual="$actual" -v threshold="$threshold" \
+    'BEGIN { exit !((actual + 0) >= (threshold + 0)) }'; then
+    docker_bench_guard_record_failure "$failure_path" "$label" ">=" "$actual" "$threshold"
+    return 1
+  fi
+}
+
+docker_bench_guard_check_at_most() {
+  local failure_path="$1"
+  local label="$2"
+  local actual="$3"
+  local threshold="$4"
+  [[ -n "$threshold" ]] || return 0
+  if ! docker_bench_is_number "$threshold"; then
+    docker_bench_guard_record_failure "$failure_path" "$label" "<=" "$actual" "invalid:$threshold"
+    return 1
+  fi
+  if ! docker_bench_is_number "$actual"; then
+    docker_bench_guard_record_failure "$failure_path" "$label" "<=" "missing:$actual" "$threshold"
+    return 1
+  fi
+  if ! awk -v actual="$actual" -v threshold="$threshold" \
+    'BEGIN { exit !((actual + 0) <= (threshold + 0)) }'; then
+    docker_bench_guard_record_failure "$failure_path" "$label" "<=" "$actual" "$threshold"
+    return 1
+  fi
+}
+
+docker_bench_assert_summary_guards() {
+  local summary_tsv="${1:-$SUMMARY_TSV}"
+  local failure_path="${OUTPUT_DIR}/guard-failures.tsv"
+  local failure_count
+  local backend threads duration tcp_single tcp_single_retrans tcp_4 tcp_4_retrans
+  local tcp_8 tcp_8_retrans udp_200 udp_200_loss udp_1000 udp_1000_loss
+  local ping_loss ping_avg raw_dir
+  local tsv_value
+
+  tsv_value() {
+    awk -F '\t' -v idx="$1" 'END { print $idx }' "$summary_tsv"
+  }
+  backend="$(tsv_value 1)"
+  threads="$(tsv_value 2)"
+  duration="$(tsv_value 3)"
+  tcp_single="$(tsv_value 4)"
+  tcp_single_retrans="$(tsv_value 5)"
+  tcp_4="$(tsv_value 6)"
+  tcp_4_retrans="$(tsv_value 7)"
+  tcp_8="$(tsv_value 8)"
+  tcp_8_retrans="$(tsv_value 9)"
+  udp_200="$(tsv_value 10)"
+  udp_200_loss="$(tsv_value 11)"
+  udp_1000="$(tsv_value 12)"
+  udp_1000_loss="$(tsv_value 13)"
+  ping_loss="$(tsv_value 14)"
+  ping_avg="$(tsv_value 15)"
+  raw_dir="$(tsv_value 16)"
+
+  mkdir -p "$OUTPUT_DIR"
+  rm -f "$failure_path"
+  failure_count=0
+
+  docker_bench_guard_check_at_least "$failure_path" "tcp_single_mbps" "$tcp_single" "$(docker_bench_guard_threshold NVPN_DOCKER_MIN_TCP_SINGLE_MBPS NVPN_DOCKER_MIN_TCP_MBPS)" || failure_count=$((failure_count + 1))
+  docker_bench_guard_check_at_least "$failure_path" "tcp_4_mbps" "$tcp_4" "$(docker_bench_guard_threshold NVPN_DOCKER_MIN_TCP_4_MBPS NVPN_DOCKER_MIN_TCP_MBPS)" || failure_count=$((failure_count + 1))
+  docker_bench_guard_check_at_least "$failure_path" "tcp_8_mbps" "$tcp_8" "$(docker_bench_guard_threshold NVPN_DOCKER_MIN_TCP_8_MBPS NVPN_DOCKER_MIN_TCP_MBPS)" || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_check_at_most "$failure_path" "tcp_single_retrans" "$tcp_single_retrans" "$(docker_bench_guard_threshold NVPN_DOCKER_MAX_TCP_SINGLE_RETRANS NVPN_DOCKER_MAX_TCP_RETRANS)" || failure_count=$((failure_count + 1))
+  docker_bench_guard_check_at_most "$failure_path" "tcp_4_retrans" "$tcp_4_retrans" "$(docker_bench_guard_threshold NVPN_DOCKER_MAX_TCP_4_RETRANS NVPN_DOCKER_MAX_TCP_RETRANS)" || failure_count=$((failure_count + 1))
+  docker_bench_guard_check_at_most "$failure_path" "tcp_8_retrans" "$tcp_8_retrans" "$(docker_bench_guard_threshold NVPN_DOCKER_MAX_TCP_8_RETRANS NVPN_DOCKER_MAX_TCP_RETRANS)" || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_check_at_most "$failure_path" "udp_200_loss_pct" "$udp_200_loss" "$(docker_bench_guard_threshold NVPN_DOCKER_MAX_UDP200_LOSS_PCT NVPN_DOCKER_MAX_UDP_LOSS_PCT)" || failure_count=$((failure_count + 1))
+  docker_bench_guard_check_at_most "$failure_path" "udp_1000_loss_pct" "$udp_1000_loss" "$(docker_bench_guard_threshold NVPN_DOCKER_MAX_UDP1000_LOSS_PCT NVPN_DOCKER_MAX_UDP_LOSS_PCT)" || failure_count=$((failure_count + 1))
+  docker_bench_guard_check_at_most "$failure_path" "ping_loss_pct" "$ping_loss" "${NVPN_DOCKER_MAX_PING_LOSS_PCT:-}" || failure_count=$((failure_count + 1))
+
+  if (( failure_count > 0 )); then
+    printf 'docker bench guard failed: wrote %s\n' "$failure_path" >&2
+    return 1
+  fi
 }
 
 docker_bench_pipeline_lines_after_start_from_stdin() {
