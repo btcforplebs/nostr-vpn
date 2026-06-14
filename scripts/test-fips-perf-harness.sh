@@ -577,26 +577,26 @@ test_pipeline_hard_event_summary() {
   got="$(
     pipeline_hard_event_summary_from_stdin <<'EOF'
 [pipe 5s] udp_send_connected=10/s encrypt_worker_queue_full=2/s total=10 encrypt_worker_bulk_dropped=1.5/s total=7 decrypt_worker_queue_full=0/s total=0
-[pipe 5s] encrypt_worker_queue_full=3/s total=12 encrypt_worker_priority_queue_full=0.1/s total=1 encrypt_worker_bulk_queue_full=2.8/s total=11 rx_loop_slow_maintenance_skipped=0.2/s total=1 decrypt_fsp_bulk_queue_full_fallback=0.5/s total=2 nvpn_tun_to_mesh_bulk_dropped=0/s total=0
+[pipe 5s] encrypt_worker_queue_full=3/s total=12 encrypt_worker_priority_queue_full=0.1/s total=1 encrypt_worker_bulk_queue_full=2.8/s total=11 fmp_linux_bulk_container_queue_full=0.4/s total=2 fmp_linux_bulk_container_queue_full_packets=25.8/s total=129 rx_loop_slow_maintenance_skipped=0.2/s total=1 decrypt_fsp_bulk_queue_full_fallback=0.5/s total=2 nvpn_tun_to_mesh_bulk_dropped=0/s total=0
 [nvpn-pipe 5s] nvpn_tun_to_mesh_bulk_dropped=4/s total=8
 EOF
   )"
   assert_eq \
     "$got" \
-    "encrypt_worker_queue_full:max_rate_per_sec=3,total=12;encrypt_worker_priority_queue_full:max_rate_per_sec=0.1,total=1;encrypt_worker_bulk_queue_full:max_rate_per_sec=2.8,total=11;encrypt_worker_bulk_dropped:max_rate_per_sec=1.5,total=7;rx_loop_slow_maintenance_skipped:max_rate_per_sec=0.2,total=1;decrypt_fsp_bulk_queue_full_fallback:max_rate_per_sec=0.5,total=2;nvpn_tun_to_mesh_bulk_dropped:max_rate_per_sec=4,total=8" \
+    "encrypt_worker_queue_full:max_rate_per_sec=3,total=12;encrypt_worker_priority_queue_full:max_rate_per_sec=0.1,total=1;encrypt_worker_bulk_queue_full:max_rate_per_sec=2.8,total=11;encrypt_worker_bulk_dropped:max_rate_per_sec=1.5,total=7;fmp_linux_bulk_container_queue_full:max_rate_per_sec=0.4,total=2;fmp_linux_bulk_container_queue_full_packets:max_rate_per_sec=25.8,total=129;rx_loop_slow_maintenance_skipped:max_rate_per_sec=0.2,total=1;decrypt_fsp_bulk_queue_full_fallback:max_rate_per_sec=0.5,total=2;nvpn_tun_to_mesh_bulk_dropped:max_rate_per_sec=4,total=8" \
     "pipeline hard event summary"
 
   got="$(
     pipeline_hard_event_summary_from_stdin 2 <<'EOF'
-[pipe 5s] encrypt_worker_queue_full=4/s total=100 encrypt_worker_bulk_dropped=4/s total=50
+[pipe 5s] encrypt_worker_queue_full=4/s total=100 encrypt_worker_bulk_dropped=4/s total=50 fmp_linux_bulk_container_queue_full=0.2/s total=100 fmp_linux_bulk_container_queue_full_packets=10/s total=50
 [nvpn-pipe 5s] nvpn_tun_to_mesh_bulk_dropped=2/s total=20
-[pipe 5s] encrypt_worker_queue_full=3/s total=112 encrypt_worker_priority_queue_full=0.1/s total=1 encrypt_worker_bulk_queue_full=2.8/s total=11 encrypt_worker_bulk_dropped=1.5/s total=57 rx_loop_slow_maintenance_skipped=0.2/s total=1
+[pipe 5s] encrypt_worker_queue_full=3/s total=112 encrypt_worker_priority_queue_full=0.1/s total=1 encrypt_worker_bulk_queue_full=2.8/s total=11 encrypt_worker_bulk_dropped=1.5/s total=57 fmp_linux_bulk_container_queue_full=0.4/s total=102 fmp_linux_bulk_container_queue_full_packets=25.8/s total=179 rx_loop_slow_maintenance_skipped=0.2/s total=1
 [nvpn-pipe 5s] nvpn_tun_to_mesh_bulk_dropped=4/s total=28
 EOF
   )"
   assert_eq \
     "$got" \
-    "encrypt_worker_queue_full:max_rate_per_sec=3,total=12;encrypt_worker_priority_queue_full:max_rate_per_sec=0.1,total=1;encrypt_worker_bulk_queue_full:max_rate_per_sec=2.8,total=11;encrypt_worker_bulk_dropped:max_rate_per_sec=1.5,total=7;rx_loop_slow_maintenance_skipped:max_rate_per_sec=0.2,total=1;nvpn_tun_to_mesh_bulk_dropped:max_rate_per_sec=4,total=8" \
+    "encrypt_worker_queue_full:max_rate_per_sec=3,total=12;encrypt_worker_priority_queue_full:max_rate_per_sec=0.1,total=1;encrypt_worker_bulk_queue_full:max_rate_per_sec=2.8,total=11;encrypt_worker_bulk_dropped:max_rate_per_sec=1.5,total=7;fmp_linux_bulk_container_queue_full:max_rate_per_sec=0.4,total=2;fmp_linux_bulk_container_queue_full_packets:max_rate_per_sec=25.8,total=129;rx_loop_slow_maintenance_skipped:max_rate_per_sec=0.2,total=1;nvpn_tun_to_mesh_bulk_dropped:max_rate_per_sec=4,total=8" \
     "phase-scoped pipeline hard event summary subtracts pre-phase totals"
 }
 
