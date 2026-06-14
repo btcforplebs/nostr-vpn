@@ -86,19 +86,29 @@ fn submit_tun_packet_batch_to_lane(
     batch: TunPipelineBatch,
 ) -> TunQueueSubmit {
     match lane {
-        TunPipelineLane::Priority => packet_tx
-            .priority
-            .send(batch)
-            .map(|_| TunQueueSubmit::Enqueued)
-            .unwrap_or(TunQueueSubmit::Closed),
+        TunPipelineLane::Priority => submit_tun_priority_batch(packet_tx, batch),
         TunPipelineLane::Bulk => submit_tun_bulk_batch(packet_tx, batch),
     }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+fn submit_tun_priority_batch(
+    packet_tx: &TunPipelineQueueTx,
+    mut batch: TunPipelineBatch,
+) -> TunQueueSubmit {
+    while !batch.is_empty() {
+        let chunk = take_tun_pipeline_batch_prefix(&mut batch, FIPS_MESH_PRIORITY_SEND_BURST);
+        if packet_tx.priority.send(chunk).is_err() {
+            return TunQueueSubmit::Closed;
+        }
+    }
+    TunQueueSubmit::Enqueued
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn submit_tun_bulk_batch(
     packet_tx: &TunPipelineQueueTx,
-    batch: TunPipelineBatch,
+    mut batch: TunPipelineBatch,
 ) -> TunQueueSubmit {
     let packet_count = batch.len();
     if packet_tx.bulk.is_closed() {
@@ -115,21 +125,41 @@ fn submit_tun_bulk_batch(
         return TunQueueSubmit::DroppedBulk;
     }
 
-    match packet_tx.bulk.try_send(batch) {
-        Ok(()) => TunQueueSubmit::Enqueued,
-        Err(mpsc::error::TrySendError::Full(_batch)) => {
-            release_tun_bulk_packet_slots(&packet_tx.bulk_queued_packets, packet_count);
-            crate::pipeline_profile::increment_counter_by(
-                crate::pipeline_profile::Counter::TunToMeshBulkDropped,
-                packet_count as u64,
-            );
-            TunQueueSubmit::DroppedBulk
-        }
-        Err(mpsc::error::TrySendError::Closed(_)) => {
-            release_tun_bulk_packet_slots(&packet_tx.bulk_queued_packets, packet_count);
-            TunQueueSubmit::Closed
+    while !batch.is_empty() {
+        let chunk = take_tun_pipeline_batch_prefix(&mut batch, FIPS_MESH_BULK_SEND_BURST);
+        let chunk_count = chunk.len();
+        match packet_tx.bulk.try_send(chunk) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_chunk)) => {
+                let dropped_count = chunk_count + batch.len();
+                release_tun_bulk_packet_slots(&packet_tx.bulk_queued_packets, dropped_count);
+                crate::pipeline_profile::increment_counter_by(
+                    crate::pipeline_profile::Counter::TunToMeshBulkDropped,
+                    dropped_count as u64,
+                );
+                return TunQueueSubmit::DroppedBulk;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                release_tun_bulk_packet_slots(&packet_tx.bulk_queued_packets, chunk_count + batch.len());
+                return TunQueueSubmit::Closed;
+            }
         }
     }
+    TunQueueSubmit::Enqueued
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn take_tun_pipeline_batch_prefix(
+    batch: &mut TunPipelineBatch,
+    limit: usize,
+) -> TunPipelineBatch {
+    debug_assert!(limit > 0);
+    if batch.len() <= limit {
+        return std::mem::take(batch);
+    }
+
+    let remaining = batch.split_off(limit);
+    std::mem::replace(batch, remaining)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -82,6 +82,20 @@ const MESH_MAX_MTU: u16 = 9000;
 const FIPS_TUN_READ_BURST: usize = 64;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const FIPS_MESH_SEND_BURST: usize = 64;
+#[cfg(target_os = "macos")]
+const FIPS_MESH_PRIORITY_SEND_BURST: usize = 16;
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    not(target_os = "macos")
+))]
+const FIPS_MESH_PRIORITY_SEND_BURST: usize = FIPS_MESH_SEND_BURST;
+#[cfg(target_os = "macos")]
+const FIPS_MESH_BULK_SEND_BURST: usize = 16;
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    not(target_os = "macos")
+))]
+const FIPS_MESH_BULK_SEND_BURST: usize = FIPS_MESH_SEND_BURST;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const FIPS_MESH_RECV_BURST: usize = 128;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
