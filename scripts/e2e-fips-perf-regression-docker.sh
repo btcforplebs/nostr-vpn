@@ -991,6 +991,10 @@ pipeline_decrypt_worker_batch_summary() {
   pipeline_worker_batch_summary "$1" "decrypt_worker_batch"
 }
 
+pipeline_linux_bulk_container_summary() {
+  docker_bench_pipeline_linux_bulk_container_summary "$1"
+}
+
 pipeline_udp_send_batch_summary() {
   local line="$1"
   printf '%s\n' "$line" | awk '
@@ -1316,6 +1320,16 @@ load_pipeline_line() {
     | load_pipeline_lines_from_stdin
 }
 
+linux_bulk_container_pipeline_summary() {
+  local service="$1"
+  local start_line="${2:-0}"
+  "${COMPOSE[@]}" exec -T "$service" sh -lc \
+    "grep -E '^\\[pipe ' /tmp/connect.log 2>/dev/null || true" \
+    | tr -d '\r' \
+    | pipeline_lines_after_start_from_stdin "$start_line" \
+    | docker_bench_pipeline_linux_bulk_container_summary
+}
+
 latest_pipeline_line() {
   peak_wait_pipeline_line "$1"
 }
@@ -1595,7 +1609,7 @@ init_phase_summary() {
   PHASE_SUMMARY="$PERF_OUTPUT_DIR/phase-summary.tsv"
   FAILURE_SUMMARY="$PERF_OUTPUT_DIR/failure-summary.tsv"
   printf '%s\n' \
-    'phase	forward_mbps	forward_retrans	reverse_mbps	reverse_retrans	forward_load_mbps	forward_load_retrans	forward_load_ping_loss_percent	forward_load_ping_avg_ms	forward_load_ping_p95_ms	forward_load_ping_p99_ms	forward_load_ping_max_ms	reverse_load_mbps	reverse_load_retrans	reverse_load_ping_loss_percent	reverse_load_ping_avg_ms	reverse_load_ping_p95_ms	reverse_load_ping_p99_ms	reverse_load_ping_max_ms	post_ping_loss_percent	post_ping_avg_ms	post_ping_p95_ms	post_ping_p99_ms	post_ping_max_ms	direct_bytes_node_a	direct_bytes_node_b	pipeline_top_queue_wait_node_a	pipeline_top_queue_wait_node_b	pipeline_fmp_worker_batch_node_a	pipeline_fmp_worker_batch_node_b	pipeline_decrypt_worker_batch_node_a	pipeline_decrypt_worker_batch_node_b	pipeline_udp_send_batch_node_a	pipeline_udp_send_batch_node_b	pipeline_hard_events_node_a	pipeline_hard_events_node_b	pipeline_node_a	pipeline_node_b' \
+    'phase	forward_mbps	forward_retrans	reverse_mbps	reverse_retrans	forward_load_mbps	forward_load_retrans	forward_load_ping_loss_percent	forward_load_ping_avg_ms	forward_load_ping_p95_ms	forward_load_ping_p99_ms	forward_load_ping_max_ms	reverse_load_mbps	reverse_load_retrans	reverse_load_ping_loss_percent	reverse_load_ping_avg_ms	reverse_load_ping_p95_ms	reverse_load_ping_p99_ms	reverse_load_ping_max_ms	post_ping_loss_percent	post_ping_avg_ms	post_ping_p95_ms	post_ping_p99_ms	post_ping_max_ms	direct_bytes_node_a	direct_bytes_node_b	pipeline_top_queue_wait_node_a	pipeline_top_queue_wait_node_b	pipeline_fmp_worker_batch_node_a	pipeline_fmp_worker_batch_node_b	pipeline_decrypt_worker_batch_node_a	pipeline_decrypt_worker_batch_node_b	pipeline_linux_bulk_container_node_a	pipeline_linux_bulk_container_node_b	pipeline_udp_send_batch_node_a	pipeline_udp_send_batch_node_b	pipeline_hard_events_node_a	pipeline_hard_events_node_b	pipeline_node_a	pipeline_node_b' \
     >"$PHASE_SUMMARY"
   printf '%s\n' \
     'label	comparison	actual	threshold	phase	step	forward_mbps	forward_retrans	reverse_mbps	reverse_retrans	probe_mbps	probe_retrans	ping_loss_percent	ping_avg_ms	ping_p95_ms	ping_p99_ms	ping_max_ms	direct_bytes_node_a	direct_bytes_node_b	pipeline_node_a	pipeline_node_b' \
@@ -1603,6 +1617,15 @@ init_phase_summary() {
   echo "writing perf phase summary to $PHASE_SUMMARY"
   echo "writing perf failure summary to $FAILURE_SUMMARY"
   echo "writing raw perf artifacts to $PERF_OUTPUT_DIR/raw"
+}
+
+write_perf_metadata() {
+  [[ -z "$PERF_OUTPUT_DIR" ]] && return
+  OUTPUT_DIR="$PERF_OUTPUT_DIR" \
+    NVPN_DOCKER_PIPELINE_TRACE="$PIPELINE_TRACE" \
+    NVPN_DOCKER_PIPELINE_INTERVAL_SECS="$PIPELINE_INTERVAL_SECS" \
+    NVPN_DOCKER_EXTRA_ENV="${NVPN_DOCKER_EXTRA_ENV:-$EXTRA_ENV}" \
+    docker_bench_write_metadata nvpn "$DURATION"
 }
 
 begin_phase_context() {
@@ -1821,6 +1844,8 @@ run_perf_phase() {
   pipeline_batch_b="$(pipeline_fmp_worker_batch_summary "$pipeline_b")"
   pipeline_decrypt_batch_a="$(pipeline_decrypt_worker_batch_summary "$pipeline_a")"
   pipeline_decrypt_batch_b="$(pipeline_decrypt_worker_batch_summary "$pipeline_b")"
+  pipeline_linux_bulk_a="$(linux_bulk_container_pipeline_summary node-a "$pipeline_start_a")"
+  pipeline_linux_bulk_b="$(linux_bulk_container_pipeline_summary node-b "$pipeline_start_b")"
   pipeline_udp_send_a="$(pipeline_udp_send_batch_summary "$pipeline_a")"
   pipeline_udp_send_b="$(pipeline_udp_send_batch_summary "$pipeline_b")"
   pipeline_hard_a="$(pipeline_hard_event_summary node-a "$pipeline_start_a")"
@@ -1868,6 +1893,8 @@ run_perf_phase() {
     "$pipeline_batch_b" \
     "$pipeline_decrypt_batch_a" \
     "$pipeline_decrypt_batch_b" \
+    "$pipeline_linux_bulk_a" \
+    "$pipeline_linux_bulk_b" \
     "$pipeline_udp_send_a" \
     "$pipeline_udp_send_b" \
     "$pipeline_hard_a" \
@@ -2046,6 +2073,7 @@ main() {
 
 cleanup
 init_phase_summary
+write_perf_metadata
 write_host_snapshot "start"
 start_compose_services
 for service in node-a node-b; do

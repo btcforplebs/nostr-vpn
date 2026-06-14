@@ -663,6 +663,110 @@ docker_bench_pipeline_decrypt_worker_batch_summary() {
   docker_bench_pipeline_worker_batch_summary "$1" "decrypt_worker_batch"
 }
 
+docker_bench_pipeline_linux_bulk_container_summary() {
+  if [[ $# -gt 0 ]]; then
+    printf '%s\n' "$1"
+  else
+    cat
+  fi | awk '
+    function parse_rate(line, metric, start, rest, parts, value) {
+      start = index(line, metric "=")
+      if (start == 0) {
+        return ""
+      }
+      rest = substr(line, start + length(metric) + 1)
+      split(rest, parts, " ")
+      value = parts[1]
+      sub(/\/s$/, "", value)
+      return value + 0
+    }
+    function duration_ms(raw, number) {
+      number = raw
+      sub(/(ns|us|ms|s)$/, "", number)
+      number += 0
+      if (raw ~ /ns$/) {
+        return number / 1000000
+      }
+      if (raw ~ /us$/) {
+        return number / 1000
+      }
+      if (raw ~ /ms$/) {
+        return number
+      }
+      if (raw ~ /s$/) {
+        return number * 1000
+      }
+      return number
+    }
+    function parse_wait(line, metric, suffix, start, rest, parts, p95_raw, p99_raw) {
+      start = index(line, metric "=")
+      if (start == 0) {
+        delete waits[suffix "_p95"]
+        delete waits[suffix "_p99"]
+        return
+      }
+      rest = substr(line, start)
+      split(rest, parts, " ")
+      if (parts[4] !~ /^p95<=/ || parts[5] !~ /^p99<=/) {
+        delete waits[suffix "_p95"]
+        delete waits[suffix "_p99"]
+        return
+      }
+      p95_raw = parts[4]
+      p99_raw = parts[5]
+      sub(/^p95<=/, "", p95_raw)
+      sub(/^p99<=/, "", p99_raw)
+      waits[suffix "_p95"] = duration_ms(p95_raw)
+      waits[suffix "_p99"] = duration_ms(p99_raw)
+    }
+    function append_wait(summary, key, label) {
+      if (!(key in waits)) {
+        return summary
+      }
+      return summary sprintf(",%s_ms=%g", label, waits[key])
+    }
+    function build_summary(line, enqueued, packets, sent, sent_packets, avg_packets, avg_sent_packets, summary) {
+      parse_wait(line, "fmp_linux_bulk_container_queue_wait", "queue")
+      parse_wait(line, "fmp_linux_bulk_container_ready_wait", "ready")
+      parse_wait(line, "fmp_linux_bulk_container_first_slot_wait", "first_slot")
+      parse_wait(line, "fmp_linux_bulk_container_all_slots_wait", "all_slots")
+      avg_packets = enqueued > 0 ? packets / enqueued : 0
+      avg_sent_packets = sent > 0 ? sent_packets / sent : 0
+      summary = sprintf("avg_packets=%.1f,avg_sent_packets=%.1f,enqueued_per_sec=%g,packets_per_sec=%g,sent_per_sec=%g,sent_packets_per_sec=%g", avg_packets, avg_sent_packets, enqueued, packets, sent, sent_packets)
+      summary = append_wait(summary, "queue_p95", "queue_p95")
+      summary = append_wait(summary, "queue_p99", "queue_p99")
+      summary = append_wait(summary, "ready_p95", "ready_p95")
+      summary = append_wait(summary, "ready_p99", "ready_p99")
+      summary = append_wait(summary, "first_slot_p95", "first_slot_p95")
+      summary = append_wait(summary, "first_slot_p99", "first_slot_p99")
+      summary = append_wait(summary, "all_slots_p95", "all_slots_p95")
+      summary = append_wait(summary, "all_slots_p99", "all_slots_p99")
+      return summary
+    }
+    {
+      line = $0
+      enqueued = parse_rate(line, "fmp_linux_bulk_container_enqueued")
+      packets = parse_rate(line, "fmp_linux_bulk_container_packets")
+      sent = parse_rate(line, "fmp_linux_bulk_container_sent")
+      sent_packets = parse_rate(line, "fmp_linux_bulk_container_sent_packets")
+      if (enqueued <= 0 && packets <= 0 && sent <= 0 && sent_packets <= 0) {
+        next
+      }
+      score = packets > sent_packets ? packets : sent_packets
+      if (best == "" || score > best_score || (score == best_score && enqueued > best_enqueued)) {
+        best = build_summary(line, enqueued, packets, sent, sent_packets)
+        best_score = score
+        best_enqueued = enqueued
+      }
+    }
+    END {
+      if (best != "") {
+        print best
+      }
+    }
+  '
+}
+
 docker_bench_pipeline_udp_send_batch_summary() {
   local line="$1"
   printf '%s\n' "$line" | awk '
