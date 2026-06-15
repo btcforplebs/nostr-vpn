@@ -19,6 +19,13 @@ CONFIG_PATH="/root/.config/nvpn/config.toml"
 KNOWN_PERF_PHASES="clean-underlay,constrained-underlay,worker-queue-pressure,rx-maintenance-fault"
 DURATION="${NVPN_PERF_DURATION_SECS:-8}"
 LOAD_DURATION="${NVPN_PERF_LOAD_DURATION_SECS:-12}"
+if (( LOAD_DURATION > DURATION )); then
+  IPERF_TIMEOUT_BASE_SECS="$LOAD_DURATION"
+else
+  IPERF_TIMEOUT_BASE_SECS="$DURATION"
+fi
+IPERF_TIMEOUT_SECS="${NVPN_DOCKER_IPERF_TIMEOUT_SECS:-$((IPERF_TIMEOUT_BASE_SECS + 30))}"
+NVPN_DOCKER_IPERF_TIMEOUT_SECS="$IPERF_TIMEOUT_SECS"
 MIN_TCP_MBIT="${NVPN_PERF_MIN_TCP_MBIT:-100}"
 MIN_REVERSE_TCP_MBIT="${NVPN_PERF_MIN_REVERSE_TCP_MBIT:-100}"
 MAX_TCP_RETRANS="${NVPN_PERF_MAX_TCP_RETRANS:-}"
@@ -126,6 +133,7 @@ Examples:
   NVPN_E2E_BUILDER_IMAGE=local-rust NVPN_E2E_RUNTIME_IMAGE=local-runtime $(basename "$0")
   NVPN_PERF_PIPELINE_INTERVAL_SECS=1 $(basename "$0") --phase clean-underlay
   NVPN_PERF_MAX_TCP_RETRANS=1000 $(basename "$0") --phase clean-underlay
+  NVPN_DOCKER_IPERF_TIMEOUT_SECS=20 $(basename "$0") --phase clean-underlay
   NVPN_DOCKER_CPU_STRESS=1 NVPN_DOCKER_CPU_STRESS_SIDES=remote $(basename "$0") --phase clean-underlay
   NVPN_PERF_FAIL_ON_PRIORITY_HARD_EVENTS=0 $(basename "$0") --phase worker-queue-pressure
   NVPN_PERF_MAX_PRIORITY_QUEUE_WAIT_MS=0 $(basename "$0") --phase clean-underlay
@@ -531,7 +539,7 @@ run_iperf_json() {
   shift
   local output code
   for attempt in 1 2 3; do
-    if output="$("${COMPOSE[@]}" exec -T node-a iperf3 \
+    if output="$("${COMPOSE[@]}" exec -T node-a timeout --kill-after=5s "$IPERF_TIMEOUT_SECS" iperf3 \
         -J --get-server-output -c "$BOB_TUNNEL_IP" -t "$DURATION" -O 1 --connect-timeout 3000 "$@" 2>&1)"; then
       code=0
       if printf '%s\n' "$output" | iperf_mbps >/dev/null 2>&1; then
@@ -548,7 +556,9 @@ run_iperf_json() {
       continue
     fi
 
-    if [[ "$code" -ne 0 ]]; then
+    if [[ "$code" -eq 124 || "$code" -eq 137 ]]; then
+      echo "fips perf regression e2e failed: iperf $label timed out after ${IPERF_TIMEOUT_SECS}s" >&2
+    elif [[ "$code" -ne 0 ]]; then
       echo "fips perf regression e2e failed: iperf $label failed with exit $code" >&2
     else
       echo "fips perf regression e2e failed: iperf $label returned no throughput result" >&2
@@ -687,6 +697,14 @@ peak_wait_pipeline_lines_from_stdin() {
       value = metric_avg_us(line, "fmp_worker_priority_queue_wait")
       if (value > score) score = value
       value = metric_avg_us(line, "fmp_worker_bulk_queue_wait")
+      if (value > score) score = value
+      value = metric_avg_us(line, "fmp_linux_bulk_container_queue_wait")
+      if (value > score) score = value
+      value = metric_avg_us(line, "fmp_linux_bulk_container_ready_wait")
+      if (value > score) score = value
+      value = metric_avg_us(line, "fmp_linux_bulk_container_first_slot_wait")
+      if (value > score) score = value
+      value = metric_avg_us(line, "fmp_linux_bulk_container_all_slots_wait")
       if (value > score) score = value
       value = metric_avg_us(line, "decrypt_fallback_wait")
       if (value > score) score = value
@@ -880,7 +898,7 @@ pipeline_queue_wait_top_summary() {
       return 0
     }
     BEGIN {
-      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait nvpn_mesh_to_tun_queue_wait"
+      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait fmp_linux_bulk_container_queue_wait fmp_linux_bulk_container_ready_wait fmp_linux_bulk_container_first_slot_wait fmp_linux_bulk_container_all_slots_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait nvpn_mesh_to_tun_queue_wait"
       metric_count = split(metrics, names, " ")
       best_p99 = -1
       best_p95 = -1
@@ -973,6 +991,10 @@ pipeline_decrypt_worker_batch_summary() {
   pipeline_worker_batch_summary "$1" "decrypt_worker_batch"
 }
 
+pipeline_linux_bulk_container_summary() {
+  docker_bench_pipeline_linux_bulk_container_summary "$1"
+}
+
 pipeline_udp_send_batch_summary() {
   local line="$1"
   printf '%s\n' "$line" | awk '
@@ -1054,7 +1076,7 @@ pipeline_hard_event_summary_from_stdin() {
       }
     }
     BEGIN {
-      events = "udp_send_backpressure udp_send_backpressure_sleep udp_send_bulk_dropped connected_udp_activation_failed connected_udp_peer_cap_skipped connected_udp_fd_budget_skipped encrypt_worker_queue_full encrypt_worker_priority_queue_full encrypt_worker_bulk_queue_full encrypt_worker_bulk_dropped decrypt_worker_queue_full decrypt_worker_bulk_dropped decrypt_worker_register_full decrypt_worker_priority_dropped decrypt_fallback_backlog_high rx_loop_slow_maintenance_timeout rx_loop_slow_maintenance_skipped decrypt_fallback_bulk_dropped decrypt_fallback_priority_dropped decrypt_fallback_pressure_drain decrypt_fallback_priority_gated decrypt_fsp_priority_queue_full_fallback decrypt_fsp_bulk_queue_full_fallback decrypt_fsp_worker_replay_dropped decrypt_authenticated_session_priority_dropped decrypt_authenticated_session_bulk_dropped pending_tun_destination_dropped pending_tun_packet_dropped pending_endpoint_destination_dropped pending_endpoint_packet_dropped endpoint_event_backlog_high endpoint_command_bulk_dropped endpoint_event_bulk_dropped transport_channel_backlog_high transport_bulk_dropped nvpn_tun_to_mesh_bulk_dropped"
+      events = "udp_send_backpressure udp_send_backpressure_sleep udp_send_bulk_dropped connected_udp_activation_failed connected_udp_peer_cap_skipped connected_udp_fd_budget_skipped encrypt_worker_queue_full encrypt_worker_priority_queue_full encrypt_worker_bulk_queue_full encrypt_worker_bulk_dropped fmp_linux_bulk_container_queue_full fmp_linux_bulk_container_queue_full_packets endpoint_direct_fmp_receive_dropped endpoint_direct_fmp_receive_dropped_packets decrypt_worker_queue_full decrypt_worker_bulk_dropped decrypt_worker_register_full decrypt_worker_priority_dropped decrypt_fallback_backlog_high rx_loop_slow_maintenance_timeout rx_loop_slow_maintenance_skipped decrypt_fallback_bulk_dropped decrypt_fallback_priority_dropped decrypt_fallback_pressure_drain decrypt_fallback_priority_gated decrypt_fsp_priority_queue_full_fallback decrypt_fsp_bulk_queue_full_fallback decrypt_fsp_worker_replay_dropped decrypt_authenticated_session_priority_dropped decrypt_authenticated_session_bulk_dropped pending_tun_destination_dropped pending_tun_packet_dropped pending_endpoint_destination_dropped pending_endpoint_packet_dropped endpoint_event_backlog_high endpoint_command_bulk_dropped endpoint_event_bulk_dropped transport_channel_backlog_high transport_bulk_dropped nvpn_tun_to_mesh_bulk_dropped"
       event_count = split(events, names, " ")
     }
     {
@@ -1306,6 +1328,16 @@ load_pipeline_line() {
     | tr -d '\r' \
     | pipeline_lines_after_start_from_stdin "$start_line" \
     | load_pipeline_lines_from_stdin
+}
+
+linux_bulk_container_pipeline_summary() {
+  local service="$1"
+  local start_line="${2:-0}"
+  "${COMPOSE[@]}" exec -T "$service" sh -lc \
+    "grep -E '^\\[pipe ' /tmp/connect.log 2>/dev/null || true" \
+    | tr -d '\r' \
+    | pipeline_lines_after_start_from_stdin "$start_line" \
+    | docker_bench_pipeline_linux_bulk_container_summary
 }
 
 latest_pipeline_line() {
@@ -1587,7 +1619,7 @@ init_phase_summary() {
   PHASE_SUMMARY="$PERF_OUTPUT_DIR/phase-summary.tsv"
   FAILURE_SUMMARY="$PERF_OUTPUT_DIR/failure-summary.tsv"
   printf '%s\n' \
-    'phase	forward_mbps	forward_retrans	reverse_mbps	reverse_retrans	forward_load_mbps	forward_load_retrans	forward_load_ping_loss_percent	forward_load_ping_avg_ms	forward_load_ping_p95_ms	forward_load_ping_p99_ms	forward_load_ping_max_ms	reverse_load_mbps	reverse_load_retrans	reverse_load_ping_loss_percent	reverse_load_ping_avg_ms	reverse_load_ping_p95_ms	reverse_load_ping_p99_ms	reverse_load_ping_max_ms	post_ping_loss_percent	post_ping_avg_ms	post_ping_p95_ms	post_ping_p99_ms	post_ping_max_ms	direct_bytes_node_a	direct_bytes_node_b	pipeline_top_queue_wait_node_a	pipeline_top_queue_wait_node_b	pipeline_fmp_worker_batch_node_a	pipeline_fmp_worker_batch_node_b	pipeline_decrypt_worker_batch_node_a	pipeline_decrypt_worker_batch_node_b	pipeline_udp_send_batch_node_a	pipeline_udp_send_batch_node_b	pipeline_hard_events_node_a	pipeline_hard_events_node_b	pipeline_node_a	pipeline_node_b' \
+    'phase	forward_mbps	forward_retrans	reverse_mbps	reverse_retrans	forward_load_mbps	forward_load_retrans	forward_load_ping_loss_percent	forward_load_ping_avg_ms	forward_load_ping_p95_ms	forward_load_ping_p99_ms	forward_load_ping_max_ms	reverse_load_mbps	reverse_load_retrans	reverse_load_ping_loss_percent	reverse_load_ping_avg_ms	reverse_load_ping_p95_ms	reverse_load_ping_p99_ms	reverse_load_ping_max_ms	post_ping_loss_percent	post_ping_avg_ms	post_ping_p95_ms	post_ping_p99_ms	post_ping_max_ms	direct_bytes_node_a	direct_bytes_node_b	pipeline_top_queue_wait_node_a	pipeline_top_queue_wait_node_b	pipeline_fmp_worker_batch_node_a	pipeline_fmp_worker_batch_node_b	pipeline_decrypt_worker_batch_node_a	pipeline_decrypt_worker_batch_node_b	pipeline_linux_bulk_container_node_a	pipeline_linux_bulk_container_node_b	pipeline_udp_send_batch_node_a	pipeline_udp_send_batch_node_b	pipeline_hard_events_node_a	pipeline_hard_events_node_b	pipeline_node_a	pipeline_node_b' \
     >"$PHASE_SUMMARY"
   printf '%s\n' \
     'label	comparison	actual	threshold	phase	step	forward_mbps	forward_retrans	reverse_mbps	reverse_retrans	probe_mbps	probe_retrans	ping_loss_percent	ping_avg_ms	ping_p95_ms	ping_p99_ms	ping_max_ms	direct_bytes_node_a	direct_bytes_node_b	pipeline_node_a	pipeline_node_b' \
@@ -1595,6 +1627,15 @@ init_phase_summary() {
   echo "writing perf phase summary to $PHASE_SUMMARY"
   echo "writing perf failure summary to $FAILURE_SUMMARY"
   echo "writing raw perf artifacts to $PERF_OUTPUT_DIR/raw"
+}
+
+write_perf_metadata() {
+  [[ -z "$PERF_OUTPUT_DIR" ]] && return
+  OUTPUT_DIR="$PERF_OUTPUT_DIR" \
+    NVPN_DOCKER_PIPELINE_TRACE="$PIPELINE_TRACE" \
+    NVPN_DOCKER_PIPELINE_INTERVAL_SECS="$PIPELINE_INTERVAL_SECS" \
+    NVPN_DOCKER_EXTRA_ENV="${NVPN_DOCKER_EXTRA_ENV:-$EXTRA_ENV}" \
+    docker_bench_write_metadata nvpn "$DURATION"
 }
 
 begin_phase_context() {
@@ -1641,7 +1682,7 @@ run_concurrent_probe() {
   local json_path err_path iperf_pid ping_output mbps retrans
   json_path="$(mktemp)"
   err_path="$(mktemp)"
-  "${COMPOSE[@]}" exec -T node-a iperf3 \
+  "${COMPOSE[@]}" exec -T node-a timeout --kill-after=5s "$IPERF_TIMEOUT_SECS" iperf3 \
     -J --get-server-output -c "$BOB_TUNNEL_IP" -t "$LOAD_DURATION" -O 1 --connect-timeout 3000 "$@" \
     >"$json_path" 2>"$err_path" &
   iperf_pid=$!
@@ -1649,10 +1690,18 @@ run_concurrent_probe() {
   ping_output="$("${COMPOSE[@]}" exec -T node-a ping \
     -c "$PING_COUNT" -i "$PING_INTERVAL" -W 2 "$BOB_TUNNEL_IP" 2>&1)"
   write_perf_artifact "$phase" "$label TCP load ping" "ping.txt" "$ping_output"
-  if ! wait "$iperf_pid"; then
+  local iperf_status=0
+  if wait "$iperf_pid"; then
+    iperf_status=0
+  else
+    iperf_status=$?
     copy_perf_artifact "$phase" "$label TCP load" "iperf.json" "$json_path"
     copy_perf_artifact "$phase" "$label TCP load" "iperf.stderr" "$err_path"
-    echo "fips perf regression e2e failed: $phase $label iperf failed" >&2
+    if [[ "$iperf_status" -eq 124 || "$iperf_status" -eq 137 ]]; then
+      echo "fips perf regression e2e failed: $phase $label iperf timed out after ${IPERF_TIMEOUT_SECS}s" >&2
+    else
+      echo "fips perf regression e2e failed: $phase $label iperf failed with exit $iperf_status" >&2
+    fi
     cat "$err_path" >&2
     exit 1
   fi
@@ -1805,6 +1854,8 @@ run_perf_phase() {
   pipeline_batch_b="$(pipeline_fmp_worker_batch_summary "$pipeline_b")"
   pipeline_decrypt_batch_a="$(pipeline_decrypt_worker_batch_summary "$pipeline_a")"
   pipeline_decrypt_batch_b="$(pipeline_decrypt_worker_batch_summary "$pipeline_b")"
+  pipeline_linux_bulk_a="$(linux_bulk_container_pipeline_summary node-a "$pipeline_start_a")"
+  pipeline_linux_bulk_b="$(linux_bulk_container_pipeline_summary node-b "$pipeline_start_b")"
   pipeline_udp_send_a="$(pipeline_udp_send_batch_summary "$pipeline_a")"
   pipeline_udp_send_b="$(pipeline_udp_send_batch_summary "$pipeline_b")"
   pipeline_hard_a="$(pipeline_hard_event_summary node-a "$pipeline_start_a")"
@@ -1852,6 +1903,8 @@ run_perf_phase() {
     "$pipeline_batch_b" \
     "$pipeline_decrypt_batch_a" \
     "$pipeline_decrypt_batch_b" \
+    "$pipeline_linux_bulk_a" \
+    "$pipeline_linux_bulk_b" \
     "$pipeline_udp_send_a" \
     "$pipeline_udp_send_b" \
     "$pipeline_hard_a" \
@@ -2030,6 +2083,7 @@ main() {
 
 cleanup
 init_phase_summary
+write_perf_metadata
 write_host_snapshot "start"
 start_compose_services
 for service in node-a node-b; do

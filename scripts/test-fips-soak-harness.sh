@@ -86,6 +86,21 @@ rtt min/avg/max/mdev = 1.000/5.000/100.000/20.000 ms
 EOF
 }
 
+fixture_iperf_output() {
+  cat <<'EOF'
+{
+  "end": {
+    "sum_received": {
+      "bits_per_second": 123000000
+    },
+    "sum_sent": {
+      "retransmits": 7
+    }
+  }
+}
+EOF
+}
+
 test_ping_parser_percentiles() {
   local stats loss avg p95 p99 max
   stats="$(fixture_ping_output | parse_ping_stats)"
@@ -145,6 +160,72 @@ test_counter_progress_policy() {
     "fixture counter did not advance" \
     bash -c 'source "$1"; assert_counter_advanced 10 10 "fixture"' \
     bash "$SOAK_SCRIPT"
+}
+
+test_iperf_timeout_configuration() {
+  local got
+
+  got="$(
+    NVPN_SOAK_IPERF_DURATION_SECS=4 \
+      bash -c 'source "$1"; printf "%s" "$IPERF_TIMEOUT_SECS"' bash "$SOAK_SCRIPT"
+  )"
+  assert_eq "$got" "34" "soak iperf timeout follows iperf duration"
+
+  got="$(
+    NVPN_SOAK_IPERF_TIMEOUT_SECS=9 \
+      bash -c 'source "$1"; printf "%s" "$IPERF_TIMEOUT_SECS"' bash "$SOAK_SCRIPT"
+  )"
+  assert_eq "$got" "9" "soak iperf timeout honors override"
+}
+
+test_iperf_probe_uses_container_timeout() {
+  local args_path got
+  args_path="$(mktemp)"
+
+  got="$(
+    BOB_TUNNEL_IP="198.51.100.1"
+    IPERF_DURATION=3
+    IPERF_TIMEOUT_SECS=11
+    COMPOSE=(fixture_compose_timeout)
+
+    fixture_compose_timeout() {
+      printf '%s\n' "$*" >>"$args_path"
+      fixture_iperf_output
+    }
+
+    iperf_probe forward
+  )"
+
+  assert_eq "$got" "123 7" "soak iperf probe parses fixture"
+  assert_file_contains "$args_path" "exec -T node-a timeout --kill-after=5s 11 iperf3" "soak iperf probe timeout command"
+  assert_file_contains "$args_path" " -t 3 " "soak iperf probe duration"
+
+  rm -f "$args_path"
+}
+
+test_iperf_probe_timeout_is_reported() {
+  local err
+  err="$(mktemp)"
+
+  if (
+    BOB_TUNNEL_IP="198.51.100.1"
+    IPERF_DURATION=3
+    IPERF_TIMEOUT_SECS=2
+    COMPOSE=(fixture_compose_timeout_failure)
+
+    fixture_compose_timeout_failure() {
+      return 124
+    }
+
+    iperf_probe reverse -R
+  ) 2>"$err"; then
+    cat "$err" >&2
+    rm -f "$err"
+    fail "soak iperf timeout unexpectedly passed"
+  fi
+
+  assert_file_contains "$err" "iperf reverse timed out after 2s" "soak iperf timeout message"
+  rm -f "$err"
 }
 
 test_fips_liveness_policy() {
@@ -271,7 +352,7 @@ test_sample_json_uses_file_inputs() {
 
 test_pipeline_queue_wait_parser() {
   local sample got
-  sample="$(pipeline_lines_to_json '[pipe 10s] endpoint_command_wait=10/s avg=125.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_priority_command_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_bulk_command_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms endpoint_event_wait=10/s avg=250.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_worker_queue_wait=10/s avg=250.0us p50<=262.1us p95<=1.0ms p99<=2.1ms max<=4.2ms allmax=4.2ms fmp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms fmp_worker_bulk_queue_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms decrypt_worker_queue_wait=10/s avg=150.0us p50<=262.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms decrypt_fallback_wait=10/s avg=200.0us p50<=262.1us p95<=1.0ms p99<=3.1ms max<=4.2ms allmax=4.2ms decrypt_authenticated_session_priority_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms decrypt_fsp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_queue_wait=10/s avg=125.0us p50<=131.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms transport_channel_wait=10/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_rx_loop_wait=10/s avg=50.0us p50<=65.5us p95<=131.1us p99<=262.1us max<=524.3us allmax=524.3us udp_send_connected=10/s')"
+  sample="$(pipeline_lines_to_json '[pipe 10s] endpoint_command_wait=10/s avg=125.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_priority_command_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_bulk_command_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms endpoint_event_wait=10/s avg=250.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_worker_queue_wait=10/s avg=250.0us p50<=262.1us p95<=1.0ms p99<=2.1ms max<=4.2ms allmax=4.2ms fmp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms fmp_worker_bulk_queue_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_linux_bulk_container_ready_wait=8/s avg=400.0us p50<=524.3us p95<=4.2ms p99<=8.4ms max<=16.8ms allmax=16.8ms decrypt_worker_queue_wait=10/s avg=150.0us p50<=262.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms decrypt_fallback_wait=10/s avg=200.0us p50<=262.1us p95<=1.0ms p99<=3.1ms max<=4.2ms allmax=4.2ms decrypt_authenticated_session_priority_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms decrypt_fsp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_queue_wait=10/s avg=125.0us p50<=131.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms transport_channel_wait=10/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_rx_loop_wait=10/s avg=50.0us p50<=65.5us p95<=131.1us p99<=262.1us max<=524.3us allmax=524.3us udp_send_connected=10/s')"
 
   got="$(jq -r '.line_count' <<<"$sample")"
   assert_eq "$got" "1" "pipeline line count"
@@ -299,6 +380,9 @@ test_pipeline_queue_wait_parser() {
 
   got="$(jq -r '.queue_wait_ms.fmp_worker_bulk_queue_wait.latest.p99_ms' <<<"$sample")"
   assert_eq "$got" "4.2" "FIPS bulk worker queue wait p99 ms"
+
+  got="$(jq -r '.queue_wait_ms.fmp_linux_bulk_container_ready_wait.latest.p99_ms' <<<"$sample")"
+  assert_eq "$got" "8.4" "Linux bulk container ready wait p99 ms"
 
   got="$(jq -r '.queue_wait_ms.decrypt_worker_queue_wait.latest.p95_ms' <<<"$sample")"
   assert_eq "$got" "0.5243" "FIPS decrypt worker queue wait p95 ms"
@@ -458,12 +542,12 @@ test_pipeline_priority_queue_wait_guard() {
 
 test_pipeline_hard_event_policy() {
   local sample got
-  sample="$(pipeline_lines_to_json '[pipe 10s] connected_udp_activation_failed=1/s connected_udp_peer_cap_skipped=4/s connected_udp_fd_budget_skipped=7/s encrypt_worker_queue_full=0/s total=0 encrypt_worker_bulk_queue_full=2/s total=2 decrypt_worker_bulk_dropped=2/s decrypt_fallback_backlog_high=1/s decrypt_fallback_priority_gated=1/s decrypt_fsp_bulk_queue_full_fallback=1/s decrypt_authenticated_session_bulk_dropped=1/s endpoint_event_backlog_high=1/s endpoint_event_bulk_dropped=5/s transport_channel_backlog_high=1/s transport_bulk_dropped=3/s udp_send_bulk_dropped=0/s total=0 nvpn_tun_to_mesh_bulk_dropped=0/s total=0')"
+  sample="$(pipeline_lines_to_json '[pipe 10s] connected_udp_activation_failed=1/s connected_udp_peer_cap_skipped=4/s connected_udp_fd_budget_skipped=7/s encrypt_worker_queue_full=0/s total=0 encrypt_worker_bulk_queue_full=2/s total=2 decrypt_worker_bulk_dropped=2/s decrypt_fallback_backlog_high=1/s decrypt_fallback_priority_gated=1/s decrypt_fsp_bulk_queue_full_fallback=1/s decrypt_authenticated_session_bulk_dropped=1/s endpoint_direct_fmp_receive_dropped=2/s total=2 endpoint_direct_fmp_receive_dropped_packets=12/s total=12 endpoint_event_backlog_high=1/s endpoint_event_bulk_dropped=5/s transport_channel_backlog_high=1/s transport_bulk_dropped=3/s udp_send_bulk_dropped=0/s total=0 nvpn_tun_to_mesh_bulk_dropped=0/s total=0')"
 
   got="$(pipeline_hard_events "$sample")"
   assert_eq \
     "$got" \
-    "connected_udp_activation_failed,decrypt_worker_bulk_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped" \
+    "connected_udp_activation_failed,decrypt_worker_bulk_dropped,endpoint_direct_fmp_receive_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped" \
     "hard pipeline events"
 
   got="$(jq -r '.seen.decrypt_fallback_backlog_high' <<<"$sample")"
@@ -493,9 +577,12 @@ test_pipeline_hard_event_policy() {
   got="$(jq -r '.rates_per_sec.endpoint_event_bulk_dropped' <<<"$sample")"
   assert_eq "$got" "5" "endpoint event bulk dropped rate"
 
+  got="$(jq -r '.rates_per_sec.endpoint_direct_fmp_receive_dropped_packets' <<<"$sample")"
+  assert_eq "$got" "12" "direct-FMP receive dropped packets rate"
+
   assert_fails_with \
     "hard event policy" \
-    "fixture observed hard pipeline events: connected_udp_activation_failed,decrypt_worker_bulk_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped" \
+    "fixture observed hard pipeline events: connected_udp_activation_failed,decrypt_worker_bulk_dropped,endpoint_direct_fmp_receive_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped" \
     bash -c 'source "$1"; ALLOW_QUEUE_EVENTS=0; assert_pipeline_ok "fixture" "$2"' \
     bash "$SOAK_SCRIPT" "$sample"
 
@@ -532,6 +619,9 @@ test_ping_parser_percentiles
 test_ping_thresholds
 test_tail_drift_thresholds
 test_counter_progress_policy
+test_iperf_timeout_configuration
+test_iperf_probe_uses_container_timeout
+test_iperf_probe_timeout_is_reported
 test_fips_liveness_policy
 test_rekey_stuck_policy
 test_direct_probe_overdue_policy

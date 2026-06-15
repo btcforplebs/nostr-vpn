@@ -20,6 +20,9 @@ COMPOSE=(docker compose -p "$PROJECT_NAME" -f "$ROOT_DIR/docker-compose.e2e.yml"
 
 NETWORK_ID="docker-perf"
 DURATION="${DURATION:-10}"
+IPERF_INTERVAL_SECS="${NVPN_DOCKER_IPERF_INTERVAL_SECS:-0}"
+IPERF_TIMEOUT_SECS="${NVPN_DOCKER_IPERF_TIMEOUT_SECS:-$((DURATION + 30))}"
+NVPN_DOCKER_IPERF_TIMEOUT_SECS="$IPERF_TIMEOUT_SECS"
 SKIP_BUILD="${NVPN_DOCKER_SKIP_BUILD:-0}"
 OUTPUT_DIR="${NVPN_DOCKER_OUTPUT_DIR:-$ROOT_DIR/artifacts/nvpn-docker/$(date -u +%Y%m%dT%H%M%SZ)}"
 RAW_DIR="$OUTPUT_DIR/raw"
@@ -27,6 +30,7 @@ SUMMARY_TSV="$OUTPUT_DIR/summary.tsv"
 PIPELINE_TRACE="${NVPN_DOCKER_PIPELINE_TRACE:-1}"
 PIPELINE_INTERVAL_SECS="${NVPN_DOCKER_PIPELINE_INTERVAL_SECS:-5}"
 EXTRA_CONNECT_ENV="${NVPN_DOCKER_EXTRA_ENV:-}"
+REQUIRE_NO_DIRECT_FMP="${NVPN_DOCKER_REQUIRE_NO_DIRECT_FMP:-0}"
 NVPN_DOCKER_PIPELINE_TRACE="$PIPELINE_TRACE"
 NVPN_DOCKER_PIPELINE_INTERVAL_SECS="$PIPELINE_INTERVAL_SECS"
 DIAGNOSTICS_READY=0
@@ -36,7 +40,9 @@ PIPELINE_START_NODE_B=0
 
 cleanup() {
   local status=$?
-  capture_nvpn_diagnostics "$status" || true
+  if declare -F capture_nvpn_diagnostics >/dev/null; then
+    capture_nvpn_diagnostics "$status" || true
+  fi
   docker_bench_stop_cpu_stress
   if [[ -z "${KEEP:-}" ]]; then
     "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -48,6 +54,11 @@ trap cleanup EXIT
 is_true() {
   [[ "${1:-}" =~ ^(1|true|TRUE|True|yes|YES|Yes|on|ON|On)$ ]]
 }
+
+if is_true "$REQUIRE_NO_DIRECT_FMP" && docker_bench_direct_fmp_forced_enabled; then
+  echo "perf: NVPN_DOCKER_REQUIRE_NO_DIRECT_FMP=1 rejects FIPS_DIRECT_ENDPOINT_FMP_ONLY in NVPN_DOCKER_EXTRA_ENV" >&2
+  exit 2
+fi
 
 start_compose_services() {
   if is_true "$SKIP_BUILD"; then
@@ -95,7 +106,7 @@ pipeline_line_count() {
 
 write_pipeline_summary_header() {
   local path="$1"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     service \
     pipeline_line_count \
     benchmark_pipeline_line_count \
@@ -104,6 +115,10 @@ write_pipeline_summary_header() {
     fmp_worker_batch \
     decrypt_worker_batch \
     udp_send_batch \
+    nvpn_tun_read_batch \
+    nvpn_mesh_send_batch \
+    nvpn_mesh_recv_batch \
+    nvpn_tun_write \
     hard_events \
     selected_load_pipeline >"$path"
 }
@@ -119,7 +134,8 @@ capture_pipeline_for_service() {
   local load_path="$prefix-pipeline-load-selected.txt"
   local peak_path="$prefix-pipeline-peak-wait-selected.txt"
   local all_count bench_count load_line peak_line
-  local load_top peak_top fmp_batch decrypt_batch udp_send_batch hard_events
+  local load_top peak_top fmp_batch decrypt_batch udp_send_batch
+  local nvpn_tun_read_batch nvpn_mesh_send_batch nvpn_mesh_recv_batch nvpn_tun_write hard_events
 
   grep -E '^\[(pipe|nvpn-pipe) ' "$log_path" >"$all_lines_path" 2>/dev/null || true
   docker_bench_pipeline_lines_after_start_from_stdin "$start_line" <"$all_lines_path" >"$bench_lines_path"
@@ -135,9 +151,13 @@ capture_pipeline_for_service() {
   fmp_batch="$(docker_bench_pipeline_fmp_worker_batch_summary "$load_line")"
   decrypt_batch="$(docker_bench_pipeline_decrypt_worker_batch_summary "$load_line")"
   udp_send_batch="$(docker_bench_pipeline_udp_send_batch_summary "$load_line")"
+  nvpn_tun_read_batch="$(docker_bench_pipeline_nvpn_tun_read_batch_summary "$load_line")"
+  nvpn_mesh_send_batch="$(docker_bench_pipeline_nvpn_mesh_send_batch_summary "$load_line")"
+  nvpn_mesh_recv_batch="$(docker_bench_pipeline_nvpn_mesh_recv_batch_summary "$load_line")"
+  nvpn_tun_write="$(docker_bench_pipeline_nvpn_tun_write_summary_from_stdin <"$bench_lines_path")"
   hard_events="$(docker_bench_pipeline_hard_event_summary_from_stdin "$start_line" <"$all_lines_path")"
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$service" \
     "$all_count" \
     "$bench_count" \
@@ -146,6 +166,10 @@ capture_pipeline_for_service() {
     "$(docker_bench_tsv_field "$fmp_batch")" \
     "$(docker_bench_tsv_field "$decrypt_batch")" \
     "$(docker_bench_tsv_field "$udp_send_batch")" \
+    "$(docker_bench_tsv_field "$nvpn_tun_read_batch")" \
+    "$(docker_bench_tsv_field "$nvpn_mesh_send_batch")" \
+    "$(docker_bench_tsv_field "$nvpn_mesh_recv_batch")" \
+    "$(docker_bench_tsv_field "$nvpn_tun_write")" \
     "$(docker_bench_tsv_field "$hard_events")" \
     "$(docker_bench_tsv_field "$load_line")" >>"$summary_path"
 }
@@ -286,8 +310,12 @@ run_test_json() {
   # --connect-timeout caps the 3WHS so a broken path bails out fast
   # instead of hanging on tcp_synack_retries.
   local err_path="$json_path.stderr"
-  if ! "${COMPOSE[@]}" exec -T node-a iperf3 -c "$BOB_TUNNEL_IP" -t "$DURATION" -i 0 -f m \
-    --connect-timeout 3000 --json "$@" >"$json_path" 2>"$err_path"; then
+  local iperf_cmd=(
+    timeout --kill-after=5s "$IPERF_TIMEOUT_SECS"
+    iperf3 -c "$BOB_TUNNEL_IP" -t "$DURATION" -i "$IPERF_INTERVAL_SECS" -f m
+    --connect-timeout 3000 --json "$@"
+  )
+  if ! "${COMPOSE[@]}" exec -T node-a "${iperf_cmd[@]}" >"$json_path" 2>"$err_path"; then
     cat "$err_path" >&2
     cat "$json_path" >&2
     return 1
@@ -331,5 +359,6 @@ docker_bench_append_summary_row \
   "$udp_1000_json" \
   "$ping_output"
 
+docker_bench_assert_summary_guards "$SUMMARY_TSV"
 capture_nvpn_diagnostics 0
 printf 'nvpn docker bench passed: wrote summary to %s\n' "$SUMMARY_TSV"

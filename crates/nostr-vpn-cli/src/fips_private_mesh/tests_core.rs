@@ -26,14 +26,16 @@
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::{
+        BorrowedTunFd,
         DEFAULT_FIPS_TUN_TO_MESH_QUEUE_CAP, MAX_FIPS_TUN_TO_MESH_QUEUE_CAP,
-        FIPS_MESH_BULK_SEND_BURST, FIPS_MESH_PRIORITY_SEND_BURST, MAX_FIPS_UDP_SEND_BUF_SIZE,
-        MIN_FIPS_TUN_TO_MESH_QUEUE_CAP,
-        MIN_FIPS_UDP_SEND_BUF_SIZE, TunPipelineLane, TunPipelinePacket, TunPipelineQueueTx,
-        TunQueueSubmit, parse_fips_tun_bulk_coalesce_micros, parse_fips_tun_to_mesh_queue_cap,
+        MAX_FIPS_UDP_SEND_BUF_SIZE, MIN_FIPS_TUN_TO_MESH_QUEUE_CAP, MIN_FIPS_UDP_SEND_BUF_SIZE,
+        TunPipelineLane, TunPipelinePacket, TunPipelineQueueTx, TunQueueSubmit,
+        parse_fips_tun_bulk_coalesce_micros, parse_fips_tun_to_mesh_queue_cap,
         parse_fips_udp_send_buf_size, raw_write_packet_to_tun, release_tun_bulk_packet_slots,
         submit_tun_packet_batch_to_mesh_queue, tun_pipeline_packet_lane,
     };
+    #[cfg(target_os = "linux")]
+    use super::LINUX_VIRTIO_NET_HDR_LEN;
     use fips_endpoint::{
         Config, ConnectPolicy, FipsEndpointPayload, FipsEndpointPeer, NodeAddr,
         NostrDiscoveryPolicy, PeerConfig as FipsPeerConfig, PeerIdentity, RoutingMode,
@@ -221,8 +223,9 @@
         let write_fd = pipe_fds[1];
 
         let packet = [0x45, 0, 0, 20, 1, 2, 3, 4];
-        raw_write_packet_to_tun(write_fd, &packet, 2).expect("write packet frame");
-        raw_write_packet_to_tun(write_fd, &packet, 2).expect("fd should remain writable");
+        let tun_fd = BorrowedTunFd::new(write_fd, false);
+        raw_write_packet_to_tun(&tun_fd, &packet, 2).expect("write packet frame");
+        raw_write_packet_to_tun(&tun_fd, &packet, 2).expect("fd should remain writable");
 
         let expected_frame: Vec<u8> = {
             #[cfg(target_os = "macos")]
@@ -266,8 +269,9 @@
 
         let stop = std::sync::atomic::AtomicBool::new(false);
         let packet = [0x45, 0, 0, 20, 1, 2, 3, 4];
-        super::write_packet_to_tun_blocking(write_fd, &packet, &stop);
-        super::write_packet_to_tun_blocking(write_fd, &packet, &stop);
+        let tun_fd = BorrowedTunFd::new(write_fd, false);
+        super::write_packet_to_tun_blocking(tun_fd, &packet, &stop);
+        super::write_packet_to_tun_blocking(tun_fd, &packet, &stop);
 
         let expected_frame: Vec<u8> = {
             #[cfg(target_os = "macos")]
@@ -284,6 +288,39 @@
         let mut expected = expected_frame.clone();
         expected.extend_from_slice(&expected_frame);
 
+        let mut read_buf = vec![0_u8; expected.len()];
+        let read = unsafe {
+            libc::read(
+                read_fd,
+                read_buf.as_mut_ptr().cast::<libc::c_void>(),
+                read_buf.len(),
+            )
+        };
+
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
+
+        assert_eq!(read as usize, expected.len());
+        assert_eq!(read_buf, expected);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_vnet_tun_write_prepends_virtio_header() {
+        let mut pipe_fds = [0; 2];
+        let pipe_result = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
+        assert_eq!(pipe_result, 0, "pipe should open");
+        let read_fd = pipe_fds[0];
+        let write_fd = pipe_fds[1];
+
+        let packet = [0x45, 0, 0, 20, 1, 2, 3, 4];
+        let tun_fd = BorrowedTunFd::new(write_fd, true);
+        raw_write_packet_to_tun(&tun_fd, &packet, 0).expect("write vnet packet frame");
+
+        let mut expected = vec![0_u8; LINUX_VIRTIO_NET_HDR_LEN];
+        expected.extend_from_slice(&packet);
         let mut read_buf = vec![0_u8; expected.len()];
         let read = unsafe {
             libc::read(
@@ -581,4 +618,292 @@
             .map(|payload| payload.as_slice().to_vec())
             .collect::<Vec<_>>();
         assert_eq!(payloads, vec![vec![1], vec![2]]);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn test_ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
+        let tcp_len = 20 + tcp_payload_len;
+        let mut packet = vec![0u8; 40 + tcp_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&(tcp_len as u16).to_be_bytes());
+        packet[6] = 6;
+        packet[40 + 12] = 5 << 4;
+        packet[40 + 13] = flags;
+        packet
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn test_ipv6_udp_packet(payload_len: usize) -> Vec<u8> {
+        let udp_len = 8 + payload_len;
+        let mut packet = vec![0u8; 40 + udp_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&(udp_len as u16).to_be_bytes());
+        packet[6] = 17;
+        packet
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn test_ipv4_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
+        let total_len = 20 + 20 + tcp_payload_len;
+        let mut packet = vec![0u8; total_len];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+        packet[9] = 6;
+        packet[20 + 12] = 5 << 4;
+        packet[20 + 13] = flags;
+        packet
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn test_ipv4_icmp_packet() -> Vec<u8> {
+        let mut packet = vec![0u8; 28];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&28u16.to_be_bytes());
+        packet[9] = 1;
+        packet[20] = 8;
+        packet
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn test_pipeline_packet(bytes: Vec<u8>) -> TunPipelinePacket {
+        TunPipelinePacket::new(bytes)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn tun_to_mesh_classifier_reserves_liveness_and_tcp_control_packets() {
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv4_icmp_packet()),
+            TunPipelineLane::Priority
+        );
+
+        let mut icmpv6 = vec![0u8; 48];
+        icmpv6[0] = 0x60;
+        icmpv6[4..6].copy_from_slice(&8u16.to_be_bytes());
+        icmpv6[6] = 58;
+        assert_eq!(tun_pipeline_packet_lane(&icmpv6), TunPipelineLane::Priority);
+
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv4_tcp_packet(0x10, 0)),
+            TunPipelineLane::Priority
+        );
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv4_tcp_packet(0x02, 0)),
+            TunPipelineLane::Priority
+        );
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv4_tcp_packet(0x18, 64)),
+            TunPipelineLane::Priority
+        );
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv4_tcp_packet(0x18, 512)),
+            TunPipelineLane::Bulk
+        );
+
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv6_tcp_packet(0x10, 0)),
+            TunPipelineLane::Priority
+        );
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv6_tcp_packet(0x02, 0)),
+            TunPipelineLane::Priority
+        );
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv6_tcp_packet(0x18, 64)),
+            TunPipelineLane::Priority
+        );
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv6_tcp_packet(0x18, 512)),
+            TunPipelineLane::Bulk
+        );
+        assert_eq!(
+            tun_pipeline_packet_lane(&test_ipv6_udp_packet(8)),
+            TunPipelineLane::Bulk
+        );
+        assert_eq!(tun_pipeline_packet_lane(&[0xaa; 32]), TunPipelineLane::Bulk);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn full_tun_to_mesh_queue_drops_bulk_without_waiting() {
+        let (tx, mut rx) = TunPipelineQueueTx::channel(1);
+
+        let first = vec![test_pipeline_packet(test_ipv6_tcp_packet(0x18, 512))];
+        let second = vec![test_pipeline_packet(test_ipv6_tcp_packet(0x18, 512))];
+
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(&tx, first),
+            TunQueueSubmit::Enqueued
+        );
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(&tx, second),
+            TunQueueSubmit::DroppedBulk
+        );
+
+        let queued = rx.bulk.try_recv().expect("first batch should stay queued");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].bytes, test_ipv6_tcp_packet(0x18, 512));
+        assert!(
+            rx.bulk.try_recv().is_err(),
+            "full-queue bulk drop must not smuggle a pending batch into the queue"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn tun_to_mesh_queue_counts_bulk_capacity_by_packets() {
+        let (tx, mut rx) = TunPipelineQueueTx::channel(3);
+
+        let first = vec![
+            test_pipeline_packet(test_ipv6_tcp_packet(0x18, 512)),
+            test_pipeline_packet(test_ipv6_tcp_packet(0x18, 513)),
+        ];
+        let second = vec![
+            test_pipeline_packet(test_ipv6_tcp_packet(0x18, 514)),
+            test_pipeline_packet(test_ipv6_tcp_packet(0x18, 515)),
+        ];
+
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(&tx, first),
+            TunQueueSubmit::Enqueued
+        );
+        assert_eq!(
+            tx.bulk_queued_packets
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(&tx, second),
+            TunQueueSubmit::DroppedBulk
+        );
+        assert_eq!(
+            tx.bulk_queued_packets
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+
+        let queued = rx.bulk.try_recv().expect("first batch should stay queued");
+        assert_eq!(queued.len(), 2);
+        assert!(rx.bulk.try_recv().is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn tun_to_mesh_release_bulk_packet_slots_subtracts_exact_count() {
+        let counter = AtomicUsize::new(5);
+
+        release_tun_bulk_packet_slots(&counter, 0);
+        assert_eq!(counter.load(Ordering::Relaxed), 5);
+
+        release_tun_bulk_packet_slots(&counter, 3);
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn tun_to_mesh_queue_releases_bulk_packet_slots_on_recv() {
+        let (tx, mut rx) = TunPipelineQueueTx::channel(2);
+
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(
+                &tx,
+                vec![
+                    test_pipeline_packet(test_ipv6_tcp_packet(0x18, 512)),
+                    test_pipeline_packet(test_ipv6_tcp_packet(0x18, 513)),
+                ],
+            ),
+            TunQueueSubmit::Enqueued
+        );
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(
+                &tx,
+                vec![test_pipeline_packet(test_ipv6_tcp_packet(0x18, 514)),],
+            ),
+            TunQueueSubmit::DroppedBulk
+        );
+
+        let queued = rx.recv().await.expect("queued bulk batch");
+        assert_eq!(queued.len(), 2);
+        assert_eq!(
+            tx.bulk_queued_packets
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(
+                &tx,
+                vec![test_pipeline_packet(test_ipv6_tcp_packet(0x18, 515)),],
+            ),
+            TunQueueSubmit::Enqueued
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn full_tun_to_mesh_queue_preserves_priority_progress() {
+        let (tx, mut rx) = TunPipelineQueueTx::channel(1);
+        let bulk_first = test_ipv6_tcp_packet(0x18, 512);
+        let bulk_dropped = test_ipv6_tcp_packet(0x18, 512);
+        let priority = test_ipv4_icmp_packet();
+
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(
+                &tx,
+                vec![test_pipeline_packet(bulk_first.clone())],
+            ),
+            TunQueueSubmit::Enqueued
+        );
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(&tx, vec![test_pipeline_packet(bulk_dropped)],),
+            TunQueueSubmit::DroppedBulk
+        );
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(
+                &tx,
+                vec![test_pipeline_packet(priority.clone())]
+            ),
+            TunQueueSubmit::Enqueued
+        );
+
+        let queued_priority = rx
+            .priority
+            .try_recv()
+            .expect("priority packet should bypass full bulk queue");
+        assert_eq!(queued_priority.len(), 1);
+        assert_eq!(queued_priority[0].bytes, priority);
+
+        let queued_bulk = rx.bulk.try_recv().expect("first bulk should stay queued");
+        assert_eq!(queued_bulk.len(), 1);
+        assert_eq!(queued_bulk[0].bytes, bulk_first);
+        assert!(rx.bulk.try_recv().is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn tun_to_mesh_queue_splits_mixed_batch_into_priority_and_bulk_lanes() {
+        let (tx, mut rx) = TunPipelineQueueTx::channel(2);
+        let bulk = test_ipv6_tcp_packet(0x18, 512);
+        let ack = test_ipv4_tcp_packet(0x10, 0);
+        let ping = test_ipv4_icmp_packet();
+
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(
+                &tx,
+                vec![
+                    test_pipeline_packet(bulk.clone()),
+                    test_pipeline_packet(ack.clone()),
+                    test_pipeline_packet(ping.clone()),
+                ],
+            ),
+            TunQueueSubmit::Enqueued
+        );
+
+        let queued_priority = rx.priority.try_recv().expect("priority batch");
+        assert_eq!(queued_priority.len(), 2);
+        assert_eq!(queued_priority[0].bytes, ack);
+        assert_eq!(queued_priority[1].bytes, ping);
+
+        let queued_bulk = rx.bulk.try_recv().expect("bulk batch");
+        assert_eq!(queued_bulk.len(), 1);
+        assert_eq!(queued_bulk[0].bytes, bulk);
     }

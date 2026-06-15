@@ -27,6 +27,8 @@ INTERVAL_SECS="${NVPN_SOAK_INTERVAL_SECS:-60}"
 PING_COUNT="${NVPN_SOAK_PING_COUNT:-20}"
 PING_INTERVAL="${NVPN_SOAK_PING_INTERVAL:-0.1}"
 IPERF_DURATION="${NVPN_SOAK_IPERF_DURATION_SECS:-5}"
+IPERF_TIMEOUT_SECS="${NVPN_SOAK_IPERF_TIMEOUT_SECS:-$((IPERF_DURATION + 30))}"
+NVPN_SOAK_IPERF_TIMEOUT_SECS="$IPERF_TIMEOUT_SECS"
 MAX_PING_LOSS_PERCENT="${NVPN_SOAK_MAX_PING_LOSS_PERCENT:-5}"
 MAX_PING_AVG_MS="${NVPN_SOAK_MAX_PING_AVG_MS:-250}"
 MAX_PING_P95_MS="${NVPN_SOAK_MAX_PING_P95_MS:-500}"
@@ -477,9 +479,20 @@ start_iperf_server() {
 iperf_probe() {
   local label="$1"
   shift
-  local json mbps retrans
-  json="$("${COMPOSE[@]}" exec -T node-a iperf3 \
-    -J -c "$BOB_TUNNEL_IP" -t "$IPERF_DURATION" -O 1 --connect-timeout 3000 "$@" 2>&1)"
+  local json code mbps retrans
+  if json="$("${COMPOSE[@]}" exec -T node-a timeout --kill-after=5s "$IPERF_TIMEOUT_SECS" iperf3 \
+    -J -c "$BOB_TUNNEL_IP" -t "$IPERF_DURATION" -O 1 --connect-timeout 3000 "$@" 2>&1)"; then
+    code=0
+  else
+    code=$?
+    if [[ "$code" -eq 124 || "$code" -eq 137 ]]; then
+      echo "fips soak failed: iperf $label timed out after ${IPERF_TIMEOUT_SECS}s" >&2
+    else
+      echo "fips soak failed: iperf $label failed with exit $code" >&2
+    fi
+    printf '%s\n' "$json" >&2
+    exit 1
+  fi
   if ! mbps="$(printf '%s\n' "$json" | jq -er '((.end.sum_received.bits_per_second // .end.sum.bits_per_second // .end.sum_sent.bits_per_second) | select(type == "number")) / 1000000')"; then
     echo "fips soak failed: iperf $label returned no throughput result" >&2
     printf '%s\n' "$json" >&2
@@ -643,6 +656,10 @@ pipeline_lines_to_json() {
           "fmp_worker_queue_wait",
           "fmp_worker_priority_queue_wait",
           "fmp_worker_bulk_queue_wait",
+          "fmp_linux_bulk_container_queue_wait",
+          "fmp_linux_bulk_container_ready_wait",
+          "fmp_linux_bulk_container_first_slot_wait",
+          "fmp_linux_bulk_container_all_slots_wait",
           "decrypt_worker_queue_wait",
           "decrypt_worker_priority_queue_wait",
           "decrypt_worker_bulk_queue_wait",
@@ -727,6 +744,8 @@ pipeline_lines_to_json() {
         pending_tun_packet_dropped: event_rate("pending_tun_packet_dropped"),
         pending_endpoint_destination_dropped: event_rate("pending_endpoint_destination_dropped"),
         pending_endpoint_packet_dropped: event_rate("pending_endpoint_packet_dropped"),
+        endpoint_direct_fmp_receive_dropped: event_rate("endpoint_direct_fmp_receive_dropped"),
+        endpoint_direct_fmp_receive_dropped_packets: event_rate("endpoint_direct_fmp_receive_dropped_packets"),
         endpoint_event_backlog_high: event_rate("endpoint_event_backlog_high"),
         endpoint_event_bulk_dropped: event_rate("endpoint_event_bulk_dropped"),
         transport_channel_backlog_high: event_rate("transport_channel_backlog_high"),
@@ -764,6 +783,8 @@ pipeline_lines_to_json() {
         pending_tun_packet_dropped: event_max_rate("pending_tun_packet_dropped"),
         pending_endpoint_destination_dropped: event_max_rate("pending_endpoint_destination_dropped"),
         pending_endpoint_packet_dropped: event_max_rate("pending_endpoint_packet_dropped"),
+        endpoint_direct_fmp_receive_dropped: event_max_rate("endpoint_direct_fmp_receive_dropped"),
+        endpoint_direct_fmp_receive_dropped_packets: event_max_rate("endpoint_direct_fmp_receive_dropped_packets"),
         endpoint_event_backlog_high: event_max_rate("endpoint_event_backlog_high"),
         endpoint_event_bulk_dropped: event_max_rate("endpoint_event_bulk_dropped"),
         transport_channel_backlog_high: event_max_rate("transport_channel_backlog_high"),
@@ -801,6 +822,8 @@ pipeline_lines_to_json() {
         pending_tun_packet_dropped: event_total("pending_tun_packet_dropped"),
         pending_endpoint_destination_dropped: event_total("pending_endpoint_destination_dropped"),
         pending_endpoint_packet_dropped: event_total("pending_endpoint_packet_dropped"),
+        endpoint_direct_fmp_receive_dropped: event_total("endpoint_direct_fmp_receive_dropped"),
+        endpoint_direct_fmp_receive_dropped_packets: event_total("endpoint_direct_fmp_receive_dropped_packets"),
         endpoint_event_backlog_high: event_total("endpoint_event_backlog_high"),
         endpoint_event_bulk_dropped: event_total("endpoint_event_bulk_dropped"),
         transport_channel_backlog_high: event_total("transport_channel_backlog_high"),
@@ -838,6 +861,8 @@ pipeline_lines_to_json() {
         pending_tun_packet_dropped: event_seen("pending_tun_packet_dropped"),
         pending_endpoint_destination_dropped: event_seen("pending_endpoint_destination_dropped"),
         pending_endpoint_packet_dropped: event_seen("pending_endpoint_packet_dropped"),
+        endpoint_direct_fmp_receive_dropped: event_seen("endpoint_direct_fmp_receive_dropped"),
+        endpoint_direct_fmp_receive_dropped_packets: event_seen("endpoint_direct_fmp_receive_dropped_packets"),
         endpoint_event_backlog_high: event_seen("endpoint_event_backlog_high"),
         endpoint_event_bulk_dropped: event_seen("endpoint_event_bulk_dropped"),
         transport_channel_backlog_high: event_seen("transport_channel_backlog_high"),
@@ -854,6 +879,10 @@ pipeline_lines_to_json() {
         fmp_worker_queue_wait: wait_metric("fmp_worker_queue_wait"),
         fmp_worker_priority_queue_wait: wait_metric("fmp_worker_priority_queue_wait"),
         fmp_worker_bulk_queue_wait: wait_metric("fmp_worker_bulk_queue_wait"),
+        fmp_linux_bulk_container_queue_wait: wait_metric("fmp_linux_bulk_container_queue_wait"),
+        fmp_linux_bulk_container_ready_wait: wait_metric("fmp_linux_bulk_container_ready_wait"),
+        fmp_linux_bulk_container_first_slot_wait: wait_metric("fmp_linux_bulk_container_first_slot_wait"),
+        fmp_linux_bulk_container_all_slots_wait: wait_metric("fmp_linux_bulk_container_all_slots_wait"),
         decrypt_worker_queue_wait: wait_metric("decrypt_worker_queue_wait"),
         decrypt_worker_priority_queue_wait: wait_metric("decrypt_worker_priority_queue_wait"),
         decrypt_worker_bulk_queue_wait: wait_metric("decrypt_worker_bulk_queue_wait"),
@@ -989,6 +1018,7 @@ pipeline_hard_events() {
       "pending_tun_packet_dropped",
       "pending_endpoint_destination_dropped",
       "pending_endpoint_packet_dropped",
+      "endpoint_direct_fmp_receive_dropped",
       "endpoint_event_backlog_high",
       "endpoint_event_bulk_dropped",
       "transport_channel_backlog_high",

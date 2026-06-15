@@ -188,6 +188,7 @@ main() {
           "pending_tun_packet_dropped",
           "pending_endpoint_destination_dropped",
           "pending_endpoint_packet_dropped",
+          "endpoint_direct_fmp_receive_dropped",
           "endpoint_event_backlog_high",
           "endpoint_event_bulk_dropped",
           "transport_channel_backlog_high",

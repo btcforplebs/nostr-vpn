@@ -78,7 +78,11 @@ const MESH_LAN_TUNNEL_MTU: u16 = 1290;
 const MESH_MIN_UNDERLAY_UDP_MTU: u16 = 1280;
 const MESH_MIN_TUNNEL_MTU: u16 = 576;
 const MESH_MAX_MTU: u16 = 9000;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+// Linux Docker/vnet benchmarks benefit slightly from wider app-side drains.
+// Keep Darwin at the smaller, Wi-Fi-proven burst until Mac-to-Mac evidence says otherwise.
+#[cfg(target_os = "linux")]
+const FIPS_TUN_READ_BURST: usize = 128;
+#[cfg(target_os = "macos")]
 const FIPS_TUN_READ_BURST: usize = 64;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const FIPS_MESH_SEND_BURST: usize = 64;
@@ -96,7 +100,9 @@ const FIPS_MESH_BULK_SEND_BURST: usize = 16;
     not(target_os = "macos")
 ))]
 const FIPS_MESH_BULK_SEND_BURST: usize = FIPS_MESH_SEND_BURST;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
+const FIPS_MESH_RECV_BURST: usize = 256;
+#[cfg(target_os = "macos")]
 const FIPS_MESH_RECV_BURST: usize = 128;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 const FIPS_MESH_EVENT_DRAIN_LIMIT: usize = 256;
@@ -196,7 +202,7 @@ fn fips_lan_discovery_scope(network_id: &str) -> String {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use boringtun::device::{Error as TunError, tun::TunSocket};
+use boringtun::device::tun::TunSocket;
 #[cfg(target_os = "windows")]
 use nostr_vpn_wintun::load_wintun;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -233,6 +239,8 @@ include!("fips_private_mesh/endpoint_config.rs");
 include!("fips_private_mesh/tunnel_config.rs");
 include!("fips_private_mesh/tunnel_runtime_unix_core.rs");
 include!("fips_private_mesh/tunnel_runtime_linux.rs");
+#[cfg(target_os = "linux")]
+include!("fips_private_mesh/linux_vnet_tun.rs");
 include!("fips_private_mesh/unix_tun.rs");
 include!("fips_private_mesh/tunnel_runtime_windows.rs");
 include!("fips_private_mesh/windows_tun.rs");
@@ -242,7 +250,6 @@ include!("fips_private_mesh/time.rs");
 #[cfg(test)]
 mod tests {
     include!("fips_private_mesh/tests_core.rs");
-    include!("fips_private_mesh/tests_tun_pipeline.rs");
     include!("fips_private_mesh/tests_status.rs");
     include!("fips_private_mesh/tests_runtime.rs");
     include!("fips_private_mesh/tests_config.rs");

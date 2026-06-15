@@ -214,6 +214,9 @@ write_normalized_summary_row() {
   local backend="$3"
   local threads="$4"
   local input="${5:-$source}"
+  local pipeline_trace_enabled pipeline_trace_interval_secs
+  pipeline_trace_enabled="$(metadata_value "$input" '.pipeline_trace.enabled')"
+  pipeline_trace_interval_secs="$(metadata_value "$input" '.pipeline_trace.interval_secs')"
   write_row \
     "$label" \
     "$source" \
@@ -224,6 +227,8 @@ write_normalized_summary_row() {
     "$(metadata_value "$input" '.cpu_stress.sides')" \
     "$(metadata_value "$input" '.cpu_stress.local_workers')" \
     "$(metadata_value "$input" '.cpu_stress.remote_workers')" \
+    "$pipeline_trace_enabled" \
+    "$pipeline_trace_interval_secs" \
     "$(tsv_value "$source" tcp_single_mbps "$backend" "$threads")" \
     "$(tsv_value "$source" tcp_single_retrans "$backend" "$threads")" \
     "$(tsv_value "$source" tcp_4_mbps "$backend" "$threads")" \
@@ -347,6 +352,12 @@ main() {
 
   local nvpn_stress_enabled nvpn_stress_sides nvpn_stress_local_workers nvpn_stress_remote_workers
   local reference_stress_enabled reference_stress_sides reference_stress_local_workers reference_stress_remote_workers
+  local nvpn_pipeline_trace_enabled nvpn_pipeline_trace_interval_secs
+  local reference_pipeline_trace_enabled reference_pipeline_trace_interval_secs
+  local nvpn_extra_connect_env reference_extra_connect_env
+  local nvpn_source_head nvpn_source_dirty nvpn_fips_patch_enabled nvpn_fips_patch_head nvpn_fips_patch_dirty
+  local reference_source_head reference_source_dirty reference_fips_patch_enabled reference_fips_patch_head reference_fips_patch_dirty
+  local pipeline_trace_mismatch
   nvpn_stress_enabled="$(metadata_value "$NVPN_INPUT" '.cpu_stress.enabled')"
   nvpn_stress_sides="$(metadata_value "$NVPN_INPUT" '.cpu_stress.sides')"
   nvpn_stress_local_workers="$(metadata_value "$NVPN_INPUT" '.cpu_stress.local_workers')"
@@ -355,6 +366,28 @@ main() {
   reference_stress_sides="$(metadata_value "$REFERENCE_INPUT" '.cpu_stress.sides')"
   reference_stress_local_workers="$(metadata_value "$REFERENCE_INPUT" '.cpu_stress.local_workers')"
   reference_stress_remote_workers="$(metadata_value "$REFERENCE_INPUT" '.cpu_stress.remote_workers')"
+  nvpn_pipeline_trace_enabled="$(metadata_value "$NVPN_INPUT" '.pipeline_trace.enabled')"
+  nvpn_pipeline_trace_interval_secs="$(metadata_value "$NVPN_INPUT" '.pipeline_trace.interval_secs')"
+  reference_pipeline_trace_enabled="$(metadata_value "$REFERENCE_INPUT" '.pipeline_trace.enabled')"
+  reference_pipeline_trace_interval_secs="$(metadata_value "$REFERENCE_INPUT" '.pipeline_trace.interval_secs')"
+  nvpn_extra_connect_env="$(metadata_value "$NVPN_INPUT" '.run_env.extra_connect_env')"
+  reference_extra_connect_env="$(metadata_value "$REFERENCE_INPUT" '.run_env.extra_connect_env')"
+  nvpn_source_head="$(metadata_value "$NVPN_INPUT" '.source.nvpn.git_head')"
+  nvpn_source_dirty="$(metadata_value "$NVPN_INPUT" '.source.nvpn.dirty')"
+  nvpn_fips_patch_enabled="$(metadata_value "$NVPN_INPUT" '.source.local_fips_patch.enabled')"
+  nvpn_fips_patch_head="$(metadata_value "$NVPN_INPUT" '.source.local_fips_patch.git_head')"
+  nvpn_fips_patch_dirty="$(metadata_value "$NVPN_INPUT" '.source.local_fips_patch.dirty')"
+  reference_source_head="$(metadata_value "$REFERENCE_INPUT" '.source.nvpn.git_head')"
+  reference_source_dirty="$(metadata_value "$REFERENCE_INPUT" '.source.nvpn.dirty')"
+  reference_fips_patch_enabled="$(metadata_value "$REFERENCE_INPUT" '.source.local_fips_patch.enabled')"
+  reference_fips_patch_head="$(metadata_value "$REFERENCE_INPUT" '.source.local_fips_patch.git_head')"
+  reference_fips_patch_dirty="$(metadata_value "$REFERENCE_INPUT" '.source.local_fips_patch.dirty')"
+  pipeline_trace_mismatch="false"
+  if [[ -n "$nvpn_pipeline_trace_enabled" \
+      && -n "$reference_pipeline_trace_enabled" \
+      && "$nvpn_pipeline_trace_enabled" != "$reference_pipeline_trace_enabled" ]]; then
+    pipeline_trace_mismatch="true"
+  fi
   local effective_udp_loss_delta_pct
   effective_udp_loss_delta_pct="$MAX_LOSS_DELTA_PCT"
   if is_true_value "$nvpn_stress_enabled" && is_true_value "$reference_stress_enabled"; then
@@ -371,6 +404,7 @@ main() {
   write_row \
     label source_summary backend threads duration_secs \
     cpu_stress_enabled cpu_stress_sides local_cpu_stress_workers remote_cpu_stress_workers \
+    pipeline_trace_enabled pipeline_trace_interval_secs \
     tcp_single_mbps tcp_single_retrans tcp_4_mbps tcp_4_retrans \
     tcp_8_mbps tcp_8_retrans udp_200_mbps udp_200_loss_pct \
     udp_1000_mbps udp_1000_loss_pct ping_loss_pct ping_avg_ms raw_dir \
@@ -435,6 +469,23 @@ main() {
     --arg reference_stress_sides "$reference_stress_sides" \
     --arg reference_stress_local_workers "$reference_stress_local_workers" \
     --arg reference_stress_remote_workers "$reference_stress_remote_workers" \
+    --arg nvpn_pipeline_trace_enabled "$nvpn_pipeline_trace_enabled" \
+    --arg nvpn_pipeline_trace_interval_secs "$nvpn_pipeline_trace_interval_secs" \
+    --arg reference_pipeline_trace_enabled "$reference_pipeline_trace_enabled" \
+    --arg reference_pipeline_trace_interval_secs "$reference_pipeline_trace_interval_secs" \
+    --arg pipeline_trace_mismatch "$pipeline_trace_mismatch" \
+    --arg nvpn_extra_connect_env "$nvpn_extra_connect_env" \
+    --arg reference_extra_connect_env "$reference_extra_connect_env" \
+    --arg nvpn_source_head "$nvpn_source_head" \
+    --arg nvpn_source_dirty "$nvpn_source_dirty" \
+    --arg nvpn_fips_patch_enabled "$nvpn_fips_patch_enabled" \
+    --arg nvpn_fips_patch_head "$nvpn_fips_patch_head" \
+    --arg nvpn_fips_patch_dirty "$nvpn_fips_patch_dirty" \
+    --arg reference_source_head "$reference_source_head" \
+    --arg reference_source_dirty "$reference_source_dirty" \
+    --arg reference_fips_patch_enabled "$reference_fips_patch_enabled" \
+    --arg reference_fips_patch_head "$reference_fips_patch_head" \
+    --arg reference_fips_patch_dirty "$reference_fips_patch_dirty" \
     --arg min_throughput_pct "$MIN_THROUGHPUT_PCT" \
     --arg max_retrans_pct "$MAX_RETRANS_PCT" \
     --arg max_loss_delta_pct "$MAX_LOSS_DELTA_PCT" \
@@ -476,6 +527,47 @@ main() {
           sides: $reference_stress_sides,
           local_workers: num($reference_stress_local_workers),
           remote_workers: num($reference_stress_remote_workers)
+        }
+      },
+      pipeline_trace: {
+        mismatch: bool($pipeline_trace_mismatch),
+        nvpn: {
+          enabled: bool($nvpn_pipeline_trace_enabled),
+          interval_secs: num($nvpn_pipeline_trace_interval_secs)
+        },
+        reference: {
+          enabled: bool($reference_pipeline_trace_enabled),
+          interval_secs: num($reference_pipeline_trace_interval_secs)
+        }
+      },
+      provenance: {
+        nvpn: {
+          run_env: {
+            extra_connect_env: $nvpn_extra_connect_env
+          },
+          source: {
+            git_head: (if $nvpn_source_head == "" then null else $nvpn_source_head end),
+            dirty: bool($nvpn_source_dirty)
+          },
+          local_fips_patch: {
+            enabled: bool($nvpn_fips_patch_enabled),
+            git_head: (if $nvpn_fips_patch_head == "" then null else $nvpn_fips_patch_head end),
+            dirty: bool($nvpn_fips_patch_dirty)
+          }
+        },
+        reference: {
+          run_env: {
+            extra_connect_env: $reference_extra_connect_env
+          },
+          source: {
+            git_head: (if $reference_source_head == "" then null else $reference_source_head end),
+            dirty: bool($reference_source_dirty)
+          },
+          local_fips_patch: {
+            enabled: bool($reference_fips_patch_enabled),
+            git_head: (if $reference_fips_patch_head == "" then null else $reference_fips_patch_head end),
+            dirty: bool($reference_fips_patch_dirty)
+          }
         }
       },
       threshold_policy: {
