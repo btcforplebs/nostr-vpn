@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 4.0.75 - 2026-06-15
+
+### Changed
+
+- The release gate now includes the host-pair latency check when the required
+  SSH environment is configured.
+- FIPS now uses `fips-core` 0.3.60 and `fips-endpoint` 0.3.35.
+
+### Fixed
+
+- The macOS FIPS private-mesh send path now includes the bounded queue latency
+  fix in tagged release artifacts.
+- The embedded FIPS receive loop now keeps idle slow-maintenance slices below
+  the release-gate priority wait budget.
+- The FIPS Docker perf gate now checks priority wait latency against the
+  selected load-window telemetry instead of idle/restart peak samples.
+
 ## 4.0.74 - 2026-06-14
 
 ### Changed

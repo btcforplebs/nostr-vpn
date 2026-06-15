@@ -1188,7 +1188,7 @@ pipeline_priority_queue_wait_violations_from_stdin() {
       }
       return number
     }
-    function parse_wait(line, metric, start, rest, parts, rate_raw, p99_raw, max_raw) {
+    function parse_wait(line, metric, start, rest, parts, rate_raw, p99_raw, max_raw, allmax_raw, i) {
       start = index(line, metric "=")
       if (start == 0) {
         return 0
@@ -1205,9 +1205,20 @@ pipeline_priority_queue_wait_violations_from_stdin() {
       sub(/\/s$/, "", rate_raw)
       sub(/^p99<=/, "", p99_raw)
       sub(/^max<=/, "", max_raw)
+      allmax_raw = ""
+      for (i = 7; i <= 10; i++) {
+        if (!(i in parts)) {
+          break
+        }
+        if (parts[i] ~ /^allmax=/) {
+          allmax_raw = parts[i]
+          sub(/^allmax=/, "", allmax_raw)
+          break
+        }
+      }
       metric_rate = rate_raw + 0
       metric_p99 = duration_ms(p99_raw)
-      metric_max = duration_ms(max_raw)
+      metric_max = allmax_raw == "" ? duration_ms(max_raw) : duration_ms(allmax_raw)
       return 1
     }
     BEGIN {
@@ -1261,16 +1272,15 @@ pipeline_priority_queue_wait_violations() {
     | pipeline_priority_queue_wait_violations_from_stdin "$threshold_ms"
 }
 
-assert_priority_queue_wait_ok() {
+assert_pipeline_priority_queue_wait_ok() {
   local threshold_ms="${MAX_PRIORITY_QUEUE_WAIT_MS:-0}"
   if ! awk -v threshold_ms="$threshold_ms" 'BEGIN { exit !((threshold_ms + 0) > 0) }'; then
     return 0
   fi
   local label="$1"
-  local service="$2"
-  local start_line="${3:-0}"
+  local pipeline_line="${2:-}"
   local violations
-  violations="$(pipeline_priority_queue_wait_violations "$service" "$start_line" "$threshold_ms")"
+  violations="$(printf '%s\n' "$pipeline_line" | pipeline_priority_queue_wait_violations_from_stdin "$threshold_ms")"
   if [[ -n "$violations" ]]; then
     append_failure_summary "$label priority queue wait max ms" "<=" "$violations" "$threshold_ms"
     echo "fips perf regression e2e failed: $label priority queue waits exceeded ${threshold_ms}ms: $violations" >&2
@@ -1806,9 +1816,9 @@ run_perf_phase() {
   CURRENT_STEP="node-b priority hard event guard"
   assert_no_priority_hard_events "$phase node-b" "$pipeline_hard_b"
   CURRENT_STEP="node-a priority queue wait guard"
-  assert_priority_queue_wait_ok "$phase node-a" node-a "$pipeline_start_a"
+  assert_pipeline_priority_queue_wait_ok "$phase node-a" "$pipeline_a"
   CURRENT_STEP="node-b priority queue wait guard"
-  assert_priority_queue_wait_ok "$phase node-b" node-b "$pipeline_start_b"
+  assert_pipeline_priority_queue_wait_ok "$phase node-b" "$pipeline_b"
   append_phase_summary \
     "$phase" \
     "$forward_mbps" \
