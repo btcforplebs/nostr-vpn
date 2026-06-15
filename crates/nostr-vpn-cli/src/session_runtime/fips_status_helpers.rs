@@ -26,6 +26,9 @@ async fn current_fips_relay_statuses<T>(_runtime: &Option<T>) -> Vec<DaemonRelay
 }
 
 #[cfg(feature = "embedded-fips")]
+pub(crate) const FIPS_STALE_PARTICIPANT_RESTART_COOLDOWN_SECS: u64 = 60;
+
+#[cfg(feature = "embedded-fips")]
 macro_rules! current_fips_advertised_routes {
     ($runtime:expr, $app:expr) => {
         $runtime
@@ -148,6 +151,22 @@ pub(crate) fn fips_link_event_refresh(
     } else {
         FipsLinkEventRefresh::None
     }
+}
+
+#[cfg(feature = "embedded-fips")]
+pub(crate) fn fips_stale_participant_restart_due(
+    last_restart_at: &mut Option<u64>,
+    now: u64,
+) -> bool {
+    let due = last_restart_at.is_none_or(|last_restart_at| {
+        now < last_restart_at
+            || now.saturating_sub(last_restart_at)
+                >= FIPS_STALE_PARTICIPANT_RESTART_COOLDOWN_SECS
+    });
+    if due {
+        *last_restart_at = Some(now);
+    }
+    due
 }
 
 #[cfg(feature = "embedded-fips")]
@@ -280,6 +299,36 @@ async fn restart_fips_tunnel_runtime_after_link_event(
     *runtime = Some(restarted);
     *context.last_endpoint_peer_signature = endpoint_peer_signature;
     Ok(())
+}
+
+#[cfg(feature = "embedded-fips")]
+async fn restart_fips_tunnel_runtime_after_stale_participants(
+    runtime: &mut Option<crate::fips_private_mesh::FipsPrivateTunnelRuntime>,
+    context: FipsRestartContext<'_>,
+    last_restart_at: &mut Option<u64>,
+    now: u64,
+) -> Result<bool> {
+    let stale_participants = runtime
+        .as_ref()
+        .map(|runtime| runtime.stale_participants_with_connected_links(now))
+        .unwrap_or_default();
+    if stale_participants.is_empty() {
+        return Ok(false);
+    }
+    if !fips_stale_participant_restart_due(last_restart_at, now) {
+        return Ok(false);
+    }
+    eprintln!(
+        "daemon: restarting FIPS private mesh after {} participant(s) stopped responding while endpoint links stayed connected",
+        stale_participants.len()
+    );
+    restart_fips_tunnel_runtime_after_link_event(
+        runtime,
+        context,
+        "stale FIPS participant traffic",
+    )
+    .await?;
+    Ok(true)
 }
 
 #[cfg(any(target_os = "macos", test))]

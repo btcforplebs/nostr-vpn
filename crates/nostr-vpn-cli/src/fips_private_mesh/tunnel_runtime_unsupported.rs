@@ -17,6 +17,10 @@ impl FipsPrivateTunnelRuntime {
         Vec::new()
     }
 
+    pub(crate) fn stale_participants_with_connected_links(&self, _now: u64) -> Vec<String> {
+        Vec::new()
+    }
+
     pub(crate) async fn relay_statuses(&self) -> Result<Vec<FipsRelayStatus>> {
         Ok(Vec::new())
     }

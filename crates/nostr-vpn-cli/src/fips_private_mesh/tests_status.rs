@@ -359,7 +359,7 @@
     }
 
     #[test]
-    fn fips_peer_liveness_trusts_authenticated_link_snapshot() {
+    fn fips_peer_liveness_prefers_participant_activity_over_link_snapshot() {
         assert_eq!(
             super::fips_peer_liveness(Some(100), true, None, 120),
             (true, None)
@@ -370,7 +370,7 @@
         );
         assert_eq!(
             super::fips_peer_liveness(Some(10), true, None, 120),
-            (true, None)
+            (false, Some("fips participant stale".to_string()))
         );
         assert_eq!(
             super::fips_peer_liveness(None, false, Some("dial failed".to_string()), 120),
@@ -386,7 +386,11 @@
         );
         assert_eq!(
             super::fips_peer_liveness(Some(180), false, None, 120),
-            (false, Some("fips link pending".to_string()))
+            (false, Some("fips participant stale".to_string()))
+        );
+        assert_eq!(
+            super::fips_peer_liveness(Some(180), true, None, 120),
+            (false, Some("fips participant stale".to_string()))
         );
     }
 

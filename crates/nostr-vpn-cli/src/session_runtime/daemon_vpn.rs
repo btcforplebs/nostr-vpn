@@ -72,6 +72,8 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
     let mut pending_fips_roster_recipients: HashSet<String> = HashSet::new();
     #[cfg(feature = "embedded-fips")]
     let mut fips_roster_sync_state = FipsRosterSyncState::default();
+    #[cfg(feature = "embedded-fips")]
+    let mut last_fips_stale_participant_restart_at: Option<u64> = None;
     let iface = args.iface.clone();
     let mut tunnel_runtime = CliTunnelRuntime::new(iface.clone());
     let mut network_snapshot = capture_network_snapshot();
@@ -297,16 +299,102 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
             _ = tunnel_heartbeat_interval.tick() => {
                 if !daemon_vpn_active(vpn_enabled, expected_peers) {
                     #[cfg(feature = "embedded-fips")]
-                    if fips_private_runtime_active(&app, vpn_enabled, expected_peers)
-                        && let Some(runtime) = fips_tunnel_runtime.as_ref()
-                    {
+                    if fips_private_runtime_active(&app, vpn_enabled, expected_peers) {
                         let now = unix_timestamp();
+                        if let Some(runtime) = fips_tunnel_runtime.as_ref() {
+                            if let Err(error) = runtime.ping_peers(&network_id, now).await {
+                                eprintln!("fips: peer ping failed: {error}");
+                            }
+                            if let Err(error) = runtime.refresh_link_statuses().await {
+                                eprintln!("fips: peer link snapshot failed: {error}");
+                            }
+                        }
+                        match restart_fips_tunnel_runtime_after_stale_participants(
+                            &mut fips_tunnel_runtime,
+                            FipsRestartContext {
+                                app: &app,
+                                network_id: &network_id,
+                                fallback_iface: &iface,
+                                own_pubkey: own_pubkey.as_deref(),
+                                recent_peers: Some(&recent_peers),
+                                last_endpoint_peer_signature:
+                                    &mut last_fips_endpoint_peer_signature,
+                            },
+                            &mut last_fips_stale_participant_restart_at,
+                            now,
+                        )
+                        .await
+                        {
+                            Ok(true) => fips_roster_sync_state = FipsRosterSyncState::default(),
+                            Ok(false) => {}
+                            Err(error) => {
+                                eprintln!("fips: stale participant recovery failed: {error}")
+                            }
+                        }
+                        if let Some(runtime) = fips_tunnel_runtime.as_ref() {
+                            if let Err(error) = sync_fips_roster_with_connected_peers(
+                                runtime,
+                                &app,
+                                &config_path,
+                                &mut fips_roster_sync_state,
+                            )
+                            .await
+                            {
+                                eprintln!("fips: roster peer sync failed: {error}");
+                            }
+                            flush_pending_fips_roster_recipients(
+                                runtime,
+                                &app,
+                                &config_path,
+                                &mut pending_fips_roster_recipients,
+                            )
+                            .await;
+                            if let Err(error) = send_pending_fips_join_requests(
+                                runtime,
+                                &app,
+                                &mut fips_join_request_sends,
+                                now,
+                            )
+                            .await
+                            {
+                                eprintln!("fips: join request send failed: {error}");
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                #[cfg(feature = "embedded-fips")]
+                if fips_tunnel_runtime.is_some() {
+                    let now = unix_timestamp();
+                    if let Some(runtime) = fips_tunnel_runtime.as_ref() {
                         if let Err(error) = runtime.ping_peers(&network_id, now).await {
                             eprintln!("fips: peer ping failed: {error}");
                         }
                         if let Err(error) = runtime.refresh_link_statuses().await {
                             eprintln!("fips: peer link snapshot failed: {error}");
                         }
+                    }
+                    match restart_fips_tunnel_runtime_after_stale_participants(
+                        &mut fips_tunnel_runtime,
+                        FipsRestartContext {
+                            app: &app,
+                            network_id: &network_id,
+                            fallback_iface: &iface,
+                            own_pubkey: own_pubkey.as_deref(),
+                            recent_peers: Some(&recent_peers),
+                            last_endpoint_peer_signature: &mut last_fips_endpoint_peer_signature,
+                        },
+                        &mut last_fips_stale_participant_restart_at,
+                        now,
+                    )
+                    .await
+                    {
+                        Ok(true) => fips_roster_sync_state = FipsRosterSyncState::default(),
+                        Ok(false) => {}
+                        Err(error) => eprintln!("fips: stale participant recovery failed: {error}"),
+                    }
+                    if let Some(runtime) = fips_tunnel_runtime.as_ref() {
                         if let Err(error) = sync_fips_roster_with_connected_peers(
                             runtime,
                             &app,
@@ -334,45 +422,6 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         {
                             eprintln!("fips: join request send failed: {error}");
                         }
-                    }
-                    continue;
-                }
-
-                #[cfg(feature = "embedded-fips")]
-                if let Some(runtime) = fips_tunnel_runtime.as_ref() {
-                    let now = unix_timestamp();
-                    if let Err(error) = runtime.ping_peers(&network_id, now).await {
-                        eprintln!("fips: peer ping failed: {error}");
-                    }
-                    if let Err(error) = runtime.refresh_link_statuses().await {
-                        eprintln!("fips: peer link snapshot failed: {error}");
-                    }
-                    if let Err(error) = sync_fips_roster_with_connected_peers(
-                        runtime,
-                        &app,
-                        &config_path,
-                        &mut fips_roster_sync_state,
-                    )
-                    .await
-                    {
-                        eprintln!("fips: roster peer sync failed: {error}");
-                    }
-                    flush_pending_fips_roster_recipients(
-                        runtime,
-                        &app,
-                        &config_path,
-                        &mut pending_fips_roster_recipients,
-                    )
-                    .await;
-                    if let Err(error) = send_pending_fips_join_requests(
-                        runtime,
-                        &app,
-                        &mut fips_join_request_sends,
-                        now,
-                    )
-                    .await
-                    {
-                        eprintln!("fips: join request send failed: {error}");
                     }
                 }
             }

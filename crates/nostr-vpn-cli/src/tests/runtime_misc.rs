@@ -339,6 +339,30 @@ fn fips_link_events_restart_endpoint_for_endpoint_only_changes() {
     );
 }
 
+#[cfg(feature = "embedded-fips")]
+#[test]
+fn fips_stale_participant_recovery_is_cooldown_gated() {
+    let mut last_restart_at = None;
+
+    assert!(fips_stale_participant_restart_due(
+        &mut last_restart_at,
+        1_000
+    ));
+    assert_eq!(last_restart_at, Some(1_000));
+    assert!(!fips_stale_participant_restart_due(
+        &mut last_restart_at,
+        1_000 + FIPS_STALE_PARTICIPANT_RESTART_COOLDOWN_SECS - 1
+    ));
+    assert!(fips_stale_participant_restart_due(
+        &mut last_restart_at,
+        1_000 + FIPS_STALE_PARTICIPANT_RESTART_COOLDOWN_SECS
+    ));
+    assert!(fips_stale_participant_restart_due(
+        &mut last_restart_at,
+        900
+    ));
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn runtime_exit_node_routes_do_not_advertise_ipv6_default() {
