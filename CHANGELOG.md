@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 4.0.77 - 2026-06-15
+
+### Changed
+
+- macOS FIPS private-mesh bulk traffic now uses a smaller queue and UDP send
+  buffer window to keep endpoint latency bounded while preserving the measured
+  coalescing behavior.
+
+### Fixed
+
+- FIPS participant liveness now prefers recent authenticated participant
+  traffic over connected endpoint-link snapshots, so stale peers are reported
+  accurately instead of appearing healthy through a lingering transport link.
+- The daemon now restarts the embedded FIPS private mesh, with cooldown, when
+  participant traffic stops while endpoint links remain connected, helping
+  recover stale participant paths automatically.
+
 ## 4.0.76 - 2026-06-15
 
 ### Changed
