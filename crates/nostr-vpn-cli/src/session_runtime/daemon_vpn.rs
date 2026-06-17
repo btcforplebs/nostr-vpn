@@ -74,6 +74,8 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
     let mut fips_roster_sync_state = FipsRosterSyncState::default();
     #[cfg(feature = "embedded-fips")]
     let mut last_fips_stale_participant_restart_at: Option<u64> = None;
+    #[cfg(feature = "embedded-fips")]
+    let mut fips_pending_roster_restart_state = FipsPendingRosterRestartState::default();
     let iface = args.iface.clone();
     let mut tunnel_runtime = CliTunnelRuntime::new(iface.clone());
     let mut network_snapshot = capture_network_snapshot();
@@ -331,6 +333,29 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                                 eprintln!("fips: stale participant recovery failed: {error}")
                             }
                         }
+                        match restart_fips_tunnel_runtime_after_pending_roster_links(
+                            &mut fips_tunnel_runtime,
+                            FipsRestartContext {
+                                app: &app,
+                                network_id: &network_id,
+                                fallback_iface: &iface,
+                                own_pubkey: own_pubkey.as_deref(),
+                                recent_peers: Some(&recent_peers),
+                                last_endpoint_peer_signature:
+                                    &mut last_fips_endpoint_peer_signature,
+                            },
+                            expected_peers,
+                            &mut fips_pending_roster_restart_state,
+                            now,
+                        )
+                        .await
+                        {
+                            Ok(true) => fips_roster_sync_state = FipsRosterSyncState::default(),
+                            Ok(false) => {}
+                            Err(error) => {
+                                eprintln!("fips: pending roster recovery failed: {error}")
+                            }
+                        }
                         if let Some(runtime) = fips_tunnel_runtime.as_ref() {
                             if let Err(error) = sync_fips_roster_with_connected_peers(
                                 runtime,
@@ -393,6 +418,26 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         Ok(true) => fips_roster_sync_state = FipsRosterSyncState::default(),
                         Ok(false) => {}
                         Err(error) => eprintln!("fips: stale participant recovery failed: {error}"),
+                    }
+                    match restart_fips_tunnel_runtime_after_pending_roster_links(
+                        &mut fips_tunnel_runtime,
+                        FipsRestartContext {
+                            app: &app,
+                            network_id: &network_id,
+                            fallback_iface: &iface,
+                            own_pubkey: own_pubkey.as_deref(),
+                            recent_peers: Some(&recent_peers),
+                            last_endpoint_peer_signature: &mut last_fips_endpoint_peer_signature,
+                        },
+                        expected_peers,
+                        &mut fips_pending_roster_restart_state,
+                        now,
+                    )
+                    .await
+                    {
+                        Ok(true) => fips_roster_sync_state = FipsRosterSyncState::default(),
+                        Ok(false) => {}
+                        Err(error) => eprintln!("fips: pending roster recovery failed: {error}"),
                     }
                     if let Some(runtime) = fips_tunnel_runtime.as_ref() {
                         if let Err(error) = sync_fips_roster_with_connected_peers(

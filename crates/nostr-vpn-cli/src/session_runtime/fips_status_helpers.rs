@@ -27,6 +27,8 @@ async fn current_fips_relay_statuses<T>(_runtime: &Option<T>) -> Vec<DaemonRelay
 
 #[cfg(feature = "embedded-fips")]
 pub(crate) const FIPS_STALE_PARTICIPANT_RESTART_COOLDOWN_SECS: u64 = 60;
+#[cfg(feature = "embedded-fips")]
+pub(crate) const FIPS_PENDING_ROSTER_RESTART_GRACE_SECS: u64 = 45;
 
 #[cfg(feature = "embedded-fips")]
 macro_rules! current_fips_advertised_routes {
@@ -140,6 +142,13 @@ pub(crate) enum FipsLinkEventRefresh {
 }
 
 #[cfg(feature = "embedded-fips")]
+#[derive(Debug, Default)]
+pub(crate) struct FipsPendingRosterRestartState {
+    pending_since: Option<u64>,
+    last_restart_at: Option<u64>,
+}
+
+#[cfg(feature = "embedded-fips")]
 pub(crate) fn fips_link_event_refresh(
     network_changed: bool,
     endpoint_changed: bool,
@@ -167,6 +176,63 @@ pub(crate) fn fips_stale_participant_restart_due(
         *last_restart_at = Some(now);
     }
     due
+}
+
+#[cfg(feature = "embedded-fips")]
+fn fips_pending_roster_links_detected(
+    peer_statuses: &[MeshPeerStatus],
+    relay_statuses: &[DaemonRelayState],
+    expected_peers: usize,
+) -> bool {
+    if expected_peers == 0
+        || !relay_statuses
+            .iter()
+            .any(|relay| relay.status.eq_ignore_ascii_case("connected"))
+    {
+        return false;
+    }
+    let connected = peer_statuses.iter().filter(|status| status.connected).count();
+    if connected > 0 {
+        return false;
+    }
+    let pending = peer_statuses
+        .iter()
+        .filter(|status| {
+            !status.connected
+                && status.last_seen_at.is_none()
+                && status.error.as_deref() == Some("fips link pending")
+        })
+        .count();
+    pending >= expected_peers
+}
+
+#[cfg(feature = "embedded-fips")]
+pub(crate) fn fips_pending_roster_restart_due(
+    peer_statuses: &[MeshPeerStatus],
+    relay_statuses: &[DaemonRelayState],
+    expected_peers: usize,
+    state: &mut FipsPendingRosterRestartState,
+    now: u64,
+) -> bool {
+    if !fips_pending_roster_links_detected(peer_statuses, relay_statuses, expected_peers) {
+        state.pending_since = None;
+        return false;
+    }
+    let pending_since = match state.pending_since {
+        Some(pending_since) if now >= pending_since => pending_since,
+        _ => {
+            state.pending_since = Some(now);
+            return false;
+        }
+    };
+    if now.saturating_sub(pending_since) < FIPS_PENDING_ROSTER_RESTART_GRACE_SECS {
+        return false;
+    }
+    if !fips_stale_participant_restart_due(&mut state.last_restart_at, now) {
+        return false;
+    }
+    state.pending_since = None;
+    true
 }
 
 #[cfg(feature = "embedded-fips")]
@@ -326,6 +392,52 @@ async fn restart_fips_tunnel_runtime_after_stale_participants(
         runtime,
         context,
         "stale FIPS participant traffic",
+    )
+    .await?;
+    Ok(true)
+}
+
+#[cfg(feature = "embedded-fips")]
+async fn restart_fips_tunnel_runtime_after_pending_roster_links(
+    runtime: &mut Option<crate::fips_private_mesh::FipsPrivateTunnelRuntime>,
+    context: FipsRestartContext<'_>,
+    expected_peers: usize,
+    state: &mut FipsPendingRosterRestartState,
+    now: u64,
+) -> Result<bool> {
+    let Some(current) = runtime.as_ref() else {
+        return Ok(false);
+    };
+    let peer_statuses = current.peer_statuses();
+    let relay_statuses = match current.relay_statuses().await {
+        Ok(relays) => relays
+            .into_iter()
+            .map(|relay| DaemonRelayState {
+                url: relay.url,
+                status: relay.status,
+            })
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            eprintln!("fips: relay status snapshot failed during pending roster recovery: {error}");
+            Vec::new()
+        }
+    };
+    if !fips_pending_roster_restart_due(
+        &peer_statuses,
+        &relay_statuses,
+        expected_peers,
+        state,
+        now,
+    ) {
+        return Ok(false);
+    }
+    eprintln!(
+        "daemon: restarting FIPS private mesh after all {expected_peers} roster link(s) stayed pending with relay discovery connected"
+    );
+    restart_fips_tunnel_runtime_after_link_event(
+        runtime,
+        context,
+        "all FIPS roster links pending",
     )
     .await?;
     Ok(true)
