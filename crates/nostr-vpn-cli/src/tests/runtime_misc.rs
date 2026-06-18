@@ -339,6 +339,146 @@ fn fips_link_events_restart_endpoint_for_endpoint_only_changes() {
     );
 }
 
+#[cfg(feature = "embedded-fips")]
+#[test]
+fn fips_stale_participant_recovery_is_cooldown_gated() {
+    let mut last_restart_at = None;
+
+    assert!(fips_stale_participant_restart_due(
+        &mut last_restart_at,
+        1_000
+    ));
+    assert_eq!(last_restart_at, Some(1_000));
+    assert!(!fips_stale_participant_restart_due(
+        &mut last_restart_at,
+        1_000 + FIPS_STALE_PARTICIPANT_RESTART_COOLDOWN_SECS - 1
+    ));
+    assert!(fips_stale_participant_restart_due(
+        &mut last_restart_at,
+        1_000 + FIPS_STALE_PARTICIPANT_RESTART_COOLDOWN_SECS
+    ));
+    assert!(fips_stale_participant_restart_due(
+        &mut last_restart_at,
+        900
+    ));
+}
+
+#[cfg(feature = "embedded-fips")]
+fn pending_fips_peer(pubkey: &str) -> MeshPeerStatus {
+    MeshPeerStatus {
+        pubkey: pubkey.to_string(),
+        connected: false,
+        endpoint_npub: format!("npub1{pubkey}"),
+        transport_addr: None,
+        transport_type: None,
+        srtt_ms: None,
+        srtt_age_ms: None,
+        link_packets_sent: 0,
+        link_packets_recv: 0,
+        link_bytes_sent: 0,
+        link_bytes_recv: 0,
+        rekey_in_progress: false,
+        rekey_draining: false,
+        current_k_bit: None,
+        direct_probe_pending: true,
+        direct_probe_after_ms: Some(1_234),
+        direct_probe_retry_count: 4,
+        direct_probe_auto_reconnect: true,
+        direct_probe_expires_at_ms: Some(5_678),
+        nostr_traversal_consecutive_failures: 1,
+        nostr_traversal_in_cooldown: false,
+        nostr_traversal_cooldown_until_ms: None,
+        nostr_traversal_last_observed_skew_ms: None,
+        last_seen_at: None,
+        last_control_seen_at: None,
+        last_data_seen_at: None,
+        tx_bytes: 1024,
+        rx_bytes: 0,
+        error: Some("fips link pending".to_string()),
+    }
+}
+
+#[cfg(feature = "embedded-fips")]
+fn connected_relay() -> DaemonRelayState {
+    DaemonRelayState {
+        url: "wss://relay.example".to_string(),
+        status: "connected".to_string(),
+    }
+}
+
+#[cfg(feature = "embedded-fips")]
+#[test]
+fn fips_pending_roster_recovery_waits_for_grace_and_cooldown() {
+    let peers = vec![pending_fips_peer("a"), pending_fips_peer("b")];
+    let relays = vec![connected_relay()];
+    let mut state = FipsPendingRosterRestartState::default();
+    let start = 10_000;
+
+    assert!(!fips_pending_roster_restart_due(
+        &peers, &relays, 2, &mut state, start
+    ));
+    assert!(!fips_pending_roster_restart_due(
+        &peers,
+        &relays,
+        2,
+        &mut state,
+        start + FIPS_PENDING_ROSTER_RESTART_GRACE_SECS - 1
+    ));
+    assert!(fips_pending_roster_restart_due(
+        &peers,
+        &relays,
+        2,
+        &mut state,
+        start + FIPS_PENDING_ROSTER_RESTART_GRACE_SECS
+    ));
+    assert!(!fips_pending_roster_restart_due(
+        &peers,
+        &relays,
+        2,
+        &mut state,
+        start + FIPS_PENDING_ROSTER_RESTART_GRACE_SECS + 1
+    ));
+}
+
+#[cfg(feature = "embedded-fips")]
+#[test]
+fn fips_pending_roster_recovery_requires_connected_relay_and_all_pending() {
+    let mut state = FipsPendingRosterRestartState::default();
+    let disconnected_relay = DaemonRelayState {
+        url: "wss://relay.example".to_string(),
+        status: "disconnected".to_string(),
+    };
+    let peers = vec![pending_fips_peer("a"), pending_fips_peer("b")];
+
+    assert!(!fips_pending_roster_restart_due(
+        &peers,
+        &[disconnected_relay],
+        2,
+        &mut state,
+        10_000 + FIPS_PENDING_ROSTER_RESTART_GRACE_SECS
+    ));
+
+    let mut partly_connected = peers.clone();
+    partly_connected[0].connected = true;
+    partly_connected[0].error = None;
+    assert!(!fips_pending_roster_restart_due(
+        &partly_connected,
+        &[connected_relay()],
+        2,
+        &mut state,
+        20_000
+    ));
+
+    let one_peer_missing_from_snapshot = vec![pending_fips_peer("a")];
+    assert!(!fips_pending_roster_restart_due(
+        &one_peer_missing_from_snapshot,
+        &[connected_relay()],
+        2,
+        &mut state,
+        30_000 + FIPS_PENDING_ROSTER_RESTART_GRACE_SECS
+    ));
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn runtime_exit_node_routes_do_not_advertise_ipv6_default() {

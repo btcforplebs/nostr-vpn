@@ -82,6 +82,43 @@ impl FipsPrivateMeshRuntime {
         statuses
     }
 
+    pub(crate) fn stale_participants_with_connected_links(&self, now: u64) -> Vec<String> {
+        let Some(presence) = self.presence.read().ok() else {
+            return Vec::new();
+        };
+        let peer_activity = self.peer_activity.load();
+        let Some(link_status) = self.link_status.read().ok() else {
+            return Vec::new();
+        };
+        let mut participants = self
+            .mesh
+            .load()
+            .peer_pubkeys()
+            .into_iter()
+            .filter(|participant| {
+                let link_connected = link_status
+                    .get(participant)
+                    .is_some_and(|peer_link| peer_link.connected);
+                if !link_connected {
+                    return false;
+                }
+                let participant_key = participant_pubkey_bytes(participant);
+                let last_seen_at = participant_key
+                    .as_ref()
+                    .and_then(|participant| peer_activity.get(participant))
+                    .and_then(|activity| activity.snapshot().last_seen_at)
+                    .or_else(|| {
+                        presence
+                            .get(participant)
+                            .and_then(|presence| presence.last_seen_at)
+                    });
+                fips_peer_presence_stale(last_seen_at, now)
+            })
+            .collect::<Vec<_>>();
+        participants.sort();
+        participants
+    }
+
     pub(crate) async fn refresh_link_statuses(&self) -> Result<()> {
         let endpoint_peers = self
             .endpoint

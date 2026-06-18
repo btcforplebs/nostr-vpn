@@ -10,11 +10,14 @@ fn fips_peer_liveness(
     peer_error: Option<String>,
     now: u64,
 ) -> (bool, Option<String>) {
-    let presence_connected = last_seen_at.is_some_and(|last_seen_at| {
-        fips_timestamp_within_grace(now, last_seen_at, FIPS_PEER_ONLINE_GRACE_SECS)
-    });
-    if presence_connected {
+    if fips_peer_presence_fresh(last_seen_at, now) {
         return (true, None);
+    }
+    if fips_peer_presence_stale(last_seen_at, now) {
+        return (
+            false,
+            peer_error.or_else(|| Some("fips participant stale".to_string())),
+        );
     }
     if link_connected {
         return (true, None);
@@ -25,10 +28,18 @@ fn fips_peer_liveness(
     )
 }
 
-fn fips_peer_ping_interval_secs(last_seen_at: Option<u64>, link_connected: bool, now: u64) -> u64 {
-    if last_seen_at.is_some_and(|last_seen_at| {
+fn fips_peer_presence_fresh(last_seen_at: Option<u64>, now: u64) -> bool {
+    last_seen_at.is_some_and(|last_seen_at| {
         fips_timestamp_within_grace(now, last_seen_at, FIPS_PEER_ONLINE_GRACE_SECS)
-    }) {
+    })
+}
+
+fn fips_peer_presence_stale(last_seen_at: Option<u64>, now: u64) -> bool {
+    last_seen_at.is_some_and(|last_seen_at| !fips_peer_presence_fresh(Some(last_seen_at), now))
+}
+
+fn fips_peer_ping_interval_secs(last_seen_at: Option<u64>, link_connected: bool, now: u64) -> u64 {
+    if fips_peer_presence_fresh(last_seen_at, now) {
         FIPS_PEER_ACTIVE_PING_INTERVAL_SECS
     } else if link_connected {
         FIPS_PEER_LINK_PING_INTERVAL_SECS
