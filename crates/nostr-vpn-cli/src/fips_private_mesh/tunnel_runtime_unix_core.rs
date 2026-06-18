@@ -151,30 +151,7 @@ impl FipsPrivateTunnelRuntime {
     }
 
     pub(crate) fn requires_endpoint_restart(&self, config: &FipsPrivateTunnelConfig) -> bool {
-        // `endpoint_peers` is deliberately NOT in this list. Its `addresses`
-        // field is fed from the recent-peers cache, which the same daemon
-        // refreshes every few seconds — gating restart on it caused a
-        // self-inflicted flap loop: cache observed a new public-IP hint
-        // for one peer → next config-sync tick saw `endpoint_peers !=
-        // self.config.endpoint_peers` → whole FIPS endpoint torn down and
-        // re-bound → every link briefly offline → cold-start retry
-        // backoff (5/10/20/40/80s) before any peer came back. Address
-        // hints get pushed via `FipsPrivateMeshRuntime::update_peers`
-        // (kicked from `update_recent_peers_from_runtime`) without
-        // tearing the endpoint down. Peer roster adds/removes still
-        // propagate via `apply_config` → `mesh.replace_peers`, which
-        // doesn't need a restart either.
-        self.config.identity_nsec != config.identity_nsec
-            || self.config.network_id != config.network_id
-            || self.config.listen_port != config.listen_port
-            || self.config.advertised_endpoint != config.advertised_endpoint
-            || self.config.advertise_public_endpoint != config.advertise_public_endpoint
-            || self.config.stun_servers != config.stun_servers
-            || self.config.nostr_relays != config.nostr_relays
-            || self.config.share_local_candidates != config.share_local_candidates
-            || self.config.nostr_discovery_policy != config.nostr_discovery_policy
-            || self.config.open_discovery_max_pending != config.open_discovery_max_pending
-            || self.config.mesh_mtu.underlay_udp != config.mesh_mtu.underlay_udp
+        fips_tunnel_requires_endpoint_restart(&self.config, config)
     }
 
     pub(crate) async fn apply_config(&mut self, config: FipsPrivateTunnelConfig) -> Result<()> {

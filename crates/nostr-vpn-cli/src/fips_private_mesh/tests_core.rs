@@ -18,7 +18,8 @@
         filter_stamped_tunnel_endpoints, filter_static_tunnel_endpoints,
         filter_static_tunnel_endpoints_with_policy, fips_endpoint_config,
         fips_endpoint_config_with_open_discovery_limit, fips_endpoint_peers_from_mesh,
-        fips_lan_discovery_scope, fips_peer_address_from_hint, linux_cap_eff_has_net_admin,
+        fips_lan_discovery_scope, fips_peer_address_from_hint,
+        fips_tunnel_requires_endpoint_restart, linux_cap_eff_has_net_admin,
         linux_private_ipv4_route_subnets_from_ip_route, linux_tun_setup_error,
         macos_private_ipv4_route_subnets_from_netstat, mesh_status_from_endpoint_peer,
         other_endpoint_peer_statuses, parse_fips_nostr_discovery_policy,
@@ -342,6 +343,29 @@
         )
         .expect("open tunnel config");
         assert_eq!(config.nostr_discovery_policy, NostrDiscoveryPolicy::Open);
+    }
+
+    #[test]
+    fn fips_restart_predicate_includes_nostr_discovery_enabled() {
+        let app = AppConfig::generated();
+        let network_id = app.effective_network_id();
+        let current = FipsPrivateTunnelConfig::from_app(
+            &app,
+            &network_id,
+            "utun100",
+            app.own_nostr_pubkey_hex().ok().as_deref(),
+            None,
+            &[],
+        )
+        .expect("fips tunnel config");
+        let mut next = current.clone();
+
+        next.nostr_discovery_enabled = !current.nostr_discovery_enabled;
+
+        assert!(
+            fips_tunnel_requires_endpoint_restart(&current, &next),
+            "toggling Nostr discovery must tear down old relay subscriptions"
+        );
     }
 
     #[test]

@@ -7,23 +7,72 @@ cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/release_common.sh"
 enable_deterministic_build_env "$ROOT_DIR"
 
+release_cargo_config_args=()
+release_cargo_lock_backup=""
+
+restore_release_cargo_lock() {
+  if [[ -n "$release_cargo_lock_backup" ]]; then
+    cp "$release_cargo_lock_backup" "$ROOT_DIR/Cargo.lock"
+    rm -f "$release_cargo_lock_backup"
+    release_cargo_lock_backup=""
+  fi
+}
+
+prepare_release_cargo_config() {
+  if [[ -z "${NVPN_FIPS_REPO_PATH:-}" ]]; then
+    return
+  fi
+
+  local fips_path="$NVPN_FIPS_REPO_PATH"
+  if [[ ! -d "$fips_path" ]]; then
+    echo "NVPN_FIPS_REPO_PATH does not exist: $fips_path" >&2
+    exit 2
+  fi
+  fips_path="$(cd "$fips_path" && pwd -P)"
+  for crate in fips-core fips-endpoint fips-identity; do
+    if [[ ! -f "$fips_path/crates/$crate/Cargo.toml" ]]; then
+      echo "NVPN_FIPS_REPO_PATH is missing crates/$crate/Cargo.toml: $fips_path" >&2
+      exit 2
+    fi
+  done
+
+  release_cargo_config_args+=(
+    --config "patch.crates-io.fips-core.path=\"$fips_path/crates/fips-core\""
+    --config "patch.crates-io.fips-endpoint.path=\"$fips_path/crates/fips-endpoint\""
+    --config "patch.crates-io.fips-identity.path=\"$fips_path/crates/fips-identity\""
+  )
+  echo "Using local FIPS crates from $fips_path"
+
+  release_cargo_lock_backup="$(mktemp "${TMPDIR:-/tmp}/nvpn-release-gate-Cargo.lock.XXXXXX")"
+  cp "$ROOT_DIR/Cargo.lock" "$release_cargo_lock_backup"
+  trap restore_release_cargo_lock EXIT
+  release_cargo update -p fips-core
+  release_cargo update -p fips-endpoint
+  release_cargo update -p fips-identity
+}
+
+release_cargo() {
+  cargo "${release_cargo_config_args[@]}" "$@"
+}
+
 node scripts/sync-versions.mjs
 ./scripts/check-rust-file-lines.sh
 ./scripts/security-audit-rust.sh
 cargo fmt --check
-cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace
+prepare_release_cargo_config
+release_cargo clippy --locked --workspace --all-targets -- -D warnings
+release_cargo test --locked --workspace
 # Mobile VPN basics run in the blocking gate without requiring a device/emulator:
 # join request over FIPS, MagicDNS from a TUN packet, and Android WG socket
 # startup ordering before VpnService.protect(fd).
-cargo test --locked -p nostr-vpn-app-core mobile_join_request_sends_and_records_over_real_fips_endpoint
-cargo test --locked -p nostr-vpn-app-core mobile_magic_dns_answers_peer_name_from_tun_packet
-cargo test --locked -p nostr-vpn-app-core mobile_wireguard_exit_dns_forwarders_prefer_configured_tunnel_dns
-cargo test --locked -p nostr-vpn-app-core mobile_wireguard_start_returns_before_handshake_watchdog
-cargo test --locked -p nostr-vpn-app-core mobile_fips_exit_node_routes_default_traffic_to_selected_member
+release_cargo test --locked -p nostr-vpn-app-core mobile_join_request_sends_and_records_over_real_fips_endpoint
+release_cargo test --locked -p nostr-vpn-app-core mobile_magic_dns_answers_peer_name_from_tun_packet
+release_cargo test --locked -p nostr-vpn-app-core mobile_wireguard_exit_dns_forwarders_prefer_configured_tunnel_dns
+release_cargo test --locked -p nostr-vpn-app-core mobile_wireguard_start_returns_before_handshake_watchdog
+release_cargo test --locked -p nostr-vpn-app-core mobile_fips_exit_node_routes_default_traffic_to_selected_member
 # Shared userspace WG dataplane, including the mpsc channel path used by
 # Android VpnService and iOS NEPacketTunnelProvider.
-cargo test --locked -p nostr-vpn-core channels_round_trip_plaintext_packets_against_paired_responder
+release_cargo test --locked -p nostr-vpn-core channels_round_trip_plaintext_packets_against_paired_responder
 ./scripts/e2e-update-cli.sh
 
 run_auto_windows_vm_app_smoke() {

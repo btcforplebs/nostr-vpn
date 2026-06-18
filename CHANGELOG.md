@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- FIPS Nostr discovery GUI toggles now restart the embedded endpoint so live
+  relay subscriptions are closed immediately instead of waiting for a daemon
+  process restart.
+- Configured-only FIPS discovery no longer seeds built-in bootstrap or recent
+  non-roster transit peers, keeping low-power nodes out of public transit retry
+  churn while preserving roster/static hints.
+- The release gate now honors `NVPN_FIPS_REPO_PATH` for its blocking Cargo
+  clippy/test steps, so local FIPS API changes are tested with the same patch
+  set used for daemon builds.
+
 ## 4.0.77 - 2026-06-15
 
 ### Changed

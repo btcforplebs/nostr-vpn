@@ -145,22 +145,9 @@ impl FipsPrivateTunnelRuntime {
     }
 
     pub(crate) fn requires_endpoint_restart(&self, config: &FipsPrivateTunnelConfig) -> bool {
-        // See `requires_endpoint_restart` on the unix tunnel runtime for
-        // why `endpoint_peers` is not in this list — address hints flow
-        // through `update_peers` (no-restart), peer-set changes flow
-        // through `apply_config` → `mesh.replace_peers`.
-        self.config.identity_nsec != config.identity_nsec
-            || self.config.network_id != config.network_id
-            || self.config.iface != config.iface
+        self.config.iface != config.iface
             || self.config.local_address != config.local_address
-            || self.config.listen_port != config.listen_port
-            || self.config.advertised_endpoint != config.advertised_endpoint
-            || self.config.advertise_public_endpoint != config.advertise_public_endpoint
-            || self.config.stun_servers != config.stun_servers
-            || self.config.nostr_relays != config.nostr_relays
-            || self.config.nostr_discovery_policy != config.nostr_discovery_policy
-            || self.config.open_discovery_max_pending != config.open_discovery_max_pending
-            || self.config.mesh_mtu.underlay_udp != config.mesh_mtu.underlay_udp
+            || fips_tunnel_requires_endpoint_restart(&self.config, config)
     }
 
     pub(crate) async fn apply_config(&mut self, config: FipsPrivateTunnelConfig) -> Result<()> {
