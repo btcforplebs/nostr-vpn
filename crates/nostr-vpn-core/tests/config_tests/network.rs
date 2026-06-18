@@ -500,7 +500,7 @@ fn active_network_helpers_ignore_inactive_networks() {
             enabled: true,
             network_id: "mesh-home".to_string(),
             invite_secret: "home-secret".to_string(),
-            participants: vec![peer_a.clone()],
+            devices: vec![peer_a.clone()],
             admins: Vec::new(),
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -515,7 +515,7 @@ fn active_network_helpers_ignore_inactive_networks() {
             enabled: false,
             network_id: "mesh-work".to_string(),
             invite_secret: "work-secret".to_string(),
-            participants: vec![peer_b.clone()],
+            devices: vec![peer_b.clone()],
             admins: Vec::new(),
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -771,7 +771,7 @@ fn switching_active_network_swaps_participant_roster() {
         config
             .network_by_id(&home_id)
             .expect("home still present")
-            .participants
+            .devices
             .contains(&home_peer_hex),
         "home roster persists across switch"
     );

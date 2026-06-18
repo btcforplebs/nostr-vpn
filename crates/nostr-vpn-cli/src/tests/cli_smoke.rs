@@ -1,4 +1,4 @@
-use clap::CommandFactory;
+use clap::{CommandFactory, error::ErrorKind};
 
 use crate::Cli;
 
@@ -6,6 +6,20 @@ use crate::Cli;
 fn clap_binary_name_is_nvpn() {
     let command = Cli::command();
     assert_eq!(command.get_name(), "nvpn");
+}
+
+#[test]
+fn clap_supports_root_version_flag() {
+    let error = Cli::command()
+        .try_get_matches_from(["nvpn", "--version"])
+        .expect_err("--version should display version and exit");
+    assert_eq!(error.kind(), ErrorKind::DisplayVersion);
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("nvpn {}", env!("CARGO_PKG_VERSION"))),
+        "version output should include binary name and package version"
+    );
 }
 
 #[test]
@@ -37,6 +51,16 @@ fn clap_includes_tailscale_style_commands() {
             "missing subcommand {name}"
         );
     }
+}
+
+#[test]
+fn clap_roster_device_commands_keep_participant_aliases() {
+    Cli::command()
+        .try_get_matches_from(["nvpn", "add-device", "--device", "npub1example"])
+        .expect("new device command parses");
+    Cli::command()
+        .try_get_matches_from(["nvpn", "add-participant", "--participant", "npub1example"])
+        .expect("legacy participant command parses");
 }
 
 #[test]

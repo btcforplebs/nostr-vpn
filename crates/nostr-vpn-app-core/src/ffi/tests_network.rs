@@ -15,7 +15,7 @@
         runtime.config.exit_node_leak_protection = true;
         create_test_network(&mut runtime, "Home");
         runtime.config.networks[0].admins = vec![own_pubkey];
-        runtime.config.networks[0].participants = vec![exit_pubkey.to_string()];
+        runtime.config.networks[0].devices = vec![exit_pubkey.to_string()];
         runtime
             .config
             .set_peer_alias(exit_pubkey, "lab-exit")
@@ -97,7 +97,7 @@
         runtime.vpn_active = true;
         create_test_network(&mut runtime, "Home");
         runtime.config.networks[0].admins = vec![own_pubkey];
-        runtime.config.networks[0].participants = vec![peer_pubkey.to_string()];
+        runtime.config.networks[0].devices = vec![peer_pubkey.to_string()];
         let now = unix_timestamp();
         runtime.daemon_state = Some(DaemonRuntimeState {
             vpn_enabled: true,
@@ -165,7 +165,7 @@
         runtime.vpn_active = true;
         create_test_network(&mut runtime, "Home");
         runtime.config.networks[0].admins = vec![own_pubkey];
-        runtime.config.networks[0].participants = vec![peer_pubkey.to_string()];
+        runtime.config.networks[0].devices = vec![peer_pubkey.to_string()];
         let future_seen_at = unix_timestamp() + 60;
         runtime.daemon_state = Some(DaemonRuntimeState {
             vpn_enabled: true,
@@ -220,7 +220,7 @@
         runtime.vpn_active = true;
         create_test_network(&mut runtime, "Home");
         runtime.config.networks[0].admins = vec![own_pubkey];
-        runtime.config.networks[0].participants = vec![peer_pubkey.to_string()];
+        runtime.config.networks[0].devices = vec![peer_pubkey.to_string()];
         runtime.daemon_state = Some(DaemonRuntimeState {
             vpn_enabled: true,
             vpn_active: true,
@@ -284,7 +284,7 @@
             .as_ref()
             .expect("join request should be queued");
         assert_eq!(pending.recipient, admin_hex);
-        assert!(network.participants.is_empty());
+        assert!(network.devices.is_empty());
         assert_eq!(
             runtime.config.fips_peer_endpoints.get(&admin_npub),
             Some(&vec!["192.168.50.20:51820".to_string()])
@@ -394,7 +394,7 @@
 
         let admin_hex = Keys::generate().public_key().to_hex();
         runtime.config.networks[0].network_id = "mesh-home".to_string();
-        runtime.config.networks[0].participants = Vec::new();
+        runtime.config.networks[0].devices = Vec::new();
         runtime.config.networks[0].admins = vec![admin_hex.clone()];
         runtime.config.networks[0].invite_inviter = admin_hex.clone();
         runtime.config.networks[0].outbound_join_request = Some(PendingOutboundJoinRequest {
@@ -457,7 +457,7 @@
         let network = runtime.config.active_network();
         assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
         assert_eq!(network.network_id, "8d4f34f5425bc50e");
-        assert_eq!(network.participants, vec![admin_hex.clone()]);
+        assert_eq!(network.devices, vec![admin_hex.clone()]);
         assert_eq!(network.admins, vec![admin_hex]);
         assert!(network.outbound_join_request.is_none());
 
@@ -714,8 +714,7 @@ exit 0
 
         assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
         assert!(
-            runtime.config.networks[0]
-                .participants
+            runtime.config.networks[0].devices
                 .contains(&requester_hex)
         );
         assert!(runtime.config.networks[0].inbound_join_requests.is_empty());
@@ -770,8 +769,7 @@ exit 0
 
         assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
         assert!(
-            !runtime.config.networks[0]
-                .participants
+            !runtime.config.networks[0].devices
                 .contains(&requester_hex)
         );
         assert!(runtime.config.networks[0].inbound_join_requests.is_empty());

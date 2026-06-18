@@ -10,7 +10,7 @@
         let peer_pubkey = "26525c442dd039de4e728b41ee8d7f717b267ab25b7c219d53a3249e1c9174cc";
         create_test_network(&mut runtime, "Home");
         runtime.config.networks[0].admins = vec![own_pubkey.clone()];
-        runtime.config.networks[0].participants = vec![peer_pubkey.to_string()];
+        runtime.config.networks[0].devices = vec![peer_pubkey.to_string()];
         runtime.daemon_running = true;
         runtime.vpn_enabled = false;
         runtime.vpn_active = false;
@@ -467,7 +467,7 @@ exit 0
         // ensure_defaults pass at save time doesn't clear our chosen
         // exit_node as "not a participant".
         if let Some(network) = runtime.config.networks.first_mut() {
-            network.participants.push(peer_npub.clone());
+            network.devices.push(peer_npub.clone());
         }
 
         // Start with WG upstream enabled.

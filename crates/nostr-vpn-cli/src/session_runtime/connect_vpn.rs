@@ -11,7 +11,7 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
         eprintln!("connect: failed to repair saved macOS network state: {error}");
     }
     let (mut app, mut network_id) =
-        load_config_with_overrides(&config_path, args.network_id, args.participants)?;
+        load_config_with_overrides(&config_path, args.network_id, args.devices)?;
     #[cfg(target_os = "macos")]
     {
         let captive_portal = detect_captive_portal(network_probe_timeout(&app)).await;

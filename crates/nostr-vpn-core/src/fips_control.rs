@@ -12,7 +12,8 @@ use crate::join_requests::MeshJoinRequest;
 pub struct NetworkRoster {
     #[serde(default)]
     pub network_name: String,
-    pub participants: Vec<String>,
+    #[serde(default, alias = "participants")]
+    pub devices: Vec<String>,
     #[serde(default)]
     pub admins: Vec<String>,
     #[serde(default)]
@@ -105,11 +106,11 @@ fn signed_roster_tags(network_id: &str, roster: &NetworkRoster) -> Result<Vec<Ta
         tags.push(roster_tag(&["name", roster.network_name.trim()])?);
     }
 
-    let mut participants = normalize_roster_pubkeys(&roster.participants, "participant")?;
-    participants.sort();
-    participants.dedup();
-    for participant in participants {
-        tags.push(roster_tag(&["member", &participant])?);
+    let mut devices = normalize_roster_pubkeys(&roster.devices, "device")?;
+    devices.sort();
+    devices.dedup();
+    for device in devices {
+        tags.push(roster_tag(&["member", &device])?);
     }
 
     let mut admins = normalize_roster_pubkeys(&roster.admins, "admin")?;
@@ -145,7 +146,7 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
     let mut version_ok = false;
     let mut network_id = None;
     let mut network_name = String::new();
-    let mut participants = Vec::new();
+    let mut devices = Vec::new();
     let mut admins = Vec::new();
     let mut aliases = HashMap::new();
 
@@ -169,7 +170,7 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
             }
             "member" => {
                 if let Some(value) = parts.get(1) {
-                    participants.push(normalize_roster_pubkey(value, "participant")?);
+                    devices.push(normalize_roster_pubkey(value, "device")?);
                 }
             }
             "admin" => {
@@ -197,8 +198,8 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
         return Err(anyhow!("signed roster event has unsupported version"));
     }
 
-    participants.sort();
-    participants.dedup();
+    devices.sort();
+    devices.dedup();
     admins.sort();
     admins.dedup();
 
@@ -209,7 +210,7 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
         network_id,
         NetworkRoster {
             network_name,
-            participants,
+            devices,
             admins,
             aliases,
             signed_at,
@@ -589,7 +590,7 @@ pub fn signed_roster_control_frame(signed_roster: SignedRoster) -> FipsControlFr
     let network_id = signed_roster.network_id().unwrap_or_default();
     let roster = signed_roster.roster().unwrap_or_else(|_| NetworkRoster {
         network_name: String::new(),
-        participants: Vec::new(),
+        devices: Vec::new(),
         admins: Vec::new(),
         aliases: HashMap::new(),
         signed_at: signed_roster.signed_at(),
@@ -613,14 +614,14 @@ pub fn peer_capabilities_control_frame(
 
 pub fn network_roster_from_shared(
     network_name: String,
-    participants: Vec<String>,
+    devices: Vec<String>,
     admins: Vec<String>,
     aliases: HashMap<String, String>,
     signed_at: u64,
 ) -> NetworkRoster {
     NetworkRoster {
         network_name,
-        participants,
+        devices,
         admins,
         aliases,
         signed_at,
@@ -697,7 +698,7 @@ mod tests {
         aliases.insert(alice.clone(), "alice".to_string());
         let roster = NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![bob.clone(), alice.clone()],
+            devices: vec![bob.clone(), alice.clone()],
             admins: vec![admin.public_key().to_hex()],
             aliases,
             signed_at: 123,
@@ -724,7 +725,7 @@ mod tests {
         aliases.insert(member.clone(), "phone".to_string());
         let roster = NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![member.clone()],
+            devices: vec![member.clone()],
             admins: vec![admin.public_key().to_hex()],
             aliases,
             signed_at: 123,
@@ -753,7 +754,7 @@ mod tests {
         let member = Keys::generate().public_key().to_hex();
         let roster = NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![member],
+            devices: vec![member],
             admins: vec![admin.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at: 123,
@@ -837,7 +838,7 @@ mod tests {
     fn large_control_frame_fragments_under_direct_limit() {
         let roster = NetworkRoster {
             network_name: "Network 1".to_string(),
-            participants: (0..12).map(|value| format!("{value:064x}")).collect(),
+            devices: (0..12).map(|value| format!("{value:064x}")).collect(),
             admins: vec!["f".repeat(64)],
             aliases: (0..12)
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))
@@ -866,7 +867,7 @@ mod tests {
     fn fragment_buffer_decodes_fragmented_frame() {
         let roster = NetworkRoster {
             network_name: "Network 1".to_string(),
-            participants: (0..12).map(|value| format!("{value:064x}")).collect(),
+            devices: (0..12).map(|value| format!("{value:064x}")).collect(),
             admins: vec!["f".repeat(64)],
             aliases: (0..12)
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))
@@ -896,7 +897,7 @@ mod tests {
     fn fragment_buffer_keys_sources_by_bytes() {
         let roster = NetworkRoster {
             network_name: "Network 1".to_string(),
-            participants: (0..12).map(|value| format!("{value:064x}")).collect(),
+            devices: (0..12).map(|value| format!("{value:064x}")).collect(),
             admins: vec!["f".repeat(64)],
             aliases: (0..12)
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))

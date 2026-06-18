@@ -15,7 +15,7 @@
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
         app.networks[0].admins = vec![admin_pubkey.clone()];
 
         let config = FipsPrivateTunnelConfig::from_app(
@@ -70,7 +70,7 @@
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = Vec::new();
+        app.networks[0].devices = Vec::new();
         app.networks[0].admins = vec![admin_pubkey.clone()];
         app.networks[0].outbound_join_request = Some(PendingOutboundJoinRequest {
             recipient: admin_pubkey.clone(),
@@ -119,7 +119,7 @@
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
 
         let mut recent = nostr_vpn_core::recent_peers::RecentPeerEndpoints::default();
         assert!(recent.note_success(&charlie_pubkey, "203.0.113.55:51820", 123));
@@ -173,7 +173,7 @@
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
         app.fips_bootstrap_enabled = false;
 
         let mut recent = nostr_vpn_core::recent_peers::RecentPeerEndpoints::default();
@@ -517,7 +517,7 @@ default            192.168.178.1      UGScg                 en0
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
         app.fips_peer_endpoints.insert(
             bob_npub.clone(),
             vec![

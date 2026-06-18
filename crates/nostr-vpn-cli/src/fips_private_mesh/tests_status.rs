@@ -178,7 +178,7 @@
     fn fragmented_control_frames_reassemble_to_original_frame() {
         let roster = NetworkRoster {
             network_name: "Network 1".to_string(),
-            participants: (0..12).map(|value| format!("{value:064x}")).collect(),
+            devices: (0..12).map(|value| format!("{value:064x}")).collect(),
             admins: vec!["f".repeat(64)],
             aliases: (0..12)
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))
@@ -458,7 +458,7 @@
             network_id: "network".to_string(),
             roster: NetworkRoster {
                 network_name: "network".to_string(),
-                participants: Vec::new(),
+                devices: Vec::new(),
                 admins: Vec::new(),
                 aliases: HashMap::new(),
                 signed_at: 42,

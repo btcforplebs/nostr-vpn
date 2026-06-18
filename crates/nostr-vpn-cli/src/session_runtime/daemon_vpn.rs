@@ -34,7 +34,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
         );
     }
     let network_override = args.network_id.clone();
-    let participants_override = args.participants.clone();
+    let participants_override = args.devices.clone();
     let (mut app, mut network_id) = load_config_with_overrides(
         &config_path,
         network_override.clone(),

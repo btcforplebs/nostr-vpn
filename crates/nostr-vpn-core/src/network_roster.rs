@@ -31,16 +31,16 @@ pub(crate) fn normalize_network_admins(
         .unwrap_or_default()
 }
 
-pub(crate) fn normalize_shared_roster_participants(
-    participants: Vec<String>,
+pub(crate) fn normalize_shared_roster_devices(
+    devices: Vec<String>,
     own_pubkey_hex: Option<&str>,
 ) -> Result<Vec<String>> {
-    let mut normalized = participants
+    let mut normalized = devices
         .into_iter()
-        .map(|participant| normalize_nostr_pubkey(&participant))
+        .map(|device| normalize_nostr_pubkey(&device))
         .collect::<Result<Vec<_>>>()?;
     if let Some(own_pubkey_hex) = own_pubkey_hex {
-        normalized.retain(|participant| participant != own_pubkey_hex);
+        normalized.retain(|device| device != own_pubkey_hex);
     }
     normalized.sort();
     normalized.dedup();
@@ -59,7 +59,7 @@ pub(crate) fn canonical_npub_key(value: &str) -> Option<String> {
 
 pub(crate) fn normalize_outbound_join_request(
     request: Option<PendingOutboundJoinRequest>,
-    _participants: &[String],
+    _devices: &[String],
 ) -> Option<PendingOutboundJoinRequest> {
     let request = request?;
     let recipient = normalize_nostr_pubkey(&request.recipient).ok()?;
@@ -82,7 +82,7 @@ pub(crate) fn canonicalize_outbound_join_request(
 
 pub(crate) fn normalize_inbound_join_requests(
     requests: Vec<PendingInboundJoinRequest>,
-    participants: &[String],
+    devices: &[String],
 ) -> Vec<PendingInboundJoinRequest> {
     let mut deduped = HashMap::new();
 
@@ -90,10 +90,7 @@ pub(crate) fn normalize_inbound_join_requests(
         let Ok(requester) = normalize_nostr_pubkey(&request.requester) else {
             continue;
         };
-        if participants
-            .iter()
-            .any(|participant| participant == &requester)
-        {
+        if devices.iter().any(|device| device == &requester) {
             continue;
         }
 

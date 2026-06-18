@@ -188,7 +188,7 @@ impl AppConfig {
             .iter()
             .filter(|network| {
                 network
-                    .participants
+                    .devices
                     .iter()
                     .any(|configured| configured == &participant_hex)
                     || network

@@ -8,11 +8,11 @@ use nostr_vpn_core::config::{
     needs_endpoint_autoconfig, needs_tunnel_ip_autoconfig, normalize_nostr_pubkey,
 };
 
-fn set_default_network_participants(config: &mut AppConfig, participants: Vec<String>) {
+fn set_default_network_participants(config: &mut AppConfig, devices: Vec<String>) {
     config.ensure_defaults();
     activate_first_network(config);
     if let Some(network) = config.networks.first_mut() {
-        network.participants = participants;
+        network.devices = devices;
     }
 }
 

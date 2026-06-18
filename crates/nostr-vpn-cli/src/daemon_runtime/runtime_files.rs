@@ -165,8 +165,8 @@ pub(crate) fn spawn_daemon_process(args: &ConnectArgs, config_path: &Path) -> Re
     if let Some(network_id) = &args.network_id {
         command.arg("--network-id").arg(network_id);
     }
-    for participant in &args.participants {
-        command.arg("--participant").arg(participant);
+    for device in &args.devices {
+        command.arg("--device").arg(device);
     }
 
     let mut child = command

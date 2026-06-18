@@ -160,10 +160,7 @@ fn target_network_for_invite(
 
 fn network_has_pubkey_configured(config: &AppConfig, network_id: &str, pubkey: &str) -> bool {
     config.network_by_id(network_id).is_some_and(|network| {
-        network
-            .participants
-            .iter()
-            .any(|participant| participant == pubkey)
+        network.devices.iter().any(|device| device == pubkey)
             || network.admins.iter().any(|admin| admin == pubkey)
     })
 }
@@ -175,19 +172,19 @@ fn merge_invite_membership(
     reset_membership: bool,
 ) {
     if reset_membership {
-        network.participants.clear();
+        network.devices.clear();
         network.admins.clear();
         network.shared_roster_updated_at = 0;
         network.shared_roster_signed_by.clear();
     }
 
-    for participant in &prepared.participants {
-        if own_pubkey != Some(participant.as_str()) {
-            network.participants.push(participant.clone());
+    for device in &prepared.participants {
+        if own_pubkey != Some(device.as_str()) {
+            network.devices.push(device.clone());
         }
     }
-    network.participants.sort();
-    network.participants.dedup();
+    network.devices.sort();
+    network.devices.dedup();
 
     for admin in &prepared.admins {
         network.admins.push(admin.clone());
@@ -238,7 +235,7 @@ pub(crate) fn preferred_join_request_recipient(network: &NetworkConfig) -> Optio
 
 fn network_should_adopt_invite(network: &NetworkConfig) -> bool {
     let trimmed = network.name.trim();
-    network.participants.is_empty() && (trimmed.is_empty() || trimmed.starts_with("Network "))
+    network.devices.is_empty() && (trimmed.is_empty() || trimmed.starts_with("Network "))
 }
 
 #[cfg(test)]
@@ -262,7 +259,7 @@ mod tests {
             enabled: true,
             network_id: "8d4f34f5425bc50e".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: Vec::new(),
+            devices: Vec::new(),
             admins: vec![admin_hex],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -310,7 +307,7 @@ mod tests {
             enabled: true,
             network_id: "8d4f34f5425bc50e".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: vec![local_keys.public_key().to_hex()],
+            devices: vec![local_keys.public_key().to_hex()],
             admins: vec![other_admin.public_key().to_hex()],
             listen_for_join_requests: true,
             invite_inviter: String::new(),

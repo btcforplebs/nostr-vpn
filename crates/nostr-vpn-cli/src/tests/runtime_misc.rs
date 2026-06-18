@@ -195,7 +195,7 @@ fn endpoint_hint_recipients_are_active_participants_only() {
         .expect("activate first network");
     app.nostr.secret_key = own.secret_key().to_bech32().expect("own nsec");
     app.nostr.public_key = own_pubkey.clone();
-    app.networks[0].participants = vec![own_pubkey.clone(), peer_pubkey.clone()];
+    app.networks[0].devices = vec![own_pubkey.clone(), peer_pubkey.clone()];
     app.networks[0].admins = vec![admin_pubkey.clone()];
 
     let recipients = desired_fips_endpoint_hint_recipients(&app);

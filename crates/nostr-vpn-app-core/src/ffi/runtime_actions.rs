@@ -326,7 +326,7 @@ impl NativeAppRuntime {
             return false;
         };
         network
-            .participants
+            .devices
             .iter()
             .chain(network.admins.iter())
             .any(|member| member == &own_pubkey)
@@ -582,9 +582,9 @@ impl NativeAppRuntime {
             normalize_runtime_network_id(&network.network_id) == signal_network_id
                 && (network.admins.iter().any(|admin| admin == &sender_hex)
                     || network
-                        .participants
+                        .devices
                         .iter()
-                        .any(|participant| participant == &sender_hex))
+                        .any(|device| device == &sender_hex))
         })
     }
 }

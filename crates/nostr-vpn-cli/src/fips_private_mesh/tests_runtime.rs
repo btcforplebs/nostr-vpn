@@ -89,7 +89,7 @@
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![
+        app.networks[0].devices = vec![
             alice_pubkey.clone(),
             bob_pubkey.clone(),
             carol_pubkey.clone(),
@@ -614,7 +614,7 @@
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![alice_pubkey.clone(), bob_pubkey];
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey];
         app.node.connected_udp = ConnectedUdpConfig {
             enabled: Some(false),
             fd_reserve: Some(2048),

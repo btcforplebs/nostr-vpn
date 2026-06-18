@@ -10,7 +10,7 @@ fn shared_network_roster_includes_network_aliases() {
     config.node_name = "helios-admin".to_string();
     config.networks[0].network_id = "mesh-home".to_string();
     config.networks[0].admins = vec![own_hex.clone()];
-    config.networks[0].participants = vec![peer_hex.clone()];
+    config.networks[0].devices = vec![peer_hex.clone()];
     config.ensure_defaults();
     config
         .set_peer_alias(&own_hex, "helios-admin")
@@ -48,7 +48,7 @@ fn apply_admin_signed_shared_roster_applies_aliases_for_members() {
     config.nostr.public_key = own_hex.clone();
     config.networks[0].network_id = "mesh-home".to_string();
     config.networks[0].admins = vec![current_admin_hex.clone()];
-    config.networks[0].participants = vec![current_admin_hex.clone()];
+    config.networks[0].devices = vec![current_admin_hex.clone()];
     config
         .peer_aliases
         .insert(own_npub, "old-local".to_string());
@@ -101,7 +101,7 @@ fn apply_admin_signed_shared_roster_clears_removed_exit_node() {
     config.nostr.public_key = own_hex.clone();
     config.networks[0].network_id = "mesh-home".to_string();
     config.networks[0].admins = vec![current_admin_hex.clone()];
-    config.networks[0].participants = vec![current_admin_hex.clone(), removed_exit_hex.clone()];
+    config.networks[0].devices = vec![current_admin_hex.clone(), removed_exit_hex.clone()];
     config.exit_node = removed_exit_hex.clone();
     config.ensure_defaults();
 
@@ -125,7 +125,7 @@ fn apply_admin_signed_shared_roster_clears_removed_exit_node() {
 fn set_peer_alias_marks_member_network_roster_changed() {
     let peer_hex = Keys::generate().public_key().to_hex();
     let mut config = AppConfig::generated();
-    config.networks[0].participants = vec![peer_hex.clone()];
+    config.networks[0].devices = vec![peer_hex.clone()];
     config.ensure_defaults();
     assert_eq!(config.networks[0].shared_roster_updated_at, 0);
 
@@ -143,7 +143,7 @@ fn set_peer_alias_bumps_shared_roster_timestamp_past_previous_value() {
     let mut config = AppConfig::generated();
     config.nostr.secret_key = own.secret_key().to_secret_hex();
     config.nostr.public_key = own.public_key().to_hex();
-    config.networks[0].participants = vec![peer_hex.clone()];
+    config.networks[0].devices = vec![peer_hex.clone()];
     config.networks[0].admins = vec![config.nostr.public_key.clone()];
     config.ensure_defaults();
     config.networks[0].shared_roster_updated_at = std::time::SystemTime::now()

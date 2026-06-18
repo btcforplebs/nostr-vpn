@@ -654,8 +654,8 @@ pub struct NetworkConfig {
     pub network_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub invite_secret: String,
-    #[serde(default)]
-    pub participants: Vec<String>,
+    #[serde(default, alias = "participants")]
+    pub devices: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admins: Vec<String>,
     #[serde(
@@ -698,7 +698,7 @@ pub struct EnabledNetworkMesh {
     pub id: String,
     pub name: String,
     pub network_id: String,
-    pub participants: Vec<String>,
+    pub devices: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -706,7 +706,7 @@ pub struct SharedNetworkRoster {
     pub id: String,
     pub network_id: String,
     pub name: String,
-    pub participants: Vec<String>,
+    pub devices: Vec<String>,
     pub admins: Vec<String>,
     pub aliases: HashMap<String, String>,
     pub updated_at: u64,
@@ -722,7 +722,7 @@ impl Default for AppConfig {
                 enabled: default_network_enabled(),
                 network_id: default_network_id(),
                 invite_secret: default_invite_secret(),
-                participants: Vec::new(),
+                devices: Vec::new(),
                 admins: Vec::new(),
                 listen_for_join_requests: default_listen_for_join_requests(),
                 invite_inviter: String::new(),

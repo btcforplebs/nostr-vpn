@@ -27,7 +27,7 @@ fn native_inbound_join_request(
 }
 
 fn remote_network_participant_count(network: &NetworkConfig, own_pubkey_hex: &str) -> usize {
-    let mut participants = network.participants.clone();
+    let mut participants = network.devices.clone();
     participants.extend(network.admins.iter().cloned());
     participants.sort();
     participants.dedup();

@@ -304,7 +304,7 @@ fn persist_daemon_runtime_state_marks_vpn_on_as_active() {
     let state_path = dir.join("daemon.state.json");
 
     let mut config = AppConfig::generated();
-    config.networks[0].participants = vec!["11".repeat(32)];
+    config.networks[0].devices = vec!["11".repeat(32)];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
 
     crate::persist_daemon_runtime_state(
@@ -340,7 +340,7 @@ fn persist_daemon_runtime_state_marks_vpn_on_as_active() {
 fn fips_runtime_state_is_ready_without_waiting_for_every_peer() {
     let mut config = AppConfig::generated();
     activate_first_network(&mut config);
-    config.networks[0].participants = vec!["11".repeat(32), "22".repeat(32)];
+    config.networks[0].devices = vec!["11".repeat(32), "22".repeat(32)];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
 
     let state = crate::build_daemon_runtime_state(
@@ -368,7 +368,7 @@ fn fips_runtime_state_rejects_far_future_peer_timestamps() {
     let mut config = AppConfig::generated();
     activate_first_network(&mut config);
     let peer_pubkey = Keys::generate().public_key().to_hex();
-    config.networks[0].participants = vec![peer_pubkey.clone()];
+    config.networks[0].devices = vec![peer_pubkey.clone()];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

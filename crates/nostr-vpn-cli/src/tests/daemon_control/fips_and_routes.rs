@@ -12,7 +12,7 @@ fn fips_runtime_state_counts_direct_roster_and_other_peers() {
     let roster_peer = Keys::generate().public_key().to_hex();
     let routed_roster_peer = Keys::generate().public_key().to_hex();
     let other_peer = Keys::generate().public_key().to_hex();
-    config.networks[0].participants = vec![roster_peer.clone(), routed_roster_peer.clone()];
+    config.networks[0].devices = vec![roster_peer.clone(), routed_roster_peer.clone()];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
 
     let state = crate::build_daemon_runtime_state(
@@ -153,7 +153,7 @@ fn daemon_runtime_state_marks_peers_unreachable_when_vpn_is_off() {
     let mut config = AppConfig::generated();
     activate_first_network(&mut config);
     let peer_pubkey = Keys::generate().public_key().to_hex();
-    config.networks[0].participants = vec![peer_pubkey.clone()];
+    config.networks[0].devices = vec![peer_pubkey.clone()];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
     let peer_status = MeshPeerStatus {
         pubkey: peer_pubkey,

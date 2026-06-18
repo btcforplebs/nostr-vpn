@@ -39,10 +39,10 @@ pub(crate) fn apply_network_invite_to_active_network(
         .iter()
         .map(|admin| normalize_nostr_pubkey(admin))
         .collect::<Result<Vec<_>>>()?;
-    let invite_participants = invite
+    let invite_devices = invite
         .participants
         .iter()
-        .map(|participant| normalize_nostr_pubkey(participant))
+        .map(|device| normalize_nostr_pubkey(device))
         .collect::<Result<Vec<_>>>()?;
 
     let (target_network_id, reset_membership) = if let Some(existing) =
@@ -71,9 +71,9 @@ pub(crate) fn apply_network_invite_to_active_network(
         .network_by_id(&target_network_id)
         .map(|network| {
             network
-                .participants
+                .devices
                 .iter()
-                .any(|participant| participant == &normalized_inviter_pubkey)
+                .any(|device| device == &normalized_inviter_pubkey)
                 || network
                     .admins
                     .iter()
@@ -85,21 +85,21 @@ pub(crate) fn apply_network_invite_to_active_network(
     config.set_network_mesh_id(&target_network_id, &invite.network_id)?;
     if let Some(network) = config.network_by_id_mut(&target_network_id) {
         if reset_membership {
-            network.participants.clear();
+            network.devices.clear();
             network.admins.clear();
             network.shared_roster_updated_at = 0;
             network.shared_roster_signed_by.clear();
         }
         network.invite_secret = invite.invite_secret.trim().to_string();
 
-        for participant in &invite_participants {
-            if own_pubkey.as_deref() == Some(participant.as_str()) {
+        for device in &invite_devices {
+            if own_pubkey.as_deref() == Some(device.as_str()) {
                 continue;
             }
-            network.participants.push(participant.clone());
+            network.devices.push(device.clone());
         }
-        network.participants.sort();
-        network.participants.dedup();
+        network.devices.sort();
+        network.devices.dedup();
 
         for admin in &invite_admins {
             network.admins.push(admin.clone());
@@ -206,7 +206,7 @@ fn network_contains_own_identity(config: &AppConfig, network: &NetworkConfig) ->
         return false;
     };
     network
-        .participants
+        .devices
         .iter()
         .chain(network.admins.iter())
         .any(|member| member == &own_pubkey)
@@ -258,8 +258,8 @@ pub(crate) fn maybe_reload_running_daemon(config_path: &Path) {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RosterEditAction {
-    AddParticipant,
-    RemoveParticipant,
+    AddDevice,
+    RemoveDevice,
     AddAdmin,
     RemoveAdmin,
 }
@@ -325,22 +325,18 @@ pub(crate) async fn update_active_network_roster(
         .clone();
 
     let mut changed = Vec::new();
-    for participant in &args.participants {
+    for device in &args.devices {
         let normalized = match action {
-            RosterEditAction::AddParticipant => {
-                app.add_participant_to_network(&active_network_id, participant)?
-            }
-            RosterEditAction::RemoveParticipant => {
-                let normalized = normalize_nostr_pubkey(participant)?;
-                app.remove_participant_from_network(&active_network_id, participant)?;
+            RosterEditAction::AddDevice => app.add_device_to_network(&active_network_id, device)?,
+            RosterEditAction::RemoveDevice => {
+                let normalized = normalize_nostr_pubkey(device)?;
+                app.remove_device_from_network(&active_network_id, device)?;
                 normalized
             }
-            RosterEditAction::AddAdmin => {
-                app.add_admin_to_network(&active_network_id, participant)?
-            }
+            RosterEditAction::AddAdmin => app.add_admin_to_network(&active_network_id, device)?,
             RosterEditAction::RemoveAdmin => {
-                let normalized = normalize_nostr_pubkey(participant)?;
-                app.remove_admin_from_network(&active_network_id, participant)?;
+                let normalized = normalize_nostr_pubkey(device)?;
+                app.remove_admin_from_network(&active_network_id, device)?;
                 normalized
             }
         };
@@ -361,9 +357,10 @@ pub(crate) async fn update_active_network_roster(
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
-                "network_id": app.effective_network_id(),
-                "participants": active_network.participants,
-                "admins": active_network.admins,
+                        "network_id": app.effective_network_id(),
+                        "devices": active_network.devices,
+                        "participants": active_network.devices,
+                        "admins": active_network.admins,
                 "changed": changed,
                 "published_recipients": published,
                 "published": args.publish,
@@ -383,5 +380,5 @@ pub(crate) async fn update_active_network_roster(
 
 fn network_should_adopt_invite(network: &nostr_vpn_core::config::NetworkConfig) -> bool {
     let trimmed = network.name.trim();
-    network.participants.is_empty() && (trimmed.is_empty() || trimmed.starts_with("Network "))
+    network.devices.is_empty() && (trimmed.is_empty() || trimmed.starts_with("Network "))
 }

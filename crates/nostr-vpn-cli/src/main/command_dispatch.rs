@@ -56,10 +56,10 @@ async fn run_command(command: Command) -> Result<()> {
         Command::Init {
             config,
             force,
-            participants,
+            devices,
         } => {
             let path = config.unwrap_or_else(default_config_path);
-            init_config(&path, force, participants)?;
+            init_config(&path, force, devices)?;
         }
         Command::Version(args) => {
             print_version(args)?;
@@ -100,7 +100,7 @@ async fn run_command(command: Command) -> Result<()> {
         Command::Status(args) => {
             let config_path = args.config.unwrap_or_else(default_config_path);
             let (app, network_id) =
-                load_config_with_overrides(&config_path, args.network_id, args.participants)?;
+                load_config_with_overrides(&config_path, args.network_id, args.devices)?;
             let daemon = daemon_status(&config_path)?;
 
             let daemon_peers: Option<Vec<DaemonPeerState>> = if daemon.running {
@@ -420,7 +420,7 @@ async fn run_command(command: Command) -> Result<()> {
             if !args.fips_peer_endpoints.is_empty() {
                 app.fips_peer_endpoints = parse_fips_peer_endpoint_args(&args.fips_peer_endpoints)?;
             }
-            apply_participants_override(&mut app, args.participants)?;
+            apply_devices_override(&mut app, args.devices)?;
             app.ensure_defaults();
             maybe_autoconfigure_node(&mut app);
             app.save(&config_path)?;
@@ -477,11 +477,11 @@ async fn run_command(command: Command) -> Result<()> {
         Command::Discover(args) => {
             run_discover(args)?;
         }
-        Command::AddParticipant(args) => {
-            update_active_network_roster(args, RosterEditAction::AddParticipant).await?;
+        Command::AddDevice(args) => {
+            update_active_network_roster(args, RosterEditAction::AddDevice).await?;
         }
-        Command::RemoveParticipant(args) => {
-            update_active_network_roster(args, RosterEditAction::RemoveParticipant).await?;
+        Command::RemoveDevice(args) => {
+            update_active_network_roster(args, RosterEditAction::RemoveDevice).await?;
         }
         Command::AddAdmin(args) => {
             update_active_network_roster(args, RosterEditAction::AddAdmin).await?;
@@ -492,7 +492,7 @@ async fn run_command(command: Command) -> Result<()> {
         Command::Ping(args) => {
             let config_path = args.config.unwrap_or_else(default_config_path);
             let (app, network_id) =
-                load_config_with_overrides(&config_path, args.network_id, args.participants)?;
+                load_config_with_overrides(&config_path, args.network_id, args.devices)?;
             let peers = configured_fips_peer_announcements(&app, &network_id);
 
             let target = resolve_ping_target(&args.target, &peers).ok_or_else(|| {
@@ -507,7 +507,7 @@ async fn run_command(command: Command) -> Result<()> {
         Command::Ip(args) => {
             let config_path = args.config.unwrap_or_else(default_config_path);
             let (app, network_id) =
-                load_config_with_overrides(&config_path, args.network_id, args.participants)?;
+                load_config_with_overrides(&config_path, args.network_id, args.devices)?;
 
             if !args.peer {
                 let tunnel_ip = runtime_local_tunnel_ip(&app, &network_id);
@@ -537,7 +537,7 @@ async fn run_command(command: Command) -> Result<()> {
         Command::Whois(args) => {
             let config_path = args.config.unwrap_or_else(default_config_path);
             let (app, network_id) =
-                load_config_with_overrides(&config_path, args.network_id, args.participants)?;
+                load_config_with_overrides(&config_path, args.network_id, args.devices)?;
             let peers = configured_fips_peer_announcements(&app, &network_id);
 
             let found = peers
