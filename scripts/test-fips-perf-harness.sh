@@ -447,12 +447,12 @@ test_pipeline_summary_collects_fips_and_nvpn_lines() {
 [pipe 5s] endpoint_event_wait=1/s
 [nvpn-pipe 5s] nvpn_tun_write=2/s
 [pipe 5s] endpoint_event_wait=3/s
-[nvpn-pipe 5s] nvpn_mesh_to_tun_queue_wait=4/s
+[nvpn-pipe 5s] nvpn_tun_to_mesh_queue_wait=4/s
 EOF
   )"
   assert_eq \
     "$got" \
-    "[pipe 5s] endpoint_event_wait=3/s | [nvpn-pipe 5s] nvpn_mesh_to_tun_queue_wait=4/s" \
+    "[pipe 5s] endpoint_event_wait=3/s | [nvpn-pipe 5s] nvpn_tun_to_mesh_queue_wait=4/s" \
     "combined pipeline summary"
 
   got="$(
@@ -553,6 +553,37 @@ EOF
     "phase-scoped peak-wait pipeline summary"
 }
 
+test_docker_pipeline_range_helpers() {
+  local got
+
+  got="$(
+    docker_bench_pipeline_lines_in_range_from_stdin 1 3 <<'EOF'
+[pipe 1s] before=1/s
+[pipe 2s] selected=2/s
+[pipe 3s] selected=3/s
+[pipe 4s] after=4/s
+EOF
+  )"
+  assert_eq \
+    "$got" \
+    $'[pipe 2s] selected=2/s\n[pipe 3s] selected=3/s' \
+    "docker phase range pipeline lines"
+
+  got="$(
+    docker_bench_pipeline_hard_event_summary_from_stdin 2 4 <<'EOF'
+[pipe 1s] encrypt_worker_queue_full=1/s total=10
+[pipe 2s] encrypt_worker_queue_full=2/s total=12
+[pipe 3s] encrypt_worker_queue_full=5/s total=15 connected_udp_kernel_dropped=6/s total=6 connected_udp_direct_decrypt_bulk_shed=4/s total=4
+[pipe 4s] encrypt_worker_queue_full=3/s total=17
+[pipe 5s] encrypt_worker_queue_full=7/s total=30
+EOF
+  )"
+  assert_eq \
+    "$got" \
+    "connected_udp_kernel_dropped:max_rate_per_sec=6,total=6;connected_udp_direct_decrypt_bulk_shed:max_rate_per_sec=4,total=4;encrypt_worker_queue_full:max_rate_per_sec=5,total=5" \
+    "docker phase range hard events ignore post-phase totals"
+}
+
 test_pipeline_queue_wait_top_summary() {
   local got
 
@@ -586,11 +617,23 @@ test_pipeline_queue_wait_top_summary() {
     "decrypt_fsp_worker_priority_queue_wait:rate_per_sec=0.2,p95_ms=16.8,p99_ms=33.6,max_ms=67.1,allmax_ms=67.1" \
     "pipeline top queue wait includes authenticated/FSP worker waits"
 
+  got="$(pipeline_queue_wait_top_summary '[pipe 5s] decrypt_authenticated_session_bulk_wait=10/s avg=1.0ms p50<=1.0ms p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms decrypt_direct_session_commit_wait=10/s avg=2.0ms p50<=2.1ms p95<=4.2ms p99<=16.8ms max<=33.6ms allmax=33.6ms')"
+  assert_eq \
+    "$got" \
+    "decrypt_direct_session_commit_wait:rate_per_sec=10,p95_ms=4.2,p99_ms=16.8,max_ms=33.6,allmax_ms=33.6" \
+    "pipeline top queue wait includes direct session waits"
+
   got="$(pipeline_queue_wait_top_summary '[pipe 5s] fmp_worker_bulk_queue_wait=10/s avg=1.0ms p50<=1.0ms p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_linux_bulk_container_ready_wait=10/s avg=2.0ms p50<=2.1ms p95<=4.2ms p99<=16.8ms max<=33.6ms allmax=33.6ms')"
   assert_eq \
     "$got" \
     "fmp_linux_bulk_container_ready_wait:rate_per_sec=10,p95_ms=4.2,p99_ms=16.8,max_ms=33.6,allmax_ms=33.6" \
     "pipeline top queue wait includes Linux bulk container waits"
+
+  got="$(pipeline_queue_wait_top_summary '[pipe 5s] fsp_aead_worker_open_completion_wait=5/s avg=7.0ms p50<=8.4ms p95<=16.8ms p99<=33.6ms max<=67.1ms allmax=67.1ms')"
+  assert_eq \
+    "$got" \
+    "fsp_aead_worker_open_completion_wait:rate_per_sec=5,p95_ms=16.8,p99_ms=33.6,max_ms=67.1,allmax_ms=67.1" \
+    "pipeline top queue wait includes FSP worker-open waits"
 
   got="$(pipeline_queue_wait_top_summary '[pipe 5s] transport_priority_queue_wait=0.2/s avg=14.5us p50<=16.4us p95<=65.5us p99<=65.5us max<=65.5us allmax=2.1ms')"
   assert_eq \
@@ -617,14 +660,67 @@ test_pipeline_fmp_worker_batch_summary() {
     "avg_packets=42.0,full_pct=90.0,single_pct=5.0,priority_pct=25.0,bulk_pct=75.0,flush_per_sec=10,packets_per_sec=420,priority_packets_per_sec=105,bulk_packets_per_sec=315" \
     "lane-aware FMP worker batch summary"
 
-  got="$(pipeline_fmp_worker_batch_summary '[pipe 5s] fmp_worker_batch_flush=10/s fmp_worker_batch_packets=420/s fmp_worker_batch_priority_packets=105/s fmp_worker_batch_bulk_packets=315/s fmp_worker_batch_full=9/s fmp_worker_batch_single=0.5/s fmp_send_group=12/s fmp_send_group_packets=420/s fmp_send_group_single=3/s endpoint_event_wait=10/s avg=40.0us | [nvpn-pipe 5s] nvpn_tun_write=2/s')"
+  got="$(pipeline_fmp_worker_batch_summary '[pipe 5s] fmp_worker_batch_flush=10/s fmp_worker_batch_packets=420/s fmp_worker_batch_priority_packets=105/s fmp_worker_batch_bulk_packets=315/s fmp_worker_batch_full=9/s fmp_worker_batch_single=0.5/s fmp_send_group=12/s fmp_send_group_packets=420/s fmp_send_group_single=3/s fmp_send_group_split_target=1/s fmp_send_group_split_lane=2/s fmp_send_group_split_backpressure=0.5/s fmp_send_group_split_packet_cap=3/s endpoint_committed_bulk_dispatch_batch=4/s endpoint_committed_bulk_dispatch_packets=512/s endpoint_committed_bulk_dispatch_merged_batch=1.5/s endpoint_committed_bulk_dispatch_merged_packets=192/s endpoint_event_wait=10/s avg=40.0us | [nvpn-pipe 5s] nvpn_tun_write=2/s')"
   assert_eq \
     "$got" \
-    "avg_packets=42.0,full_pct=90.0,single_pct=5.0,priority_pct=25.0,bulk_pct=75.0,flush_per_sec=10,packets_per_sec=420,priority_packets_per_sec=105,bulk_packets_per_sec=315,send_groups_per_flush=1.2,send_group_avg_packets=35.0,send_group_single_pct=25.0,send_groups_per_sec=12,send_group_packets_per_sec=420" \
-    "FMP worker batch summary includes selected send group shape"
+    "avg_packets=42.0,full_pct=90.0,single_pct=5.0,priority_pct=25.0,bulk_pct=75.0,flush_per_sec=10,packets_per_sec=420,priority_packets_per_sec=105,bulk_packets_per_sec=315,send_groups_per_flush=1.2,send_group_avg_packets=35.0,send_group_single_pct=25.0,send_groups_per_sec=12,send_group_packets_per_sec=420,send_group_split_total_per_sec=6.5,send_group_split_target_per_sec=1,send_group_split_lane_per_sec=2,send_group_split_backpressure_per_sec=0.5,send_group_split_packet_cap_per_sec=3,committed_bulk_dispatch_avg_packets=128.0,committed_bulk_dispatch_per_sec=4,committed_bulk_dispatch_packets_per_sec=512,committed_bulk_merged_batches_per_sec=1.5,committed_bulk_merged_packets_per_sec=192" \
+    "FMP worker batch summary includes send group shape, split causes, and committed bulk coalescing"
 
   got="$(pipeline_fmp_worker_batch_summary '[pipe 5s] endpoint_event_wait=10/s avg=40.0us')"
   assert_eq "$got" "" "empty FMP worker batch summary"
+}
+
+test_pipeline_fmp_worker_dispatch_spread_summary() {
+  local got
+
+  got="$(pipeline_fmp_worker_dispatch_spread_summary '[pipe 5s] fmp_worker_dispatch_flow_keyed=99/s fmp_worker_dispatch_target_only=1/s fmp_worker_dispatch_worker0=25/s fmp_worker_dispatch_worker1=0/s fmp_worker_dispatch_worker2=0/s fmp_worker_dispatch_worker3=75/s fmp_worker_dispatch_worker_other=0/s endpoint_event_wait=10/s avg=40.0us')"
+  assert_eq \
+    "$got" \
+    "active_workers=2,workers_ge1pct=2,top_worker=w3,top_pct=75.0,flow_keyed_pct=99.0,target_only_pct=1.0,total_per_sec=100,worker_rates=w0:25;w3:75" \
+    "FMP worker dispatch spread summary"
+
+  got="$(pipeline_fmp_worker_dispatch_spread_summary '[pipe 5s] endpoint_event_wait=10/s avg=40.0us')"
+  assert_eq "$got" "" "empty FMP worker dispatch spread summary"
+}
+
+test_pipeline_fsp_owner_placement_summary() {
+  local got
+
+  got="$(pipeline_fsp_owner_placement_summary '[pipe 5s] decrypt_fsp_owner_same=500000/s decrypt_fsp_path_local=499990/s decrypt_fsp_path_local_bulk=499990/s endpoint_event_wait=10/s avg=40.0us')"
+  assert_eq \
+    "$got" \
+    "owner=same,path=local,bulk_path=local,priority_path=unknown,owner_same_per_sec=500000,owner_mismatch_per_sec=0,path_local_per_sec=499990,path_handoff_per_sec=0,path_helper_per_sec=0,path_worker_open_per_sec=0,path_worker_open_striped_per_sec=0,path_local_priority_per_sec=0,path_local_bulk_per_sec=499990,path_handoff_priority_per_sec=0,path_handoff_bulk_per_sec=0,path_helper_bulk_per_sec=0,path_worker_open_bulk_per_sec=0,bulk_packets_per_sec=0,select_bulk_packets_per_sec=0,drain_bulk_packets_per_sec=0" \
+    "FSP same-owner local placement summary"
+  assert_eq \
+    "$(pipeline_fsp_owner_placement_kind '[pipe 5s] decrypt_fsp_owner_same=500000/s decrypt_fsp_path_local=499990/s')" \
+    "local" \
+    "FSP same-owner local placement kind"
+
+  got="$(pipeline_fsp_owner_placement_summary '[pipe 5s] decrypt_fsp_owner_mismatch=589000/s decrypt_fsp_path_handoff=589000/s decrypt_fsp_path_handoff_bulk=589000/s')"
+  assert_eq \
+    "$got" \
+    "owner=mismatch,path=handoff,bulk_path=handoff,priority_path=unknown,owner_same_per_sec=0,owner_mismatch_per_sec=589000,path_local_per_sec=0,path_handoff_per_sec=589000,path_helper_per_sec=0,path_worker_open_per_sec=0,path_worker_open_striped_per_sec=0,path_local_priority_per_sec=0,path_local_bulk_per_sec=0,path_handoff_priority_per_sec=0,path_handoff_bulk_per_sec=589000,path_helper_bulk_per_sec=0,path_worker_open_bulk_per_sec=0,bulk_packets_per_sec=0,select_bulk_packets_per_sec=0,drain_bulk_packets_per_sec=0" \
+    "FSP mismatch handoff placement summary"
+  assert_eq \
+    "$(pipeline_fsp_owner_placement_kind '[pipe 5s] decrypt_fsp_owner_mismatch=589000/s decrypt_fsp_path_handoff=589000/s')" \
+    "handoff" \
+    "FSP mismatch handoff placement kind"
+
+  got="$(pipeline_fsp_owner_placement_summary '[pipe 5s] decrypt_fsp_owner_same=520000/s decrypt_fsp_path_worker_open=519900/s decrypt_fsp_path_worker_open_bulk=519900/s decrypt_fsp_path_local=100/s decrypt_fsp_path_local_priority=100/s')"
+  assert_eq \
+    "$got" \
+    "owner=same,path=worker-open,bulk_path=worker-open,priority_path=local,owner_same_per_sec=520000,owner_mismatch_per_sec=0,path_local_per_sec=100,path_handoff_per_sec=0,path_helper_per_sec=0,path_worker_open_per_sec=519900,path_worker_open_striped_per_sec=0,path_local_priority_per_sec=100,path_local_bulk_per_sec=0,path_handoff_priority_per_sec=0,path_handoff_bulk_per_sec=0,path_helper_bulk_per_sec=0,path_worker_open_bulk_per_sec=519900,bulk_packets_per_sec=0,select_bulk_packets_per_sec=0,drain_bulk_packets_per_sec=0" \
+    "FSP worker-open placement summary"
+  assert_eq \
+    "$(pipeline_fsp_owner_placement_kind '[pipe 5s] decrypt_fsp_owner_same=520000/s decrypt_fsp_path_worker_open=519900/s decrypt_fsp_path_local=100/s')" \
+    "worker-open" \
+    "FSP worker-open placement kind"
+
+  got="$(pipeline_fsp_owner_placement_summary '[pipe 5s] decrypt_fsp_owner_mismatch=520000/s decrypt_fsp_path_worker_open=519900/s decrypt_fsp_path_worker_open_bulk=519900/s decrypt_fsp_path_worker_open_striped=519900/s decrypt_fsp_path_local=100/s decrypt_fsp_path_local_priority=100/s')"
+  assert_eq \
+    "$got" \
+    "owner=mismatch,path=worker-open,bulk_path=worker-open,priority_path=local,owner_same_per_sec=0,owner_mismatch_per_sec=520000,path_local_per_sec=100,path_handoff_per_sec=0,path_helper_per_sec=0,path_worker_open_per_sec=519900,path_worker_open_striped_per_sec=519900,path_local_priority_per_sec=100,path_local_bulk_per_sec=0,path_handoff_priority_per_sec=0,path_handoff_bulk_per_sec=0,path_helper_bulk_per_sec=0,path_worker_open_bulk_per_sec=519900,bulk_packets_per_sec=0,select_bulk_packets_per_sec=0,drain_bulk_packets_per_sec=0" \
+    "FSP striped worker-open placement summary"
 }
 
 test_pipeline_decrypt_worker_batch_summary() {
@@ -638,6 +734,32 @@ test_pipeline_decrypt_worker_batch_summary() {
 
   got="$(pipeline_decrypt_worker_batch_summary '[pipe 5s] decrypt_worker_bulk_queue_wait=10/s avg=40.0us')"
   assert_eq "$got" "" "empty decrypt worker batch summary"
+}
+
+test_pipeline_decrypt_worker_spread_summary() {
+  local got
+
+  got="$(pipeline_decrypt_worker_spread_summary '[pipe 5s] decrypt_worker_batch_worker0=320/s decrypt_worker_batch_worker1=0/s decrypt_worker_batch_worker2=160/s decrypt_worker_batch_worker7=160/s decrypt_worker_batch_worker_other=0/s endpoint_event_wait=10/s avg=40.0us')"
+  assert_eq \
+    "$got" \
+    "active_workers=3,workers_ge1pct=3,top_worker=w0,top_pct=50.0,total_packets_per_sec=640,worker_packet_rates=w0:320;w2:160;w7:160" \
+    "decrypt worker packet spread summary"
+
+  got="$(pipeline_decrypt_worker_spread_summary '[pipe 5s] decrypt_worker_bulk_queue_wait=10/s avg=40.0us')"
+  assert_eq "$got" "" "empty decrypt worker packet spread summary"
+}
+
+test_pipeline_decrypt_worker_turn_mix_summary() {
+  local got
+
+  got="$(pipeline_decrypt_worker_turn_mix_summary '[pipe 5s] decrypt_worker_select_fmp_completion=2/s decrypt_worker_select_fsp_completion_batch=3/s decrypt_worker_select_fsp_completion_packets=96/s decrypt_worker_select_bulk_packets=480/s decrypt_worker_drain_aead_completion_batch=4/s decrypt_worker_drain_aead_completion_packets=128/s decrypt_worker_drain_bulk_packets=320/s decrypt_worker_bulk_interleave_aead_completion_batch=5/s decrypt_worker_bulk_interleave_aead_completion_packets=160/s decrypt_worker_bulk_interleave_budget_exhausted=0.2/s endpoint_event_wait=10/s avg=40.0us')"
+  assert_eq \
+    "$got" \
+    "completion_packet_pct=32.4,completion_batches_per_sec=14,known_completion_packets_per_sec=384,bulk_packets_per_sec=800,select_fmp_completion_batches_per_sec=2,select_fsp_completion_batches_per_sec=3,select_fsp_completion_packets_per_sec=96,select_bulk_packets_per_sec=480,drain_completion_batches_per_sec=4,drain_completion_packets_per_sec=128,drain_bulk_packets_per_sec=320,interleave_completion_batches_per_sec=5,interleave_completion_packets_per_sec=160,interleave_budget_exhausted_per_sec=0.2" \
+    "decrypt worker turn mix summary"
+
+  got="$(pipeline_decrypt_worker_turn_mix_summary '[pipe 5s] decrypt_worker_bulk_queue_wait=10/s avg=40.0us')"
+  assert_eq "$got" "" "empty decrypt worker turn mix summary"
 }
 
 test_pipeline_linux_bulk_container_summary() {
@@ -688,26 +810,26 @@ test_pipeline_hard_event_summary() {
   got="$(
     pipeline_hard_event_summary_from_stdin <<'EOF'
 [pipe 5s] udp_send_connected=10/s encrypt_worker_queue_full=2/s total=10 encrypt_worker_bulk_dropped=1.5/s total=7 decrypt_worker_queue_full=0/s total=0
-[pipe 5s] encrypt_worker_queue_full=3/s total=12 encrypt_worker_priority_queue_full=0.1/s total=1 encrypt_worker_bulk_queue_full=2.8/s total=11 fmp_linux_bulk_container_queue_full=0.4/s total=2 fmp_linux_bulk_container_queue_full_packets=25.8/s total=129 endpoint_direct_fmp_receive_dropped=0.2/s total=2 endpoint_direct_fmp_receive_dropped_packets=12.8/s total=64 rx_loop_slow_maintenance_skipped=0.2/s total=1 decrypt_fsp_bulk_queue_full_fallback=0.5/s total=2 nvpn_tun_to_mesh_bulk_dropped=0/s total=0
-[nvpn-pipe 5s] nvpn_tun_to_mesh_bulk_dropped=4/s total=8
+[pipe 5s] connected_udp_kernel_dropped=0.7/s total=4 encrypt_worker_queue_full=3/s total=12 encrypt_worker_priority_queue_full=0.1/s total=1 encrypt_worker_bulk_queue_full=2.8/s total=11 fmp_linux_bulk_container_queue_full=0.4/s total=2 fmp_linux_bulk_container_queue_full_packets=25.8/s total=129 rx_loop_slow_maintenance_skipped=0.2/s total=1 decrypt_fsp_bulk_queue_full_fallback=0.5/s total=2 decrypt_fsp_open_worker_completion_backlog_fallback=0.3/s total=3 decrypt_fsp_worker_replay_dropped_too_old=0.4/s total=2 decrypt_fsp_worker_replay_dropped_too_old_lag_ge_2x_window=0.2/s total=1 fmp_aead_completion_aead_failed=0.2/s total=1 fsp_aead_completion_aead_failed=0.4/s total=2 fsp_aead_completion_epoch_mismatch=0.3/s total=3 fsp_aead_completion_replay_dropped_worker_open=0.8/s total=4 fsp_aead_completion_replay_dropped_duplicate=0.6/s total=3 fsp_aead_completion_replay_dropped_too_old=0.2/s total=1 fsp_aead_completion_replay_dropped_too_old_lag_ge_2x_window=0.2/s total=1 nvpn_tun_to_mesh_bulk_dropped=0/s total=0
+[nvpn-pipe 5s] nvpn_tun_to_mesh_bulk_dropped=4/s total=8 nvpn_tun_to_mesh_bulk_dropped_batches=1/s total=2 nvpn_tun_to_mesh_bulk_dropped_packet_cap=4/s total=8 nvpn_tun_to_mesh_bulk_dropped_channel_full=0/s total=0
 EOF
   )"
   assert_eq \
     "$got" \
-    "encrypt_worker_queue_full:max_rate_per_sec=3,total=12;encrypt_worker_priority_queue_full:max_rate_per_sec=0.1,total=1;encrypt_worker_bulk_queue_full:max_rate_per_sec=2.8,total=11;encrypt_worker_bulk_dropped:max_rate_per_sec=1.5,total=7;fmp_linux_bulk_container_queue_full:max_rate_per_sec=0.4,total=2;fmp_linux_bulk_container_queue_full_packets:max_rate_per_sec=25.8,total=129;endpoint_direct_fmp_receive_dropped:max_rate_per_sec=0.2,total=2;endpoint_direct_fmp_receive_dropped_packets:max_rate_per_sec=12.8,total=64;rx_loop_slow_maintenance_skipped:max_rate_per_sec=0.2,total=1;decrypt_fsp_bulk_queue_full_fallback:max_rate_per_sec=0.5,total=2;nvpn_tun_to_mesh_bulk_dropped:max_rate_per_sec=4,total=8" \
+    "connected_udp_kernel_dropped:max_rate_per_sec=0.7,total=4;encrypt_worker_queue_full:max_rate_per_sec=3,total=12;encrypt_worker_priority_queue_full:max_rate_per_sec=0.1,total=1;encrypt_worker_bulk_queue_full:max_rate_per_sec=2.8,total=11;encrypt_worker_bulk_dropped:max_rate_per_sec=1.5,total=7;fmp_linux_bulk_container_queue_full:max_rate_per_sec=0.4,total=2;fmp_linux_bulk_container_queue_full_packets:max_rate_per_sec=25.8,total=129;rx_loop_slow_maintenance_skipped:max_rate_per_sec=0.2,total=1;decrypt_fsp_bulk_queue_full_fallback:max_rate_per_sec=0.5,total=2;decrypt_fsp_open_worker_completion_backlog_fallback:max_rate_per_sec=0.3,total=3;decrypt_fsp_worker_replay_dropped_too_old:max_rate_per_sec=0.4,total=2;decrypt_fsp_worker_replay_dropped_too_old_lag_ge_2x_window:max_rate_per_sec=0.2,total=1;fmp_aead_completion_aead_failed:max_rate_per_sec=0.2,total=1;fsp_aead_completion_aead_failed:max_rate_per_sec=0.4,total=2;fsp_aead_completion_epoch_mismatch:max_rate_per_sec=0.3,total=3;fsp_aead_completion_replay_dropped_worker_open:max_rate_per_sec=0.8,total=4;fsp_aead_completion_replay_dropped_duplicate:max_rate_per_sec=0.6,total=3;fsp_aead_completion_replay_dropped_too_old:max_rate_per_sec=0.2,total=1;fsp_aead_completion_replay_dropped_too_old_lag_ge_2x_window:max_rate_per_sec=0.2,total=1;nvpn_tun_to_mesh_bulk_dropped:max_rate_per_sec=4,total=8;nvpn_tun_to_mesh_bulk_dropped_batches:max_rate_per_sec=1,total=2;nvpn_tun_to_mesh_bulk_dropped_packet_cap:max_rate_per_sec=4,total=8" \
     "pipeline hard event summary"
 
   got="$(
     pipeline_hard_event_summary_from_stdin 2 <<'EOF'
-[pipe 5s] encrypt_worker_queue_full=4/s total=100 encrypt_worker_bulk_dropped=4/s total=50 fmp_linux_bulk_container_queue_full=0.2/s total=100 fmp_linux_bulk_container_queue_full_packets=10/s total=50
-[nvpn-pipe 5s] nvpn_tun_to_mesh_bulk_dropped=2/s total=20
-[pipe 5s] encrypt_worker_queue_full=3/s total=112 encrypt_worker_priority_queue_full=0.1/s total=1 encrypt_worker_bulk_queue_full=2.8/s total=11 encrypt_worker_bulk_dropped=1.5/s total=57 fmp_linux_bulk_container_queue_full=0.4/s total=102 fmp_linux_bulk_container_queue_full_packets=25.8/s total=179 rx_loop_slow_maintenance_skipped=0.2/s total=1
-[nvpn-pipe 5s] nvpn_tun_to_mesh_bulk_dropped=4/s total=28
+[pipe 5s] encrypt_worker_queue_full=4/s total=100 encrypt_worker_bulk_dropped=4/s total=50 fmp_linux_bulk_container_queue_full=0.2/s total=100 fmp_linux_bulk_container_queue_full_packets=10/s total=50 decrypt_fsp_open_worker_completion_backlog_fallback=0.1/s total=10 fsp_aead_completion_replay_dropped_worker_open=0.6/s total=20 fsp_aead_completion_replay_dropped_duplicate=0.8/s total=20 fsp_aead_completion_replay_dropped_too_old=0.1/s total=10 fsp_aead_completion_replay_dropped_too_old_lag_ge_2x_window=0.1/s total=7 fsp_aead_completion_replay_dropped_too_old_lag_ge_4x_window=0.1/s total=4
+[nvpn-pipe 5s] nvpn_tun_to_mesh_bulk_dropped=2/s total=20 nvpn_tun_to_mesh_bulk_dropped_batches=0.5/s total=5 nvpn_tun_to_mesh_bulk_dropped_channel_full=2/s total=20
+[pipe 5s] encrypt_worker_queue_full=3/s total=112 encrypt_worker_priority_queue_full=0.1/s total=1 encrypt_worker_bulk_queue_full=2.8/s total=11 encrypt_worker_bulk_dropped=1.5/s total=57 fmp_linux_bulk_container_queue_full=0.4/s total=102 fmp_linux_bulk_container_queue_full_packets=25.8/s total=179 rx_loop_slow_maintenance_skipped=0.2/s total=1 decrypt_fsp_open_worker_completion_backlog_fallback=0.5/s total=16 fsp_aead_completion_replay_dropped_worker_open=1/s total=24 fsp_aead_completion_replay_dropped_duplicate=1.4/s total=25 fsp_aead_completion_replay_dropped_too_old=0.4/s total=12 fsp_aead_completion_replay_dropped_too_old_lag_ge_2x_window=0.4/s total=10 fsp_aead_completion_replay_dropped_too_old_lag_ge_4x_window=0.2/s total=5
+[nvpn-pipe 5s] nvpn_tun_to_mesh_bulk_dropped=4/s total=28 nvpn_tun_to_mesh_bulk_dropped_batches=1/s total=7 nvpn_tun_to_mesh_bulk_dropped_channel_full=4/s total=28
 EOF
   )"
   assert_eq \
     "$got" \
-    "encrypt_worker_queue_full:max_rate_per_sec=3,total=12;encrypt_worker_priority_queue_full:max_rate_per_sec=0.1,total=1;encrypt_worker_bulk_queue_full:max_rate_per_sec=2.8,total=11;encrypt_worker_bulk_dropped:max_rate_per_sec=1.5,total=7;fmp_linux_bulk_container_queue_full:max_rate_per_sec=0.4,total=2;fmp_linux_bulk_container_queue_full_packets:max_rate_per_sec=25.8,total=129;rx_loop_slow_maintenance_skipped:max_rate_per_sec=0.2,total=1;nvpn_tun_to_mesh_bulk_dropped:max_rate_per_sec=4,total=8" \
+    "encrypt_worker_queue_full:max_rate_per_sec=3,total=12;encrypt_worker_priority_queue_full:max_rate_per_sec=0.1,total=1;encrypt_worker_bulk_queue_full:max_rate_per_sec=2.8,total=11;encrypt_worker_bulk_dropped:max_rate_per_sec=1.5,total=7;fmp_linux_bulk_container_queue_full:max_rate_per_sec=0.4,total=2;fmp_linux_bulk_container_queue_full_packets:max_rate_per_sec=25.8,total=129;rx_loop_slow_maintenance_skipped:max_rate_per_sec=0.2,total=1;decrypt_fsp_open_worker_completion_backlog_fallback:max_rate_per_sec=0.5,total=6;fsp_aead_completion_replay_dropped_worker_open:max_rate_per_sec=1,total=4;fsp_aead_completion_replay_dropped_duplicate:max_rate_per_sec=1.4,total=5;fsp_aead_completion_replay_dropped_too_old:max_rate_per_sec=0.4,total=2;fsp_aead_completion_replay_dropped_too_old_lag_ge_2x_window:max_rate_per_sec=0.4,total=3;fsp_aead_completion_replay_dropped_too_old_lag_ge_4x_window:max_rate_per_sec=0.2,total=1;nvpn_tun_to_mesh_bulk_dropped:max_rate_per_sec=4,total=8;nvpn_tun_to_mesh_bulk_dropped_batches:max_rate_per_sec=1,total=2;nvpn_tun_to_mesh_bulk_dropped_channel_full:max_rate_per_sec=4,total=8" \
     "phase-scoped pipeline hard event summary subtracts pre-phase totals"
 }
 
@@ -810,7 +932,7 @@ test_phase_argument_selection() {
 }
 
 test_phase_summary_pipeline_columns() {
-  local dir header_fields row_fields top_a top_b batch_a batch_b decrypt_batch_a decrypt_batch_b linux_bulk_a linux_bulk_b udp_send_a udp_send_b hard_a hard_b raw_a raw_b
+  local dir header_fields row_fields top_a top_b batch_a batch_b spread_a spread_b decrypt_batch_a decrypt_batch_b decrypt_spread_a decrypt_spread_b decrypt_turn_mix_a decrypt_turn_mix_b linux_bulk_a linux_bulk_b udp_send_a udp_send_b hard_a hard_b raw_a raw_b
   dir="$(mktemp -d)"
 
   (
@@ -847,8 +969,14 @@ test_phase_summary_pipeline_columns() {
       "fmp_worker_queue_wait:rate_per_sec=20,p95_ms=1,p99_ms=2.1,max_ms=2.1,allmax_ms=2" \
       "avg_packets=42.0,full_pct=90.0,single_pct=5.0,priority_pct=25.0,bulk_pct=75.0,flush_per_sec=10,packets_per_sec=420,priority_packets_per_sec=105,bulk_packets_per_sec=315" \
       "avg_packets=31.5,full_pct=60.0,single_pct=2.0,priority_pct=40.0,bulk_pct=60.0,flush_per_sec=20,packets_per_sec=630,priority_packets_per_sec=252,bulk_packets_per_sec=378" \
+      "active_workers=2,workers_ge1pct=2,top_worker=w7,top_pct=66.5,flow_keyed_pct=100.0,target_only_pct=0.0,total_per_sec=416349,worker_rates=w4:139503;w7:276846" \
+      "active_workers=1,workers_ge1pct=1,top_worker=w3,top_pct=100.0,flow_keyed_pct=0.0,target_only_pct=100.0,total_per_sec=19384.6,worker_rates=w3:19384.6" \
       "avg_packets=32.0,full_pct=25.0,single_pct=10.0,priority_pct=10.0,bulk_pct=90.0,flush_per_sec=20,packets_per_sec=640,priority_packets_per_sec=64,bulk_packets_per_sec=576" \
       "avg_packets=16.0,full_pct=12.5,single_pct=4.0,priority_pct=25.0,bulk_pct=75.0,flush_per_sec=30,packets_per_sec=480,priority_packets_per_sec=120,bulk_packets_per_sec=360" \
+      "active_workers=2,workers_ge1pct=2,top_worker=w0,top_pct=75.0,total_packets_per_sec=640,worker_packet_rates=w0:480;w2:160" \
+      "active_workers=1,workers_ge1pct=1,top_worker=w3,top_pct=100.0,total_packets_per_sec=480,worker_packet_rates=w3:480" \
+      "completion_packet_pct=32.4,completion_batches_per_sec=14,known_completion_packets_per_sec=384,bulk_packets_per_sec=800,select_fmp_completion_batches_per_sec=2,select_fsp_completion_batches_per_sec=3,select_fsp_completion_packets_per_sec=96,select_bulk_packets_per_sec=480,drain_completion_batches_per_sec=4,drain_completion_packets_per_sec=128,drain_bulk_packets_per_sec=320,interleave_completion_batches_per_sec=5,interleave_completion_packets_per_sec=160,interleave_budget_exhausted_per_sec=0.2" \
+      "completion_packet_pct=20.0,completion_batches_per_sec=7,known_completion_packets_per_sec=120,bulk_packets_per_sec=480,select_fmp_completion_batches_per_sec=1,select_fsp_completion_batches_per_sec=2,select_fsp_completion_packets_per_sec=40,select_bulk_packets_per_sec=240,drain_completion_batches_per_sec=2,drain_completion_packets_per_sec=40,drain_bulk_packets_per_sec=240,interleave_completion_batches_per_sec=2,interleave_completion_packets_per_sec=40,interleave_budget_exhausted_per_sec=0" \
       "avg_packets=96.0,avg_sent_packets=96.0,enqueued_per_sec=5,packets_per_sec=480,sent_per_sec=5,sent_packets_per_sec=480,queue_p95_ms=0.524,queue_p99_ms=1" \
       "avg_packets=48.0,avg_sent_packets=48.0,enqueued_per_sec=10,packets_per_sec=480,sent_per_sec=10,sent_packets_per_sec=480,queue_p95_ms=0.262,queue_p99_ms=0.524" \
       "gso_packet_pct=99.1,sendmmsg_packet_pct=0.9,avg_packets=35.3,gso_avg_packets=42.0,sendmmsg_avg_packets=2.0,gso_batch_per_sec=10,gso_packets_per_sec=420,sendmmsg_batch_per_sec=2,sendmmsg_packets_per_sec=4,total_packets_per_sec=424" \
@@ -861,29 +989,41 @@ test_phase_summary_pipeline_columns() {
 
   header_fields="$(awk -F '\t' 'NR == 1 { print NF }' "$dir/phase-summary.tsv")"
   row_fields="$(awk -F '\t' 'NR == 2 { print NF }' "$dir/phase-summary.tsv")"
-  assert_eq "$header_fields" "40" "phase summary header field count"
-  assert_eq "$row_fields" "40" "phase summary row field count"
+  assert_eq "$header_fields" "46" "phase summary header field count"
+  assert_eq "$row_fields" "46" "phase summary row field count"
 
   top_a="$(awk -F '\t' 'NR == 2 { print $27 }' "$dir/phase-summary.tsv")"
   top_b="$(awk -F '\t' 'NR == 2 { print $28 }' "$dir/phase-summary.tsv")"
   batch_a="$(awk -F '\t' 'NR == 2 { print $29 }' "$dir/phase-summary.tsv")"
   batch_b="$(awk -F '\t' 'NR == 2 { print $30 }' "$dir/phase-summary.tsv")"
-  decrypt_batch_a="$(awk -F '\t' 'NR == 2 { print $31 }' "$dir/phase-summary.tsv")"
-  decrypt_batch_b="$(awk -F '\t' 'NR == 2 { print $32 }' "$dir/phase-summary.tsv")"
-  linux_bulk_a="$(awk -F '\t' 'NR == 2 { print $33 }' "$dir/phase-summary.tsv")"
-  linux_bulk_b="$(awk -F '\t' 'NR == 2 { print $34 }' "$dir/phase-summary.tsv")"
-  udp_send_a="$(awk -F '\t' 'NR == 2 { print $35 }' "$dir/phase-summary.tsv")"
-  udp_send_b="$(awk -F '\t' 'NR == 2 { print $36 }' "$dir/phase-summary.tsv")"
-  hard_a="$(awk -F '\t' 'NR == 2 { print $37 }' "$dir/phase-summary.tsv")"
-  hard_b="$(awk -F '\t' 'NR == 2 { print $38 }' "$dir/phase-summary.tsv")"
-  raw_a="$(awk -F '\t' 'NR == 2 { print $39 }' "$dir/phase-summary.tsv")"
-  raw_b="$(awk -F '\t' 'NR == 2 { print $40 }' "$dir/phase-summary.tsv")"
+  spread_a="$(awk -F '\t' 'NR == 2 { print $31 }' "$dir/phase-summary.tsv")"
+  spread_b="$(awk -F '\t' 'NR == 2 { print $32 }' "$dir/phase-summary.tsv")"
+  decrypt_batch_a="$(awk -F '\t' 'NR == 2 { print $33 }' "$dir/phase-summary.tsv")"
+  decrypt_batch_b="$(awk -F '\t' 'NR == 2 { print $34 }' "$dir/phase-summary.tsv")"
+  decrypt_spread_a="$(awk -F '\t' 'NR == 2 { print $35 }' "$dir/phase-summary.tsv")"
+  decrypt_spread_b="$(awk -F '\t' 'NR == 2 { print $36 }' "$dir/phase-summary.tsv")"
+  decrypt_turn_mix_a="$(awk -F '\t' 'NR == 2 { print $37 }' "$dir/phase-summary.tsv")"
+  decrypt_turn_mix_b="$(awk -F '\t' 'NR == 2 { print $38 }' "$dir/phase-summary.tsv")"
+  linux_bulk_a="$(awk -F '\t' 'NR == 2 { print $39 }' "$dir/phase-summary.tsv")"
+  linux_bulk_b="$(awk -F '\t' 'NR == 2 { print $40 }' "$dir/phase-summary.tsv")"
+  udp_send_a="$(awk -F '\t' 'NR == 2 { print $41 }' "$dir/phase-summary.tsv")"
+  udp_send_b="$(awk -F '\t' 'NR == 2 { print $42 }' "$dir/phase-summary.tsv")"
+  hard_a="$(awk -F '\t' 'NR == 2 { print $43 }' "$dir/phase-summary.tsv")"
+  hard_b="$(awk -F '\t' 'NR == 2 { print $44 }' "$dir/phase-summary.tsv")"
+  raw_a="$(awk -F '\t' 'NR == 2 { print $45 }' "$dir/phase-summary.tsv")"
+  raw_b="$(awk -F '\t' 'NR == 2 { print $46 }' "$dir/phase-summary.tsv")"
   assert_eq "$top_a" "decrypt_fallback_bulk_wait:rate_per_sec=10,p95_ms=2.1,p99_ms=8.4,max_ms=16.8,allmax_ms=11.1" "phase summary node-a top queue wait"
   assert_eq "$top_b" "fmp_worker_queue_wait:rate_per_sec=20,p95_ms=1,p99_ms=2.1,max_ms=2.1,allmax_ms=2" "phase summary node-b top queue wait"
   assert_eq "$batch_a" "avg_packets=42.0,full_pct=90.0,single_pct=5.0,priority_pct=25.0,bulk_pct=75.0,flush_per_sec=10,packets_per_sec=420,priority_packets_per_sec=105,bulk_packets_per_sec=315" "phase summary node-a FMP worker batch"
   assert_eq "$batch_b" "avg_packets=31.5,full_pct=60.0,single_pct=2.0,priority_pct=40.0,bulk_pct=60.0,flush_per_sec=20,packets_per_sec=630,priority_packets_per_sec=252,bulk_packets_per_sec=378" "phase summary node-b FMP worker batch"
+  assert_eq "$spread_a" "active_workers=2,workers_ge1pct=2,top_worker=w7,top_pct=66.5,flow_keyed_pct=100.0,target_only_pct=0.0,total_per_sec=416349,worker_rates=w4:139503;w7:276846" "phase summary node-a FMP worker dispatch spread"
+  assert_eq "$spread_b" "active_workers=1,workers_ge1pct=1,top_worker=w3,top_pct=100.0,flow_keyed_pct=0.0,target_only_pct=100.0,total_per_sec=19384.6,worker_rates=w3:19384.6" "phase summary node-b FMP worker dispatch spread"
   assert_eq "$decrypt_batch_a" "avg_packets=32.0,full_pct=25.0,single_pct=10.0,priority_pct=10.0,bulk_pct=90.0,flush_per_sec=20,packets_per_sec=640,priority_packets_per_sec=64,bulk_packets_per_sec=576" "phase summary node-a decrypt worker batch"
   assert_eq "$decrypt_batch_b" "avg_packets=16.0,full_pct=12.5,single_pct=4.0,priority_pct=25.0,bulk_pct=75.0,flush_per_sec=30,packets_per_sec=480,priority_packets_per_sec=120,bulk_packets_per_sec=360" "phase summary node-b decrypt worker batch"
+  assert_eq "$decrypt_spread_a" "active_workers=2,workers_ge1pct=2,top_worker=w0,top_pct=75.0,total_packets_per_sec=640,worker_packet_rates=w0:480;w2:160" "phase summary node-a decrypt worker spread"
+  assert_eq "$decrypt_spread_b" "active_workers=1,workers_ge1pct=1,top_worker=w3,top_pct=100.0,total_packets_per_sec=480,worker_packet_rates=w3:480" "phase summary node-b decrypt worker spread"
+  assert_eq "$decrypt_turn_mix_a" "completion_packet_pct=32.4,completion_batches_per_sec=14,known_completion_packets_per_sec=384,bulk_packets_per_sec=800,select_fmp_completion_batches_per_sec=2,select_fsp_completion_batches_per_sec=3,select_fsp_completion_packets_per_sec=96,select_bulk_packets_per_sec=480,drain_completion_batches_per_sec=4,drain_completion_packets_per_sec=128,drain_bulk_packets_per_sec=320,interleave_completion_batches_per_sec=5,interleave_completion_packets_per_sec=160,interleave_budget_exhausted_per_sec=0.2" "phase summary node-a decrypt worker turn mix"
+  assert_eq "$decrypt_turn_mix_b" "completion_packet_pct=20.0,completion_batches_per_sec=7,known_completion_packets_per_sec=120,bulk_packets_per_sec=480,select_fmp_completion_batches_per_sec=1,select_fsp_completion_batches_per_sec=2,select_fsp_completion_packets_per_sec=40,select_bulk_packets_per_sec=240,drain_completion_batches_per_sec=2,drain_completion_packets_per_sec=40,drain_bulk_packets_per_sec=240,interleave_completion_batches_per_sec=2,interleave_completion_packets_per_sec=40,interleave_budget_exhausted_per_sec=0" "phase summary node-b decrypt worker turn mix"
   assert_eq "$linux_bulk_a" "avg_packets=96.0,avg_sent_packets=96.0,enqueued_per_sec=5,packets_per_sec=480,sent_per_sec=5,sent_packets_per_sec=480,queue_p95_ms=0.524,queue_p99_ms=1" "phase summary node-a Linux bulk container"
   assert_eq "$linux_bulk_b" "avg_packets=48.0,avg_sent_packets=48.0,enqueued_per_sec=10,packets_per_sec=480,sent_per_sec=10,sent_packets_per_sec=480,queue_p95_ms=0.262,queue_p99_ms=0.524" "phase summary node-b Linux bulk container"
   assert_eq "$udp_send_a" "gso_packet_pct=99.1,sendmmsg_packet_pct=0.9,avg_packets=35.3,gso_avg_packets=42.0,sendmmsg_avg_packets=2.0,gso_batch_per_sec=10,gso_packets_per_sec=420,sendmmsg_batch_per_sec=2,sendmmsg_packets_per_sec=4,total_packets_per_sec=424" "phase summary node-a UDP send batch"
@@ -1139,6 +1279,63 @@ test_selected_pipeline_summary_artifact() {
   rm -rf "$dir"
 }
 
+test_nvpn_perf_docker_phase_summary_hooks() {
+  local script="$ROOT_DIR/scripts/perf-docker.sh"
+  assert_file_contains "$script" "nvpn-pipeline-phase-ranges.tsv" "nvpn perf phase range artifact"
+  assert_file_contains "$script" "nvpn-pipeline-phase-summary.tsv" "nvpn perf phase summary artifact"
+  assert_file_contains "$script" "run_test_json tcp-single" "nvpn perf TCP single phase range"
+  assert_file_contains "$script" "write_pipeline_phase_summary" "nvpn perf phase summary writer"
+  assert_file_contains "$script" "assert_no_direct_fmp_runtime_artifacts" "nvpn perf no-direct runtime guard"
+  assert_file_contains "$script" "decrypt_direct_fmp_endpoint_wait" "nvpn perf no-direct stage guard"
+  assert_file_contains "$script" "NVPN_DOCKER_REQUIRE_NO_FSP_AEAD_HELPERS" "nvpn perf no-FSP-helper guard"
+  assert_file_contains "$script" "assert_no_fsp_aead_helper_runtime_artifacts" "nvpn perf no-FSP-helper runtime guard"
+  assert_file_contains "$script" "decrypt_fsp_path_helper" "nvpn perf FSP helper path guard"
+  assert_file_contains "$script" "NVPN_DOCKER_EXPECT_FSP_OWNER_PLACEMENT" "nvpn perf FSP placement expectation guard"
+  assert_file_contains "$script" "NVPN_DOCKER_PLACEMENT_PREFLIGHT" "nvpn perf FSP placement preflight guard"
+  assert_file_contains "$script" 'NVPN_DOCKER_PLACEMENT_PREFLIGHT="$PLACEMENT_PREFLIGHT"' "nvpn perf exports effective placement preflight"
+  assert_file_contains "$script" "NVPN_DOCKER_PLACEMENT_PREFLIGHT_PING_SIZE" "nvpn perf bulk-sized placement preflight"
+  assert_file_contains "$script" "NVPN_DOCKER_PLACEMENT_PROFILE" "nvpn perf deterministic placement profile"
+  assert_file_contains "$script" "FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER=1" "nvpn perf source-affine placement profile env"
+  assert_file_contains "$script" "FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1" "nvpn perf worker-open placement profile env"
+  assert_file_contains "$script" "run_placement_preflight" "nvpn perf placement preflight before benchmark"
+  assert_file_contains "$script" "node_b_fsp_owner_placement_load_line" "nvpn perf live placement classifier"
+  assert_file_contains "$script" "nvpn-fsp-owner-placement.tsv" "nvpn perf FSP placement artifact"
+  assert_file_contains "$script" "nvpn-iperf-socket-buffers.tsv" "nvpn perf iperf socket buffer artifact"
+  assert_file_contains "$script" "nvpn-connected-udp-socket-buffers.tsv" "nvpn perf connected UDP socket buffer artifact"
+  assert_file_contains "$script" "udp-receiver-limits.tsv" "nvpn perf UDP receiver limits artifact"
+  assert_file_contains "$script" "net.core.rmem_max" "nvpn perf captures UDP receive buffer ceiling"
+}
+
+test_nvpn_perf_docker_placement_hunt_hooks() {
+  local script="$ROOT_DIR/scripts/perf-docker-placement-hunt.sh"
+  [[ -x "$script" ]] || fail "nvpn perf placement hunt script should be executable"
+  assert_file_contains "$script" "NVPN_DOCKER_PLACEMENT_ATTEMPTS" "placement hunt attempt count env"
+  assert_file_contains "$script" "NVPN_DOCKER_EXPECT_FSP_OWNER_PLACEMENT" "placement hunt expected placement env"
+  assert_file_contains "$script" "NVPN_DOCKER_PLACEMENT_PREFLIGHT" "placement hunt preflight env"
+  assert_file_contains "$script" "expected (exclusive )?node-b FSP owner placement" "placement hunt retries only placement misses"
+  assert_file_contains "$script" "export NVPN_DOCKER_SKIP_BUILD=1" "placement hunt skips rebuild after first attempt"
+  assert_file_contains "$script" "export NVPN_DOCKER_PLACEMENT_PREFLIGHT=1" "placement hunt enables cheap placement misses"
+  assert_file_contains "$script" "success-output-dir.txt" "placement hunt success artifact"
+}
+
+test_nvpn_perf_docker_identity_hooks() {
+  local script="$ROOT_DIR/scripts/perf-docker.sh"
+  assert_file_contains "$script" "NVPN_DOCKER_NODE_A_NOSTR_SECRET_KEY" "node-a deterministic secret env"
+  assert_file_contains "$script" "NVPN_DOCKER_NODE_A_NOSTR_PUBLIC_KEY" "node-a deterministic public env"
+  assert_file_contains "$script" "NVPN_DOCKER_NODE_B_NOSTR_SECRET_KEY" "node-b deterministic secret env"
+  assert_file_contains "$script" "NVPN_DOCKER_NODE_B_NOSTR_PUBLIC_KEY" "node-b deterministic public env"
+  assert_file_contains "$script" "NVPN_DOCKER_NODE_A_ID" "node-a deterministic node-id env"
+  assert_file_contains "$script" "NVPN_DOCKER_NODE_B_ID" "node-b deterministic node-id env"
+  assert_file_contains "$script" "validate_nostr_identity_env" "deterministic identity validation hook"
+  assert_file_contains "$script" "validate_node_id_env" "deterministic node-id validation hook"
+  assert_file_contains "$script" "Docker Nostr identity env is all-or-none" "deterministic identity all-or-none guard"
+  assert_file_contains "$script" "Docker node ID env is all-or-none" "deterministic node-id all-or-none guard"
+  assert_file_contains "$script" "install_configured_nostr_identities" "deterministic identity install hook"
+  assert_file_contains "$script" "install_configured_node_ids" "deterministic node-id install hook"
+  assert_file_contains "$script" ".config.toml.nostr-secret-key.secret" "Linux sidecar secret install"
+  assert_file_contains "$script" "stored-in-private-secret-file" "redacted config marker after identity install"
+}
+
 test_host_snapshot_artifact() {
   local dir path content
   dir="$(mktemp -d)"
@@ -1171,9 +1368,14 @@ test_pipeline_summary_collects_fips_and_nvpn_lines
 test_pipeline_summary_prefers_peak_wait_lines
 test_pipeline_summary_prefers_load_bearing_lines
 test_pipeline_summary_scopes_selected_lines_after_start
+test_docker_pipeline_range_helpers
 test_pipeline_queue_wait_top_summary
 test_pipeline_fmp_worker_batch_summary
+test_pipeline_fmp_worker_dispatch_spread_summary
+test_pipeline_fsp_owner_placement_summary
 test_pipeline_decrypt_worker_batch_summary
+test_pipeline_decrypt_worker_spread_summary
+test_pipeline_decrypt_worker_turn_mix_summary
 test_pipeline_linux_bulk_container_summary
 test_pipeline_udp_send_batch_summary
 test_pipeline_hard_event_summary
@@ -1188,6 +1390,9 @@ test_perf_metadata_maps_e2e_env
 test_failure_summary_context
 test_raw_artifact_helpers
 test_selected_pipeline_summary_artifact
+test_nvpn_perf_docker_phase_summary_hooks
+test_nvpn_perf_docker_placement_hunt_hooks
+test_nvpn_perf_docker_identity_hooks
 test_host_snapshot_artifact
 
 printf 'fips perf harness self-test passed\n'

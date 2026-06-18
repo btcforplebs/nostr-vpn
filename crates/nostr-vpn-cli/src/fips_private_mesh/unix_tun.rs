@@ -171,8 +171,17 @@ fn read_plain_tun_packets_into(
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn push_tun_pipeline_packet(batch: &mut TunPipelineBatch, packet: &[u8]) {
-    let mut bytes = packet.to_vec();
+    push_tun_pipeline_packet_owned(batch, packet.to_vec());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn push_tun_pipeline_packet_owned(batch: &mut TunPipelineBatch, mut bytes: Vec<u8>) {
     nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut bytes);
+    push_tun_pipeline_packet_owned_finalized(batch, bytes);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn push_tun_pipeline_packet_owned_finalized(batch: &mut TunPipelineBatch, bytes: Vec<u8>) {
     batch.push(TunPipelinePacket::new(bytes));
 }
 
@@ -194,6 +203,13 @@ fn spawn_tun_read_task(
         let mut buf = vec![0_u8; tun.read_buffer_len()];
         let mut batch = Vec::with_capacity(FIPS_TUN_READ_BURST);
         loop {
+            if !packet_tx
+                .wait_for_tun_read_bulk_headroom(FIPS_TUN_READ_BURST)
+                .await
+            {
+                return;
+            }
+
             let mut guard = match tun_fd.readable().await {
                 Ok(guard) => guard,
                 Err(error) => {
@@ -258,7 +274,13 @@ fn spawn_tun_read_task(
                 );
                 let pending =
                     std::mem::replace(&mut batch, Vec::with_capacity(FIPS_TUN_READ_BURST));
-                match submit_tun_packet_batch_to_mesh_queue(&packet_tx, pending) {
+                match submit_tun_packet_batch_to_mesh_queue_with_backpressure(
+                    &packet_tx,
+                    pending,
+                    FIPS_TUN_READ_BURST,
+                )
+                .await
+                {
                     TunQueueSubmit::Enqueued | TunQueueSubmit::DroppedBulk => {}
                     TunQueueSubmit::Closed => return,
                 }
@@ -335,7 +357,10 @@ async fn stop_mesh_recv_worker(worker: FipsMeshRecvWorker, mesh: &FipsPrivateMes
         FipsMeshRecvWorker::Blocking { stop, thread } => {
             stop.store(true, Ordering::Release);
             mesh.wake_blocking_mesh_recv();
-            let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = thread.join();
+            })
+            .await;
         }
     }
 }
@@ -347,12 +372,13 @@ fn spawn_mesh_recv_task(
     event_tx: mpsc::Sender<FipsPrivateMeshEvent>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut messages = Vec::with_capacity(FIPS_MESH_RECV_BURST);
-        let mut events = Vec::with_capacity(FIPS_MESH_RECV_BURST);
-        let mut packet_batch = Vec::with_capacity(FIPS_MESH_RECV_BURST);
+        let recv_burst = fips_mesh_recv_burst();
+        let mut messages = Vec::with_capacity(recv_burst);
+        let mut events = Vec::with_capacity(recv_burst);
+        let mut packet_batch = Vec::with_capacity(recv_burst);
         loop {
             match mesh
-                .recv_mesh_event_batch_into(&mut messages, &mut events, FIPS_MESH_RECV_BURST)
+                .recv_mesh_event_batch_into(&mut messages, &mut events, recv_burst)
                 .await
             {
                 Ok(Some(drained)) => {
@@ -361,7 +387,7 @@ fn spawn_mesh_recv_task(
                         drained,
                         packet_count,
                         packet_bytes,
-                        FIPS_MESH_RECV_BURST,
+                        recv_burst,
                     );
                     packet_batch.clear();
                     for event in events.drain(..) {
@@ -378,7 +404,7 @@ fn spawn_mesh_recv_task(
                     }
                     flush_mesh_packet_batch_to_tun(&tun_fd, &mut packet_batch).await;
 
-                    if drained == FIPS_MESH_RECV_BURST {
+                    if drained == recv_burst {
                         tokio::task::yield_now().await;
                     }
                 }
@@ -399,65 +425,79 @@ fn spawn_blocking_mesh_recv_worker(
     event_tx: mpsc::Sender<FipsPrivateMeshEvent>,
 ) -> FipsMeshRecvWorker {
     let stop = Arc::new(AtomicBool::new(false));
+    let tun_fd = *tun_fd.get_ref();
     let thread_stop = Arc::clone(&stop);
-    let thread = std::thread::spawn(move || {
-        let tun_fd = *tun_fd.get_ref();
-        let mut packet_batch = Vec::with_capacity(FIPS_MESH_RECV_BURST);
-        while !thread_stop.load(Ordering::Acquire) {
-            let mut packet_count = 0usize;
-            let mut packet_bytes = 0usize;
-            packet_batch.clear();
-            match mesh.recv_mesh_event_batch_blocking_for_each(
-                FIPS_MESH_RECV_BURST,
-                &thread_stop,
-                |event| {
-                    if let FipsPrivateMeshEvent::Packet(packet) = &event {
-                        packet_count += 1;
-                        packet_bytes = packet_bytes.saturating_add(packet.len());
-                    }
-                    !thread_stop.load(Ordering::Acquire)
-                        && forward_mesh_event_to_tun_blocking_batched(
-                            event,
+    let thread = std::thread::Builder::new()
+        .name("nvpn-fips-mesh-recv".to_string())
+        .spawn(move || {
+            let recv_burst = fips_mesh_recv_burst();
+            let mut packet_batch = Vec::with_capacity(recv_burst);
+            while !thread_stop.load(Ordering::Acquire) {
+                packet_batch.clear();
+                let mut packet_count = 0usize;
+                let mut packet_bytes = 0usize;
+                let mut keep_running = true;
+                let received =
+                    mesh.recv_mesh_event_batch_blocking_for_each(recv_burst, &thread_stop, |event| {
+                        match event {
+                            FipsPrivateMeshEvent::Packet(packet) => {
+                                packet_count = packet_count.saturating_add(1);
+                                packet_bytes = packet_bytes.saturating_add(packet.len());
+                                push_mesh_packet_for_tun(packet, &mut packet_batch);
+                                true
+                            }
+                            event => {
+                                flush_mesh_packet_batch_to_tun_blocking(
+                                    tun_fd,
+                                    &mut packet_batch,
+                                    &thread_stop,
+                                );
+                                keep_running = event_tx.blocking_send(event).is_ok();
+                                keep_running
+                            }
+                        }
+                    });
+                match received {
+                    Ok(Some(drained)) => {
+                        crate::pipeline_profile::record_mesh_recv_batch(
+                            drained,
+                            packet_count,
+                            packet_bytes,
+                            recv_burst,
+                        );
+                        flush_mesh_packet_batch_to_tun_blocking(
                             tun_fd,
-                            &event_tx,
-                            &thread_stop,
                             &mut packet_batch,
-                        )
-                },
-            ) {
-                Ok(Some(drained)) => {
-                    crate::pipeline_profile::record_mesh_recv_batch(
-                        drained,
-                        packet_count,
-                        packet_bytes,
-                        FIPS_MESH_RECV_BURST,
-                    );
-                    flush_mesh_packet_batch_to_tun_blocking(
-                        tun_fd,
-                        &mut packet_batch,
-                        &thread_stop,
-                    );
-                }
-                Ok(None) => {
-                    flush_mesh_packet_batch_to_tun_blocking(
-                        tun_fd,
-                        &mut packet_batch,
-                        &thread_stop,
-                    );
-                    break;
-                }
-                Err(error) => {
-                    flush_mesh_packet_batch_to_tun_blocking(
-                        tun_fd,
-                        &mut packet_batch,
-                        &thread_stop,
-                    );
-                    eprintln!("fips: failed to receive tunnel packet: {error}");
-                    std::thread::sleep(Duration::from_millis(100));
+                            &thread_stop,
+                        );
+                        if !keep_running {
+                            break;
+                        }
+                        if drained == recv_burst {
+                            std::thread::yield_now();
+                        }
+                    }
+                    Ok(None) => {
+                        flush_mesh_packet_batch_to_tun_blocking(
+                            tun_fd,
+                            &mut packet_batch,
+                            &thread_stop,
+                        );
+                        break;
+                    }
+                    Err(error) => {
+                        flush_mesh_packet_batch_to_tun_blocking(
+                            tun_fd,
+                            &mut packet_batch,
+                            &thread_stop,
+                        );
+                        eprintln!("fips: failed to receive tunnel packet: {error}");
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
                 }
             }
-        }
-    });
+        })
+        .expect("failed to spawn FIPS mesh receive worker");
     FipsMeshRecvWorker::Blocking { stop, thread }
 }
 

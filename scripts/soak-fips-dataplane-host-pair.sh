@@ -1147,6 +1147,8 @@ pipeline_hard_events() {
   local event regex rate total found
   local hard_events=(
     connected_udp_activation_failed
+    connected_udp_kernel_dropped
+    connected_udp_drain_bulk_dropped
     encrypt_worker_queue_full
     encrypt_worker_bulk_dropped
     decrypt_worker_queue_full
@@ -1155,17 +1157,25 @@ pipeline_hard_events() {
     decrypt_worker_priority_dropped
     decrypt_fallback_bulk_dropped
     decrypt_fallback_priority_dropped
+    fmp_aead_completion_aead_failed
+    fsp_aead_completion_aead_failed
+    fsp_aead_completion_epoch_mismatch
     pending_tun_destination_dropped
     pending_tun_packet_dropped
     pending_endpoint_destination_dropped
     pending_endpoint_packet_dropped
-    endpoint_direct_fmp_receive_dropped
+    endpoint_bulk_fast_path_prepare_failed
+    endpoint_bulk_fast_path_stage_full
+    endpoint_bulk_fast_path_feedback_full
     endpoint_event_backlog_high
     endpoint_event_bulk_dropped
     transport_channel_backlog_high
     transport_bulk_dropped
     udp_send_bulk_dropped
     nvpn_tun_to_mesh_bulk_dropped
+    nvpn_tun_to_mesh_bulk_dropped_batches
+    nvpn_tun_to_mesh_bulk_dropped_packet_cap
+    nvpn_tun_to_mesh_bulk_dropped_channel_full
   )
   for event in "${hard_events[@]}"; do
     regex="(^|[[:space:]])${event}=([0-9]+([.][0-9]+)?)/s([[:space:]]total=([0-9]+))?([[:space:]]|$)"
@@ -1250,9 +1260,13 @@ pipeline_queue_wait_json() {
       decrypt_fallback_wait: wait_point("decrypt_fallback_wait"),
       decrypt_fallback_priority_wait: wait_point("decrypt_fallback_priority_wait"),
       decrypt_fallback_bulk_wait: wait_point("decrypt_fallback_bulk_wait"),
+      fsp_aead_worker_open_queue_wait: wait_point("fsp_aead_worker_open_queue_wait"),
+      fsp_aead_worker_open_completion_wait: wait_point("fsp_aead_worker_open_completion_wait"),
       decrypt_authenticated_session_wait: wait_point("decrypt_authenticated_session_wait"),
       decrypt_authenticated_session_priority_wait: wait_point("decrypt_authenticated_session_priority_wait"),
       decrypt_authenticated_session_bulk_wait: wait_point("decrypt_authenticated_session_bulk_wait"),
+      decrypt_direct_session_commit_wait: wait_point("decrypt_direct_session_commit_wait"),
+      decrypt_direct_session_data_wait: wait_point("decrypt_direct_session_data_wait"),
       decrypt_fsp_worker_queue_wait: wait_point("decrypt_fsp_worker_queue_wait"),
       decrypt_fsp_worker_priority_queue_wait: wait_point("decrypt_fsp_worker_priority_queue_wait"),
       decrypt_fsp_worker_bulk_queue_wait: wait_point("decrypt_fsp_worker_bulk_queue_wait"),
@@ -1339,7 +1353,7 @@ pipeline_queue_wait_top_summary() {
       return 0
     }
     BEGIN {
-      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait fmp_linux_bulk_container_queue_wait fmp_linux_bulk_container_ready_wait fmp_linux_bulk_container_first_slot_wait fmp_linux_bulk_container_all_slots_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait nvpn_mesh_to_tun_queue_wait"
+      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait fmp_linux_bulk_container_queue_wait fmp_linux_bulk_container_ready_wait fmp_linux_bulk_container_first_slot_wait fmp_linux_bulk_container_all_slots_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait fsp_aead_worker_open_queue_wait fsp_aead_worker_open_completion_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_direct_session_commit_wait decrypt_direct_session_data_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait"
       metric_count = split(metrics, names, " ")
       best_p99 = -1
       best_p95 = -1

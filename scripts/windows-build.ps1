@@ -15,6 +15,10 @@ $Project = Join-Path $Root "windows\NostrVpn.Windows\NostrVpn.Windows.csproj"
 $CargoTargetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $Root "target" }
 $CargoProfile = if ($Configuration -eq "Release") { "release" } else { "debug" }
 $WorkspaceCargoToml = Join-Path $Root "Cargo.toml"
+$CargoLock = Join-Path $Root "Cargo.lock"
+$CargoConfigArgs = @()
+$CargoLockArgs = @("--locked")
+$LockSnapshot = $null
 
 Set-Location $Root
 
@@ -117,71 +121,136 @@ function Assert-BundledWindowsHelpers {
   }
 }
 
-Enable-DeterministicBuildEnv
-
-$CargoArgs = @("build", "--locked", "-p", "nostr-vpn-app-core", "-p", "nvpn")
-if ($Configuration -eq "Release") {
-  $CargoArgs += "--release"
-}
-Invoke-Checked cargo $CargoArgs
-
-$CargoOutputDir = Join-Path $CargoTargetRoot $CargoProfile
-$AppCargoDir = Join-Path $Root "target\$Configuration"
-New-Item -ItemType Directory -Force -Path $AppCargoDir | Out-Null
-foreach ($FileName in @("nostr_vpn_app_core.dll", "nvpn.exe")) {
-  $Source = Join-Path $CargoOutputDir $FileName
-  $Destination = Join-Path $AppCargoDir $FileName
-  Copy-RequiredFile $Source $Destination $FileName
-}
-$AppBinariesDir = Join-Path $AppCargoDir "binaries"
-Copy-RequiredFile (Join-Path $CargoOutputDir "wintun.dll") (Join-Path $AppBinariesDir "wintun.dll") "wintun.dll"
-
-if ($Publish -or $Installer) {
-  $SelfContained = if ($Installer) { "true" } else { "false" }
-  Invoke-Checked dotnet @("publish", $Project, "-c", $Configuration, "-r", $Runtime, "--self-contained", $SelfContained, "-p:Deterministic=true", "-p:ContinuousIntegrationBuild=true")
-  $DotnetOutputDir = Join-Path $Root "windows\NostrVpn.Windows\bin\$Configuration\net8.0-windows\$Runtime\publish"
-} else {
-  Invoke-Checked dotnet @("build", $Project, "-c", $Configuration, "-p:Deterministic=true", "-p:ContinuousIntegrationBuild=true")
-  $DotnetOutputDir = Join-Path $Root "windows\NostrVpn.Windows\bin\$Configuration\net8.0-windows"
-}
-Assert-BundledWindowsHelpers $DotnetOutputDir
-
-if ($Installer) {
-  if ($Runtime -ne "win-x64") {
-    throw "The installer script currently supports win-x64 only, got $Runtime"
+function Test-FilesDiffer {
+  param(
+    [string]$Left,
+    [string]$Right
+  )
+  if (!(Test-Path $Left) -or !(Test-Path $Right)) {
+    return $true
   }
-
-  $VersionTag = if ($Tag) { $Tag } else { "v$(Get-WorkspaceVersion)" }
-  if (!$VersionTag.StartsWith("v")) {
-    $VersionTag = "v$VersionTag"
-  }
-  $Version = $VersionTag.TrimStart("v")
-  $InstallerOutputDir = if ($OutputDir) { Resolve-OutputPath $OutputDir } else { Join-Path $Root "dist" }
-  New-Item -ItemType Directory -Force -Path $InstallerOutputDir | Out-Null
-
-  $PublishDir = $DotnetOutputDir
-  if (!(Test-Path (Join-Path $PublishDir "NostrVpn.Windows.exe"))) {
-    throw "Published Windows app not found in $PublishDir"
-  }
-
-  $env:NVPN_RELEASE_VERSION = $Version
-  $env:NVPN_PROJECT_ROOT = $Root
-  $env:NVPN_WINDOWS_PUBLISH_DIR = $PublishDir
-  $env:NVPN_WINDOWS_INSTALLER_OUTPUT_DIR = $InstallerOutputDir
-  $env:NVPN_WINDOWS_INSTALLER_BASENAME = "nostr-vpn-$VersionTag-windows-x64-setup"
-  $InnoSetupCompiler = Resolve-InnoSetupCompiler
-  Invoke-Checked $InnoSetupCompiler @((Join-Path $Root "scripts\windows-installer.iss"))
-
-  $InstallerPath = Join-Path $InstallerOutputDir "$($env:NVPN_WINDOWS_INSTALLER_BASENAME).exe"
-  if (!(Test-Path $InstallerPath)) {
-    throw "Expected Windows installer was not produced: $InstallerPath"
-  }
+  return (Get-FileHash -Algorithm SHA256 $Left).Hash -ne (Get-FileHash -Algorithm SHA256 $Right).Hash
 }
 
-if ($Run) {
-  $exe = Join-Path $Root "windows\NostrVpn.Windows\bin\$Configuration\net8.0-windows\NostrVpn.Windows.exe"
-  if (!(Test-Path $exe)) {
-    throw "Built Windows app not found: $exe"
+function Prepare-CargoLockRestore {
+  if ($script:LockSnapshot) {
+    return
   }
-  & $exe
+  $script:LockSnapshot = [System.IO.Path]::GetTempFileName()
+  Copy-Item -Force $CargoLock $script:LockSnapshot
+}
+
+function Restore-CargoLock {
+  if (!$script:LockSnapshot -or !(Test-Path $script:LockSnapshot)) {
+    return
+  }
+  if (Test-FilesDiffer $script:LockSnapshot $CargoLock) {
+    Copy-Item -Force $script:LockSnapshot $CargoLock
+    Write-Host "restored Cargo.lock after local-FIPS cargo run"
+  }
+  Remove-Item -Force $script:LockSnapshot -ErrorAction SilentlyContinue
+  $script:LockSnapshot = $null
+}
+
+function Convert-ToCargoPath {
+  param([string]$Path)
+  return ((Resolve-Path $Path).Path -replace '\\', '/')
+}
+
+function Prepare-LocalFipsPatch {
+  if (!$env:NVPN_FIPS_REPO_PATH) {
+    return
+  }
+
+  $FipsRoot = (Resolve-Path $env:NVPN_FIPS_REPO_PATH).Path
+  foreach ($CrateName in @("fips-core", "fips-endpoint", "fips-identity")) {
+    $CrateDir = Join-Path $FipsRoot "crates\$CrateName"
+    if (!(Test-Path (Join-Path $CrateDir "Cargo.toml"))) {
+      throw "NVPN_FIPS_REPO_PATH must point at a fips checkout with ${CrateName}: $CrateDir"
+    }
+    $CargoPath = Convert-ToCargoPath $CrateDir
+    $script:CargoConfigArgs += @("--config", "patch.crates-io.$CrateName.path='$CargoPath'")
+  }
+
+  Prepare-CargoLockRestore
+  $script:CargoLockArgs = @()
+  Write-Host "using local FIPS crates from $FipsRoot"
+}
+
+try {
+  Enable-DeterministicBuildEnv
+  Prepare-LocalFipsPatch
+
+  $CargoArgs = @()
+  $CargoArgs += $CargoConfigArgs
+  $CargoArgs += @("build")
+  $CargoArgs += $CargoLockArgs
+  $CargoArgs += @("-p", "nostr-vpn-app-core", "-p", "nvpn")
+  if ($Configuration -eq "Release") {
+    $CargoArgs += "--release"
+  }
+  Invoke-Checked cargo $CargoArgs
+
+  $CargoOutputDir = Join-Path $CargoTargetRoot $CargoProfile
+  $AppCargoDir = Join-Path $Root "target\$Configuration"
+  New-Item -ItemType Directory -Force -Path $AppCargoDir | Out-Null
+  foreach ($FileName in @("nostr_vpn_app_core.dll", "nvpn.exe")) {
+    $Source = Join-Path $CargoOutputDir $FileName
+    $Destination = Join-Path $AppCargoDir $FileName
+    Copy-RequiredFile $Source $Destination $FileName
+  }
+  $AppBinariesDir = Join-Path $AppCargoDir "binaries"
+  Copy-RequiredFile (Join-Path $CargoOutputDir "wintun.dll") (Join-Path $AppBinariesDir "wintun.dll") "wintun.dll"
+
+  if ($Publish -or $Installer) {
+    $SelfContained = if ($Installer) { "true" } else { "false" }
+    Invoke-Checked dotnet @("publish", $Project, "-c", $Configuration, "-r", $Runtime, "--self-contained", $SelfContained, "-p:Deterministic=true", "-p:ContinuousIntegrationBuild=true")
+    $DotnetOutputDir = Join-Path $Root "windows\NostrVpn.Windows\bin\$Configuration\net8.0-windows\$Runtime\publish"
+  } else {
+    Invoke-Checked dotnet @("build", $Project, "-c", $Configuration, "-p:Deterministic=true", "-p:ContinuousIntegrationBuild=true")
+    $DotnetOutputDir = Join-Path $Root "windows\NostrVpn.Windows\bin\$Configuration\net8.0-windows"
+  }
+  Assert-BundledWindowsHelpers $DotnetOutputDir
+
+  if ($Installer) {
+    if ($Runtime -ne "win-x64") {
+      throw "The installer script currently supports win-x64 only, got $Runtime"
+    }
+
+    $VersionTag = if ($Tag) { $Tag } else { "v$(Get-WorkspaceVersion)" }
+    if (!$VersionTag.StartsWith("v")) {
+      $VersionTag = "v$VersionTag"
+    }
+    $Version = $VersionTag.TrimStart("v")
+    $InstallerOutputDir = if ($OutputDir) { Resolve-OutputPath $OutputDir } else { Join-Path $Root "dist" }
+    New-Item -ItemType Directory -Force -Path $InstallerOutputDir | Out-Null
+
+    $PublishDir = $DotnetOutputDir
+    if (!(Test-Path (Join-Path $PublishDir "NostrVpn.Windows.exe"))) {
+      throw "Published Windows app not found in $PublishDir"
+    }
+
+    $env:NVPN_RELEASE_VERSION = $Version
+    $env:NVPN_PROJECT_ROOT = $Root
+    $env:NVPN_WINDOWS_PUBLISH_DIR = $PublishDir
+    $env:NVPN_WINDOWS_INSTALLER_OUTPUT_DIR = $InstallerOutputDir
+    $env:NVPN_WINDOWS_INSTALLER_BASENAME = "nostr-vpn-$VersionTag-windows-x64-setup"
+    $InnoSetupCompiler = Resolve-InnoSetupCompiler
+    Invoke-Checked $InnoSetupCompiler @((Join-Path $Root "scripts\windows-installer.iss"))
+
+    $InstallerPath = Join-Path $InstallerOutputDir "$($env:NVPN_WINDOWS_INSTALLER_BASENAME).exe"
+    if (!(Test-Path $InstallerPath)) {
+      throw "Expected Windows installer was not produced: $InstallerPath"
+    }
+  }
+
+  if ($Run) {
+    $exe = Join-Path $Root "windows\NostrVpn.Windows\bin\$Configuration\net8.0-windows\NostrVpn.Windows.exe"
+    if (!(Test-Path $exe)) {
+      throw "Built Windows app not found: $exe"
+    }
+    & $exe
+  }
+} finally {
+  Restore-CargoLock
 }

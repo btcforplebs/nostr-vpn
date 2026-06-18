@@ -8,6 +8,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SUMMARY_LIB="$ROOT_DIR/scripts/lib-docker-bench-summary.sh"
 COMPARE_SCRIPT="$ROOT_DIR/scripts/compare-docker-benchmarks.sh"
+TABLE_SCRIPT="$ROOT_DIR/scripts/summarize-docker-benchmark-table.sh"
 
 # shellcheck source=scripts/lib-docker-bench-summary.sh
 source "$SUMMARY_LIB"
@@ -29,6 +30,41 @@ assert_file_contains() {
   local needle="$2"
   local label="$3"
   grep -Fq "$needle" "$path" || fail "$label: missing '$needle' in $path"
+}
+
+assert_file_not_contains() {
+  local path="$1"
+  local needle="$2"
+  local label="$3"
+  ! grep -Fq "$needle" "$path" || fail "$label: unexpected '$needle' in $path"
+}
+
+table_values() {
+  local path="$1"
+  local label="$2"
+  shift 2
+  local fields="$*"
+  awk -F '\t' -v label="$label" -v fields="$fields" '
+    BEGIN {
+      want_count = split(fields, want, " ")
+    }
+    NR == 1 {
+      for (i = 1; i <= NF; i++) header[$i] = i
+      next
+    }
+    $1 == label {
+      for (i = 1; i <= want_count; i++) {
+        idx = header[want[i]]
+        if (!idx) exit 2
+        printf "%s%s", (i == 1 ? "" : "\t"), $idx
+      }
+      printf "\n"
+      found = 1
+      exit
+    }
+    END {
+      if (!found) exit 3
+    }' "$path"
 }
 
 write_tcp_json() {
@@ -94,9 +130,22 @@ test_json_and_ping_parsers() {
   rm -rf "$dir"
 }
 
+test_udp1000_parallel_bandwidth_helpers_preserve_total_target() {
+  local per_stream default_streams
+  per_stream="$(
+    NVPN_DOCKER_UDP1000_BANDWIDTH=1G \
+    NVPN_DOCKER_UDP1000_PARALLEL=4 \
+      docker_bench_udp1000_per_stream_bandwidth
+  )"
+  default_streams="$(docker_bench_udp1000_parallel_streams)"
+
+  assert_eq "$per_stream" "250000000" "UDP1000 P4 per-stream bandwidth"
+  assert_eq "$default_streams" "1" "UDP1000 default stream count"
+}
+
 test_summary_row() {
   local dir tcp_single tcp_4 tcp_8 udp_200 udp_1000 ping_output
-  local header row nvpn_row fields nvpn_fields
+  local header row nvpn_row fields nvpn_fields lane_header lane_row
   dir="$(mktemp -d)"
   OUTPUT_DIR="$dir/out"
   RAW_DIR="$OUTPUT_DIR/raw"
@@ -128,8 +177,48 @@ test_summary_row() {
   assert_eq "$header" $'backend\tthreads\tduration_secs\traw_dir' "summary header"
   assert_eq "$row" $'boringtun\t1\t3\t1234.568\t7\t987.654\t1.25\t0.333333\t1.234' "summary row"
   assert_eq "$nvpn_row" $'nvpn\t\t3\t1234.568\t7\t987.654\t1.25\t0.333333\t1.234' "nvpn summary row"
-  assert_eq "$fields" "16" "summary field count"
-  assert_eq "$nvpn_fields" "16" "nvpn summary field count"
+  assert_eq "$fields" "26" "summary field count"
+  assert_eq "$nvpn_fields" "26" "nvpn summary field count"
+
+  rm -rf "$dir"
+
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  RAW_DIR="$OUTPUT_DIR/raw"
+  SUMMARY_TSV="$OUTPUT_DIR/summary.tsv"
+  DURATION=3
+  docker_bench_init_summary
+
+  tcp_single="$dir/tcp-single.json"
+  tcp_4="$dir/tcp-4.json"
+  tcp_8="$dir/tcp-8.json"
+  udp_200="$dir/udp-200.json"
+  udp_1000="$dir/udp-1000.json"
+  ping_output="$dir/ping.txt"
+  write_tcp_json "$tcp_single"
+  write_tcp_json "$tcp_4"
+  write_tcp_json "$tcp_8"
+  write_udp_json "$udp_200"
+  write_udp_json "$udp_1000"
+  write_ping_output "$ping_output"
+
+  (
+    export NVPN_DOCKER_CPU_STRESS=1
+    export NVPN_DOCKER_CPU_STRESS_SIDES=both
+    export NVPN_DOCKER_CPU_STRESS_LOCAL_WORKERS=2
+    export NVPN_DOCKER_CPU_STRESS_REMOTE_WORKERS=3
+    export NVPN_DOCKER_IPERF_SOCKET_BUFFER=4M
+    export NVPN_DOCKER_UDP1000_PARALLEL=4
+    export NVPN_DOCKER_UDP1000_BANDWIDTH=1G
+    export NVPN_DOCKER_DATAPLANE_PROFILE=linux-vnet-lan
+    export NVPN_DOCKER_PLACEMENT_PROFILE=worker-open
+    docker_bench_append_summary_row nvpn "" "$DURATION" "$RAW_DIR" "$tcp_single" "$tcp_4" "$tcp_8" "$udp_200" "$udp_1000" "$ping_output"
+  )
+  lane_header="$(awk -F '\t' 'NR == 1 { print $17 "\t" $18 "\t" $19 "\t" $20 "\t" $21 "\t" $22 "\t" $23 "\t" $24 "\t" $25 "\t" $26 }' "$SUMMARY_TSV")"
+  lane_row="$(awk -F '\t' 'NR == 2 { print $17 "\t" $18 "\t" $19 "\t" $20 "\t" $21 "\t" $22 "\t" $23 "\t" $24 "\t" $25 "\t" $26 }' "$SUMMARY_TSV")"
+
+  assert_eq "$lane_header" $'cpu_stress_enabled\tcpu_stress_sides\tcpu_stress_local_workers\tcpu_stress_remote_workers\tiperf_socket_buffer\tudp1000_parallel\tudp1000_bandwidth\tudp1000_per_stream_bandwidth\tdataplane_profile\tplacement_profile' "summary lane metadata header"
+  assert_eq "$lane_row" $'true\tboth\t2\t3\t4M\t4\t1G\t250000000\tlinux-vnet-lan\tworker-open' "summary lane metadata row"
 
   rm -rf "$dir"
 }
@@ -142,6 +231,8 @@ test_metadata_writer_records_cpu_stress() {
   mkdir -p "$OUTPUT_DIR"
 
   (
+    unset NVPN_FIPS_REPO_PATH
+    unset NVPN_PATCH_LOCAL_FIPS
     export NVPN_DOCKER_CPU_STRESS=1
     export NVPN_DOCKER_CPU_STRESS_SIDES=remote
     export NVPN_DOCKER_CPU_STRESS_WORKERS=2
@@ -155,6 +246,37 @@ test_metadata_writer_records_cpu_stress() {
   assert_eq "$(jq -r '.cpu_stress.local_workers' "$metadata")" "0" "metadata local workers"
   assert_eq "$(jq -r '.cpu_stress.remote_workers' "$metadata")" "5" "metadata remote workers"
   assert_eq "$(jq -r '.source.local_fips_patch.enabled' "$metadata")" "false" "metadata local FIPS default"
+
+  rm -rf "$dir"
+}
+
+test_local_fips_repo_path_defaults_to_patch() {
+  local dir metadata
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR" "$dir/fips"
+
+  (
+    unset NVPN_PATCH_LOCAL_FIPS
+    export NVPN_FIPS_REPO_PATH="$dir/fips"
+    docker_bench_apply_local_fips_patch_default
+    assert_eq "${NVPN_PATCH_LOCAL_FIPS:-}" "1" "local FIPS path exports patch default"
+    docker_bench_write_metadata nvpn 3
+  )
+  assert_eq "$(jq -r '.source.local_fips_patch.enabled' "$metadata")" "true" "metadata local FIPS defaults on with repo path"
+
+  OUTPUT_DIR="$dir/out-explicit-off"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR"
+  (
+    export NVPN_FIPS_REPO_PATH="$dir/fips"
+    export NVPN_PATCH_LOCAL_FIPS=0
+    docker_bench_apply_local_fips_patch_default
+    assert_eq "$NVPN_PATCH_LOCAL_FIPS" "0" "explicit local FIPS patch opt-out is preserved"
+    docker_bench_write_metadata nvpn 3
+  )
+  assert_eq "$(jq -r '.source.local_fips_patch.enabled' "$metadata")" "false" "metadata local FIPS explicit opt-out"
 
   rm -rf "$dir"
 }
@@ -212,6 +334,26 @@ test_metadata_writer_records_iperf_timeout() {
   rm -rf "$dir"
 }
 
+test_metadata_writer_records_udp1000_per_stream_bandwidth() {
+  local dir metadata
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR"
+
+  (
+    export NVPN_DOCKER_UDP1000_BANDWIDTH=1G
+    export NVPN_DOCKER_UDP1000_PARALLEL=4
+    docker_bench_write_metadata nvpn 3
+  )
+
+  assert_eq "$(jq -r '.iperf.udp1000_bandwidth' "$metadata")" "1G" "metadata UDP1000 total bandwidth"
+  assert_eq "$(jq -r '.iperf.udp1000_parallel' "$metadata")" "4" "metadata UDP1000 parallel"
+  assert_eq "$(jq -r '.iperf.udp1000_per_stream_bandwidth' "$metadata")" "250000000" "metadata UDP1000 per-stream bandwidth"
+
+  rm -rf "$dir"
+}
+
 test_metadata_writer_records_guard_thresholds() {
   local dir metadata
   dir="$(mktemp -d)"
@@ -227,6 +369,27 @@ test_metadata_writer_records_guard_thresholds() {
     export NVPN_DOCKER_MAX_UDP_LOSS_PCT=2
     export NVPN_DOCKER_MAX_UDP1000_LOSS_PCT=5
     export NVPN_DOCKER_MAX_PING_LOSS_PCT=0
+    export NVPN_DOCKER_MAX_CONNECTED_UDP_DRAIN_BULK_DROPPED=0
+    export NVPN_DOCKER_MAX_CONNECTED_UDP_DIRECT_DECRYPT_BULK_SHED=0
+    export NVPN_DOCKER_MAX_ENDPOINT_EVENT_BULK_DROPPED=0
+    export NVPN_DOCKER_MAX_TUN_RX_DROPPED=0
+    export NVPN_DOCKER_MAX_TUN_TX_DROPPED=0
+    export NVPN_DOCKER_MAX_DECRYPT_WORKER_QUEUE_FULL=0
+    export NVPN_DOCKER_MAX_DECRYPT_WORKER_BULK_DROPPED=0
+    export NVPN_DOCKER_MAX_DECRYPT_FALLBACK_PRESSURE_DRAIN=0
+    export NVPN_DOCKER_MAX_DECRYPT_FALLBACK_PRIORITY_GATED=0
+    export NVPN_DOCKER_MAX_DECRYPT_FSP_OPEN_WORKER_COMPLETION_BACKLOG_FALLBACK=0
+    export NVPN_DOCKER_MAX_DECRYPT_FSP_WORKER_REPLAY_DROPPED=0
+    export NVPN_DOCKER_MAX_FMP_AEAD_COMPLETION_AEAD_FAILED=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_AEAD_FAILED=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_EPOCH_MISMATCH=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_SESSION=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_ORDER=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_TICKET=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_DUPLICATE_TICKET=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_WINDOW_EXCEEDED=0
+    export NVPN_DOCKER_MAX_FMP_AEAD_COMPLETION_REPLAY_DROPPED=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED=0
     docker_bench_write_metadata nvpn 3
   )
 
@@ -237,7 +400,83 @@ test_metadata_writer_records_guard_thresholds() {
   assert_eq "$(jq -r '.guard_thresholds.max_udp_loss_pct' "$metadata")" "2" "metadata common UDP loss guard"
   assert_eq "$(jq -r '.guard_thresholds.max_udp1000_loss_pct' "$metadata")" "5" "metadata UDP1000 loss guard"
   assert_eq "$(jq -r '.guard_thresholds.max_ping_loss_pct' "$metadata")" "0" "metadata ping loss guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_connected_udp_drain_bulk_dropped' "$metadata")" "0" "metadata connected UDP drain bulk drop guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_connected_udp_direct_decrypt_bulk_shed' "$metadata")" "0" "metadata connected UDP direct-decrypt shed guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_endpoint_event_bulk_dropped' "$metadata")" "0" "metadata endpoint event bulk drop guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_tun_rx_dropped' "$metadata")" "0" "metadata TUN RX drop guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_tun_tx_dropped' "$metadata")" "0" "metadata TUN TX drop guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_decrypt_worker_queue_full' "$metadata")" "0" "metadata decrypt worker queue-full guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_decrypt_worker_bulk_dropped' "$metadata")" "0" "metadata decrypt worker bulk drop guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_decrypt_fallback_pressure_drain' "$metadata")" "0" "metadata decrypt fallback pressure drain guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_decrypt_fallback_priority_gated' "$metadata")" "0" "metadata decrypt fallback priority gated guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_decrypt_fsp_open_worker_completion_backlog_fallback' "$metadata")" "0" "metadata FSP open-worker completion backlog fallback guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_decrypt_fsp_worker_replay_dropped' "$metadata")" "0" "metadata FSP worker replay drop guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fmp_aead_completion_aead_failed' "$metadata")" "0" "metadata FMP AEAD completion failed guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fsp_aead_completion_aead_failed' "$metadata")" "0" "metadata FSP AEAD completion failed guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fsp_aead_completion_epoch_mismatch' "$metadata")" "0" "metadata FSP AEAD completion epoch mismatch guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fsp_aead_completion_stale_session' "$metadata")" "0" "metadata FSP stale session guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fsp_aead_completion_stale_order' "$metadata")" "0" "metadata FSP stale order guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fsp_aead_completion_stale_ticket' "$metadata")" "0" "metadata FSP stale ticket guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fsp_aead_completion_duplicate_ticket' "$metadata")" "0" "metadata FSP duplicate ticket guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fsp_aead_completion_window_exceeded' "$metadata")" "0" "metadata FSP completion window guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fmp_aead_completion_replay_dropped' "$metadata")" "0" "metadata FMP AEAD completion replay drop guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fsp_aead_completion_replay_dropped' "$metadata")" "0" "metadata FSP AEAD completion replay drop guard"
   assert_eq "$(jq -r '.guard_thresholds.max_udp200_loss_pct' "$metadata")" "null" "metadata unset guard"
+
+  rm -rf "$dir"
+}
+
+test_metadata_writer_records_fips_soak_thresholds() {
+  local dir metadata
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR"
+
+  (
+    MAX_PING_LOSS_PERCENT=0
+    MAX_PING_AVG_MS=25
+    MAX_PING_P95_MS=50
+    MAX_PING_P99_MS=75
+    MAX_PING_MAX_MS=100
+    MAX_PING_AVG_DRIFT_MS=5
+    MAX_PING_AVG_DRIFT_FACTOR=3
+    MAX_PING_P95_DRIFT_MS=10
+    MAX_PING_P95_DRIFT_FACTOR=4
+    MAX_PING_P99_DRIFT_MS=15
+    MAX_PING_P99_DRIFT_FACTOR=5
+    MAX_SRTT_MS=250
+    MAX_SRTT_DRIFT_MS=20
+    MAX_SRTT_DRIFT_FACTOR=6
+    MAX_CONSECUTIVE_HIGH_SRTT_SAMPLES=2
+    MAX_FIPS_LAST_SEEN_AGE_SECS=30
+    MAX_FIPS_CONTROL_LAST_SEEN_AGE_SECS=10
+    MAX_FIPS_DATA_LAST_SEEN_AGE_SECS=20
+    MAX_FIPS_LAST_SEEN_FUTURE_SKEW_SECS=3
+    EXPECT_FSP_OWNER_PLACEMENT=worker-open
+    docker_bench_write_metadata fips-soak 600
+  )
+
+  assert_eq "$(jq -r '.run_env.expected_fsp_owner_placement' "$metadata")" "worker-open" "metadata soak expected placement"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_loss_pct' "$metadata")" "0" "metadata soak ping loss guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_avg_ms' "$metadata")" "25" "metadata soak ping avg guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_p95_ms' "$metadata")" "50" "metadata soak ping p95 guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_p99_ms' "$metadata")" "75" "metadata soak ping p99 guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_max_ms' "$metadata")" "100" "metadata soak ping max guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_avg_drift_ms' "$metadata")" "5" "metadata soak ping avg drift guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_avg_drift_factor' "$metadata")" "3" "metadata soak ping avg drift factor"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_p95_drift_ms' "$metadata")" "10" "metadata soak ping p95 drift guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_p95_drift_factor' "$metadata")" "4" "metadata soak ping p95 drift factor"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_p99_drift_ms' "$metadata")" "15" "metadata soak ping p99 drift guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_ping_p99_drift_factor' "$metadata")" "5" "metadata soak ping p99 drift factor"
+  assert_eq "$(jq -r '.guard_thresholds.max_srtt_ms' "$metadata")" "250" "metadata soak SRTT guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_srtt_drift_ms' "$metadata")" "20" "metadata soak SRTT drift guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_srtt_drift_factor' "$metadata")" "6" "metadata soak SRTT drift factor"
+  assert_eq "$(jq -r '.guard_thresholds.max_consecutive_high_srtt_samples' "$metadata")" "2" "metadata soak consecutive high SRTT guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fips_last_seen_age_secs' "$metadata")" "30" "metadata soak FIPS liveness guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fips_control_last_seen_age_secs' "$metadata")" "10" "metadata soak FIPS control liveness guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fips_data_last_seen_age_secs' "$metadata")" "20" "metadata soak FIPS data liveness guard"
+  assert_eq "$(jq -r '.guard_thresholds.max_fips_last_seen_future_skew_secs' "$metadata")" "3" "metadata soak FIPS future skew guard"
 
   rm -rf "$dir"
 }
@@ -256,13 +495,178 @@ test_metadata_writer_records_run_provenance() {
   )
 
   assert_eq "$(jq -r '.run_env.extra_connect_env' "$metadata")" "FIPS_LINUX_BULK_CONTAINERS=1 NVPN_FIPS_LINUX_TUN_VNET=1" "metadata extra env"
+  assert_eq "$(jq -r '.run_env.dataplane_profile' "$metadata")" "null" "metadata dataplane profile default"
   assert_eq "$(jq -r '.run_env.direct_fmp_forced' "$metadata")" "false" "metadata direct-FMP forced default"
   assert_eq "$(jq -r '.run_env.require_no_direct_fmp' "$metadata")" "false" "metadata no-direct requirement default"
+  assert_eq "$(jq -r '.run_env.require_no_fsp_aead_helpers' "$metadata")" "false" "metadata no-FSP-helper requirement default"
   assert_eq "$(jq -r '.source.local_fips_patch.enabled' "$metadata")" "true" "metadata local FIPS enabled"
   assert_eq "$(jq -r '.source.nvpn | has("git_head")' "$metadata")" "true" "metadata nvpn head field"
   assert_eq "$(jq -r '.source.local_fips_patch | has("git_head")' "$metadata")" "true" "metadata FIPS head field"
 
   rm -rf "$dir"
+}
+
+test_dataplane_profile_expands_connect_env() {
+  local dir metadata effective
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR"
+
+  (
+    export NVPN_DOCKER_DATAPLANE_PROFILE=linux-vnet-lan
+    export NVPN_DOCKER_EXTRA_ENV="FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1"
+    effective="$(docker_bench_effective_extra_env)"
+    printf '%s' "$effective" >"$dir/effective-env"
+    docker_bench_validate_connect_env_scope "$effective"
+    docker_bench_write_metadata nvpn 3
+  )
+
+  effective="$(cat "$dir/effective-env")"
+  assert_eq "$effective" "NVPN_FIPS_LINUX_TUN_VNET=1 NVPN_MESH_UNDERLAY_UDP_MTU=1472 FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1" "profile effective connect env"
+  assert_eq "$(jq -r '.run_env.dataplane_profile' "$metadata")" "linux-vnet-lan" "metadata dataplane profile"
+  assert_eq "$(jq -r '.run_env.extra_connect_env' "$metadata")" "$effective" "metadata effective extra env"
+
+  rm -rf "$dir"
+}
+
+test_placement_profile_expands_worker_open_connect_env() {
+  local dir metadata effective
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR"
+
+  (
+    export NVPN_DOCKER_PLACEMENT_PROFILE=worker-open
+    export NVPN_DOCKER_MAX_FSP_OWNER_PLACEMENT_OTHER_PATH_RATE=0
+    export NVPN_DOCKER_PLACEMENT_PREFLIGHT=1
+    export NVPN_DOCKER_PLACEMENT_PREFLIGHT_MODE=tcp
+    export NVPN_DOCKER_PLACEMENT_PREFLIGHT_DURATION=3
+    export NVPN_DOCKER_PLACEMENT_PREFLIGHT_STREAMS=4
+    effective="$(docker_bench_effective_extra_env)"
+    printf '%s' "$effective" >"$dir/effective-env"
+    docker_bench_write_metadata nvpn 3
+  )
+
+  effective="$(cat "$dir/effective-env")"
+  assert_eq "$effective" "FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER=1 FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1" "placement profile effective connect env"
+  assert_eq "$(jq -r '.run_env.placement_profile' "$metadata")" "worker-open" "metadata placement profile"
+  assert_eq "$(jq -r '.run_env.expected_fsp_owner_placement' "$metadata")" "worker-open" "metadata expected placement"
+  assert_eq "$(jq -r '.run_env.expected_fsp_owner_placement_exclusive' "$metadata")" "true" "metadata expected exclusive placement"
+  assert_eq "$(jq -r '.run_env.placement_preflight' "$metadata")" "1" "metadata placement preflight"
+  assert_eq "$(jq -r '.run_env.placement_preflight_mode' "$metadata")" "tcp" "metadata placement preflight mode"
+  assert_eq "$(jq -r '.run_env.placement_preflight_duration_secs' "$metadata")" "3" "metadata placement preflight duration"
+  assert_eq "$(jq -r '.run_env.placement_preflight_streams' "$metadata")" "4" "metadata placement preflight streams"
+  assert_eq "$(jq -r '.guard_thresholds.max_fsp_owner_placement_other_path_rate' "$metadata")" "0" "metadata max alternate placement path rate"
+  assert_eq "$(jq -r '.run_env.extra_connect_env' "$metadata")" "$effective" "metadata placement effective env"
+
+  rm -rf "$dir"
+}
+
+test_placement_profile_allows_explicit_nonexclusive_worker_open_guard() {
+  local dir metadata
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR"
+
+  (
+    export NVPN_DOCKER_PLACEMENT_PROFILE=worker-open
+    export NVPN_DOCKER_EXPECT_FSP_OWNER_PLACEMENT_EXCLUSIVE=0
+    docker_bench_write_metadata nvpn 3
+  )
+
+  assert_eq "$(jq -r '.run_env.expected_fsp_owner_placement' "$metadata")" "worker-open" "metadata default worker-open expected placement"
+  assert_eq "$(jq -r '.run_env.expected_fsp_owner_placement_exclusive' "$metadata")" "false" "metadata explicit nonexclusive placement"
+
+  rm -rf "$dir"
+}
+
+test_placement_profile_allows_explicit_truthy_worker_open_env() {
+  local output status
+  set +e
+  output="$(
+    NVPN_DOCKER_PLACEMENT_PROFILE=worker-open \
+    NVPN_DOCKER_EXTRA_ENV=FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1 \
+      docker_bench_effective_extra_env 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" == "0" ]] || fail "truthy explicit worker-open env was rejected: $output"
+  assert_eq "$output" "FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER=1 FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1" "truthy explicit worker-open env"
+}
+
+test_placement_profile_rejects_conflicting_worker_open_env() {
+  local output status
+  set +e
+  output="$(
+    NVPN_DOCKER_PLACEMENT_PROFILE=worker-open \
+    NVPN_DOCKER_EXTRA_ENV=FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=0 \
+      docker_bench_effective_extra_env 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" != "0" ]] || fail "conflicting worker-open placement env was accepted"
+  case "$output" in
+    *"NVPN_DOCKER_PLACEMENT_PROFILE=worker-open conflicts"*) ;;
+    *) fail "conflicting placement diagnostic missing: $output" ;;
+  esac
+
+  set +e
+  output="$(
+    NVPN_DOCKER_PLACEMENT_PROFILE=worker-open \
+    NVPN_DOCKER_EXTRA_ENV=FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER=0 \
+      docker_bench_effective_extra_env 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" != "0" ]] || fail "conflicting source-affine placement env was accepted"
+  case "$output" in
+    *"NVPN_DOCKER_PLACEMENT_PROFILE=worker-open conflicts with FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER"*) ;;
+    *) fail "conflicting source-affine placement diagnostic missing: $output" ;;
+  esac
+}
+
+test_dataplane_profile_rejects_unknown_profile() {
+  local output status
+  set +e
+  output="$(
+    NVPN_DOCKER_DATAPLANE_PROFILE=bogus docker_bench_effective_extra_env 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" != "0" ]] || fail "unknown dataplane profile was accepted"
+  case "$output" in
+    *"unknown NVPN_DOCKER_DATAPLANE_PROFILE=bogus"*) ;;
+    *) fail "unknown dataplane profile diagnostic missing: $output" ;;
+  esac
+}
+
+test_connect_env_scope_rejects_stranded_outer_env() {
+  local output status
+  set +e
+  output="$(
+    NVPN_FIPS_LINUX_TUN_VNET=1 \
+    NVPN_FIPS_LINUX_TUN_TX_QUEUE_LEN=500 \
+      docker_bench_validate_connect_env_scope "" 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" != "0" ]] || fail "stranded outer connect env was accepted"
+  case "$output" in
+    *"NVPN_FIPS_LINUX_TUN_VNET=1 is set outside the daemon connect env"*) ;;
+    *) fail "stranded connect env diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"NVPN_FIPS_LINUX_TUN_TX_QUEUE_LEN=500 is set outside the daemon connect env"*) ;;
+    *) fail "stranded qlen connect env diagnostic missing: $output" ;;
+  esac
 }
 
 test_metadata_writer_records_direct_fmp_guard() {
@@ -291,13 +695,94 @@ test_metadata_writer_records_direct_fmp_guard() {
   rm -rf "$dir"
 }
 
+test_metadata_writer_records_fsp_aead_helper_guard() {
+  local dir metadata
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR"
+
+  (
+    export NVPN_DOCKER_REQUIRE_NO_FSP_AEAD_HELPERS=1
+    docker_bench_write_metadata nvpn 3
+  )
+
+  assert_eq "$(jq -r '.run_env.require_no_fsp_aead_helpers' "$metadata")" "true" "metadata no-FSP-helper requirement"
+
+  rm -rf "$dir"
+}
+
+test_metadata_writer_records_pipeline_hard_event_guard() {
+  local dir metadata
+  dir="$(mktemp -d)"
+  OUTPUT_DIR="$dir/out"
+  metadata="$OUTPUT_DIR/metadata.json"
+  mkdir -p "$OUTPUT_DIR"
+
+  (
+    export NVPN_DOCKER_REQUIRE_NO_PIPELINE_HARD_EVENTS=1
+    export NVPN_DOCKER_ALLOW_PIPELINE_HARD_EVENTS=nvpn_tun_to_mesh_bulk_dropped,nvpn_tun_to_mesh_bulk_dropped_batches
+    docker_bench_write_metadata nvpn 3
+  )
+
+  assert_eq "$(jq -r '.run_env.require_no_pipeline_hard_events' "$metadata")" "true" "metadata no-pipeline-hard-events requirement"
+  assert_eq "$(jq -r '.run_env.allowed_pipeline_hard_events' "$metadata")" "nvpn_tun_to_mesh_bulk_dropped,nvpn_tun_to_mesh_bulk_dropped_batches" "metadata allowed pipeline hard events"
+
+  rm -rf "$dir"
+}
+
+test_extra_env_validation_accepts_current_fips_parallel_open_names() {
+  local output
+  output="$(
+    docker_bench_validate_extra_env_assignments \
+      "FIPS_DECRYPT_FMP_AEAD_HELPERS=2 FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1 NVPN_FIPS_LINUX_TUN_VNET=1" \
+      2>&1
+  )" || fail "current FIPS parallel-open env names were rejected: $output"
+  assert_eq "$output" "" "current parallel-open env validation output"
+}
+
+test_extra_env_validation_rejects_stale_fips_helper_names() {
+  local output status
+  set +e
+  output="$(
+    docker_bench_validate_extra_env_assignments \
+      "FIPS_FSP_AEAD_HELPERS=2 FIPS_FSP_AEAD_HELPER_COMPLETIONS=1 FIPS_FMP_AEAD_HELPERS=2 FIPS_DECRYPT_FSP_ORDERED_AEAD_HELPERS=2 FIPS_DECRYPT_FMP_PREOWNER_AEAD_HELPERS=1" \
+      2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" != "0" ]] || fail "stale FIPS helper env names were accepted"
+  case "$output" in
+    *"FIPS_FSP_AEAD_HELPERS is not read by current FIPS"*) ;;
+    *) fail "stale FSP helper diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"FIPS_DECRYPT_FSP_ORDERED_AEAD_HELPERS is retired"*) ;;
+    *) fail "retired FSP helper diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"FIPS_FSP_AEAD_HELPER_COMPLETIONS is not read by current FIPS"*) ;;
+    *) fail "stale FSP helper completion diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"FIPS_FMP_AEAD_HELPERS is not read by current FIPS"*) ;;
+    *) fail "stale FMP helper diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"FIPS_DECRYPT_FMP_PREOWNER_AEAD_HELPERS was removed"*) ;;
+    *) fail "removed FMP preowner diagnostic missing: $output" ;;
+  esac
+}
+
 test_pipeline_summary_helpers() {
-  local dir lines all after load peak top fmp linux_bulk udp tun mesh_send mesh_recv tun_write hard
+  local dir lines all after load peak top worker_open worker_top fmp decrypt_spread linux_bulk udp tun mesh_send mesh_recv tun_write hard
+  local placement helper_other handoff_other
   dir="$(mktemp -d)"
   lines="$dir/pipeline.txt"
   cat >"$lines" <<'EOF'
 [pipe 5s] fmp_worker_batch_flush=2/s fmp_worker_batch_packets=20/s udp_send_connected=20/s endpoint_event_wait=2/s avg=40.0us p50<=32.8us p95<=262.1us p99<=524.3us max<=1.0ms allmax=5.7ms
-[pipe 5s] fmp_worker_batch_flush=10/s fmp_worker_batch_packets=420/s fmp_worker_batch_priority_packets=105/s fmp_worker_batch_bulk_packets=315/s fmp_worker_batch_full=9/s fmp_worker_batch_single=0.5/s fmp_send_group=12/s fmp_send_group_packets=420/s fmp_send_group_single=3/s udp_send_gso_batch=10/s udp_send_gso_packets=420/s udp_send_gso_batch_ge32=7/s udp_send_gso_batch_ge48=3/s udp_send_gso_batch_eq64=1/s udp_send_sendmmsg_batch=2/s udp_send_sendmmsg_packets=4/s udp_send_sendmmsg_batch_ge32=1/s udp_send_sendmmsg_batch_ge48=0/s udp_send_sendmmsg_batch_eq64=0/s fmp_worker_bulk_queue_wait=10/s avg=1.1ms p50<=2.1ms p95<=2.1ms p99<=8.4ms max<=16.8ms allmax=11.1ms fmp_linux_bulk_container_enqueued=12/s total=60 fmp_linux_bulk_container_packets=420/s total=2100 fmp_linux_bulk_container_sent=12/s total=60 fmp_linux_bulk_container_sent_packets=420/s total=2100 fmp_linux_bulk_container_queue_wait=12/s avg=1.0ms p50<=2.1ms p95<=2.1ms p99<=8.4ms max<=16.8ms allmax=11.1ms fmp_linux_bulk_container_ready_wait=10/s avg=2.0ms p50<=2.1ms p95<=4.2ms p99<=16.8ms max<=33.6ms allmax=33.6ms fmp_linux_bulk_container_first_slot_wait=12/s avg=40.0us p50<=32.8us p95<=131.1us p99<=262.1us max<=1.0ms allmax=1.2ms fmp_linux_bulk_container_all_slots_wait=12/s avg=260.0us p50<=262.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=1.9ms encrypt_worker_bulk_queue_full=2/s total=10 | [nvpn-pipe 5s] nvpn_tun_read=300/s nvpn_mesh_send=300/s nvpn_tun_to_mesh_queue_wait=10/s avg=31.0us p50<=32.8us p95<=131.1us p99<=524.3us max<=1.0ms allmax=2.5ms nvpn_tun_read_batch_flush=12/s total=60 nvpn_tun_read_batch_packets=300/s total=1500 nvpn_tun_read_batch_full=3/s total=15 nvpn_tun_read_batch_single=1/s total=5 nvpn_tun_read_packet_bytes=360000/s total=1800000 nvpn_mesh_send_batch_flush=12/s total=60 nvpn_mesh_send_batch_input_packets=300/s total=1500 nvpn_mesh_send_batch_routed_packets=285/s total=1425 nvpn_mesh_send_batch_runs=15/s total=75 nvpn_mesh_send_batch_full=3/s total=15 nvpn_mesh_recv_batch_flush=6/s total=30 nvpn_mesh_recv_batch_events=300/s total=1500 nvpn_mesh_recv_batch_packets=240/s total=1200 nvpn_mesh_recv_packet_bytes=288000/s total=1440000 nvpn_mesh_recv_batch_full=2/s total=10 nvpn_mesh_recv_batch_single_packet=1/s total=5 nvpn_tun_write_packets=240/s total=1200 nvpn_tun_write_packet_bytes=288000/s total=1440000 nvpn_tun_write_would_block=3/s total=15
+[pipe 5s] fmp_worker_batch_flush=10/s fmp_worker_batch_packets=420/s fmp_worker_batch_priority_packets=105/s fmp_worker_batch_bulk_packets=315/s fmp_worker_batch_full=9/s fmp_worker_batch_single=0.5/s fmp_send_group=12/s fmp_send_group_packets=420/s fmp_send_group_single=3/s decrypt_worker_batch_bulk_packets=315/s decrypt_worker_batch_worker0=210/s decrypt_worker_batch_worker2=105/s decrypt_fsp_owner_mismatch=420/s decrypt_fsp_path_helper=400/s decrypt_fsp_path_helper_bulk=400/s decrypt_fsp_path_handoff=20/s decrypt_fsp_path_handoff_priority=20/s decrypt_fsp_path_handoff_bulk=0/s udp_send_gso_batch=10/s udp_send_gso_packets=420/s udp_send_gso_batch_ge32=7/s udp_send_gso_batch_ge48=3/s udp_send_gso_batch_eq64=1/s udp_send_sendmmsg_batch=2/s udp_send_sendmmsg_packets=4/s udp_send_sendmmsg_batch_ge32=1/s udp_send_sendmmsg_batch_ge48=0/s udp_send_sendmmsg_batch_eq64=0/s fmp_worker_bulk_queue_wait=10/s avg=1.1ms p50<=2.1ms p95<=2.1ms p99<=8.4ms max<=16.8ms allmax=11.1ms fsp_aead_worker_open_queue_wait=10/s avg=500.0us p50<=524.3us p95<=1.0ms p99<=2.1ms max<=4.2ms allmax=4.2ms fsp_aead_worker_open_completion_wait=10/s avg=800.0us p50<=1.0ms p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_linux_bulk_container_enqueued=12/s total=60 fmp_linux_bulk_container_packets=420/s total=2100 fmp_linux_bulk_container_sent=12/s total=60 fmp_linux_bulk_container_sent_packets=420/s total=2100 fmp_linux_bulk_container_queue_wait=12/s avg=1.0ms p50<=2.1ms p95<=2.1ms p99<=8.4ms max<=16.8ms allmax=11.1ms fmp_linux_bulk_container_ready_wait=10/s avg=2.0ms p50<=2.1ms p95<=4.2ms p99<=16.8ms max<=33.6ms allmax=33.6ms fmp_linux_bulk_container_first_slot_wait=12/s avg=40.0us p50<=32.8us p95<=131.1us p99<=262.1us max<=1.0ms allmax=1.2ms fmp_linux_bulk_container_all_slots_wait=12/s avg=260.0us p50<=262.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=1.9ms connected_udp_kernel_dropped=0.3/s total=3 connected_udp_drain_bulk_dropped=0.4/s total=4 encrypt_worker_bulk_queue_full=2/s total=10 decrypt_fsp_worker_replay_dropped_too_old=0.6/s total=3 decrypt_fsp_worker_replay_dropped_too_old_lag_ge_2x_window=0.2/s total=1 fmp_aead_completion_aead_failed=0.2/s total=1 fsp_aead_completion_aead_failed=0.4/s total=2 fsp_aead_completion_epoch_mismatch=0.6/s total=6 fsp_aead_completion_stale_order=0.2/s total=4 fsp_aead_completion_duplicate_ticket=0.2/s total=1 fsp_aead_completion_replay_dropped_worker_open=1/s total=5 fsp_aead_completion_replay_dropped_duplicate=1/s total=5 fsp_aead_completion_replay_dropped_too_old=0.2/s total=1 fsp_aead_completion_replay_dropped_too_old_lag_ge_2x_window=0.2/s total=1 fsp_aead_completion_replay_dropped_too_old_lag_ge_4x_window=0.2/s total=1 | [nvpn-pipe 5s] nvpn_tun_read=300/s nvpn_mesh_send=300/s nvpn_tun_to_mesh_queue_wait=10/s avg=31.0us p50<=32.8us p95<=131.1us p99<=524.3us max<=1.0ms allmax=2.5ms nvpn_tun_read_batch_flush=12/s total=60 nvpn_tun_read_batch_packets=300/s total=1500 nvpn_tun_read_batch_full=3/s total=15 nvpn_tun_read_batch_single=1/s total=5 nvpn_tun_read_packet_bytes=360000/s total=1800000 nvpn_tun_read_vnet_gso_frames=20/s total=100 nvpn_tun_read_vnet_gso_segments=260/s total=1300 nvpn_tun_read_vnet_gso_segment_bytes=338000/s total=1690000 nvpn_mesh_send_batch_flush=12/s total=60 nvpn_mesh_send_batch_input_packets=300/s total=1500 nvpn_mesh_send_batch_routed_packets=285/s total=1425 nvpn_mesh_send_batch_runs=15/s total=75 nvpn_mesh_send_batch_full=3/s total=15 nvpn_mesh_recv_batch_flush=6/s total=30 nvpn_mesh_recv_batch_events=300/s total=1500 nvpn_mesh_recv_batch_packets=240/s total=1200 nvpn_mesh_recv_packet_bytes=288000/s total=1440000 nvpn_mesh_recv_batch_full=2/s total=10 nvpn_mesh_recv_batch_single_packet=1/s total=5 nvpn_tun_write_packets=240/s total=1200 nvpn_tun_write_packet_bytes=288000/s total=1440000 nvpn_tun_write_would_block=3/s total=15
 [nvpn-pipe 5s] nvpn_tun_read=1/s nvpn_mesh_send=1/s nvpn_tun_to_mesh_queue_wait=1/s avg=9.0ms p50<=8.4ms p95<=16.8ms p99<=33.6ms max<=67.1ms allmax=67.1ms
 EOF
 
@@ -305,13 +790,19 @@ EOF
   load="$(docker_bench_load_pipeline_line_from_stdin <"$lines")"
   peak="$(docker_bench_peak_wait_pipeline_line_from_stdin <"$lines")"
   top="$(docker_bench_pipeline_queue_wait_top_summary "$load")"
+  worker_open="$(docker_bench_pipeline_fsp_worker_open_wait_summary "$load")"
+  worker_top="$(docker_bench_pipeline_queue_wait_top_summary '[pipe 5s] fsp_aead_worker_open_completion_wait=5/s avg=7.0ms p50<=8.4ms p95<=16.8ms p99<=33.6ms max<=67.1ms allmax=67.1ms')"
   fmp="$(docker_bench_pipeline_fmp_worker_batch_summary "$load")"
+  decrypt_spread="$(docker_bench_pipeline_decrypt_worker_spread_summary "$load")"
   linux_bulk="$(docker_bench_pipeline_linux_bulk_container_summary "$load")"
   udp="$(docker_bench_pipeline_udp_send_batch_summary "$load")"
   tun="$(docker_bench_pipeline_nvpn_tun_read_batch_summary "$load")"
   mesh_send="$(docker_bench_pipeline_nvpn_mesh_send_batch_summary "$load")"
   mesh_recv="$(docker_bench_pipeline_nvpn_mesh_recv_batch_summary "$load")"
   tun_write="$(docker_bench_pipeline_nvpn_tun_write_summary "$load")"
+  placement="$(docker_bench_pipeline_fsp_owner_placement_summary "$load")"
+  helper_other="$(docker_bench_pipeline_fsp_owner_placement_other_path_max "$load" helper)"
+  handoff_other="$(docker_bench_pipeline_fsp_owner_placement_other_path_max "$load" handoff)"
   hard="$(docker_bench_pipeline_hard_event_summary_from_stdin 0 <"$lines")"
 
   assert_eq "$after" "2" "pipeline lines after start"
@@ -324,14 +815,20 @@ EOF
     *) fail "peak pipeline selector did not choose highest wait line: $peak" ;;
   esac
   assert_eq "$top" "fmp_linux_bulk_container_ready_wait:rate_per_sec=10,p95_ms=4.2,p99_ms=16.8,max_ms=33.6,allmax_ms=33.6" "pipeline top queue wait"
+  assert_eq "$worker_open" "queue_rate_per_sec=10,queue_p95_ms=1,queue_p99_ms=2.1,queue_max_ms=4.2,queue_allmax_ms=4.2,completion_rate_per_sec=10,completion_p95_ms=2.1,completion_p99_ms=4.2,completion_max_ms=8.4,completion_allmax_ms=8.4" "FSP worker-open wait summary"
+  assert_eq "$worker_top" "fsp_aead_worker_open_completion_wait:rate_per_sec=5,p95_ms=16.8,p99_ms=33.6,max_ms=67.1,allmax_ms=67.1" "worker-open waits can be top queue wait"
   assert_eq "$fmp" "avg_packets=42.0,full_pct=90.0,single_pct=5.0,priority_pct=25.0,bulk_pct=75.0,flush_per_sec=10,packets_per_sec=420,priority_packets_per_sec=105,bulk_packets_per_sec=315,send_groups_per_flush=1.2,send_group_avg_packets=35.0,send_group_single_pct=25.0,send_groups_per_sec=12,send_group_packets_per_sec=420" "FMP worker batch summary"
+  assert_eq "$decrypt_spread" "active_workers=2,workers_ge1pct=2,top_worker=w0,top_pct=66.7,total_packets_per_sec=315,worker_packet_rates=w0:210;w2:105" "decrypt worker spread summary"
   assert_eq "$linux_bulk" "avg_packets=35.0,avg_sent_packets=35.0,enqueued_per_sec=12,packets_per_sec=420,sent_per_sec=12,sent_packets_per_sec=420,queue_p95_ms=2.1,queue_p99_ms=8.4,ready_p95_ms=4.2,ready_p99_ms=16.8,first_slot_p95_ms=0.1311,first_slot_p99_ms=0.2621,all_slots_p95_ms=0.5243,all_slots_p99_ms=1" "Linux bulk container summary"
   assert_eq "$udp" "gso_packet_pct=99.1,sendmmsg_packet_pct=0.9,avg_packets=35.3,gso_avg_packets=42.0,sendmmsg_avg_packets=2.0,gso_ge32_pct=70.0,gso_ge48_pct=30.0,gso_eq64_pct=10.0,sendmmsg_ge32_pct=50.0,sendmmsg_ge48_pct=0.0,sendmmsg_eq64_pct=0.0,gso_batch_per_sec=10,gso_packets_per_sec=420,sendmmsg_batch_per_sec=2,sendmmsg_packets_per_sec=4,total_packets_per_sec=424" "UDP send batch summary"
-  assert_eq "$tun" "avg_packets=25.0,full_pct=25.0,single_pct=8.3,avg_packet_bytes=1200.0,flush_per_sec=12,packets_per_sec=300,bytes_per_sec=360000" "nvpn TUN read batch summary"
+  assert_eq "$tun" "avg_packets=25.0,full_pct=25.0,single_pct=8.3,avg_packet_bytes=1200.0,flush_per_sec=12,packets_per_sec=300,bytes_per_sec=360000,vnet_gso_frames_per_sec=20,vnet_gso_segments_per_sec=260,vnet_gso_avg_segments=13.0,vnet_gso_avg_segment_bytes=1300.0" "nvpn TUN read batch summary"
   assert_eq "$mesh_send" "avg_input_packets=25.0,avg_routed_packets=23.8,avg_runs=1.2,routed_pct=95.0,full_pct=25.0,flush_per_sec=12,input_packets_per_sec=300,routed_packets_per_sec=285,runs_per_sec=15" "nvpn mesh send batch summary"
   assert_eq "$mesh_recv" "avg_events=50.0,avg_packets=40.0,full_pct=33.3,single_packet_pct=16.7,avg_packet_bytes=1200.0,flush_per_sec=6,events_per_sec=300,packets_per_sec=240,bytes_per_sec=288000" "nvpn mesh receive batch summary"
   assert_eq "$tun_write" "packets_per_sec=240,bytes_per_sec=288000,avg_packet_bytes=1200.0,would_block_per_sec=3" "nvpn TUN write summary"
-  assert_eq "$hard" "encrypt_worker_bulk_queue_full:max_rate_per_sec=2,total=10" "pipeline hard event summary"
+  assert_eq "$placement" "owner=mismatch,path=helper,bulk_path=helper,priority_path=handoff,owner_same_per_sec=0,owner_mismatch_per_sec=420,path_local_per_sec=0,path_handoff_per_sec=20,path_helper_per_sec=400,path_worker_open_per_sec=0,path_worker_open_striped_per_sec=0,path_local_priority_per_sec=0,path_local_bulk_per_sec=0,path_handoff_priority_per_sec=20,path_handoff_bulk_per_sec=0,path_helper_bulk_per_sec=400,path_worker_open_bulk_per_sec=0,bulk_packets_per_sec=315,select_bulk_packets_per_sec=0,drain_bulk_packets_per_sec=0" "FSP owner placement summary"
+  assert_eq "$helper_other" $'\t0' "helper alternate placement path ignores priority handoff"
+  assert_eq "$handoff_other" $'helper\t400' "handoff alternate placement path"
+  assert_eq "$hard" "connected_udp_kernel_dropped:max_rate_per_sec=0.3,total=3;connected_udp_drain_bulk_dropped:max_rate_per_sec=0.4,total=4;encrypt_worker_bulk_queue_full:max_rate_per_sec=2,total=10;decrypt_fsp_worker_replay_dropped_too_old:max_rate_per_sec=0.6,total=3;decrypt_fsp_worker_replay_dropped_too_old_lag_ge_2x_window:max_rate_per_sec=0.2,total=1;fmp_aead_completion_aead_failed:max_rate_per_sec=0.2,total=1;fsp_aead_completion_aead_failed:max_rate_per_sec=0.4,total=2;fsp_aead_completion_epoch_mismatch:max_rate_per_sec=0.6,total=6;fsp_aead_completion_stale_order:max_rate_per_sec=0.2,total=4;fsp_aead_completion_duplicate_ticket:max_rate_per_sec=0.2,total=1;fsp_aead_completion_replay_dropped_worker_open:max_rate_per_sec=1,total=5;fsp_aead_completion_replay_dropped_duplicate:max_rate_per_sec=1,total=5;fsp_aead_completion_replay_dropped_too_old:max_rate_per_sec=0.2,total=1;fsp_aead_completion_replay_dropped_too_old_lag_ge_2x_window:max_rate_per_sec=0.2,total=1;fsp_aead_completion_replay_dropped_too_old_lag_ge_4x_window:max_rate_per_sec=0.2,total=1" "pipeline hard event summary"
 
   rm -rf "$dir"
 }
@@ -404,6 +901,10 @@ write_metadata_fixture() {
   local nvpn_git_dirty="${12:-false}"
   local fips_git_head="${13:-}"
   local fips_git_dirty="${14:-false}"
+  local iperf_socket_buffer="${15:-}"
+  local iperf_udp1000_parallel="${16:-}"
+  local iperf_udp1000_bandwidth="${17:-1G}"
+  local iperf_udp1000_per_stream_bandwidth="${18:-}"
   mkdir -p "$dir"
   jq -n \
     --arg backend "$backend" \
@@ -419,6 +920,10 @@ write_metadata_fixture() {
     --arg nvpn_git_dirty "$nvpn_git_dirty" \
     --arg fips_git_head "$fips_git_head" \
     --arg fips_git_dirty "$fips_git_dirty" \
+    --arg iperf_socket_buffer "$iperf_socket_buffer" \
+    --arg iperf_udp1000_parallel "$iperf_udp1000_parallel" \
+    --arg iperf_udp1000_bandwidth "$iperf_udp1000_bandwidth" \
+    --arg iperf_udp1000_per_stream_bandwidth "$iperf_udp1000_per_stream_bandwidth" \
     '{
       backend: $backend,
       run_env: {
@@ -438,6 +943,16 @@ write_metadata_fixture() {
           end
         )
       },
+      iperf: {
+        socket_buffer: (if $iperf_socket_buffer == "" then null else $iperf_socket_buffer end),
+        udp1000_parallel: (
+          if $iperf_udp1000_parallel == "" then null
+          else ($iperf_udp1000_parallel | tonumber)
+          end
+        ),
+        udp1000_bandwidth: (if $iperf_udp1000_bandwidth == "" then null else $iperf_udp1000_bandwidth end),
+        udp1000_per_stream_bandwidth: (if $iperf_udp1000_per_stream_bandwidth == "" then null else $iperf_udp1000_per_stream_bandwidth end)
+      },
       source: {
         nvpn: {
           git_head: (if $nvpn_git_head == "" then null else $nvpn_git_head end),
@@ -454,8 +969,8 @@ write_metadata_fixture() {
 
 test_docker_comparison_outputs() {
   local dir out comparison_fields ratio_fields threshold_fields tcp_ratio ping_delta json_metric
-  local threshold_tcp_4 threshold_status threshold_failures effective_udp_delta enforce_output stress_fields stress_json
-  local pipeline_fields pipeline_json provenance_json
+  local threshold_tcp_4 threshold_udp1000_zero threshold_status threshold_failures effective_udp_delta enforce_output stress_fields stress_json
+  local pipeline_fields pipeline_json provenance_json iperf_json
   dir="$(mktemp -d)"
   write_summary_fixture \
     "$dir/nvpn/summary.tsv" \
@@ -467,7 +982,7 @@ test_docker_comparison_outputs() {
     990 1 \
     0 0.8 \
     "$dir/nvpn/raw"
-  write_metadata_fixture "$dir/nvpn" nvpn true remote 0 4 true 2 "FIPS_LINUX_BULK_CONTAINERS=1" true nvpnabc false fipsabc true
+  write_metadata_fixture "$dir/nvpn" nvpn true remote 0 4 true 2 "FIPS_LINUX_BULK_CONTAINERS=1" true nvpnabc false fipsabc true 208K 1 1G 1G
   write_summary_fixture \
     "$dir/reference/summary.tsv" \
     boringtun 1 \
@@ -478,7 +993,7 @@ test_docker_comparison_outputs() {
     980 2 \
     0 0.4 \
     "$dir/reference/raw"
-  write_metadata_fixture "$dir/reference" boringtun false both 0 0 false
+  write_metadata_fixture "$dir/reference" boringtun false both 0 0 false "" "" false "" false "" false 208K 1 1G 1G
   out="$dir/out"
 
   "$COMPARE_SCRIPT" "$dir/nvpn" "$dir/reference" "$out" >/dev/null
@@ -490,6 +1005,7 @@ test_docker_comparison_outputs() {
   ping_delta="$(awk -F '\t' '$1 == "ping_avg_ms" { print $6 "\t" $7 }' "$out/ratios.tsv")"
   json_metric="$(jq -r '.ratios[] | select(.metric == "udp_1000_loss_pct") | .better_when + "\t" + .nvpn_minus_reference' "$out/comparison.json")"
   threshold_tcp_4="$(awk -F '\t' '$1 == "tcp_4_throughput" { print $3 "\t" $6 "\t" $7 }' "$out/thresholds.tsv")"
+  threshold_udp1000_zero="$(awk -F '\t' '$1 == "nvpn_udp_1000_zero_loss" { print $3 "\t" $4 "\t" $6 }' "$out/thresholds.tsv")"
   threshold_status="$(jq -r '.threshold_status.status' "$out/comparison.json")"
   threshold_failures="$(jq -r '.threshold_status.failures' "$out/comparison.json")"
   effective_udp_delta="$(jq -r '.threshold_policy.effective_udp_loss_delta_pct' "$out/comparison.json")"
@@ -498,6 +1014,7 @@ test_docker_comparison_outputs() {
   pipeline_fields="$(awk -F '\t' '$1 == "nvpn" { print $10 "\t" $11 }' "$out/comparison.tsv")"
   pipeline_json="$(jq -r '.pipeline_trace.mismatch, .pipeline_trace.nvpn.enabled, .pipeline_trace.nvpn.interval_secs, .pipeline_trace.reference.enabled' "$out/comparison.json" | paste -sd ':' -)"
   provenance_json="$(jq -r '.provenance.nvpn.run_env.extra_connect_env, .provenance.nvpn.local_fips_patch.enabled, .provenance.nvpn.local_fips_patch.git_head, .provenance.nvpn.local_fips_patch.dirty' "$out/comparison.json" | paste -sd ':' -)"
+  iperf_json="$(jq -r '.iperf.mismatch, .iperf.nvpn.socket_buffer, .iperf.reference.socket_buffer, .iperf.nvpn.udp1000_bandwidth, .iperf.nvpn.udp1000_per_stream_bandwidth' "$out/comparison.json" | paste -sd ':' -)"
 
   assert_eq "$comparison_fields" "24" "Docker comparison field count"
   assert_eq "$ratio_fields" "7" "Docker ratio field count"
@@ -506,14 +1023,16 @@ test_docker_comparison_outputs() {
   assert_eq "$ping_delta" $'200.0\t0.400' "Docker ping avg delta"
   assert_eq "$json_metric" $'lower\t-1.000' "Docker comparison JSON ratio"
   assert_eq "$threshold_tcp_4" $'fail\t>=90%\t80.0%' "Docker throughput threshold"
+  assert_eq "$threshold_udp1000_zero" $'fail\t1\t==0' "Docker UDP1000 zero-loss candidate threshold"
   assert_eq "$threshold_status" "fail" "Docker threshold JSON status"
-  assert_eq "$threshold_failures" "2" "Docker threshold JSON failure count"
+  assert_eq "$threshold_failures" "4" "Docker threshold JSON failure count"
   assert_eq "$effective_udp_delta" "1" "Docker clean/default UDP loss threshold"
   assert_eq "$stress_fields" $'true\tremote\t0\t4' "Docker comparison stress columns"
   assert_eq "$stress_json" "true:4:false" "Docker comparison stress JSON"
   assert_eq "$pipeline_fields" $'true\t2' "Docker comparison pipeline columns"
   assert_eq "$pipeline_json" "true:true:2:false" "Docker comparison pipeline JSON"
   assert_eq "$provenance_json" "FIPS_LINUX_BULK_CONTAINERS=1:true:fipsabc:true" "Docker comparison provenance JSON"
+  assert_eq "$iperf_json" "false:208K:208K:1G:1G" "Docker comparison iperf JSON"
 
   if NVPN_DOCKER_COMPARISON_ENFORCE_THRESHOLDS=1 "$COMPARE_SCRIPT" "$dir/nvpn" "$dir/reference" "$dir/enforced" >"$dir/enforced.stdout" 2>"$dir/enforced.stderr"; then
     fail "Docker comparison enforcement should fail on threshold violations"
@@ -522,6 +1041,131 @@ test_docker_comparison_outputs() {
   case "$enforce_output" in
     *"threshold status is fail"*) ;;
     *) fail "Docker comparison enforcement stderr did not explain threshold failure: $enforce_output" ;;
+  esac
+
+  rm -rf "$dir"
+}
+
+test_docker_benchmark_table_outputs() {
+  local dir out fields current_status current_events current_socket published_status published_events legacy_status wg_status
+  local current_receiver current_provenance markdown_row
+  dir="$(mktemp -d)"
+  write_summary_fixture \
+    "$dir/current/summary.tsv" \
+    nvpn "" \
+    3000 10 \
+    2800 20 \
+    2600 30 \
+    200 0 \
+    1000 0 \
+    0 0.3 \
+    "$dir/current/raw"
+  write_metadata_fixture "$dir/current" nvpn true both 1 1 false "" "" true nvpnabc false fipsabc false
+  mkdir -p "$dir/current/raw"
+  printf 'event\tmax_rate_per_sec\ttotal\n' >"$dir/current/raw/nvpn-pipeline-hard-event-totals.tsv"
+  {
+    printf 'service\tpeer_addr\trequested_recv_buf\tactual_recv_buf\trequested_send_buf\tactual_send_buf\n'
+    printf 'node-a\t10.0.0.2:51820\t16777216\t33554432\t8388608\t16777216\n'
+    printf 'node-b\t10.0.0.1:51820\t16777216\t33554432\t8388608\t16777216\n'
+  } >"$dir/current/raw/nvpn-connected-udp-socket-buffers.tsv"
+  {
+    printf 'phase\tprotocol\tstreams\trequested_sock_bufsize\tactual_recv_buf\tactual_send_buf\n'
+    printf 'udp-200\tUDP\t1\t0\t212992\t212992\n'
+    printf 'udp-1000\tUDP\t4\t4194304\t8388608\t8388608\n'
+  } >"$dir/current/raw/nvpn-iperf-socket-buffers.tsv"
+  for service in node-a node-b; do
+    {
+      printf 'net.core.rmem_default\t212992\n'
+      printf 'net.core.rmem_max\t212992\n'
+      printf 'net.core.wmem_default\t212992\n'
+      printf 'net.core.wmem_max\t212992\n'
+      printf 'net.ipv4.udp_rmem_min\t4096\n'
+      printf 'net.ipv4.udp_wmem_min\t4096\n'
+    } >"$dir/current/raw/nvpn-$service-udp-receiver-limits.tsv"
+  done
+
+  write_summary_fixture \
+    "$dir/published/summary.tsv" \
+    nvpn "" \
+    2200 100 \
+    2100 200 \
+    2000 300 \
+    199 0 \
+    998 0.2 \
+    0 0.5 \
+    "$dir/published/raw"
+  write_metadata_fixture "$dir/published" nvpn true both 1 1 false "" "" false publishedabc false "" false
+  mkdir -p "$dir/published/raw"
+  {
+    printf 'event\tmax_rate_per_sec\ttotal\n'
+    printf 'udp_namespace_rcvbuf_errors\t0.1\t5\n'
+    printf 'connected_udp_kernel_dropped\t0.5\t3\n'
+    printf 'connected_udp_peer_kernel_dropped\t0.2\t2\n'
+  } >"$dir/published/raw/nvpn-pipeline-hard-event-totals.tsv"
+
+  write_summary_fixture \
+    "$dir/legacy/summary.tsv" \
+    nvpn "" \
+    4300 10 \
+    4600 20 \
+    4700 30 \
+    200 0 \
+    1000 0 \
+    0 0.4 \
+    "$dir/legacy/raw"
+  write_metadata_fixture "$dir/legacy" nvpn true both 1 1 false "" "" true legacyabc false fipsabc true
+  mkdir -p "$dir/legacy/raw"
+  {
+    printf 'phase\tservice\thard_events\n'
+    printf 'tcp-single\tnode-b\tdecrypt_fallback_pressure_drain:max_rate_per_sec=1,total=11\n'
+    printf 'tcp-4\tnode-b\tdecrypt_fallback_pressure_drain:max_rate_per_sec=1,total=4\n'
+  } >"$dir/legacy/raw/nvpn-pipeline-phase-summary.tsv"
+
+  write_summary_fixture \
+    "$dir/wg/summary.tsv" \
+    wireguard-go "" \
+    5000 5 \
+    7000 6 \
+    8000 7 \
+    200 0 \
+    1000 0 \
+    0 0.2 \
+    "$dir/wg/raw"
+  write_metadata_fixture "$dir/wg" wireguard-go true both 1 1
+  out="$dir/out"
+
+  "$TABLE_SCRIPT" \
+    --output-dir "$out" \
+    current="$dir/current" \
+    published="$dir/published" \
+    legacy="$dir/legacy" \
+    wg="$dir/wg" >/dev/null
+
+  fields="$(awk -F '\t' 'NR == 2 { print NF }' "$out/stress-table.tsv")"
+  current_status="$(table_values "$out/stress-table.tsv" current udp_ping_zero hard_events_total hard_events candidate)"
+  current_events="$(table_values "$out/stress-table.tsv" current udp_kernel_dropped_total udp_namespace_rcvbuf_errors_total connected_udp_kernel_dropped_total connected_udp_peer_kernel_dropped_total connected_udp_drain_bulk_dropped_total connected_udp_direct_decrypt_bulk_shed_total)"
+  current_socket="$(table_values "$out/stress-table.tsv" current connected_udp_recv_buf connected_udp_send_buf)"
+  current_receiver="$(table_values "$out/stress-table.tsv" current iperf_udp200_sockbuf iperf_udp1000_sockbuf udp_receiver_rmem udp_receiver_wmem)"
+  published_status="$(table_values "$out/stress-table.tsv" published udp_ping_zero hard_events_total hard_events candidate)"
+  published_events="$(table_values "$out/stress-table.tsv" published udp_kernel_dropped_total udp_namespace_rcvbuf_errors_total connected_udp_kernel_dropped_total connected_udp_peer_kernel_dropped_total connected_udp_drain_bulk_dropped_total connected_udp_direct_decrypt_bulk_shed_total)"
+  legacy_status="$(table_values "$out/stress-table.tsv" legacy udp_ping_zero hard_events_total hard_events candidate)"
+  wg_status="$(table_values "$out/stress-table.tsv" wg backend udp_ping_zero hard_events_total candidate)"
+  current_provenance="$(table_values "$out/stress-table.tsv" current git_head fips_head dirty stress)"
+  markdown_row="$(grep -F '| current | nvpn |' "$out/stress-table.md")"
+
+  assert_eq "$fields" "38" "Docker benchmark table field count"
+  assert_eq "$current_status" $'true\t0\tnone\tpass' "Docker benchmark table current status"
+  assert_eq "$current_events" $'0\t0\t0\t0\t0\t0' "Docker benchmark table current event split"
+  assert_eq "$current_socket" $'16777216/33554432\t8388608/16777216' "Docker benchmark table connected UDP buffer summary"
+  assert_eq "$current_receiver" $'1:0/212992/212992\t4:4194304/8388608/8388608\t212992/212992\t212992/212992' "Docker benchmark table receiver buffer summary"
+  assert_eq "$published_status" $'false\t10\tudp_namespace_rcvbuf_errors:5;connected_udp_kernel_dropped:3;connected_udp_peer_kernel_dropped:2\tfail' "Docker benchmark table published status"
+  assert_eq "$published_events" $'0\t5\t3\t2\t0\t0' "Docker benchmark table published event split"
+  assert_eq "$legacy_status" $'true\t15\tdecrypt_fallback_pressure_drain:15\tfail' "Docker benchmark table legacy phase hard-event fallback"
+  assert_eq "$wg_status" $'wireguard-go\ttrue\tn/a\treference' "Docker benchmark table WG reference status"
+  assert_eq "$current_provenance" $'nvpnabc\tfipsabc\tnvpn=false,fips=false\tboth:l1/r1' "Docker benchmark table provenance"
+  case "$markdown_row" in
+    *"| 3000 | 10 | 2800 |"*) ;;
+    *) fail "Docker benchmark markdown row missing current throughput: $markdown_row" ;;
   esac
 
   rm -rf "$dir"
@@ -600,6 +1244,191 @@ test_docker_benchmark_summary_guards_accept_healthy_fixture() {
   rm -rf "$dir"
 }
 
+test_docker_benchmark_tun_drop_guards_are_opt_in() {
+  local dir tun_summary failure_path
+  dir="$(mktemp -d)"
+  tun_summary="$dir/nvpn-linux-tun-netdev.tsv"
+  {
+    printf 'service\tiface\ttx_queue_len\trx_packets\trx_dropped\ttx_packets\ttx_dropped\n'
+    printf 'node-a\tutun100\t4096\t1000\t0\t2000\t15\n'
+    printf 'node-b\tutun100\t4096\t2000\t2\t1000\t0\n'
+  } >"$tun_summary"
+
+  (
+    OUTPUT_DIR="$dir/no-guard"
+    RAW_DIR="$dir/raw"
+    mkdir -p "$OUTPUT_DIR"
+    docker_bench_assert_tun_drop_guards "$tun_summary"
+  )
+
+  if (
+    OUTPUT_DIR="$dir/guarded"
+    RAW_DIR="$dir/raw"
+    mkdir -p "$OUTPUT_DIR"
+    export NVPN_DOCKER_MAX_TUN_RX_DROPPED=0
+    export NVPN_DOCKER_MAX_TUN_TX_DROPPED=0
+    docker_bench_assert_tun_drop_guards "$tun_summary"
+  ) 2>"$dir/guarded.stderr"; then
+    fail "Docker TUN drop guard should fail dropped fixture"
+  fi
+
+  failure_path="$dir/guarded/guard-failures.tsv"
+  assert_file_contains "$failure_path" $'tun_rx_dropped_total\t<=\t2\t0' "TUN RX drop guard failure"
+  assert_file_contains "$failure_path" $'tun_tx_dropped_total\t<=\t15\t0' "TUN TX drop guard failure"
+  assert_file_contains "$dir/guarded.stderr" "docker bench guard failed: wrote $failure_path" "TUN drop guard stderr failure path"
+
+  rm -rf "$dir"
+}
+
+test_docker_benchmark_pipeline_hard_event_guards_are_opt_in() {
+  local dir phase_summary failure_path
+  dir="$(mktemp -d)"
+  phase_summary="$dir/phase-summary.tsv"
+  {
+    printf 'phase\tpeer\thard_events\n'
+    printf 'benchmark\tnode-b\t%s\n' \
+      'connected_udp_direct_decrypt_bulk_shed:max_rate_per_sec=3,total=11;endpoint_event_bulk_dropped:max_rate_per_sec=2,total=10;decrypt_worker_queue_full:max_rate_per_sec=4,total=13;decrypt_worker_bulk_dropped:max_rate_per_sec=5,total=17;decrypt_fallback_pressure_drain:max_rate_per_sec=1,total=19;decrypt_fallback_priority_gated:max_rate_per_sec=1,total=23;decrypt_fsp_helper_window_fallback:max_rate_per_sec=1,total=29;decrypt_fsp_open_worker_window_fallback:max_rate_per_sec=1,total=30;decrypt_fsp_helper_queue_full_fallback:max_rate_per_sec=1,total=31;decrypt_fsp_helper_completion_backlog_fallback:max_rate_per_sec=1,total=37;decrypt_fsp_open_worker_completion_backlog_fallback:max_rate_per_sec=1,total=5;decrypt_fsp_worker_replay_dropped:max_rate_per_sec=2,total=7;fmp_aead_completion_aead_failed:max_rate_per_sec=1,total=2;fsp_aead_completion_aead_failed:max_rate_per_sec=1,total=3;fsp_aead_completion_epoch_mismatch:max_rate_per_sec=1,total=4;fsp_aead_completion_stale_session:max_rate_per_sec=1,total=44;fsp_aead_completion_stale_order:max_rate_per_sec=1,total=45;fsp_aead_completion_stale_ticket:max_rate_per_sec=1,total=46;fsp_aead_completion_duplicate_ticket:max_rate_per_sec=1,total=47;fsp_aead_completion_window_exceeded:max_rate_per_sec=1,total=48;fmp_aead_completion_replay_dropped:max_rate_per_sec=1,total=39;fsp_aead_completion_replay_dropped:max_rate_per_sec=1,total=40;fsp_aead_completion_replay_dropped_helper:max_rate_per_sec=1,total=41;fsp_aead_completion_replay_dropped_helper_returned:max_rate_per_sec=1,total=43'
+  } >"$phase_summary"
+
+  (
+    OUTPUT_DIR="$dir/no-guard"
+    mkdir -p "$OUTPUT_DIR"
+    docker_bench_assert_pipeline_hard_event_guards "$phase_summary"
+  )
+
+  if (
+    OUTPUT_DIR="$dir/guarded"
+    mkdir -p "$OUTPUT_DIR"
+    export NVPN_DOCKER_MAX_CONNECTED_UDP_DIRECT_DECRYPT_BULK_SHED=0
+    export NVPN_DOCKER_MAX_ENDPOINT_EVENT_BULK_DROPPED=0
+    export NVPN_DOCKER_MAX_DECRYPT_WORKER_QUEUE_FULL=0
+    export NVPN_DOCKER_MAX_DECRYPT_WORKER_BULK_DROPPED=0
+    export NVPN_DOCKER_MAX_DECRYPT_FALLBACK_PRESSURE_DRAIN=0
+    export NVPN_DOCKER_MAX_DECRYPT_FALLBACK_PRIORITY_GATED=0
+    export NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_WINDOW_FALLBACK=0
+    export NVPN_DOCKER_MAX_DECRYPT_FSP_OPEN_WORKER_WINDOW_FALLBACK=0
+    export NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_QUEUE_FULL_FALLBACK=0
+    export NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_COMPLETION_BACKLOG_FALLBACK=0
+    export NVPN_DOCKER_MAX_DECRYPT_FSP_OPEN_WORKER_COMPLETION_BACKLOG_FALLBACK=0
+    export NVPN_DOCKER_MAX_DECRYPT_FSP_WORKER_REPLAY_DROPPED=0
+    export NVPN_DOCKER_MAX_FMP_AEAD_COMPLETION_AEAD_FAILED=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_AEAD_FAILED=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_EPOCH_MISMATCH=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_SESSION=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_ORDER=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_TICKET=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_DUPLICATE_TICKET=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_WINDOW_EXCEEDED=0
+    export NVPN_DOCKER_MAX_FMP_AEAD_COMPLETION_REPLAY_DROPPED=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED_HELPER=0
+    export NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED_HELPER_RETURNED=0
+    docker_bench_assert_pipeline_hard_event_guards "$phase_summary"
+  ) 2>"$dir/guarded.stderr"; then
+    fail "Docker pipeline hard event guard should fail open-worker completion backlog fixture"
+  fi
+
+  failure_path="$dir/guarded/guard-failures.tsv"
+  assert_file_contains "$failure_path" $'connected_udp_direct_decrypt_bulk_shed_total\t<=\t11\t0' "pipeline hard event connected direct-decrypt shed failure"
+  assert_file_contains "$failure_path" $'endpoint_event_bulk_dropped_total\t<=\t10\t0' "pipeline hard event endpoint event bulk drop failure"
+  assert_file_contains "$failure_path" $'decrypt_worker_queue_full_total\t<=\t13\t0' "pipeline hard event decrypt worker queue-full failure"
+  assert_file_contains "$failure_path" $'decrypt_worker_bulk_dropped_total\t<=\t17\t0' "pipeline hard event decrypt worker bulk drop failure"
+  assert_file_contains "$failure_path" $'decrypt_fallback_pressure_drain_total\t<=\t19\t0' "pipeline hard event decrypt fallback pressure drain failure"
+  assert_file_contains "$failure_path" $'decrypt_fallback_priority_gated_total\t<=\t23\t0' "pipeline hard event decrypt fallback priority gated failure"
+  assert_file_contains "$failure_path" $'decrypt_fsp_helper_window_fallback_total\t<=\t29\t0' "pipeline hard event FSP helper window fallback failure"
+  assert_file_contains "$failure_path" $'decrypt_fsp_open_worker_window_fallback_total\t<=\t30\t0' "pipeline hard event FSP open-worker window fallback failure"
+  assert_file_contains "$failure_path" $'decrypt_fsp_helper_queue_full_fallback_total\t<=\t31\t0' "pipeline hard event FSP helper queue-full fallback failure"
+  assert_file_contains "$failure_path" $'decrypt_fsp_helper_completion_backlog_fallback_total\t<=\t37\t0' "pipeline hard event FSP helper completion backlog failure"
+  assert_file_contains "$failure_path" $'decrypt_fsp_open_worker_completion_backlog_fallback_total\t<=\t5\t0' "pipeline hard event FSP open-worker backlog failure"
+  assert_file_contains "$failure_path" $'decrypt_fsp_worker_replay_dropped_total\t<=\t7\t0' "pipeline hard event FSP worker replay drop failure"
+  assert_file_contains "$failure_path" $'fmp_aead_completion_aead_failed_total\t<=\t2\t0' "pipeline hard event FMP AEAD failed failure"
+  assert_file_contains "$failure_path" $'fsp_aead_completion_aead_failed_total\t<=\t3\t0' "pipeline hard event FSP AEAD failed failure"
+  assert_file_contains "$failure_path" $'fsp_aead_completion_epoch_mismatch_total\t<=\t4\t0' "pipeline hard event FSP epoch mismatch failure"
+  assert_file_contains "$failure_path" $'fsp_aead_completion_stale_session_total\t<=\t44\t0' "pipeline hard event FSP stale session failure"
+  assert_file_contains "$failure_path" $'fsp_aead_completion_stale_order_total\t<=\t45\t0' "pipeline hard event FSP stale order failure"
+  assert_file_contains "$failure_path" $'fsp_aead_completion_stale_ticket_total\t<=\t46\t0' "pipeline hard event FSP stale ticket failure"
+  assert_file_contains "$failure_path" $'fsp_aead_completion_duplicate_ticket_total\t<=\t47\t0' "pipeline hard event FSP duplicate ticket failure"
+  assert_file_contains "$failure_path" $'fsp_aead_completion_window_exceeded_total\t<=\t48\t0' "pipeline hard event FSP window exceeded failure"
+  assert_file_contains "$failure_path" $'fmp_aead_completion_replay_dropped_total\t<=\t39\t0' "pipeline hard event FMP AEAD replay drop failure"
+  assert_file_contains "$failure_path" $'fsp_aead_completion_replay_dropped_total\t<=\t40\t0' "pipeline hard event FSP AEAD replay drop failure"
+  assert_file_contains "$failure_path" $'fsp_aead_completion_replay_dropped_helper_total\t<=\t41\t0' "pipeline hard event FSP helper replay drop failure"
+  assert_file_contains "$failure_path" $'fsp_aead_completion_replay_dropped_helper_returned_total\t<=\t43\t0' "pipeline hard event FSP helper returned replay drop failure"
+  assert_file_contains "$dir/guarded.stderr" "docker bench guard failed: wrote $failure_path" "pipeline hard event guard stderr failure path"
+
+  rm -rf "$dir"
+}
+
+test_docker_benchmark_pipeline_hard_event_guard_can_require_all_zero() {
+  local dir phase_summary failure_path
+  dir="$(mktemp -d)"
+  phase_summary="$dir/phase-summary.tsv"
+  {
+    printf 'phase\tpeer\thard_events\n'
+    printf 'tcp-4\tnode-a\t%s\n' \
+      'nvpn_tun_to_mesh_bulk_dropped:max_rate_per_sec=289,total=356;nvpn_tun_to_mesh_bulk_dropped_batches:max_rate_per_sec=7,total=8;connected_udp_peer_kernel_dropped:max_rate_per_sec=1,total=1'
+    printf 'udp-1000\tnode-b\t%s\n' \
+      'connected_udp_peer_kernel_dropped:max_rate_per_sec=2,total=3'
+  } >"$phase_summary"
+
+  (
+    OUTPUT_DIR="$dir/no-guard"
+    mkdir -p "$OUTPUT_DIR"
+    docker_bench_assert_pipeline_hard_event_guards "$phase_summary"
+  )
+
+  if (
+    OUTPUT_DIR="$dir/guarded"
+    mkdir -p "$OUTPUT_DIR"
+    export NVPN_DOCKER_REQUIRE_NO_PIPELINE_HARD_EVENTS=1
+    docker_bench_assert_pipeline_hard_event_guards "$phase_summary"
+  ) 2>"$dir/guarded.stderr"; then
+    fail "Docker pipeline hard event zero guard should fail any nonzero event fixture"
+  fi
+
+  failure_path="$dir/guarded/guard-failures.tsv"
+  assert_file_contains "$failure_path" $'nvpn_tun_to_mesh_bulk_dropped_total\t<=\t356\t0' "pipeline hard event global zero TUN-to-mesh drop failure"
+  assert_file_contains "$failure_path" $'nvpn_tun_to_mesh_bulk_dropped_batches_total\t<=\t8\t0' "pipeline hard event global zero TUN-to-mesh batch failure"
+  assert_file_contains "$failure_path" $'connected_udp_peer_kernel_dropped_total\t<=\t4\t0' "pipeline hard event global zero connected peer drop failure"
+  assert_file_contains "$dir/guarded.stderr" "docker bench guard failed: wrote $failure_path" "pipeline hard event global zero stderr failure path"
+
+  rm -rf "$dir"
+}
+
+test_docker_benchmark_pipeline_hard_event_guard_allows_named_bulk_events() {
+  local dir phase_summary failure_path
+  dir="$(mktemp -d)"
+  phase_summary="$dir/phase-summary.tsv"
+  {
+    printf 'phase\tpeer\thard_events\n'
+    printf 'tcp-8\tnode-a\t%s\n' \
+      'nvpn_tun_to_mesh_bulk_dropped:max_rate_per_sec=131,total=131;nvpn_tun_to_mesh_bulk_dropped_batches:max_rate_per_sec=1,total=1;nvpn_tun_to_mesh_bulk_dropped_packet_cap:max_rate_per_sec=131,total=131;endpoint_event_bulk_dropped:max_rate_per_sec=2,total=2'
+  } >"$phase_summary"
+
+  if (
+    OUTPUT_DIR="$dir/guarded"
+    mkdir -p "$OUTPUT_DIR"
+    export NVPN_DOCKER_REQUIRE_NO_PIPELINE_HARD_EVENTS=1
+    export NVPN_DOCKER_ALLOW_PIPELINE_HARD_EVENTS=nvpn_tun_to_mesh_bulk_dropped,nvpn_tun_to_mesh_bulk_dropped_batches,nvpn_tun_to_mesh_bulk_dropped_packet_cap
+    docker_bench_assert_pipeline_hard_event_guards "$phase_summary"
+  ) 2>"$dir/guarded.stderr"; then
+    fail "Docker pipeline hard event zero guard should still fail unallowed endpoint event"
+  fi
+
+  failure_path="$dir/guarded/guard-failures.tsv"
+  assert_file_not_contains "$failure_path" "nvpn_tun_to_mesh_bulk_dropped_total" "allowed TUN-to-mesh bulk drop should not fail global guard"
+  assert_file_contains "$failure_path" $'endpoint_event_bulk_dropped_total\t<=\t2\t0' "unallowed endpoint event should still fail global guard"
+
+  (
+    OUTPUT_DIR="$dir/allowed"
+    mkdir -p "$OUTPUT_DIR"
+    export NVPN_DOCKER_REQUIRE_NO_PIPELINE_HARD_EVENTS=1
+    export NVPN_DOCKER_ALLOW_PIPELINE_HARD_EVENTS=nvpn_tun_to_mesh_bulk_dropped,nvpn_tun_to_mesh_bulk_dropped_batches,nvpn_tun_to_mesh_bulk_dropped_packet_cap,endpoint_event_bulk_dropped
+    docker_bench_assert_pipeline_hard_event_guards "$phase_summary"
+  )
+
+  rm -rf "$dir"
+}
+
 test_docker_comparison_relaxes_udp_bulk_loss_under_cpu_stress() {
   local dir out threshold_status threshold_failures udp_threshold ping_threshold effective_udp_delta
   dir="$(mktemp -d)"
@@ -627,7 +1456,7 @@ test_docker_comparison_relaxes_udp_bulk_loss_under_cpu_stress() {
   write_metadata_fixture "$dir/reference" boringtun true remote 0 1
   out="$dir/out"
 
-  "$COMPARE_SCRIPT" "$dir/nvpn" "$dir/reference" "$out" >/dev/null
+  NVPN_DOCKER_COMPARISON_REQUIRE_NVPN_UDP_ZERO_LOSS=0 "$COMPARE_SCRIPT" "$dir/nvpn" "$dir/reference" "$out" >/dev/null
 
   threshold_status="$(jq -r '.threshold_status.status' "$out/comparison.json")"
   threshold_failures="$(jq -r '.threshold_status.failures' "$out/comparison.json")"
@@ -687,21 +1516,89 @@ test_docker_comparison_selects_wireguard_go_reference() {
   rm -rf "$dir"
 }
 
+test_docker_comparison_labels_same_backend_profiles() {
+  local dir out nvpn_label reference_label reference_backend json_labels tcp_ratio
+  dir="$(mktemp -d)"
+  write_summary_fixture \
+    "$dir/helper2/summary.tsv" \
+    nvpn "" \
+    600 10 \
+    610 20 \
+    620 30 \
+    199 0 \
+    990 0 \
+    0 0.8 \
+    "$dir/helper2/raw"
+  write_metadata_fixture "$dir/helper2" nvpn false both 0 0 false
+  write_summary_fixture \
+    "$dir/defaultoff/summary.tsv" \
+    nvpn "" \
+    300 10 \
+    400 20 \
+    500 30 \
+    199 0 \
+    990 0 \
+    0 0.4 \
+    "$dir/defaultoff/raw"
+  write_metadata_fixture "$dir/defaultoff" nvpn false both 0 0 false
+  out="$dir/out"
+
+  NVPN_DOCKER_COMPARISON_NVPN_LABEL=helper2 \
+    NVPN_DOCKER_COMPARISON_REFERENCE_BACKEND=nvpn \
+    NVPN_DOCKER_COMPARISON_REFERENCE_LABEL=defaultoff \
+    "$COMPARE_SCRIPT" "$dir/helper2" "$dir/defaultoff" "$out" >/dev/null
+
+  nvpn_label="$(awk -F '\t' 'NR == 2 { print $1 }' "$out/comparison.tsv")"
+  reference_label="$(awk -F '\t' 'NR == 3 { print $1 }' "$out/comparison.tsv")"
+  reference_backend="$(awk -F '\t' 'NR == 3 { print $3 }' "$out/comparison.tsv")"
+  json_labels="$(jq -r '.inputs.nvpn_label, .inputs.reference_label, .inputs.reference_backend' "$out/comparison.json" | paste -sd ':' -)"
+  tcp_ratio="$(awk -F '\t' '$1 == "tcp_single_mbps" { print $6 }' "$out/ratios.tsv")"
+
+  assert_eq "$nvpn_label" "helper2" "same-backend comparison nvpn label"
+  assert_eq "$reference_label" "defaultoff" "same-backend comparison reference label"
+  assert_eq "$reference_backend" "nvpn" "same-backend comparison reference backend"
+  assert_eq "$json_labels" "helper2:defaultoff:nvpn" "same-backend comparison JSON labels"
+  assert_eq "$tcp_ratio" "200.0" "same-backend comparison TCP ratio"
+
+  rm -rf "$dir"
+}
+
 test_json_and_ping_parsers
+test_udp1000_parallel_bandwidth_helpers_preserve_total_target
 test_summary_row
 test_metadata_writer_records_cpu_stress
+test_local_fips_repo_path_defaults_to_patch
 test_metadata_writer_records_pipeline_trace
 test_metadata_writer_records_iperf_interval
 test_metadata_writer_records_iperf_timeout
+test_metadata_writer_records_udp1000_per_stream_bandwidth
 test_metadata_writer_records_guard_thresholds
+test_metadata_writer_records_fips_soak_thresholds
 test_metadata_writer_records_run_provenance
+test_dataplane_profile_expands_connect_env
+test_placement_profile_expands_worker_open_connect_env
+test_placement_profile_allows_explicit_nonexclusive_worker_open_guard
+test_placement_profile_allows_explicit_truthy_worker_open_env
+test_placement_profile_rejects_conflicting_worker_open_env
+test_dataplane_profile_rejects_unknown_profile
+test_connect_env_scope_rejects_stranded_outer_env
 test_metadata_writer_records_direct_fmp_guard
+test_metadata_writer_records_fsp_aead_helper_guard
+test_metadata_writer_records_pipeline_hard_event_guard
+test_extra_env_validation_accepts_current_fips_parallel_open_names
+test_extra_env_validation_rejects_stale_fips_helper_names
 test_pipeline_summary_helpers
 test_nvpn_tun_write_summary_prefers_coalesced_frame_interval
 test_docker_comparison_outputs
+test_docker_benchmark_table_outputs
 test_docker_benchmark_summary_guards_are_opt_in
 test_docker_benchmark_summary_guards_accept_healthy_fixture
+test_docker_benchmark_tun_drop_guards_are_opt_in
+test_docker_benchmark_pipeline_hard_event_guards_are_opt_in
+test_docker_benchmark_pipeline_hard_event_guard_can_require_all_zero
+test_docker_benchmark_pipeline_hard_event_guard_allows_named_bulk_events
 test_docker_comparison_relaxes_udp_bulk_loss_under_cpu_stress
 test_docker_comparison_selects_wireguard_go_reference
+test_docker_comparison_labels_same_backend_profiles
 
 printf 'docker benchmark summary self-test passed\n'

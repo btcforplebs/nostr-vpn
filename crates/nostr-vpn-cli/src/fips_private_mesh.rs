@@ -45,6 +45,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::Interest;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::io::unix::AsyncFd;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use tokio::sync::Notify;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use tokio::sync::mpsc;
 
@@ -78,8 +80,9 @@ const MESH_LAN_TUNNEL_MTU: u16 = 1290;
 const MESH_MIN_UNDERLAY_UDP_MTU: u16 = 1280;
 const MESH_MIN_TUNNEL_MTU: u16 = 576;
 const MESH_MAX_MTU: u16 = 9000;
-// Linux Docker/vnet benchmarks benefit slightly from wider app-side drains.
-// Keep Darwin at the smaller, Wi-Fi-proven burst until Mac-to-Mac evidence says otherwise.
+// Linux vnet receive writes need enough batching to amortize endpoint wakeups,
+// but wide TUN-write turns create UDP receive-buffer bursts under CPU stress.
+// Docker A/Bs found 32 steadier than the old effective 128 and than 16/64.
 #[cfg(target_os = "linux")]
 const FIPS_TUN_READ_BURST: usize = 128;
 #[cfg(target_os = "macos")]
@@ -101,13 +104,15 @@ const FIPS_MESH_BULK_SEND_BURST: usize = 16;
 ))]
 const FIPS_MESH_BULK_SEND_BURST: usize = FIPS_MESH_SEND_BURST;
 #[cfg(target_os = "linux")]
-const FIPS_MESH_RECV_BURST: usize = 256;
+const FIPS_MESH_RECV_BURST: usize = 64;
 #[cfg(target_os = "macos")]
 const FIPS_MESH_RECV_BURST: usize = 128;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 const FIPS_MESH_EVENT_DRAIN_LIMIT: usize = 256;
 #[cfg(target_os = "linux")]
 const DEFAULT_FIPS_TUN_TO_MESH_QUEUE_CAP: usize = 4096;
+#[cfg(target_os = "linux")]
+const DEFAULT_LINUX_TUN_TX_QUEUE_LEN: usize = 4096;
 #[cfg(target_os = "macos")]
 const DEFAULT_FIPS_TUN_TO_MESH_QUEUE_CAP: usize = 256;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -193,6 +198,55 @@ fn parse_fips_udp_send_buf_size(raw: Option<&str>, default: Option<usize>) -> Op
         Some(value) => Some(value.clamp(MIN_FIPS_UDP_SEND_BUF_SIZE, MAX_FIPS_UDP_SEND_BUF_SIZE)),
         None => default,
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_tun_tx_queue_len() -> Option<usize> {
+    static VALUE: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        parse_linux_tun_tx_queue_len(
+            std::env::var("NVPN_FIPS_LINUX_TUN_TX_QUEUE_LEN")
+                .ok()
+                .as_deref(),
+            DEFAULT_LINUX_TUN_TX_QUEUE_LEN,
+        )
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_linux_tun_tx_queue_len(raw: Option<&str>, default: usize) -> Option<usize> {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Some(default.clamp(64, 65_536));
+    };
+    if value == "0"
+        || value.eq_ignore_ascii_case("false")
+        || value.eq_ignore_ascii_case("no")
+        || value.eq_ignore_ascii_case("off")
+    {
+        return None;
+    }
+    value
+        .parse::<usize>()
+        .ok()
+        .map(|value| value.clamp(64, 65_536))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn fips_mesh_recv_burst() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        parse_fips_mesh_recv_burst(
+            std::env::var("NVPN_FIPS_MESH_RECV_BURST").ok().as_deref(),
+            FIPS_MESH_RECV_BURST,
+        )
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn parse_fips_mesh_recv_burst(raw: Option<&str>, default: usize) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+        .clamp(1, 128)
 }
 
 fn fips_lan_discovery_scope(network_id: &str) -> String {

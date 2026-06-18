@@ -597,6 +597,7 @@
         assert_peer_data_activity(&runtime, &participant_pubkey, expected_endpoint_data_bytes);
         runtime.shutdown().await.expect("shutdown");
     }
+
     #[tokio::test]
     async fn endpoint_data_runtime_sends_tun_pipeline_batch_without_repacking() {
         let keys = Keys::generate();
@@ -731,7 +732,7 @@
         runtime.shutdown().await.expect("shutdown");
     }
     #[tokio::test]
-    async fn endpoint_data_runtime_blocking_recv_batch_into_reuses_event_buffer_and_respects_limit()
+    async fn endpoint_data_runtime_blocking_recv_batch_into_reuses_buffers_and_respects_limit()
     {
         let keys = Keys::generate();
         let nsec = keys.secret_key().to_bech32().expect("nsec");
@@ -763,13 +764,17 @@
         let (runtime, event_capacity) =
             tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                 let stop = AtomicBool::new(false);
+                let mut messages = Vec::with_capacity(8);
                 let mut events = Vec::with_capacity(8);
+                let message_capacity = messages.capacity();
                 let event_capacity = events.capacity();
 
                 let received = runtime
-                    .recv_mesh_event_batch_blocking_into(&mut events, 2, &stop)?
+                    .recv_mesh_event_batch_blocking_into(&mut messages, &mut events, 2, &stop)?
                     .expect("batch should contain admitted packets");
                 assert_eq!(received, 2);
+                assert!(messages.is_empty());
+                assert_eq!(messages.capacity(), message_capacity);
                 assert_eq!(events.capacity(), event_capacity);
 
                 let packets: Vec<_> = events
@@ -782,9 +787,11 @@
                 assert_eq!(packets, vec![first, second]);
 
                 let received = runtime
-                    .recv_mesh_event_batch_blocking_into(&mut events, 8, &stop)?
+                    .recv_mesh_event_batch_blocking_into(&mut messages, &mut events, 8, &stop)?
                     .expect("batch should contain admitted packets");
                 assert_eq!(received, 1);
+                assert!(messages.is_empty());
+                assert_eq!(messages.capacity(), message_capacity);
                 assert_eq!(events.capacity(), event_capacity);
 
                 let packets: Vec<_> = events
@@ -802,6 +809,82 @@
             .expect("blocking receiver should join")
             .expect("blocking batch receive should succeed");
         assert_eq!(event_capacity, 8);
+
+        runtime.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn endpoint_data_runtime_blocking_recv_batch_for_each_respects_limit() {
+        let keys = Keys::generate();
+        let nsec = keys.secret_key().to_bech32().expect("nsec");
+        let participant_pubkey = keys.public_key().to_hex();
+        let source = Ipv4Addr::new(10, 44, 10, 1);
+        let destination = Ipv4Addr::new(10, 44, 22, 44);
+
+        let peer = FipsMeshPeerConfig::from_participant_pubkey(
+            &participant_pubkey,
+            vec![format!("{source}/32"), format!("{destination}/32")],
+        )
+        .expect("peer config");
+        let runtime = FipsPrivateMeshRuntime::bind(nsec, "test-network", vec![peer])
+            .await
+            .expect("runtime should bind");
+        let mut first = ipv4_packet(source, destination);
+        let mut second = ipv4_packet(source, destination);
+        let mut third = ipv4_packet(source, destination);
+        first[20] = 1;
+        second[20] = 2;
+        third[20] = 3;
+
+        let sent = runtime
+            .send_tunnel_packet_batch_owned(vec![first.clone(), second.clone(), third.clone()])
+            .await
+            .expect("send packet batch");
+        assert_eq!(sent, 3);
+
+        let runtime = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let stop = AtomicBool::new(false);
+            let mut events = Vec::with_capacity(8);
+
+            let received = runtime
+                .recv_mesh_event_batch_blocking_for_each(2, &stop, |event| {
+                    events.push(event);
+                    true
+                })?
+                .expect("batch should contain admitted packets");
+            assert_eq!(received, 2);
+
+            let packets: Vec<_> = events
+                .drain(..)
+                .map(|event| match event {
+                    FipsPrivateMeshEvent::Packet(packet) => packet,
+                    event => panic!("expected packet event, got {event:?}"),
+                })
+                .collect();
+            assert_eq!(packets, vec![first, second]);
+
+            let received = runtime
+                .recv_mesh_event_batch_blocking_for_each(8, &stop, |event| {
+                    events.push(event);
+                    true
+                })?
+                .expect("batch should contain admitted packets");
+            assert_eq!(received, 1);
+
+            let packets: Vec<_> = events
+                .drain(..)
+                .map(|event| match event {
+                    FipsPrivateMeshEvent::Packet(packet) => packet,
+                    event => panic!("expected packet event, got {event:?}"),
+                })
+                .collect();
+            assert_eq!(packets, vec![third]);
+
+            Ok(runtime)
+        })
+        .await
+        .expect("blocking receiver should join")
+        .expect("blocking callback receive should succeed");
 
         runtime.shutdown().await.expect("shutdown");
     }

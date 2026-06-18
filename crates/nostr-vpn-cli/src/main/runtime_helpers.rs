@@ -613,6 +613,7 @@ async fn broadcast_local_fips_capabilities(
             } else {
                 Vec::new()
             },
+            dataplane_features: local_fips_dataplane_features(),
             signed_at,
         };
         if runtime

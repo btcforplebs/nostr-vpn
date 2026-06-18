@@ -77,6 +77,25 @@ prepare_lock_restore() {
 
 cargo_config_args=()
 
+run_cargo_test_checked() {
+  local output status
+  output="$(mktemp)"
+  set +e
+  "$@" >"$output" 2>&1
+  status=$?
+  set -e
+  cat "$output"
+  if ((status != 0)); then
+    rm -f "$output"
+    return "$status"
+  fi
+  if ! grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$output"; then
+    rm -f "$output"
+    fail "focused cargo test selected zero tests: $*"
+  fi
+  rm -f "$output"
+}
+
 prepare_cargo_config() {
   cargo_config_args=()
   if [[ -n "${NVPN_FIPS_REPO_PATH:-}" ]]; then
@@ -95,9 +114,9 @@ prepare_cargo_config() {
 cargo_test() {
   prepare_cargo_config
   if ((${#cargo_config_args[@]})); then
-    (cd "$ROOT_DIR" && cargo test "${cargo_config_args[@]}" "$@")
+    (cd "$ROOT_DIR" && run_cargo_test_checked cargo test "${cargo_config_args[@]}" "$@")
   else
-    (cd "$ROOT_DIR" && cargo test "$@")
+    (cd "$ROOT_DIR" && run_cargo_test_checked cargo test "$@")
   fi
 }
 
@@ -113,7 +132,7 @@ validated_fips_repo_path() {
 fips_cargo_test() {
   local fips_path
   fips_path="$(validated_fips_repo_path)"
-  (cd "$fips_path" && cargo test "$@")
+  (cd "$fips_path" && run_cargo_test_checked cargo test "$@")
 }
 
 run_harnesses() {
@@ -125,12 +144,11 @@ run_harnesses() {
     scripts/install-nvpn-test-daemon
     scripts/lib-docker-bench-summary.sh
     scripts/perf-docker.sh
+    scripts/perf-docker-relay.sh
     scripts/perf-docker-boringtun.sh
     scripts/perf-docker-wireguard-go.sh
-    scripts/release-gate.sh
     scripts/run-darwin-docker-wg-reference.sh
     scripts/run-host-pair-comparison.sh
-    scripts/release-gate-host-pair-latency.sh
     scripts/soak-fips-dataplane-docker.sh
     scripts/soak-fips-dataplane-host-pair.sh
     scripts/summarize-fips-soak-docker.sh
@@ -147,7 +165,6 @@ run_harnesses() {
     scripts/test-host-pair-harness.sh
     scripts/test-install-nvpn-test-daemon.sh
     scripts/test-mobile-platform-tools.sh
-    scripts/test-release-gate-host-pair-latency.sh
     scripts/test-userspace-wg-host-pair-harness.sh
   )
   run bash -n "${scripts[@]/#/$ROOT_DIR/}"
@@ -163,7 +180,6 @@ run_harnesses() {
   run "$ROOT_DIR/scripts/test-host-pair-comparison-runner.sh"
   run "$ROOT_DIR/scripts/test-mobile-platform-tools.sh"
   run "$ROOT_DIR/scripts/test-install-nvpn-test-daemon.sh"
-  run "$ROOT_DIR/scripts/test-release-gate-host-pair-latency.sh"
   run "$ROOT_DIR/scripts/test-userspace-wg-host-pair-harness.sh"
 }
 
@@ -207,8 +223,6 @@ run_core() {
 
 run_nvpn_hotpath() {
   run cargo_test -p nvpn blocking_mesh_recv_defaults_on_and_accepts_explicit_disable
-  run cargo_test -p nvpn tun_to_mesh_queue_default_matches_host_pair_bulk_budget
-  run cargo_test -p nvpn tun_to_mesh_queue_cap_env_keeps_safe_bounds
   run cargo_test -p nvpn raw_tun_write_keeps_fd_open_and_writes_platform_frame
   run cargo_test -p nvpn blocking_tun_write_keeps_fd_open_and_writes_platform_frame
   run cargo_test -p nvpn tun_to_mesh_classifier_reserves_liveness_and_tcp_control_packets
@@ -227,8 +241,9 @@ run_nvpn_hotpath() {
   run cargo_test -p nvpn endpoint_data_runtime_sends_and_receives_raw_packet_batch
   run cargo_test -p nvpn endpoint_data_runtime_sends_tun_pipeline_batch_without_repacking
   run cargo_test -p nvpn endpoint_data_runtime_recv_batch_into_reuses_buffers_and_respects_limit
-  run cargo_test -p nvpn endpoint_data_runtime_blocking_recv_batch_into_reuses_event_buffer_and_respects_limit
-  run cargo_test -p nvpn endpoint_data_runtime_blocking_recv_for_each_avoids_endpoint_and_event_batch_staging
+  run cargo_test -p nvpn endpoint_data_runtime_blocking_recv_batch_into_reuses_buffers_and_respects_limit
+  run cargo_test -p nvpn endpoint_data_runtime_blocking_recv_batch_into_stages_before_event_handling
+  run cargo_test -p nvpn endpoint_data_runtime_blocking_recv_batch_for_each_respects_limit
 }
 
 run_nvpn_reliability() {
@@ -264,7 +279,7 @@ run_app_state() {
 run_fips() {
   run fips_cargo_test -p fips-core non_reconnect -- --nocapture
   run fips_cargo_test -p fips-core active_fallback -- --nocapture
-  run fips_cargo_test -p fips-core worker_batch_size_parse_stays_within_sender_accounting_limit -- --nocapture
+  run fips_cargo_test -p fips-core worker_batch_size_parse_stays_within_safe_default_turn -- --nocapture
   run fips_cargo_test -p fips-core packet_drain_cursor_interleaves_side_queues_after_fallback -- --nocapture
   run fips_cargo_test -p fips-core endpoint_event_queue_owns_backlog_message_count -- --nocapture
   run fips_cargo_test -p fips-core endpoint_event_queue_splits_mixed_batch_into_priority_and_bulk_lanes -- --nocapture
@@ -280,6 +295,8 @@ run_fips() {
   run fips_cargo_test -p fips-core blocking_recv_batch_for_each_preserves_unhandled_internal_batch_tail -- --nocapture
   run fips_cargo_test -p fips-core endpoint_command_enqueue_drops_only_discardable_bulk_when_full -- --nocapture
   run fips_cargo_test -p fips-core packet_channel_batch_send_amortizes_bulk_channel_items -- --nocapture
+  run fips_cargo_test -p fips-core packet_channel_reuses_pooled_batch_container_after_rx_drain -- --nocapture
+  run fips_cargo_test -p fips-core packet_channel_recycles_pooled_packet_buffer_when_bulk_batch_is_dropped -- --nocapture
   run fips_cargo_test -p fips-core packet_channel_keeps_single_lane_batches_grouped -- --nocapture
   run fips_cargo_test -p fips-core packet_channel_dequeue_counts_preserve_item_and_lane_counts -- --nocapture
   run fips_cargo_test -p fips-core packet_channel_priority_overtakes_pending_bulk_batch_tail -- --nocapture

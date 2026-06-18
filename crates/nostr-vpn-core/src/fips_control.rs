@@ -241,8 +241,22 @@ pub struct PeerCapabilities {
     pub advertised_routes: Vec<String>,
     #[serde(default)]
     pub endpoint_hints: Vec<PeerEndpointHint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dataplane_features: Vec<String>,
     #[serde(default)]
     pub signed_at: u64,
+}
+
+pub fn local_fips_dataplane_features() -> Vec<String> {
+    Vec::new()
+}
+
+impl PeerCapabilities {
+    pub fn supports_dataplane_feature(&self, feature: &str) -> bool {
+        self.dataplane_features
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(feature))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -666,6 +680,7 @@ mod tests {
             capabilities: PeerCapabilities {
                 advertised_routes: vec!["0.0.0.0/0".to_string(), "::/0".to_string()],
                 endpoint_hints: vec![PeerEndpointHint::udp("192.168.50.22:51820")],
+                dataplane_features: vec!["future_feature".to_string()],
                 signed_at: 99,
             },
         };
@@ -685,7 +700,24 @@ mod tests {
 
         assert_eq!(caps.advertised_routes, vec!["0.0.0.0/0".to_string()]);
         assert!(caps.endpoint_hints.is_empty());
+        assert!(caps.dataplane_features.is_empty());
         assert_eq!(caps.signed_at, 99);
+    }
+
+    #[test]
+    fn peer_capabilities_match_dataplane_features_case_insensitively() {
+        let caps = PeerCapabilities {
+            dataplane_features: vec!["FUTURE_FEATURE".to_string()],
+            ..PeerCapabilities::default()
+        };
+
+        assert!(caps.supports_dataplane_feature("future_feature"));
+        assert!(!caps.supports_dataplane_feature("unknown_feature"));
+    }
+
+    #[test]
+    fn local_dataplane_features_are_empty_without_protocol_extensions() {
+        assert!(local_fips_dataplane_features().is_empty());
     }
 
     #[test]

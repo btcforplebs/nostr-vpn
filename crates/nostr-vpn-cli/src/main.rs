@@ -69,7 +69,7 @@ use nostr_vpn_core::diagnostics::{
     HealthIssue, HealthSeverity, NetworkSummary, PortMappingStatus, ProbeState,
 };
 use nostr_vpn_core::fips_control::{
-    NetworkRoster, PeerCapabilities, PeerEndpointHint, SignedRoster,
+    NetworkRoster, PeerCapabilities, PeerEndpointHint, SignedRoster, local_fips_dataplane_features,
 };
 #[cfg(feature = "embedded-fips")]
 use nostr_vpn_core::join_requests::{FIPS_JOIN_REQUEST_RETRY_SECS, MeshJoinRequest};

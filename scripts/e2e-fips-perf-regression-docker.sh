@@ -712,6 +712,10 @@ peak_wait_pipeline_lines_from_stdin() {
       if (value > score) score = value
       value = metric_avg_us(line, "decrypt_fallback_bulk_wait")
       if (value > score) score = value
+      value = metric_avg_us(line, "fsp_aead_worker_open_queue_wait")
+      if (value > score) score = value
+      value = metric_avg_us(line, "fsp_aead_worker_open_completion_wait")
+      if (value > score) score = value
       value = metric_avg_us(line, "endpoint_command_wait")
       if (value > score) score = value
       value = metric_avg_us(line, "endpoint_priority_command_wait")
@@ -723,8 +727,6 @@ peak_wait_pipeline_lines_from_stdin() {
     function nvpn_score(line, score, value) {
       score = -1
       value = metric_avg_us(line, "nvpn_tun_to_mesh_queue_wait")
-      if (value > score) score = value
-      value = metric_avg_us(line, "nvpn_mesh_to_tun_queue_wait")
       if (value > score) score = value
       return score
     }
@@ -898,7 +900,7 @@ pipeline_queue_wait_top_summary() {
       return 0
     }
     BEGIN {
-      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait fmp_linux_bulk_container_queue_wait fmp_linux_bulk_container_ready_wait fmp_linux_bulk_container_first_slot_wait fmp_linux_bulk_container_all_slots_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait nvpn_mesh_to_tun_queue_wait"
+      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait connected_udp_drain_recv connected_udp_fast_path_dispatch fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait fmp_linux_bulk_container_queue_wait fmp_linux_bulk_container_ready_wait fmp_linux_bulk_container_first_slot_wait fmp_linux_bulk_container_all_slots_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait fsp_aead_worker_open_queue_wait fsp_aead_worker_open_completion_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_direct_session_commit_wait decrypt_direct_session_data_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait"
       metric_count = split(metrics, names, " ")
       best_p99 = -1
       best_p95 = -1
@@ -960,6 +962,26 @@ pipeline_worker_batch_summary() {
       send_groups = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group") : 0
       send_group_packets = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_packets") : 0
       send_group_single = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_single") : 0
+      split_target = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_split_target") : 0
+      split_lane = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_split_lane") : 0
+      split_backpressure = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_split_backpressure") : 0
+      split_packet_cap = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_split_packet_cap") : 0
+      split_total = split_target + split_lane + split_backpressure + split_packet_cap
+      committed_dispatch = prefix == "fmp_worker_batch" ? parse_rate($0, "endpoint_committed_bulk_dispatch_batch") : 0
+      committed_packets = prefix == "fmp_worker_batch" ? parse_rate($0, "endpoint_committed_bulk_dispatch_packets") : 0
+      committed_merged_batches = prefix == "fmp_worker_batch" ? parse_rate($0, "endpoint_committed_bulk_dispatch_merged_batch") : 0
+      committed_merged_packets = prefix == "fmp_worker_batch" ? parse_rate($0, "endpoint_committed_bulk_dispatch_merged_packets") : 0
+      committed_avg = committed_dispatch > 0 ? committed_packets / committed_dispatch : 0
+      select_priority = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_select_priority") : 0
+      select_fmp_completion = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_select_fmp_completion") : 0
+      select_fsp_completion_packets = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_select_fsp_completion_packets") : 0
+      select_bulk_packets = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_select_bulk_packets") : 0
+      drain_priority = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_drain_priority") : 0
+      drain_completion_packets = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_drain_aead_completion_packets") : 0
+      drain_bulk_packets = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_drain_bulk_packets") : 0
+      interleave_completion_packets = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_bulk_interleave_aead_completion_packets") : 0
+      interleave_budget_exhausted = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_bulk_interleave_budget_exhausted") : 0
+      scheduler_total = select_priority + select_fmp_completion + select_fsp_completion_packets + select_bulk_packets + drain_priority + drain_completion_packets + drain_bulk_packets + interleave_completion_packets + interleave_budget_exhausted
       avg = packets / flush
       full_pct = (full / flush) * 100
       single_pct = (single / flush) * 100
@@ -977,6 +999,15 @@ pipeline_worker_batch_summary() {
       if (send_groups > 0) {
         summary = summary sprintf(",send_groups_per_flush=%.1f,send_group_avg_packets=%.1f,send_group_single_pct=%.1f,send_groups_per_sec=%g,send_group_packets_per_sec=%g", send_groups_per_flush, send_group_avg, send_group_single_pct, send_groups, send_group_packets)
       }
+      if (split_total > 0) {
+        summary = summary sprintf(",send_group_split_total_per_sec=%g,send_group_split_target_per_sec=%g,send_group_split_lane_per_sec=%g,send_group_split_backpressure_per_sec=%g,send_group_split_packet_cap_per_sec=%g", split_total, split_target, split_lane, split_backpressure, split_packet_cap)
+      }
+      if (committed_dispatch > 0) {
+        summary = summary sprintf(",committed_bulk_dispatch_avg_packets=%.1f,committed_bulk_dispatch_per_sec=%g,committed_bulk_dispatch_packets_per_sec=%g,committed_bulk_merged_batches_per_sec=%g,committed_bulk_merged_packets_per_sec=%g", committed_avg, committed_dispatch, committed_packets, committed_merged_batches, committed_merged_packets)
+      }
+      if (scheduler_total > 0) {
+        summary = summary sprintf(",select_priority_per_sec=%g,select_fmp_completion_per_sec=%g,select_fsp_completion_packets_per_sec=%g,select_bulk_packets_per_sec=%g,drain_priority_per_sec=%g,drain_completion_packets_per_sec=%g,drain_bulk_packets_per_sec=%g,bulk_interleave_completion_packets_per_sec=%g,bulk_interleave_budget_exhausted_per_sec=%g", select_priority, select_fmp_completion, select_fsp_completion_packets, select_bulk_packets, drain_priority, drain_completion_packets, drain_bulk_packets, interleave_completion_packets, interleave_budget_exhausted)
+      }
       print summary
       exit
     }
@@ -987,8 +1018,28 @@ pipeline_fmp_worker_batch_summary() {
   pipeline_worker_batch_summary "$1" "fmp_worker_batch"
 }
 
+pipeline_fmp_worker_dispatch_spread_summary() {
+  docker_bench_pipeline_fmp_worker_dispatch_spread_summary "$1"
+}
+
+pipeline_fsp_owner_placement_summary() {
+  docker_bench_pipeline_fsp_owner_placement_summary "$1"
+}
+
+pipeline_fsp_owner_placement_kind() {
+  docker_bench_pipeline_fsp_owner_placement_kind "$1"
+}
+
 pipeline_decrypt_worker_batch_summary() {
   pipeline_worker_batch_summary "$1" "decrypt_worker_batch"
+}
+
+pipeline_decrypt_worker_spread_summary() {
+  docker_bench_pipeline_decrypt_worker_spread_summary "$1"
+}
+
+pipeline_decrypt_worker_turn_mix_summary() {
+  docker_bench_pipeline_decrypt_worker_turn_mix_summary "$1"
 }
 
 pipeline_linux_bulk_container_summary() {
@@ -1076,7 +1127,7 @@ pipeline_hard_event_summary_from_stdin() {
       }
     }
     BEGIN {
-      events = "udp_send_backpressure udp_send_backpressure_sleep udp_send_bulk_dropped connected_udp_activation_failed connected_udp_peer_cap_skipped connected_udp_fd_budget_skipped encrypt_worker_queue_full encrypt_worker_priority_queue_full encrypt_worker_bulk_queue_full encrypt_worker_bulk_dropped fmp_linux_bulk_container_queue_full fmp_linux_bulk_container_queue_full_packets endpoint_direct_fmp_receive_dropped endpoint_direct_fmp_receive_dropped_packets decrypt_worker_queue_full decrypt_worker_bulk_dropped decrypt_worker_register_full decrypt_worker_priority_dropped decrypt_fallback_backlog_high rx_loop_slow_maintenance_timeout rx_loop_slow_maintenance_skipped decrypt_fallback_bulk_dropped decrypt_fallback_priority_dropped decrypt_fallback_pressure_drain decrypt_fallback_priority_gated decrypt_fsp_priority_queue_full_fallback decrypt_fsp_bulk_queue_full_fallback decrypt_fsp_worker_replay_dropped decrypt_authenticated_session_priority_dropped decrypt_authenticated_session_bulk_dropped pending_tun_destination_dropped pending_tun_packet_dropped pending_endpoint_destination_dropped pending_endpoint_packet_dropped endpoint_event_backlog_high endpoint_command_bulk_dropped endpoint_event_bulk_dropped transport_channel_backlog_high transport_bulk_dropped nvpn_tun_to_mesh_bulk_dropped"
+      events = "udp_send_backpressure udp_send_backpressure_sleep udp_send_bulk_dropped connected_udp_activation_failed connected_udp_peer_cap_skipped connected_udp_fd_budget_skipped connected_udp_kernel_dropped connected_udp_peer_kernel_dropped connected_udp_drain_bulk_dropped connected_udp_direct_decrypt_bulk_shed encrypt_worker_queue_full encrypt_worker_priority_queue_full encrypt_worker_bulk_queue_full encrypt_worker_bulk_dropped fmp_linux_bulk_container_queue_full fmp_linux_bulk_container_queue_full_packets endpoint_bulk_fast_path_prepare_failed endpoint_bulk_fast_path_stage_full endpoint_bulk_fast_path_feedback_full decrypt_worker_queue_full decrypt_worker_bulk_dropped decrypt_worker_register_full decrypt_worker_priority_dropped decrypt_fallback_backlog_high rx_loop_slow_maintenance_timeout rx_loop_slow_maintenance_skipped decrypt_fallback_bulk_dropped decrypt_fallback_priority_dropped decrypt_fallback_pressure_drain decrypt_fallback_priority_gated decrypt_fsp_priority_queue_full_fallback decrypt_fsp_bulk_queue_full_fallback decrypt_fsp_owner_handoff_dropped decrypt_fsp_open_pool_queue_full_fallback decrypt_fsp_open_worker_completion_backlog_fallback decrypt_fsp_worker_replay_dropped decrypt_fsp_worker_replay_dropped_duplicate decrypt_fsp_worker_replay_dropped_too_old decrypt_fsp_worker_replay_dropped_too_old_lag_ge_2x_window decrypt_fsp_worker_replay_dropped_too_old_lag_ge_4x_window decrypt_fsp_worker_replay_dropped_too_old_lag_ge_16x_window decrypt_fsp_worker_replay_dropped_too_old_lag_ge_64x_window fmp_aead_completion_aead_failed fsp_aead_completion_aead_failed fsp_aead_completion_epoch_mismatch fsp_aead_completion_replay_dropped_helper fsp_aead_completion_replay_dropped_helper_returned fsp_aead_completion_replay_dropped_worker_open fsp_aead_completion_replay_dropped_worker_open_returned fsp_aead_completion_replay_dropped_duplicate fsp_aead_completion_replay_dropped_too_old fsp_aead_completion_replay_dropped_too_old_lag_ge_2x_window fsp_aead_completion_replay_dropped_too_old_lag_ge_4x_window fsp_aead_completion_replay_dropped_too_old_lag_ge_16x_window fsp_aead_completion_replay_dropped_too_old_lag_ge_64x_window decrypt_authenticated_session_priority_dropped decrypt_authenticated_session_bulk_dropped pending_tun_destination_dropped pending_tun_packet_dropped pending_endpoint_destination_dropped pending_endpoint_packet_dropped endpoint_event_backlog_high endpoint_command_bulk_dropped endpoint_event_bulk_dropped transport_channel_backlog_high transport_bulk_dropped nvpn_tun_to_mesh_bulk_dropped nvpn_tun_to_mesh_bulk_dropped_batches nvpn_tun_to_mesh_bulk_dropped_packet_cap nvpn_tun_to_mesh_bulk_dropped_channel_full"
       event_count = split(events, names, " ")
     }
     {
@@ -1210,7 +1261,7 @@ pipeline_priority_queue_wait_violations_from_stdin() {
       }
       return number
     }
-    function parse_wait(line, metric, start, rest, parts, rate_raw, p99_raw, max_raw, allmax_raw, i) {
+    function parse_wait(line, metric, start, rest, parts, rate_raw, p99_raw, max_raw) {
       start = index(line, metric "=")
       if (start == 0) {
         return 0
@@ -1227,20 +1278,9 @@ pipeline_priority_queue_wait_violations_from_stdin() {
       sub(/\/s$/, "", rate_raw)
       sub(/^p99<=/, "", p99_raw)
       sub(/^max<=/, "", max_raw)
-      allmax_raw = ""
-      for (i = 7; i <= 10; i++) {
-        if (!(i in parts)) {
-          break
-        }
-        if (parts[i] ~ /^allmax=/) {
-          allmax_raw = parts[i]
-          sub(/^allmax=/, "", allmax_raw)
-          break
-        }
-      }
       metric_rate = rate_raw + 0
       metric_p99 = duration_ms(p99_raw)
-      metric_max = allmax_raw == "" ? duration_ms(max_raw) : duration_ms(allmax_raw)
+      metric_max = duration_ms(max_raw)
       return 1
     }
     BEGIN {
@@ -1294,15 +1334,16 @@ pipeline_priority_queue_wait_violations() {
     | pipeline_priority_queue_wait_violations_from_stdin "$threshold_ms"
 }
 
-assert_pipeline_priority_queue_wait_ok() {
+assert_priority_queue_wait_ok() {
   local threshold_ms="${MAX_PRIORITY_QUEUE_WAIT_MS:-0}"
   if ! awk -v threshold_ms="$threshold_ms" 'BEGIN { exit !((threshold_ms + 0) > 0) }'; then
     return 0
   fi
   local label="$1"
-  local pipeline_line="${2:-}"
+  local service="$2"
+  local start_line="${3:-0}"
   local violations
-  violations="$(printf '%s\n' "$pipeline_line" | pipeline_priority_queue_wait_violations_from_stdin "$threshold_ms")"
+  violations="$(pipeline_priority_queue_wait_violations "$service" "$start_line" "$threshold_ms")"
   if [[ -n "$violations" ]]; then
     append_failure_summary "$label priority queue wait max ms" "<=" "$violations" "$threshold_ms"
     echo "fips perf regression e2e failed: $label priority queue waits exceeded ${threshold_ms}ms: $violations" >&2
@@ -1619,7 +1660,7 @@ init_phase_summary() {
   PHASE_SUMMARY="$PERF_OUTPUT_DIR/phase-summary.tsv"
   FAILURE_SUMMARY="$PERF_OUTPUT_DIR/failure-summary.tsv"
   printf '%s\n' \
-    'phase	forward_mbps	forward_retrans	reverse_mbps	reverse_retrans	forward_load_mbps	forward_load_retrans	forward_load_ping_loss_percent	forward_load_ping_avg_ms	forward_load_ping_p95_ms	forward_load_ping_p99_ms	forward_load_ping_max_ms	reverse_load_mbps	reverse_load_retrans	reverse_load_ping_loss_percent	reverse_load_ping_avg_ms	reverse_load_ping_p95_ms	reverse_load_ping_p99_ms	reverse_load_ping_max_ms	post_ping_loss_percent	post_ping_avg_ms	post_ping_p95_ms	post_ping_p99_ms	post_ping_max_ms	direct_bytes_node_a	direct_bytes_node_b	pipeline_top_queue_wait_node_a	pipeline_top_queue_wait_node_b	pipeline_fmp_worker_batch_node_a	pipeline_fmp_worker_batch_node_b	pipeline_decrypt_worker_batch_node_a	pipeline_decrypt_worker_batch_node_b	pipeline_linux_bulk_container_node_a	pipeline_linux_bulk_container_node_b	pipeline_udp_send_batch_node_a	pipeline_udp_send_batch_node_b	pipeline_hard_events_node_a	pipeline_hard_events_node_b	pipeline_node_a	pipeline_node_b' \
+    'phase	forward_mbps	forward_retrans	reverse_mbps	reverse_retrans	forward_load_mbps	forward_load_retrans	forward_load_ping_loss_percent	forward_load_ping_avg_ms	forward_load_ping_p95_ms	forward_load_ping_p99_ms	forward_load_ping_max_ms	reverse_load_mbps	reverse_load_retrans	reverse_load_ping_loss_percent	reverse_load_ping_avg_ms	reverse_load_ping_p95_ms	reverse_load_ping_p99_ms	reverse_load_ping_max_ms	post_ping_loss_percent	post_ping_avg_ms	post_ping_p95_ms	post_ping_p99_ms	post_ping_max_ms	direct_bytes_node_a	direct_bytes_node_b	pipeline_top_queue_wait_node_a	pipeline_top_queue_wait_node_b	pipeline_fmp_worker_batch_node_a	pipeline_fmp_worker_batch_node_b	pipeline_fmp_worker_dispatch_spread_node_a	pipeline_fmp_worker_dispatch_spread_node_b	pipeline_decrypt_worker_batch_node_a	pipeline_decrypt_worker_batch_node_b	pipeline_decrypt_worker_spread_node_a	pipeline_decrypt_worker_spread_node_b	pipeline_decrypt_worker_turn_mix_node_a	pipeline_decrypt_worker_turn_mix_node_b	pipeline_linux_bulk_container_node_a	pipeline_linux_bulk_container_node_b	pipeline_udp_send_batch_node_a	pipeline_udp_send_batch_node_b	pipeline_hard_events_node_a	pipeline_hard_events_node_b	pipeline_node_a	pipeline_node_b' \
     >"$PHASE_SUMMARY"
   printf '%s\n' \
     'label	comparison	actual	threshold	phase	step	forward_mbps	forward_retrans	reverse_mbps	reverse_retrans	probe_mbps	probe_retrans	ping_loss_percent	ping_avg_ms	ping_p95_ms	ping_p99_ms	ping_max_ms	direct_bytes_node_a	direct_bytes_node_b	pipeline_node_a	pipeline_node_b' \
@@ -1805,7 +1846,7 @@ run_perf_phase() {
   local reverse_load_mbps reverse_load_retrans
   local reverse_load_ping_loss reverse_load_ping_avg reverse_load_ping_p95 reverse_load_ping_p99 reverse_load_ping_max
   local post_ping_loss post_ping_avg post_ping_p95 post_ping_p99 post_ping_max
-  local direct_delta_a direct_delta_b pipeline_a pipeline_b peak_pipeline_a peak_pipeline_b pipeline_top_a pipeline_top_b pipeline_batch_a pipeline_batch_b pipeline_decrypt_batch_a pipeline_decrypt_batch_b pipeline_udp_send_a pipeline_udp_send_b pipeline_hard_a pipeline_hard_b
+  local direct_delta_a direct_delta_b pipeline_a pipeline_b peak_pipeline_a peak_pipeline_b pipeline_top_a pipeline_top_b pipeline_batch_a pipeline_batch_b pipeline_spread_a pipeline_spread_b pipeline_decrypt_batch_a pipeline_decrypt_batch_b pipeline_udp_send_a pipeline_udp_send_b pipeline_hard_a pipeline_hard_b
   run_concurrent_probe "$phase" "forward" "$min_tcp" "$max_loss" "$max_avg" "$max_p95" "$max_p99" "$max_max"
   forward_load_mbps="$LAST_PROBE_MBIT"
   forward_load_retrans="$LAST_PROBE_RETRANS"
@@ -1852,8 +1893,14 @@ run_perf_phase() {
   pipeline_top_b="$(pipeline_queue_wait_top_summary "$pipeline_b")"
   pipeline_batch_a="$(pipeline_fmp_worker_batch_summary "$pipeline_a")"
   pipeline_batch_b="$(pipeline_fmp_worker_batch_summary "$pipeline_b")"
+  pipeline_spread_a="$(pipeline_fmp_worker_dispatch_spread_summary "$pipeline_a")"
+  pipeline_spread_b="$(pipeline_fmp_worker_dispatch_spread_summary "$pipeline_b")"
   pipeline_decrypt_batch_a="$(pipeline_decrypt_worker_batch_summary "$pipeline_a")"
   pipeline_decrypt_batch_b="$(pipeline_decrypt_worker_batch_summary "$pipeline_b")"
+  pipeline_decrypt_spread_a="$(pipeline_decrypt_worker_spread_summary "$pipeline_a")"
+  pipeline_decrypt_spread_b="$(pipeline_decrypt_worker_spread_summary "$pipeline_b")"
+  pipeline_decrypt_turn_mix_a="$(pipeline_decrypt_worker_turn_mix_summary "$pipeline_a")"
+  pipeline_decrypt_turn_mix_b="$(pipeline_decrypt_worker_turn_mix_summary "$pipeline_b")"
   pipeline_linux_bulk_a="$(linux_bulk_container_pipeline_summary node-a "$pipeline_start_a")"
   pipeline_linux_bulk_b="$(linux_bulk_container_pipeline_summary node-b "$pipeline_start_b")"
   pipeline_udp_send_a="$(pipeline_udp_send_batch_summary "$pipeline_a")"
@@ -1867,9 +1914,9 @@ run_perf_phase() {
   CURRENT_STEP="node-b priority hard event guard"
   assert_no_priority_hard_events "$phase node-b" "$pipeline_hard_b"
   CURRENT_STEP="node-a priority queue wait guard"
-  assert_pipeline_priority_queue_wait_ok "$phase node-a" "$pipeline_a"
+  assert_priority_queue_wait_ok "$phase node-a" node-a "$pipeline_start_a"
   CURRENT_STEP="node-b priority queue wait guard"
-  assert_pipeline_priority_queue_wait_ok "$phase node-b" "$pipeline_b"
+  assert_priority_queue_wait_ok "$phase node-b" node-b "$pipeline_start_b"
   append_phase_summary \
     "$phase" \
     "$forward_mbps" \
@@ -1901,8 +1948,14 @@ run_perf_phase() {
     "$pipeline_top_b" \
     "$pipeline_batch_a" \
     "$pipeline_batch_b" \
+    "$pipeline_spread_a" \
+    "$pipeline_spread_b" \
     "$pipeline_decrypt_batch_a" \
     "$pipeline_decrypt_batch_b" \
+    "$pipeline_decrypt_spread_a" \
+    "$pipeline_decrypt_spread_b" \
+    "$pipeline_decrypt_turn_mix_a" \
+    "$pipeline_decrypt_turn_mix_b" \
     "$pipeline_linux_bulk_a" \
     "$pipeline_linux_bulk_b" \
     "$pipeline_udp_send_a" \
@@ -2079,6 +2132,9 @@ start_compose_services() {
 main() {
   parse_args "$@"
   validate_perf_phases
+  if ! docker_bench_validate_extra_env_assignments "$EXTRA_ENV"; then
+    exit 2
+  fi
   trap on_exit EXIT
 
 cleanup

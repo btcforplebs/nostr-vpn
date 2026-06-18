@@ -184,17 +184,22 @@ main() {
           "decrypt_worker_priority_dropped",
           "decrypt_fallback_bulk_dropped",
           "decrypt_fallback_priority_dropped",
+          "fmp_aead_completion_aead_failed",
+          "fsp_aead_completion_aead_failed",
+          "fsp_aead_completion_epoch_mismatch",
           "pending_tun_destination_dropped",
           "pending_tun_packet_dropped",
           "pending_endpoint_destination_dropped",
           "pending_endpoint_packet_dropped",
-          "endpoint_direct_fmp_receive_dropped",
           "endpoint_event_backlog_high",
           "endpoint_event_bulk_dropped",
           "transport_channel_backlog_high",
           "transport_bulk_dropped",
           "udp_send_bulk_dropped",
-          "nvpn_tun_to_mesh_bulk_dropped"
+          "nvpn_tun_to_mesh_bulk_dropped",
+          "nvpn_tun_to_mesh_bulk_dropped_batches",
+          "nvpn_tun_to_mesh_bulk_dropped_packet_cap",
+          "nvpn_tun_to_mesh_bulk_dropped_channel_full"
         ];
       def hard_events($node; $kind):
         [

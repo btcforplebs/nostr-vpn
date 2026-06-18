@@ -8,8 +8,9 @@
         FIPS_NOSTR_EXTENDED_COOLDOWN_SECS, FIPS_NOSTR_FAILURE_STREAK_THRESHOLD,
         FIPS_NOSTR_OPEN_DISCOVERY_MAX_PENDING, FIPS_NOSTR_STARTUP_SWEEP_MAX_AGE_SECS,
         FIPS_RECENT_NON_ROSTER_TRANSIT_MAX_SEEDS, FIPS_RECONNECT_BACKOFF_BASE_SECS,
-        FIPS_RECONNECT_BACKOFF_MAX_SECS, FIPS_STATIC_PEER_ENDPOINT_PRIORITY, FipsEndpointSendRun,
-        FipsEndpointTransportConfig, FipsPeerActivity, FipsPeerActivitySnapshot,
+        FIPS_RECONNECT_BACKOFF_MAX_SECS, FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
+        FipsEndpointSendRun, FipsEndpointTransportConfig, FipsPeerActivity,
+        FipsPeerActivitySnapshot,
         FipsPeerAddressHint, FipsPeerIdentityMap, FipsPeerRxKind, FipsPrivateMeshEvent,
         FipsPrivateMeshRuntime, FipsPrivateTunnelConfig, Ipv4Subnet,
         cap_recent_non_roster_transit_endpoints, control_frame_destination_peer,
@@ -20,19 +21,18 @@
         fips_lan_discovery_scope, fips_peer_address_from_hint, linux_cap_eff_has_net_admin,
         linux_private_ipv4_route_subnets_from_ip_route, linux_tun_setup_error,
         macos_private_ipv4_route_subnets_from_netstat, mesh_status_from_endpoint_peer,
-        other_endpoint_peer_statuses, parse_fips_nostr_discovery_policy, participant_pubkey_bytes,
+        other_endpoint_peer_statuses, parse_fips_nostr_discovery_policy,
+        parse_linux_tun_tx_queue_len, participant_pubkey_bytes, parse_fips_mesh_recv_burst,
         peer_activity_map, peer_identity_map, strip_cidr, tag_authenticated_transport_addr,
         unix_timestamp,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::{
-        BorrowedTunFd,
-        DEFAULT_FIPS_TUN_TO_MESH_QUEUE_CAP, MAX_FIPS_TUN_TO_MESH_QUEUE_CAP,
-        MAX_FIPS_UDP_SEND_BUF_SIZE, MIN_FIPS_TUN_TO_MESH_QUEUE_CAP, MIN_FIPS_UDP_SEND_BUF_SIZE,
-        TunPipelineLane, TunPipelinePacket, TunPipelineQueueTx, TunQueueSubmit,
-        parse_fips_tun_bulk_coalesce_micros, parse_fips_tun_to_mesh_queue_cap,
-        parse_fips_udp_send_buf_size, raw_write_packet_to_tun, release_tun_bulk_packet_slots,
-        submit_tun_packet_batch_to_mesh_queue, tun_pipeline_packet_lane,
+        BorrowedTunFd, TunPipelineLane, TunPipelinePacket, TunPipelineQueueTx,
+        TunQueueSubmit, parse_fips_tun_to_mesh_queue_cap, raw_write_packet_to_tun,
+        release_tun_bulk_packet_slots, submit_tun_packet_batch_to_mesh_queue,
+        submit_tun_packet_batch_to_mesh_queue_with_backpressure,
+        tun_pipeline_packet_lane,
     };
     #[cfg(target_os = "linux")]
     use super::LINUX_VIRTIO_NET_HDR_LEN;
@@ -75,30 +75,6 @@
         }
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn tun_to_mesh_queue_default_matches_host_pair_bulk_budget() {
-        assert_eq!(DEFAULT_FIPS_TUN_TO_MESH_QUEUE_CAP, 4096);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn tun_to_mesh_queue_default_matches_macos_latency_budget() {
-        assert_eq!(DEFAULT_FIPS_TUN_TO_MESH_QUEUE_CAP, 256);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn tun_bulk_coalesce_delay_defaults_to_measured_macos_window() {
-        assert_eq!(super::DEFAULT_FIPS_TUN_BULK_COALESCE_MICROS, 250);
-    }
-
-    #[cfg(all(any(target_os = "linux", target_os = "macos"), not(target_os = "macos")))]
-    #[test]
-    fn tun_bulk_coalesce_delay_defaults_off_outside_macos() {
-        assert_eq!(super::DEFAULT_FIPS_TUN_BULK_COALESCE_MICROS, 0);
-    }
-
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn tun_to_mesh_queue_cap_env_keeps_safe_bounds() {
@@ -108,74 +84,38 @@
             parse_fips_tun_to_mesh_queue_cap(Some("not-a-number"), 1024),
             1024
         );
-        assert_eq!(
-            parse_fips_tun_to_mesh_queue_cap(Some("0"), 1024),
-            MIN_FIPS_TUN_TO_MESH_QUEUE_CAP
-        );
+        assert_eq!(parse_fips_tun_to_mesh_queue_cap(Some("0"), 1024), 1);
         assert_eq!(
             parse_fips_tun_to_mesh_queue_cap(Some("999999"), 1024),
-            MAX_FIPS_TUN_TO_MESH_QUEUE_CAP
+            65_536
         );
         assert_eq!(parse_fips_tun_to_mesh_queue_cap(Some("4096"), 1024), 4096);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn tun_bulk_coalesce_delay_env_keeps_safe_bounds() {
-        assert_eq!(parse_fips_tun_bulk_coalesce_micros(None, 250), 250);
-        assert_eq!(parse_fips_tun_bulk_coalesce_micros(Some(""), 250), 250);
+    fn linux_tun_tx_queue_len_env_keeps_bounded_default() {
+        assert_eq!(parse_linux_tun_tx_queue_len(None, 4096), Some(4096));
+        assert_eq!(parse_linux_tun_tx_queue_len(Some(""), 4096), Some(4096));
+        assert_eq!(parse_linux_tun_tx_queue_len(Some("500"), 4096), Some(500));
+        assert_eq!(parse_linux_tun_tx_queue_len(Some("1"), 4096), Some(64));
         assert_eq!(
-            parse_fips_tun_bulk_coalesce_micros(Some("not-a-number"), 250),
-            250
+            parse_linux_tun_tx_queue_len(Some("999999"), 4096),
+            Some(65_536)
         );
-        assert_eq!(parse_fips_tun_bulk_coalesce_micros(Some("0"), 250), 0);
-        assert_eq!(parse_fips_tun_bulk_coalesce_micros(Some("750"), 250), 750);
-        assert_eq!(
-            parse_fips_tun_bulk_coalesce_micros(Some("999999"), 250),
-            super::MAX_FIPS_TUN_BULK_COALESCE_MICROS
-        );
+        assert_eq!(parse_linux_tun_tx_queue_len(Some("0"), 4096), None);
+        assert_eq!(parse_linux_tun_tx_queue_len(Some("off"), 4096), None);
+        assert_eq!(parse_linux_tun_tx_queue_len(Some("no"), 4096), None);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn udp_send_buf_size_env_keeps_safe_bounds() {
-        assert_eq!(
-            parse_fips_udp_send_buf_size(None, Some(512 * 1024)),
-            Some(512 * 1024)
-        );
-        assert_eq!(
-            parse_fips_udp_send_buf_size(Some(""), Some(512 * 1024)),
-            Some(512 * 1024)
-        );
-        assert_eq!(
-            parse_fips_udp_send_buf_size(Some("not-a-number"), Some(512 * 1024)),
-            Some(512 * 1024)
-        );
-        assert_eq!(parse_fips_udp_send_buf_size(Some("0"), Some(512)), None);
-        assert_eq!(
-            parse_fips_udp_send_buf_size(Some("1"), Some(512 * 1024)),
-            Some(MIN_FIPS_UDP_SEND_BUF_SIZE)
-        );
-        assert_eq!(
-            parse_fips_udp_send_buf_size(Some("999999999"), Some(512 * 1024)),
-            Some(MAX_FIPS_UDP_SEND_BUF_SIZE)
-        );
-        assert_eq!(
-            parse_fips_udp_send_buf_size(Some("1048576"), Some(512 * 1024)),
-            Some(1024 * 1024)
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn udp_send_buf_size_defaults_to_latency_oriented_macos_window() {
-        assert_eq!(super::DEFAULT_FIPS_UDP_SEND_BUF_SIZE, Some(256 * 1024));
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn udp_send_buf_size_uses_fips_core_default_outside_macos() {
-        assert_eq!(super::DEFAULT_FIPS_UDP_SEND_BUF_SIZE, None);
+    fn mesh_recv_burst_env_keeps_endpoint_batch_bounds() {
+        assert_eq!(parse_fips_mesh_recv_burst(None, 64), 64);
+        assert_eq!(parse_fips_mesh_recv_burst(Some(""), 64), 64);
+        assert_eq!(parse_fips_mesh_recv_burst(Some("not-a-number"), 64), 64);
+        assert_eq!(parse_fips_mesh_recv_burst(Some("0"), 64), 1);
+        assert_eq!(parse_fips_mesh_recv_burst(Some("32"), 64), 32);
+        assert_eq!(parse_fips_mesh_recv_burst(Some("999"), 64), 128);
     }
 
     #[test]
@@ -842,6 +782,83 @@
             ),
             TunQueueSubmit::Enqueued
         );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn tun_to_mesh_read_backpressure_waits_for_bulk_headroom() {
+        let (tx, mut rx) = TunPipelineQueueTx::channel(2);
+
+        assert_eq!(
+            submit_tun_packet_batch_to_mesh_queue(
+                &tx,
+                vec![
+                    test_pipeline_packet(test_ipv6_tcp_packet(0x18, 512)),
+                    test_pipeline_packet(test_ipv6_tcp_packet(0x18, 513)),
+                ],
+            ),
+            TunQueueSubmit::Enqueued
+        );
+        assert!(!tx.tun_read_backpressure_ready(2));
+
+        let wait = tx.wait_for_tun_read_bulk_headroom(2);
+        tokio::pin!(wait);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err(),
+            "reader should wait while the bulk packet cap is full"
+        );
+
+        let queued = rx.recv().await.expect("queued bulk batch");
+        assert_eq!(queued.len(), 2);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), &mut wait)
+                .await
+                .expect("reader should wake after bulk slots are released")
+        );
+        assert!(tx.tun_read_backpressure_ready(2));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn tun_to_mesh_backpressured_submission_splits_oversized_bulk_batch() {
+        let (tx, mut rx) = TunPipelineQueueTx::channel(2);
+        let first = test_ipv6_tcp_packet(0x18, 512);
+        let second = test_ipv6_tcp_packet(0x18, 513);
+        let third = test_ipv6_tcp_packet(0x18, 514);
+
+        let submit = submit_tun_packet_batch_to_mesh_queue_with_backpressure(
+            &tx,
+            vec![
+                test_pipeline_packet(first.clone()),
+                test_pipeline_packet(second.clone()),
+                test_pipeline_packet(third.clone()),
+            ],
+            2,
+        );
+        tokio::pin!(submit);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut submit)
+                .await
+                .is_err(),
+            "oversized bulk batch should wait after filling the first chunk"
+        );
+
+        let first_chunk = rx.recv().await.expect("first bulk chunk");
+        assert_eq!(first_chunk.len(), 2);
+        assert_eq!(first_chunk[0].bytes, first);
+        assert_eq!(first_chunk[1].bytes, second);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), &mut submit)
+                .await
+                .expect("submission should finish after first chunk is released"),
+            TunQueueSubmit::Enqueued
+        );
+
+        let second_chunk = rx.recv().await.expect("second bulk chunk");
+        assert_eq!(second_chunk.len(), 1);
+        assert_eq!(second_chunk[0].bytes, third);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

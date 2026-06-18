@@ -114,11 +114,12 @@ impl FipsPrivateMeshRuntime {
             let Some(outgoing) = mesh.route_outbound_packet_owned_with_peer(packet) else {
                 continue;
             };
+            let participant_key = outgoing.participant_pubkey_bytes.copied();
             Self::push_endpoint_send_run(
                 &mut runs,
                 &peer_identities,
                 outgoing.participant_pubkey,
-                outgoing.participant_pubkey_bytes.copied(),
+                participant_key,
                 outgoing.endpoint_node_addr,
                 FipsEndpointPayload::new(outgoing.bytes),
             );
@@ -152,12 +153,13 @@ impl FipsPrivateMeshRuntime {
                     continue;
                 };
                 routed_packets += 1;
+                let participant_key = outgoing.participant_pubkey_bytes.copied();
                 let payload = FipsEndpointPayload::from_classified(outgoing.bytes, class);
                 Self::push_endpoint_send_run(
                     &mut runs,
                     &peer_identities,
                     outgoing.participant_pubkey,
-                    outgoing.participant_pubkey_bytes.copied(),
+                    participant_key,
                     outgoing.endpoint_node_addr,
                     payload,
                 );

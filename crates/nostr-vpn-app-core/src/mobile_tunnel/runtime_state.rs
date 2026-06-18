@@ -592,6 +592,7 @@ async fn broadcast_mobile_capabilities(
         capabilities: PeerCapabilities {
             advertised_routes: Vec::new(),
             endpoint_hints,
+            dataplane_features: local_fips_dataplane_features(),
             signed_at: unix_timestamp(),
         },
     };

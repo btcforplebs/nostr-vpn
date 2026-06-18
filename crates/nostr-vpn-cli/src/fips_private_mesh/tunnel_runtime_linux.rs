@@ -68,6 +68,7 @@ impl FipsPrivateTunnelRuntime {
             config.mesh_mtu.tunnel,
         )
         .with_context(|| format!("failed to configure FIPS tunnel interface {}", self.iface))?;
+        apply_linux_tun_tx_queue_len(&self.iface)?;
         if let Err(error) = crate::flush_linux_route_cache() {
             eprintln!("fips: failed to flush linux route cache: {error}");
         }
@@ -583,4 +584,24 @@ impl FipsPrivateTunnelRuntime {
             eprintln!("fips: failed to flush linux route cache: {error}");
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_tun_tx_queue_len(iface: &str) -> Result<()> {
+    let Some(queue_len) = linux_tun_tx_queue_len() else {
+        return Ok(());
+    };
+    let queue_len = queue_len.to_string();
+    crate::run_checked(
+        ProcessCommand::new("ip")
+            .arg("link")
+            .arg("set")
+            .arg("dev")
+            .arg(iface)
+            .arg("txqueuelen")
+            .arg(&queue_len),
+    )
+    .with_context(|| format!("failed to set Linux tunnel txqueuelen on {iface}"))?;
+    eprintln!("fips: Linux tunnel txqueuelen set on {iface}; txqueuelen={queue_len}");
+    Ok(())
 }

@@ -1,7 +1,6 @@
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
-    async fn endpoint_data_runtime_blocking_recv_for_each_avoids_endpoint_and_event_batch_staging()
-    {
+    async fn endpoint_data_runtime_blocking_recv_batch_into_stages_before_event_handling() {
         let keys = Keys::generate();
         let nsec = keys.secret_key().to_bech32().expect("nsec");
         let participant_pubkey = keys.public_key().to_hex();
@@ -31,29 +30,27 @@
 
         let (runtime, packets) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let stop = AtomicBool::new(false);
+            let mut messages = Vec::with_capacity(3);
+            let mut events = Vec::with_capacity(3);
             let mut packets = Vec::with_capacity(3);
 
             let received = runtime
-                .recv_mesh_event_batch_blocking_for_each(2, &stop, |event| {
-                    match event {
-                        FipsPrivateMeshEvent::Packet(packet) => packets.push(packet),
-                        event => panic!("expected packet event, got {event:?}"),
-                    }
-                    true
-                })?
+                .recv_mesh_event_batch_blocking_into(&mut messages, &mut events, 2, &stop)?
                 .expect("batch should contain admitted packets");
             assert_eq!(received, 2);
+            packets.extend(events.drain(..).map(|event| match event {
+                FipsPrivateMeshEvent::Packet(packet) => packet,
+                event => panic!("expected packet event, got {event:?}"),
+            }));
 
             let received = runtime
-                .recv_mesh_event_batch_blocking_for_each(8, &stop, |event| {
-                    match event {
-                        FipsPrivateMeshEvent::Packet(packet) => packets.push(packet),
-                        event => panic!("expected packet event, got {event:?}"),
-                    }
-                    true
-                })?
+                .recv_mesh_event_batch_blocking_into(&mut messages, &mut events, 8, &stop)?
                 .expect("batch should contain admitted packets");
             assert_eq!(received, 1);
+            packets.extend(events.drain(..).map(|event| match event {
+                FipsPrivateMeshEvent::Packet(packet) => packet,
+                event => panic!("expected packet event, got {event:?}"),
+            }));
 
             Ok((runtime, packets))
         })
