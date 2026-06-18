@@ -678,6 +678,81 @@ exit 0
     }
 
     #[test]
+    fn desktop_tick_reloads_roster_edits_from_disk() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("nvpn-app-core-desktop-reload-{nonce}"));
+        fs::create_dir_all(&dir).expect("create test dir");
+        let script_path = dir.join("nvpn");
+
+        let script = r#"#!/bin/sh
+if [ "$1" = "service" ] && [ "$2" = "status" ]; then
+  cat <<'JSON'
+{"supported":true,"installed":true,"disabled":false,"loaded":true,"running":true,"pid":123,"label":"to.iris.nvpn.test","binary_version":"test"}
+JSON
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  cat <<'JSON'
+{"daemon":{"running":true,"state":{"updated_at":1,"binary_version":"test","local_endpoint":"","advertised_endpoint":"","listen_port":0,"vpn_enabled":true,"vpn_active":true,"vpn_status":"VPN on","expected_peer_count":1,"connected_peer_count":1,"mesh_ready":true,"peers":[]}}}
+JSON
+  exit 0
+fi
+exit 0
+"#;
+        fs::write(&script_path, script).expect("write fake nvpn");
+        let mut permissions = fs::metadata(&script_path)
+            .expect("fake nvpn metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("make fake nvpn executable");
+
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.last_error.clear();
+        runtime.mobile_runtime = false;
+        runtime.config_path = dir.join("config.toml");
+        runtime.nvpn_bin = Some(script_path);
+        let own_pubkey = runtime
+            .config
+            .own_nostr_pubkey_hex()
+            .expect("generated config should have own pubkey");
+        create_test_network(&mut runtime, "Home");
+        runtime.config.networks[0].admins = vec![own_pubkey.clone()];
+        runtime
+            .config
+            .save(&runtime.config_path)
+            .expect("save initial config");
+        assert_eq!(runtime.state().networks[0].participants.len(), 1);
+
+        let peer_pubkey = Keys::generate().public_key().to_hex();
+        let mut persisted = runtime.config.clone();
+        persisted.networks[0].devices = vec![peer_pubkey.clone()];
+        persisted
+            .save(&runtime.config_path)
+            .expect("save external roster edit");
+
+        runtime.dispatch(NativeAppAction::Tick);
+        let state = runtime.state();
+        let network = &state.networks[0];
+
+        assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
+        assert_eq!(network.participants.len(), 2);
+        assert!(network
+            .participants
+            .iter()
+            .any(|participant| participant.pubkey_hex == peer_pubkey));
+        assert_eq!(network.expected_count, 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn accepting_join_request_uses_requester_node_name_as_alias() {
         let nonce = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

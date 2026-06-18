@@ -149,6 +149,7 @@ final class AppManager: ObservableObject {
         }
         syncLaunchAgentWithSettings()
         startAutomaticUpdateChecks()
+        refresh()
         guard refreshTask == nil else {
             return
         }

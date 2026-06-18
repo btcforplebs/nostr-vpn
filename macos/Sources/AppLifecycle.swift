@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func showMainWindow() {
+        manager?.refresh()
         NSApp.unhide(nil)
         NSApp.activate()
         observeWindows()
