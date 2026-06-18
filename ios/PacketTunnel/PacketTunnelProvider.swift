@@ -188,10 +188,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         from servers: [String],
         magicDnsServer: String
     ) -> (servers: [String], matchDomains: [String], allowFailover: Bool) {
-        var normalized = servers
+        // Route all DNS through the FIPS tunnel's MagicDNS resolver first.
+        // The Rust code handles .fips/.nvpn queries directly and forwards
+        // everything else to the appropriate upstream (roster DNS when
+        // dns_strict is on, public resolvers otherwise). Placing fd00::53
+        // first prevents roster DNS servers from racing and returning
+        // NXDOMAIN for .fips queries before the FIPS resolver can answer.
+        var normalized: [String] = ["fd00::53"]
+        normalized.append(contentsOf: servers
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        normalized.append("fd00::53")
+            .filter { !$0.isEmpty && $0 != "fd00::53" })
         return (normalized, [""], false)
     }
 

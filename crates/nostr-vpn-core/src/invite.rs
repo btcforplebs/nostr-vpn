@@ -115,7 +115,7 @@ pub fn parse_network_invite(value: &str) -> Result<NetworkInvite> {
     if invite.participants.is_empty() && invite.v < NETWORK_INVITE_VERSION {
         invite.participants.push(invite.inviter_npub.clone());
     }
-    invite.relays.clear();
+    invite.relays = normalized_invite_strings(&invite.relays);
 
     Ok(invite)
 }

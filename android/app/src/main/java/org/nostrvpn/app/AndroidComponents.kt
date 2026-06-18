@@ -48,7 +48,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import org.json.JSONArray
 import org.json.JSONObject
+import org.nostrvpn.app.core.activeNetwork
 import org.nostrvpn.app.core.AppState
 import org.nostrvpn.app.core.LanPeerState
 import org.nostrvpn.app.core.NativeActions

@@ -34,7 +34,7 @@ pub(crate) fn active_network_invite_code_with_endpoints(
         inviter_endpoints: active_inviter_endpoints(config, extra_inviter_endpoints),
         admins: roster.admins.iter().map(|admin| to_npub(admin)).collect(),
         participants: Vec::new(),
-        relays: Vec::new(),
+        relays: config.nostr.relays.clone(),
     };
     encode_network_invite(&invite)
 }
@@ -60,6 +60,19 @@ pub(crate) fn apply_network_invite_to_active_network(
         merge_invite_membership(network, &prepared, own_pubkey.as_deref(), reset_membership);
     }
     config.add_fips_peer_endpoint_hints(&prepared.inviter_pubkey, &invite.inviter_endpoints)?;
+
+    // Merge invite relays so the joining device can reach the admin's relays
+    // for join request delivery. Without this, a new device with no configured
+    // relays has no way to send the Nostr DM carrying the join request.
+    if !invite.relays.is_empty() {
+        let mut relays = config.nostr.relays.clone();
+        for relay in &invite.relays {
+            if !relays.contains(relay) {
+                relays.push(relay.clone());
+            }
+        }
+        config.nostr.relays = relays;
+    }
 
     if !inviter_already_configured {
         let inviter_alias = invite.inviter_node_name.trim();
