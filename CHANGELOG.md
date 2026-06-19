@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.79 - 2026-06-19
+
+### Changed
+
+- The workspace now depends on the published FIPS 0.3.64/0.3.39 crates, which
+  skip slow RX-loop maintenance while queued dataplane work is waiting and
+  shorten decrypt-worker bulk batches to bound priority stalls under LAN load.
+
 ## 4.0.78 - 2026-06-19
 
 ### Changed
