@@ -304,6 +304,8 @@ run_app_state() {
 }
 
 run_fips() {
+  run fips_cargo_test -p fips-core overlay_adverts -- --nocapture
+  run fips_cargo_test -p fips-core update_peers -- --nocapture
   run fips_cargo_test -p fips-core non_reconnect -- --nocapture
   run fips_cargo_test -p fips-core active_fallback -- --nocapture
   run fips_cargo_test -p fips-core worker_batch_size_parse_stays_within_safe_default_turn -- --nocapture

@@ -16,6 +16,7 @@ WINDOWS_GUI_SMOKE_TIMEOUT_SECS="${NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE_TIMEOUT_SE
 
 release_cargo_config_args=()
 release_cargo_lock_backup=""
+release_fips_path=""
 
 restore_release_cargo_lock() {
   if [[ -n "$release_cargo_lock_backup" ]]; then
@@ -36,6 +37,7 @@ prepare_release_cargo_config() {
     exit 2
   fi
   fips_path="$(cd "$fips_path" && pwd -P)"
+  release_fips_path="$fips_path"
   for crate in fips-core fips-endpoint fips-identity; do
     if [[ ! -f "$fips_path/crates/$crate/Cargo.toml" ]]; then
       echo "NVPN_FIPS_REPO_PATH is missing crates/$crate/Cargo.toml: $fips_path" >&2
@@ -58,6 +60,18 @@ prepare_release_cargo_config() {
   release_cargo update -p fips-identity
 }
 
+run_local_fips_regression_tests() {
+  if [[ -z "$release_fips_path" ]]; then
+    return
+  fi
+
+  (
+    cd "$release_fips_path"
+    cargo test -p fips-core overlay_adverts -- --nocapture
+    cargo test -p fips-core update_peers -- --nocapture
+  )
+}
+
 release_cargo() {
   if ((${#release_cargo_config_args[@]})); then
     cargo "${release_cargo_config_args[@]}" "$@"
@@ -71,6 +85,7 @@ node scripts/sync-versions.mjs
 ./scripts/security-audit-rust.sh
 cargo fmt --check
 prepare_release_cargo_config
+run_local_fips_regression_tests
 release_cargo clippy --locked --workspace --all-targets -- -D warnings
 release_cargo test --locked --workspace
 # Mobile VPN basics run in the blocking gate without requiring a device/emulator:

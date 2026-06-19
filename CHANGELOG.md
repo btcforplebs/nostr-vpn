@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.80 - 2026-06-19
+
+### Changed
+
+- The workspace now depends on the published FIPS 0.3.65/0.3.40 crates, which
+  let fresh Nostr overlay adverts displace stale restart-cache endpoint hints
+  while keeping operator static paths preferred.
+- Release-gate local-FIPS runs and the fast FIPS safety suite now include the
+  overlay/update-peers regression filters that cover this stale-path class.
+
+### Fixed
+
+- Active direct-path refreshes can now reach FIPS path-candidate reclaim logic
+  even when the per-peer race budget is already full, so better configured
+  paths are not blocked behind lower-priority in-flight attempts.
+
 ## 4.0.79 - 2026-06-19
 
 ### Changed
