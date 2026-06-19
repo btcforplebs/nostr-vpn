@@ -236,6 +236,8 @@ run_loaded_latency_dry_run() {
     || fail "loaded latency dry-run did not include duration"
   grep -Fq 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_SAMPLE_INTERVAL_SECS=30' "$out" \
     || fail "loaded latency dry-run did not include sample interval"
+  grep -Fq 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_P99_MS=1000' "$out" \
+    || fail "loaded latency dry-run did not include default p99 threshold"
   grep -Fq 'release-gate-host-pair-loaded-latency.sh' "$out" \
     || fail "loaded latency dry-run did not include script path"
   rm -rf "$dir"
