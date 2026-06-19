@@ -957,8 +957,8 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                 {
                     vpn_status = "VPN on".to_string();
                 }
-                if last_state_persisted_at.elapsed() >= daemon_state_persist_interval {
-                    if persist_daemon_runtime_and_cleanup_state(
+                if last_state_persisted_at.elapsed() >= daemon_state_persist_interval
+                    && persist_daemon_runtime_and_cleanup_state(
                         &state_file,
                         &config_path,
                         &app,
@@ -971,9 +971,9 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         &vpn_status,
                         &network_snapshot.summary(network_changed_at, captive_portal),
                         &port_mapping_runtime.status(),
-                    ) {
-                        last_state_persisted_at = Instant::now();
-                    }
+                    )
+                {
+                    last_state_persisted_at = Instant::now();
                 }
             }
         }
