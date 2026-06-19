@@ -32,6 +32,7 @@ import {
   readWorkspaceVersionTag,
   splitCsv,
   validateReleaseAssetSet,
+  validateStagedReleaseTree,
 } from './local-release-lib.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -261,6 +262,53 @@ function run(command, args, { cwd = repoRoot, env = process.env, capture = false
     throw new Error(stderr || `${command} exited with status ${result.status ?? 'unknown'}`)
   }
   return capture ? result.stdout.trim() : ''
+}
+
+function readReleaseManifest(stageDir) {
+  const releaseJsonPath = join(stageDir, 'release.json')
+  const manifestJsonPath = join(stageDir, 'manifest.json')
+  if (!existsSync(releaseJsonPath) || !existsSync(manifestJsonPath)) {
+    throw new Error(`No staged release manifest found at ${stageDir}. Run the draft release first or pass --stage-dir.`)
+  }
+
+  const releaseText = readFileSync(releaseJsonPath, 'utf8')
+  const manifestText = readFileSync(manifestJsonPath, 'utf8')
+  if (releaseText !== manifestText) {
+    throw new Error('release.json and manifest.json differ in the staged release tree.')
+  }
+
+  const manifest = JSON.parse(releaseText)
+  validateStagedReleaseTree(stageDir, manifest)
+  return manifest
+}
+
+function verifyHtreeReleaseCid({ cid, manifest, dryRun }) {
+  if (dryRun) {
+    console.log(`Would verify ${manifest.assets.length} htree asset(s) from ${cid}`)
+    return
+  }
+
+  const paths = ['release.json', 'manifest.json', 'notes.md', ...manifest.assets.map((asset) => asset.path)]
+  for (const path of paths) {
+    const result = spawnSync('htree', ['cat', `${cid}/${path}`], {
+      cwd: repoRoot,
+      env: process.env,
+      encoding: 'buffer',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 512 * 1024 * 1024,
+    })
+    if (result.status !== 0) {
+      const stderr = result.stderr ? result.stderr.toString('utf8').trim() : ''
+      throw new Error(`Published htree CID does not contain ${path}${stderr ? `: ${stderr}` : ''}`)
+    }
+
+    const asset = manifest.assets.find((candidate) => candidate.path === path)
+    if (asset && result.stdout.length !== asset.size) {
+      throw new Error(
+        `Published htree CID size mismatch for ${path}: manifest ${asset.size} bytes, htree cat returned ${result.stdout.length} bytes.`,
+      )
+    }
+  }
 }
 
 function writeUnixInstallScript(path) {
@@ -934,6 +982,7 @@ function publishRelease({ stageDir, releaseTree, tag, draft, dryRun }) {
     return 'dry-run'
   }
 
+  const manifest = readReleaseManifest(stageDir)
   const addOutput = run('htree', ['add', stageDir], { capture: true, dryRun })
   const match = addOutput.match(/^\s*url:\s*(\S+)/m)
   if (!match) {
@@ -941,6 +990,8 @@ function publishRelease({ stageDir, releaseTree, tag, draft, dryRun }) {
   }
 
   const cid = match[1]
+  run('htree', ['push', '--force', cid], { dryRun })
+  verifyHtreeReleaseCid({ cid, manifest, dryRun })
   const args = ['release', 'publish', releaseTree, tag, cid]
   if (draft) {
     args.push('--draft')
@@ -957,9 +1008,7 @@ function promoteStagedDraft({ stageDir, releaseTree, tag, dryRun }) {
 
   const releaseJsonPath = join(stageDir, 'release.json')
   const manifestJsonPath = join(stageDir, 'manifest.json')
-  if (!existsSync(releaseJsonPath) || !existsSync(manifestJsonPath)) {
-    throw new Error(`No staged release manifest found at ${stageDir}. Run the draft release first or pass --stage-dir.`)
-  }
+  readReleaseManifest(stageDir)
 
   const publishedAt = Math.floor(Date.now() / 1000)
   for (const path of [releaseJsonPath, manifestJsonPath]) {
@@ -968,6 +1017,7 @@ function promoteStagedDraft({ stageDir, releaseTree, tag, dryRun }) {
     manifest.published_at = publishedAt
     writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`)
   }
+  readReleaseManifest(stageDir)
 
   return publishRelease({ stageDir, releaseTree, tag, draft: false, dryRun })
 }

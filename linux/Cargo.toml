@@ -33,6 +33,7 @@ priority = "optional"
 depends = "$auto, curl, xdg-utils, zbar-tools"
 assets = [
     ["target/release/nostr-vpn", "usr/bin/", "755"],
+    ["../target/release/nvpn", "usr/bin/nvpn", "755"],
     ["resources/nostr-vpn-16.png", "usr/share/icons/hicolor/16x16/apps/nostr-vpn.png", "644"],
     ["resources/nostr-vpn-22.png", "usr/share/icons/hicolor/22x22/apps/nostr-vpn.png", "644"],
     ["resources/nostr-vpn-24.png", "usr/share/icons/hicolor/24x24/apps/nostr-vpn.png", "644"],
