@@ -151,11 +151,15 @@ async fn run_command(command: Command) -> Result<()> {
                     let peers = configured_fips_peer_announcements(&app, &network_id);
                     let expected = expected_peer_count(&app);
                     (peers, expected, 0, false, "config")
-                };
+            };
 
             if args.json {
                 let endpoint = status_endpoint(&app, &daemon);
                 let listen_port = status_listen_port(&app, &daemon);
+                #[cfg(feature = "paid-exit")]
+                let paid_exit_status = paid_exit_status_json(&app);
+                #[cfg(not(feature = "paid-exit"))]
+                let paid_exit_status = serde_json::Value::Null;
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json!({
@@ -184,7 +188,7 @@ async fn run_command(command: Command) -> Result<()> {
                         "fips_bootstrap_enabled": app.fips_bootstrap_enabled,
                         "fips_host_inbound_tcp_ports": app.fips_host_inbound_tcp_ports,
                         "wireguard_exit": wireguard_exit_status_json(&app),
-                        "paid_exit": paid_exit_status_json(&app),
+                        "paid_exit": paid_exit_status,
                         "daemon": daemon_status_json_value(&daemon),
                         "expected_peer_count": expected_peers,
                         "peer_count": peer_count,
@@ -255,6 +259,7 @@ async fn run_command(command: Command) -> Result<()> {
                     println!("wireguard_exit_address: {}", app.wireguard_exit.address);
                     println!("wireguard_exit_endpoint: {}", app.wireguard_exit.endpoint);
                 }
+                #[cfg(feature = "paid-exit")]
                 print_paid_exit_status(&app);
                 let effective_routes = runtime_effective_advertised_routes(&app);
                 if effective_routes.is_empty() {
@@ -337,70 +342,73 @@ async fn run_command(command: Command) -> Result<()> {
             if let Some(value) = args.advertise_exit_node {
                 app.node.advertise_exit_node = value;
             }
-            if let Some(value) = args.paid_exit_enabled {
-                app.paid_exit.enabled = value;
-            }
-            if let Some(value) = args.paid_exit_meter {
-                app.paid_exit.pricing.meter =
-                    value.parse::<PaidRouteMeter>().map_err(|error| anyhow!(error))?;
-            }
-            if let Some(value) = args.paid_exit_upstream {
-                app.paid_exit.access.upstream = value
-                    .parse::<PaidExitUpstream>()
-                    .map_err(|error| anyhow!(error))?;
-            }
-            if let Some(value) = args.paid_exit_price_msat {
-                app.paid_exit.pricing.price_msat = value;
-            }
-            if let Some(value) = args.paid_exit_per_units.as_deref() {
-                app.paid_exit.pricing.per_units = paid_exit_parse_pricing_units_arg(
-                    value,
-                    app.paid_exit.pricing.meter,
-                    "--paid-exit-per-units",
-                )?;
-            }
-            if let Some(value) = args.paid_exit_accepted_mints {
-                app.paid_exit.channel.accepted_mints = parse_csv_arg(&value);
-            }
-            if let Some(value) = args.paid_exit_country_code {
-                app.paid_exit.location.country_code = value;
-            }
-            if let Some(value) = args.paid_exit_region {
-                app.paid_exit.location.region = value;
-            }
-            if let Some(value) = args.paid_exit_asn {
-                app.paid_exit.location.asn = Some(value);
-            }
-            if let Some(value) = args.paid_exit_network_class {
-                app.paid_exit.location.network_class = value
-                    .parse::<ExitNetworkClass>()
-                    .map_err(|error| anyhow!(error))?;
-            }
-            if let Some(value) = args.paid_exit_ipv4 {
-                app.paid_exit.ip_support.ipv4 = value;
-            }
-            if let Some(value) = args.paid_exit_ipv6 {
-                app.paid_exit.ip_support.ipv6 = value;
-            }
-            if let Some(value) = args.paid_exit_max_channel_capacity_sat {
-                app.paid_exit.channel.max_channel_capacity_sat = value;
-            }
-            if let Some(value) = args.paid_exit_channel_expiry_secs {
-                app.paid_exit.channel.channel_expiry_secs = value;
-            }
-            if let Some(value) = args.paid_exit_free_probe_units.as_deref() {
-                app.paid_exit.channel.free_probe_units = paid_exit_parse_traffic_units_arg(
-                    value,
-                    app.paid_exit.pricing.meter,
-                    "--paid-exit-free-probe-units",
-                )?;
-            }
-            if let Some(value) = args.paid_exit_grace_units.as_deref() {
-                app.paid_exit.channel.grace_units = paid_exit_parse_traffic_units_arg(
-                    value,
-                    app.paid_exit.pricing.meter,
-                    "--paid-exit-grace-units",
-                )?;
+            #[cfg(feature = "paid-exit")]
+            {
+                if let Some(value) = args.paid_exit_enabled {
+                    app.paid_exit.enabled = value;
+                }
+                if let Some(value) = args.paid_exit_meter {
+                    app.paid_exit.pricing.meter =
+                        value.parse::<PaidRouteMeter>().map_err(|error| anyhow!(error))?;
+                }
+                if let Some(value) = args.paid_exit_upstream {
+                    app.paid_exit.access.upstream = value
+                        .parse::<PaidExitUpstream>()
+                        .map_err(|error| anyhow!(error))?;
+                }
+                if let Some(value) = args.paid_exit_price_msat {
+                    app.paid_exit.pricing.price_msat = value;
+                }
+                if let Some(value) = args.paid_exit_per_units.as_deref() {
+                    app.paid_exit.pricing.per_units = paid_exit_parse_pricing_units_arg(
+                        value,
+                        app.paid_exit.pricing.meter,
+                        "--paid-exit-per-units",
+                    )?;
+                }
+                if let Some(value) = args.paid_exit_accepted_mints {
+                    app.paid_exit.channel.accepted_mints = parse_csv_arg(&value);
+                }
+                if let Some(value) = args.paid_exit_country_code {
+                    app.paid_exit.location.country_code = value;
+                }
+                if let Some(value) = args.paid_exit_region {
+                    app.paid_exit.location.region = value;
+                }
+                if let Some(value) = args.paid_exit_asn {
+                    app.paid_exit.location.asn = Some(value);
+                }
+                if let Some(value) = args.paid_exit_network_class {
+                    app.paid_exit.location.network_class = value
+                        .parse::<ExitNetworkClass>()
+                        .map_err(|error| anyhow!(error))?;
+                }
+                if let Some(value) = args.paid_exit_ipv4 {
+                    app.paid_exit.ip_support.ipv4 = value;
+                }
+                if let Some(value) = args.paid_exit_ipv6 {
+                    app.paid_exit.ip_support.ipv6 = value;
+                }
+                if let Some(value) = args.paid_exit_max_channel_capacity_sat {
+                    app.paid_exit.channel.max_channel_capacity_sat = value;
+                }
+                if let Some(value) = args.paid_exit_channel_expiry_secs {
+                    app.paid_exit.channel.channel_expiry_secs = value;
+                }
+                if let Some(value) = args.paid_exit_free_probe_units.as_deref() {
+                    app.paid_exit.channel.free_probe_units = paid_exit_parse_traffic_units_arg(
+                        value,
+                        app.paid_exit.pricing.meter,
+                        "--paid-exit-free-probe-units",
+                    )?;
+                }
+                if let Some(value) = args.paid_exit_grace_units.as_deref() {
+                    app.paid_exit.channel.grace_units = paid_exit_parse_traffic_units_arg(
+                        value,
+                        app.paid_exit.pricing.meter,
+                        "--paid-exit-grace-units",
+                    )?;
+                }
             }
             if let Some(value) = args.wireguard_exit_enabled {
                 app.wireguard_exit.enabled = value;
@@ -635,6 +643,7 @@ async fn run_command(command: Command) -> Result<()> {
         Command::WgUpstreamTest(args) => {
             run_wg_upstream_test(args).await?;
         }
+        #[cfg(feature = "paid-exit")]
         Command::PaidExit(args) => {
             run_paid_exit_command(args).await?;
         }

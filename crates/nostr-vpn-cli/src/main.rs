@@ -42,8 +42,11 @@ use std::fs;
 use std::fs::OpenOptions;
 #[cfg(any(target_os = "macos", test))]
 use std::hash::{Hash, Hasher};
+#[cfg(feature = "paid-exit")]
 use std::io::Read;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+#[cfg(feature = "paid-exit")]
+use std::net::{ToSocketAddrs, UdpSocket};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -58,6 +61,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
+#[cfg(feature = "paid-exit")]
 use cashu_service::{
     CashuSpilmanPayment, CashuSpilmanPaymentSigner, CashuSpilmanReceiverCloseResult,
     CashuWalletOverview, FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig,
@@ -69,15 +73,17 @@ use cashu_service::{
     send_lightning_payment, send_payment_token,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
+#[cfg(feature = "paid-exit")]
 use nostr_sdk::{
     Client,
     prelude::{Event, Keys, RelayPoolNotification, ToBech32},
 };
+#[cfg(feature = "paid-exit")]
+use nostr_vpn_core::config::normalize_relay_urls;
 use nostr_vpn_core::config::{
     AppConfig, SharedNetworkRoster, derive_mesh_tunnel_ip, exit_node_default_routes,
     maybe_autoconfigure_node, normalize_advertised_route, normalize_fips_peer_endpoint_hint,
-    normalize_nostr_pubkey, normalize_relay_urls, normalize_runtime_network_id,
-    parse_wireguard_exit_config,
+    normalize_nostr_pubkey, normalize_runtime_network_id, parse_wireguard_exit_config,
 };
 use nostr_vpn_core::control::PeerAnnouncement;
 use nostr_vpn_core::data_plane::MeshPeerStatus;
@@ -87,7 +93,7 @@ use nostr_vpn_core::diagnostics::{
 use nostr_vpn_core::fips_control::{
     NetworkRoster, PeerCapabilities, PeerEndpointHint, SignedRoster, local_fips_dataplane_features,
 };
-#[cfg(feature = "embedded-fips")]
+#[cfg(all(feature = "embedded-fips", feature = "paid-exit"))]
 use nostr_vpn_core::fips_mesh::FipsPaidRouteAdmission;
 #[cfg(feature = "embedded-fips")]
 use nostr_vpn_core::join_requests::{FIPS_JOIN_REQUEST_RETRY_SECS, MeshJoinRequest};
@@ -95,6 +101,7 @@ use nostr_vpn_core::magic_dns::{
     MagicDnsResolverConfig, MagicDnsServer, build_magic_dns_records, install_system_resolver,
     uninstall_system_resolver,
 };
+#[cfg(feature = "paid-exit")]
 use nostr_vpn_core::paid_route_probe::{
     DEFAULT_PAID_ROUTE_BANDWIDTH_BYTES, DEFAULT_PAID_ROUTE_DOWNLOAD_URL,
     DEFAULT_PAID_ROUTE_GEOIP_URL_TEMPLATE, DEFAULT_PAID_ROUTE_PUBLIC_IP_URL,
@@ -104,6 +111,7 @@ use nostr_vpn_core::paid_route_probe::{
     paid_route_stun_transaction_id, parse_paid_route_geoip_response,
     parse_paid_route_public_ip_response, parse_paid_route_stun_binding_response,
 };
+#[cfg(feature = "paid-exit")]
 use nostr_vpn_core::paid_route_store::{
     ApplyPaidRouteSellerPaymentRequest, AttachPaidRouteBuyerSpilmanChannelRequest,
     BuildPaidRouteBuyerPaymentEnvelopeKind, BuildPaidRouteBuyerPaymentEnvelopeRequest,
@@ -116,8 +124,9 @@ use nostr_vpn_core::paid_route_store::{
     load_paid_route_store, paid_route_store_file_path, upsert_paid_route_offer,
     write_paid_route_store,
 };
-#[cfg(test)]
+#[cfg(all(test, feature = "paid-exit"))]
 use nostr_vpn_core::paid_routes::signed_paid_exit_offer_from_config;
+#[cfg(feature = "paid-exit")]
 use nostr_vpn_core::paid_routes::{
     ExitNetworkClass, PaidExitConfig, PaidExitUpstream, PaidRouteMeter, PaidRouteOffer,
     PaidRouteQualityMetrics, PaidRouteRoutingDecision, SignedPaidRouteOffer,
@@ -229,6 +238,7 @@ include!("main/command_dispatch.rs");
 include!("main/wg_self_test.rs");
 include!("main/roster_sync.rs");
 include!("main/status_types.rs");
+#[cfg(feature = "paid-exit")]
 include!("main/paid_exit.rs");
 include!("main/runtime_helpers.rs");
 include!("main/daemon_commands.rs");

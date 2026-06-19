@@ -11,6 +11,10 @@ readme = "README.md"
 [features]
 default = ["embedded-fips"]
 embedded-fips = ["dep:fips-endpoint", "dep:fips-core"]
+paid-exit = [
+  "dep:cashu-service",
+  "nostr-vpn-core/paid-exit",
+]
 
 [dependencies]
 anyhow.workspace = true
@@ -30,7 +34,7 @@ toml.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
 nostr-sdk.workspace = true
-cashu-service = { workspace = true, features = ["wallet", "spilman-wallet-http", "spilman-configurable-host-reqwest"] }
+cashu-service = { workspace = true, optional = true, features = ["wallet", "spilman-wallet-http", "spilman-configurable-host-reqwest"] }
 
 nostr-vpn-core = { workspace = true, features = ["updater"] }
 crab_nat = "0.7"
@@ -58,6 +62,11 @@ windows-sys = { version = "0.61", features = [
 [[bin]]
 name = "nvpn"
 path = "src/main.rs"
+
+[[test]]
+name = "paid_exit_cli"
+path = "tests/paid_exit_cli.rs"
+required-features = ["paid-exit"]
 
 [dev-dependencies]
 futures-util = "0.3"

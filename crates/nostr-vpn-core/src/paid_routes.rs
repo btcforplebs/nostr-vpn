@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use anyhow::{Context, Result, anyhow};
+#[cfg(feature = "paid-exit")]
 use cashu_service::{
     CashuSpilmanPayment, StreamingRouteAccessState, StreamingRouteCashuTokenLease,
     StreamingRouteDecision, StreamingRouteMeter, StreamingRoutePaymentEnvelope,
@@ -120,6 +121,7 @@ impl PaidRouteMeter {
     }
 }
 
+#[cfg(feature = "paid-exit")]
 impl From<PaidRouteMeter> for StreamingRouteMeter {
     fn from(value: PaidRouteMeter) -> Self {
         match value {
@@ -296,6 +298,7 @@ impl PaidExitConfig {
         self.location.region = self.location.region.trim().to_string();
     }
 
+    #[cfg(feature = "paid-exit")]
     pub fn streaming_policy(&self) -> StreamingRoutePolicy {
         StreamingRoutePolicy {
             meter: self.pricing.meter.into(),
@@ -309,8 +312,20 @@ impl PaidExitConfig {
     }
 
     pub fn amount_due_msat(&self, usage: &PaidRouteUsage) -> u64 {
-        self.streaming_policy()
-            .amount_due_msat(usage.units_for_meter(self.pricing.meter))
+        #[cfg(feature = "paid-exit")]
+        {
+            self.streaming_policy()
+                .amount_due_msat(usage.units_for_meter(self.pricing.meter))
+        }
+        #[cfg(not(feature = "paid-exit"))]
+        {
+            paid_route_amount_due_msat(
+                usage.units_for_meter(self.pricing.meter),
+                self.channel.free_probe_units,
+                self.pricing.price_msat,
+                self.pricing.per_units,
+            )
+        }
     }
 
     pub fn routing_decision(
@@ -318,9 +333,62 @@ impl PaidExitConfig {
         usage: &PaidRouteUsage,
         paid_msat: u64,
     ) -> PaidRouteRoutingDecision {
-        self.streaming_policy()
-            .routing_decision(usage.units_for_meter(self.pricing.meter), paid_msat)
-            .into()
+        #[cfg(feature = "paid-exit")]
+        {
+            return self
+                .streaming_policy()
+                .routing_decision(usage.units_for_meter(self.pricing.meter), paid_msat)
+                .into();
+        }
+        #[cfg(not(feature = "paid-exit"))]
+        {
+            let delivered_units = usage.units_for_meter(self.pricing.meter);
+            let amount_due_msat = paid_route_amount_due_msat(
+                delivered_units,
+                self.channel.free_probe_units,
+                self.pricing.price_msat,
+                self.pricing.per_units,
+            );
+            let enforced_amount_due_msat = paid_route_amount_due_msat(
+                delivered_units.saturating_sub(self.channel.grace_units),
+                self.channel.free_probe_units,
+                self.pricing.price_msat,
+                self.pricing.per_units,
+            );
+            let unpaid_msat = amount_due_msat.saturating_sub(paid_msat);
+            let enforced_unpaid_msat = enforced_amount_due_msat.saturating_sub(paid_msat);
+            let state = if amount_due_msat == 0 {
+                PaidRouteAccessState::FreeProbe
+            } else if unpaid_msat == 0 {
+                PaidRouteAccessState::Paid
+            } else if enforced_unpaid_msat == 0 {
+                PaidRouteAccessState::Grace
+            } else {
+                PaidRouteAccessState::Suspended
+            };
+
+            PaidRouteRoutingDecision {
+                state,
+                allow_routing: state != PaidRouteAccessState::Suspended,
+                delivered_units,
+                paid_msat,
+                amount_due_msat,
+                enforced_amount_due_msat,
+                unpaid_msat,
+                free_probe_remaining_units: self
+                    .channel
+                    .free_probe_units
+                    .saturating_sub(delivered_units),
+                grace_remaining_units: paid_route_grace_remaining_units(
+                    delivered_units,
+                    self.channel.free_probe_units,
+                    self.channel.grace_units,
+                    paid_msat,
+                    self.pricing.price_msat,
+                    self.pricing.per_units,
+                ),
+            }
+        }
     }
 
     pub fn can_continue_routing(&self, usage: &PaidRouteUsage, paid_msat: u64) -> bool {
@@ -337,6 +405,55 @@ impl PaidExitConfig {
             ip_support: offer.ip_support.clone(),
         }
     }
+}
+
+#[cfg(not(feature = "paid-exit"))]
+fn paid_route_amount_due_msat(
+    delivered_units: u64,
+    free_probe_units: u64,
+    price_msat: u64,
+    per_units: u64,
+) -> u64 {
+    let billable_units = delivered_units.saturating_sub(free_probe_units);
+    paid_route_price_for_units(billable_units, price_msat, per_units)
+}
+
+#[cfg(not(feature = "paid-exit"))]
+fn paid_route_price_for_units(units: u64, price_msat: u64, per_units: u64) -> u64 {
+    if units == 0 || price_msat == 0 {
+        return 0;
+    }
+    let per_units = per_units.max(1);
+    units
+        .saturating_add(per_units.saturating_sub(1))
+        .saturating_div(per_units)
+        .saturating_mul(price_msat)
+}
+
+#[cfg(not(feature = "paid-exit"))]
+fn paid_route_grace_remaining_units(
+    delivered_units: u64,
+    free_probe_units: u64,
+    grace_units: u64,
+    paid_msat: u64,
+    price_msat: u64,
+    per_units: u64,
+) -> u64 {
+    let billable_units = delivered_units.saturating_sub(free_probe_units);
+    if billable_units == 0 || grace_units == 0 {
+        return 0;
+    }
+    let paid_units = if price_msat == 0 {
+        billable_units
+    } else {
+        paid_msat
+            .saturating_div(price_msat)
+            .saturating_mul(per_units.max(1))
+    };
+    paid_units
+        .saturating_add(grace_units)
+        .saturating_sub(billable_units)
+        .min(grace_units)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -462,6 +579,7 @@ impl PaidRouteAccessState {
     }
 }
 
+#[cfg(feature = "paid-exit")]
 impl From<StreamingRouteAccessState> for PaidRouteAccessState {
     fn from(value: StreamingRouteAccessState) -> Self {
         match value {
@@ -486,6 +604,7 @@ pub struct PaidRouteRoutingDecision {
     pub grace_remaining_units: u64,
 }
 
+#[cfg(feature = "paid-exit")]
 impl From<StreamingRouteDecision> for PaidRouteRoutingDecision {
     fn from(value: StreamingRouteDecision) -> Self {
         Self {
@@ -693,6 +812,7 @@ pub fn paid_route_payment_filter(
     filter
 }
 
+#[cfg(feature = "paid-exit")]
 pub async fn gift_wrap_paid_route_payment(
     envelope: &StreamingRoutePaymentEnvelope,
     keys: &Keys,
@@ -719,6 +839,7 @@ pub async fn gift_wrap_paid_route_payment(
     .map_err(|error| anyhow!("failed to gift-wrap paid route payment: {error}"))
 }
 
+#[cfg(feature = "paid-exit")]
 pub async fn unwrap_paid_route_payment(
     event: &Event,
     keys: &Keys,
@@ -844,8 +965,10 @@ pub struct PaidRoutePaymentState {
     pub paid_msat: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub updated_at_unix: u64,
+    #[cfg(feature = "paid-exit")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cashu_spilman_payment: Option<CashuSpilmanPayment>,
+    #[cfg(feature = "paid-exit")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cashu_token_lease: Option<StreamingRouteCashuTokenLease>,
 }
@@ -1053,6 +1176,7 @@ fn paid_route_owned_tag(parts: Vec<String>) -> Result<Tag> {
     Tag::parse(parts).map_err(|error| anyhow!("failed to build paid route tag: {error}"))
 }
 
+#[cfg(feature = "paid-exit")]
 fn paid_route_payment_rumor_tags(envelope: &StreamingRoutePaymentEnvelope) -> Result<Vec<Tag>> {
     Ok(vec![
         paid_route_tag(&["app", PAID_ROUTE_PAYMENT_APP])?,
@@ -1063,6 +1187,7 @@ fn paid_route_payment_rumor_tags(envelope: &StreamingRoutePaymentEnvelope) -> Re
     ])
 }
 
+#[cfg(feature = "paid-exit")]
 fn validate_paid_route_payment_rumor_tags(tags: &[Tag]) -> Result<()> {
     let mut app_ok = false;
     let mut version_ok = false;
@@ -1723,6 +1848,7 @@ mod tests {
         assert_eq!(json["since"], 100);
     }
 
+    #[cfg(feature = "paid-exit")]
     #[tokio::test]
     async fn paid_route_payment_gift_wrap_roundtrips_envelope() {
         let buyer = Keys::generate();
@@ -1744,6 +1870,7 @@ mod tests {
         assert_eq!(unwrapped, envelope);
     }
 
+    #[cfg(feature = "paid-exit")]
     #[tokio::test]
     async fn paid_route_payment_gift_wrap_rejects_wrong_sender() {
         let buyer = Keys::generate();
@@ -1807,6 +1934,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "paid-exit")]
     fn sample_paid_route_payment_envelope(
         buyer: &Keys,
         seller: &Keys,

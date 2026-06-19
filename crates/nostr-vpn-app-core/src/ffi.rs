@@ -34,8 +34,8 @@ use crate::native_state::{
     NativeNetworkState, NativeNetworkSummary, NativeOutboundJoinRequestState,
     NativePaidExitSellerState, NativePaidRouteMarketFilterState, NativePaidRouteMarketState,
     NativePaidRoutePaymentActionState, NativePaidRouteWalletActionState,
-    NativePaidRouteWalletState, NativeParticipantState, NativePortMappingStatus,
-    NativeProbeStatus, NativeRelayState,
+    NativePaidRouteWalletState, NativeParticipantState, NativePortMappingStatus, NativeProbeStatus,
+    NativeRelayState,
 };
 use crate::platform::current_runtime_capabilities;
 use crate::state::{

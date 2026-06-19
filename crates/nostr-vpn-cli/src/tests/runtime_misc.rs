@@ -1,4 +1,5 @@
 use crate::*;
+#[cfg(feature = "paid-exit")]
 use futures_util::{SinkExt, StreamExt};
 #[cfg(feature = "embedded-fips")]
 use nostr_sdk::prelude::{Keys, ToBech32};
@@ -7,10 +8,14 @@ use std::collections::HashSet;
 #[cfg(feature = "embedded-fips")]
 use std::net::Ipv4Addr;
 use std::path::Path;
+#[cfg(feature = "paid-exit")]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+#[cfg(feature = "paid-exit")]
 use tokio::net::TcpListener;
+#[cfg(feature = "paid-exit")]
 use tokio::sync::oneshot;
+#[cfg(feature = "paid-exit")]
 use tokio_tungstenite::tungstenite::Message;
 
 #[test]
@@ -34,12 +39,14 @@ fn daemon_vpn_idle_status_distinguishes_waiting_from_paused() {
     assert_eq!(daemon_vpn_idle_status(true, 2, false), "Paused");
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_spilman_receiver_mode_names_processing_state() {
     assert_eq!(paid_exit_spilman_receiver_mode(true), "processing");
     assert_eq!(paid_exit_spilman_receiver_mode(false), "claim_only");
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_status_snapshot_reports_store_sessions_and_routing() {
     use nostr_sdk::prelude::{Keys, ToBech32};
@@ -122,6 +129,7 @@ fn paid_exit_status_snapshot_reports_store_sessions_and_routing() {
     );
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_record_probe_once_persists_session_measurements() {
     use nostr_sdk::prelude::{Keys, ToBech32};
@@ -219,6 +227,7 @@ fn paid_exit_record_probe_once_persists_session_measurements() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_probe_once_measures_and_persists_session() {
     use nostr_sdk::prelude::{Keys, ToBech32};
@@ -343,6 +352,7 @@ fn paid_exit_probe_once_measures_and_persists_session() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_probe_once_uses_stun_for_realized_exit_ip() {
     use nostr_sdk::prelude::{Keys, ToBech32};
@@ -430,6 +440,7 @@ fn paid_exit_probe_once_uses_stun_for_realized_exit_ip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "paid-exit")]
 fn spawn_paid_exit_probe_fixture_server(
     expected_requests: usize,
 ) -> (String, std::thread::JoinHandle<()>) {
@@ -469,6 +480,7 @@ fn spawn_paid_exit_probe_fixture_server(
     (base, handle)
 }
 
+#[cfg(feature = "paid-exit")]
 fn spawn_paid_exit_stun_fixture(mapped_ip: [u8; 4]) -> (String, std::thread::JoinHandle<()>) {
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind STUN fixture");
     let addr = socket.local_addr().expect("STUN fixture addr");
@@ -493,6 +505,7 @@ fn spawn_paid_exit_stun_fixture(mapped_ip: [u8; 4]) -> (String, std::thread::Joi
     (server, handle)
 }
 
+#[cfg(feature = "paid-exit")]
 fn paid_exit_stun_fixture_response(transaction_id: &[u8], mapped_ip: [u8; 4]) -> Vec<u8> {
     assert_eq!(transaction_id.len(), 12);
     let mut response = Vec::new();
@@ -512,6 +525,7 @@ fn paid_exit_stun_fixture_response(transaction_id: &[u8], mapped_ip: [u8; 4]) ->
     response
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_run_once_enables_seller_and_stores_offer() {
     let nonce = std::time::SystemTime::now()
@@ -585,6 +599,7 @@ fn paid_exit_run_once_enables_seller_and_stores_offer() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_run_once_rejects_incomplete_wireguard_upstream() {
     let nonce = std::time::SystemTime::now()
@@ -632,6 +647,7 @@ fn paid_exit_run_once_rejects_incomplete_wireguard_upstream() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_run_once_enables_configured_wireguard_upstream() {
     let nonce = std::time::SystemTime::now()
@@ -705,6 +721,7 @@ fn paid_exit_run_once_enables_configured_wireguard_upstream() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_advertisable_rejects_disabled_wireguard_upstream() {
     let mut app = AppConfig::generated();
@@ -722,6 +739,7 @@ fn paid_exit_advertisable_rejects_disabled_wireguard_upstream() {
     assert!(error.to_string().contains("wireguard_exit is disabled"));
 }
 
+#[cfg(feature = "paid-exit")]
 #[tokio::test]
 async fn paid_exit_offer_publish_and_discover_roundtrips_through_local_relay() {
     use nostr_vpn_core::paid_routes::PaidRouteMeter;
@@ -769,12 +787,14 @@ async fn paid_exit_offer_publish_and_discover_roundtrips_through_local_relay() {
     relay.stop().await;
 }
 
+#[cfg(feature = "paid-exit")]
 struct LocalNostrRelay {
     url: String,
     shutdown: Option<oneshot::Sender<()>>,
     handle: tokio::task::JoinHandle<()>,
 }
 
+#[cfg(feature = "paid-exit")]
 impl LocalNostrRelay {
     async fn spawn() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -799,6 +819,7 @@ impl LocalNostrRelay {
     }
 }
 
+#[cfg(feature = "paid-exit")]
 async fn run_local_nostr_relay(
     listener: TcpListener,
     events: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -868,6 +889,7 @@ async fn run_local_nostr_relay(
     }
 }
 
+#[cfg(feature = "paid-exit")]
 fn relay_message_text(message: &Message) -> Option<&str> {
     match message {
         Message::Text(text) => Some(text.as_ref()),
@@ -875,6 +897,7 @@ fn relay_message_text(message: &Message) -> Option<&str> {
     }
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_buy_and_use_select_public_exit_route() {
     use nostr_sdk::prelude::Keys;
@@ -965,6 +988,7 @@ fn paid_exit_buy_and_use_select_public_exit_route() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "paid-exit")]
 #[tokio::test]
 async fn paid_exit_create_payment_command_updates_buyer_session() {
     use cashu_service::CashuSpilmanPayment;
@@ -1071,6 +1095,7 @@ async fn paid_exit_create_payment_command_updates_buyer_session() {
     }
 }
 
+#[cfg(feature = "paid-exit")]
 #[tokio::test]
 async fn paid_exit_stream_payments_signs_due_buyer_usage_update() {
     use cashu_service::{CashuSpilmanPayment, CashuSpilmanPaymentSigner};
@@ -1205,6 +1230,7 @@ async fn paid_exit_stream_payments_signs_due_buyer_usage_update() {
     }
 }
 
+#[cfg(feature = "paid-exit")]
 #[tokio::test]
 async fn paid_exit_settle_signs_manual_cooperative_close_from_wallet() {
     use cashu_service::{CashuSpilmanPayment, CashuSpilmanPaymentSigner};
@@ -1362,6 +1388,7 @@ async fn paid_exit_settle_signs_manual_cooperative_close_from_wallet() {
     }
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_create_token_lease_command_updates_buyer_session() {
     use nostr_sdk::prelude::{Keys, ToBech32};
@@ -1465,6 +1492,7 @@ fn paid_exit_create_token_lease_command_updates_buyer_session() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn paid_exit_apply_payment_command_updates_seller_admission() {
     use cashu_service::{
@@ -1650,6 +1678,7 @@ fn paid_exit_apply_payment_command_updates_seller_admission() {
     }
 }
 
+#[cfg(feature = "paid-exit")]
 #[tokio::test]
 async fn paid_exit_buyer_payment_roundtrips_through_local_relay() {
     use cashu_service::CashuSpilmanPayment;
@@ -1996,7 +2025,7 @@ fn endpoint_hint_recipients_are_active_participants_only() {
     assert!(!recipients.contains(&admin_pubkey));
 }
 
-#[cfg(feature = "embedded-fips")]
+#[cfg(all(feature = "embedded-fips", feature = "paid-exit"))]
 #[test]
 fn fips_tunnel_config_carries_paid_route_payment_streaming_inputs() {
     let own = Keys::generate();

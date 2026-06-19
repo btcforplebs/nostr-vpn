@@ -34,7 +34,6 @@ fn clap_includes_tailscale_style_commands() {
         "resume",
         "connect",
         "status",
-        "paid-exit",
         "set",
         "ping",
         "doctor",
@@ -52,6 +51,30 @@ fn clap_includes_tailscale_style_commands() {
             "missing subcommand {name}"
         );
     }
+}
+
+#[cfg(feature = "paid-exit")]
+#[test]
+fn clap_includes_paid_exit_command_when_enabled() {
+    let command = Cli::command();
+    assert!(
+        command
+            .get_subcommands()
+            .any(|subcommand| subcommand.get_name() == "paid-exit"),
+        "missing paid-exit subcommand"
+    );
+}
+
+#[cfg(not(feature = "paid-exit"))]
+#[test]
+fn clap_omits_paid_exit_command_by_default() {
+    let command = Cli::command();
+    assert!(
+        !command
+            .get_subcommands()
+            .any(|subcommand| subcommand.get_name() == "paid-exit"),
+        "paid-exit subcommand should require the paid-exit feature"
+    );
 }
 
 #[test]
@@ -121,6 +144,7 @@ fn clap_set_supports_route_advertisement_flags() {
     );
 }
 
+#[cfg(feature = "paid-exit")]
 #[test]
 fn clap_set_supports_paid_exit_seller_flags() {
     let command = Cli::command();

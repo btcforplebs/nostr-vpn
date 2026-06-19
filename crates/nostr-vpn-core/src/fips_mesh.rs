@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::normalize_nostr_pubkey;
 use crate::data_plane::{MeshPeerStatus, PrivatePacket};
+#[cfg(feature = "paid-exit")]
 use crate::paid_route_store::PaidRouteSellerAdmission;
 use crate::paid_routes::PaidRouteAccessState;
 
@@ -62,6 +63,7 @@ pub struct FipsPaidRouteAdmission {
     pub updated_at_unix: u64,
 }
 
+#[cfg(feature = "paid-exit")]
 impl From<PaidRouteSellerAdmission> for FipsPaidRouteAdmission {
     fn from(value: PaidRouteSellerAdmission) -> Self {
         Self {
@@ -154,10 +156,18 @@ impl FipsMeshRuntime {
         peers: Vec<FipsMeshPeerConfig>,
         local_allowed_ips: Vec<String>,
     ) -> Self {
-        Self::with_local_routes_and_paid_route_admissions(peers, local_allowed_ips, Vec::new())
+        Self::with_local_routes_internal(peers, local_allowed_ips, Vec::new())
     }
 
     pub fn with_local_routes_and_paid_route_admissions(
+        peers: Vec<FipsMeshPeerConfig>,
+        local_allowed_ips: Vec<String>,
+        paid_route_admissions: Vec<FipsPaidRouteAdmission>,
+    ) -> Self {
+        Self::with_local_routes_internal(peers, local_allowed_ips, paid_route_admissions)
+    }
+
+    fn with_local_routes_internal(
         peers: Vec<FipsMeshPeerConfig>,
         local_allowed_ips: Vec<String>,
         paid_route_admissions: Vec<FipsPaidRouteAdmission>,
@@ -556,9 +566,8 @@ impl FipsMeshRuntime {
         if ambiguous {
             None
         } else {
-            best_peer_index
-                .and_then(|peer_index| self.peers.get(peer_index))
-                .or_else(|| select_paid_route_peer_for_ip(&self.paid_route_peers, destination))
+            let peer = best_peer_index.and_then(|peer_index| self.peers.get(peer_index));
+            peer.or_else(|| select_paid_route_peer_for_ip(&self.paid_route_peers, destination))
         }
     }
 
@@ -653,7 +662,10 @@ fn paid_route_peers_from_admissions(
             })
         })
         .collect::<Vec<_>>();
-    peers.sort_by(|left, right| left.participant_pubkey_hex.cmp(&right.participant_pubkey_hex));
+    peers.sort_by(|left, right| {
+        left.participant_pubkey_hex
+            .cmp(&right.participant_pubkey_hex)
+    });
     peers.dedup_by(|left, right| same_participant(left, right));
     peers
 }

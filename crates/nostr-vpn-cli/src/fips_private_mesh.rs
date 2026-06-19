@@ -22,6 +22,7 @@ use nostr_vpn_core::fips_control::{
 };
 use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime, FipsPaidRouteAdmission};
 use nostr_vpn_core::join_requests::MeshJoinRequest;
+#[cfg(feature = "paid-exit")]
 use nostr_vpn_core::paid_route_store::PaidRouteSellerAdmission;
 use nostr_vpn_core::paid_routes::PaidExitConfig;
 use sha2::{Digest, Sha256};

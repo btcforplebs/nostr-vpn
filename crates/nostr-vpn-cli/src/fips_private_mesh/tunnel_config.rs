@@ -1,3 +1,4 @@
+#[cfg(feature = "paid-exit")]
 pub(crate) fn fips_paid_route_admission_from_seller_admission(
     network_id: &str,
     admission: PaidRouteSellerAdmission,
@@ -45,6 +46,7 @@ impl FipsPrivateTunnelConfig {
             }
         }
 
+        #[cfg(feature = "paid-exit")]
         if let Some(public_paid_exit) = app.public_paid_exit_node_pubkey_hex()
             && Some(public_paid_exit.as_str()) != own_pubkey
         {
@@ -57,6 +59,7 @@ impl FipsPrivateTunnelConfig {
         }
 
         let mut route_participants = app.active_network_signal_pubkeys_hex();
+        #[cfg(feature = "paid-exit")]
         if let Some(public_paid_exit) = app.public_paid_exit_node_pubkey_hex() {
             route_participants.push(public_paid_exit);
         }

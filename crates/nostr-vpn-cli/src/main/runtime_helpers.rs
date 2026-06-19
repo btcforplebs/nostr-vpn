@@ -443,11 +443,16 @@ fn fips_tunnel_config_from_app(
         recent_peers,
         live_peer_endpoints,
     )?;
-    config.paid_exit = app.paid_exit.clone();
-    config.paid_route_store_path = paid_route_store_file_path(config_path);
-    config.paid_route_wallet_data_dir = paid_exit_wallet_data_dir(config_path);
-    config.paid_route_payment_relays = paid_exit_relay_urls(app, &[]);
-    config.paid_route_admissions = fips_paid_route_admissions_from_store(app, config_path)?;
+    #[cfg(feature = "paid-exit")]
+    {
+        config.paid_exit = app.paid_exit.clone();
+        config.paid_route_store_path = paid_route_store_file_path(config_path);
+        config.paid_route_wallet_data_dir = paid_exit_wallet_data_dir(config_path);
+        config.paid_route_payment_relays = paid_exit_relay_urls(app, &[]);
+        config.paid_route_admissions = fips_paid_route_admissions_from_store(app, config_path)?;
+    }
+    #[cfg(not(feature = "paid-exit"))]
+    let _ = config_path;
     // Daemon no longer pre-discovers a public endpoint. fips-core's
     // build_overlay_advert performs its own STUN observation and advertises
     // <reflexive_ip>:<listen_port> directly; if that's wrong (e.g. symmetric
@@ -462,7 +467,7 @@ fn fips_tunnel_config_from_app(
     Ok(config)
 }
 
-#[cfg(feature = "embedded-fips")]
+#[cfg(all(feature = "embedded-fips", feature = "paid-exit"))]
 fn fips_paid_route_admissions_from_store(
     app: &AppConfig,
     config_path: &Path,
