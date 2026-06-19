@@ -682,8 +682,7 @@ fn linux_vnet_gso_split(
         out[hdr_len..].copy_from_slice(&packet[next_segment_data_at..next_segment_end]);
 
         let transport_len = total_len - csum_start;
-        let pseudo_sum =
-            linux_vnet_pseudo_header_sum(protocol, &src, &dst, transport_len as u16);
+        let pseudo_sum = linux_vnet_pseudo_header_sum(protocol, src, dst, transport_len as u16);
         let transport_checksum = !linux_vnet_checksum(&out[csum_start..], pseudo_sum);
         let out_csum_at = csum_start + usize::from(hdr.csum_offset);
         out[out_csum_at..out_csum_at + 2].copy_from_slice(&transport_checksum.to_be_bytes());
