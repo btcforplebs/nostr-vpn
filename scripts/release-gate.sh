@@ -121,6 +121,17 @@ run_auto_windows_vm_wireguard_exit_e2e() {
   fi
 }
 
+release_gate_perf_output_dir() {
+  if [[ -n "${NVPN_RELEASE_GATE_PERF_OUTPUT_DIR:-}" ]]; then
+    printf '%s\n' "$NVPN_RELEASE_GATE_PERF_OUTPUT_DIR"
+  elif [[ -n "${NVPN_PERF_OUTPUT_DIR:-}" ]]; then
+    printf '%s\n' "$NVPN_PERF_OUTPUT_DIR"
+  else
+    printf '%s/artifacts/release-gate-fips-perf-%s\n' \
+      "$ROOT_DIR" "$(date -u +%Y%m%dT%H%M%SZ)"
+  fi
+}
+
 run_wireguard_exit_platform_gates() {
   case "${NVPN_RELEASE_GATE_MACOS_WG_EXIT_E2E:-auto}" in
     0|false|FALSE|False|no|NO|No|off|OFF|Off)
@@ -244,7 +255,10 @@ case "${NVPN_RELEASE_GATE_DOCKER_E2E:-1}" in
         echo "Skipping Docker perf regression e2e because NVPN_RELEASE_GATE_PERF_E2E=${NVPN_RELEASE_GATE_PERF_E2E}"
         ;;
       *)
+        perf_output_dir="$(release_gate_perf_output_dir)"
+        echo "Writing Docker FIPS perf artifacts to $perf_output_dir"
         NVPN_FIPS_NOSTR_DISCOVERY_POLICY="${NVPN_FIPS_NOSTR_DISCOVERY_POLICY:-configured_only}" \
+          NVPN_PERF_OUTPUT_DIR="$perf_output_dir" \
           ./scripts/e2e-fips-perf-regression-docker.sh
         ;;
     esac
