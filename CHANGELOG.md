@@ -8,10 +8,10 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-- The workspace now depends on the published FIPS 0.3.66/0.3.41 crates, which
-  let fresh Nostr overlay adverts displace stale restart-cache endpoint hints,
-  keep operator static paths preferred, and enable macOS raw UDP send pacing by
-  default to prevent bulk tunnel traffic from creating multi-second LAN stalls.
+- The workspace now depends on the published FIPS 0.3.67/0.3.42 crates, which
+  carry the stale-path and raw-UDP pacing fixes plus a final receive-loop
+  scheduling reduction that bounds non-packet, fallback, and side-turn work
+  between dataplane receives under LAN load.
 - Release-gate local-FIPS runs and the fast FIPS safety suite now include the
   overlay/update-peers regression filters that cover this stale-path class.
 - The optional host-pair loaded-latency release gate now clamps sub-second ping
