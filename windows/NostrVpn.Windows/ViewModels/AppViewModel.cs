@@ -99,9 +99,9 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             _ => Page = AppPage.AddDevice,
             _ => ActiveNetwork is { LocalIsAdmin: true, Enabled: true });
         ShowInternetCommand = new RelayCommand(_ => Page = AppPage.Internet);
-        ShowPublicExitsCommand = new RelayCommand(_ => Page = AppPage.PublicExits);
-        ShowWalletCommand = new RelayCommand(_ => Page = AppPage.Wallet);
-        ShowSellAccessCommand = new RelayCommand(_ => Page = AppPage.SellAccess);
+        ShowPublicExitsCommand = new RelayCommand(_ => Page = AppPage.PublicExits, _ => PaidRouteMarketVisible);
+        ShowWalletCommand = new RelayCommand(_ => Page = AppPage.Wallet, _ => PaidRouteMarketVisible);
+        ShowSellAccessCommand = new RelayCommand(_ => Page = AppPage.SellAccess, _ => PaidExitSellerVisible);
         ShowSettingsCommand = new RelayCommand(_ => Page = AppPage.Settings);
         RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !ActionInFlight);
         ToggleVpnCommand = new AsyncRelayCommand(_ => ToggleVpnAsync(), _ => !ActionInFlight && State.VpnControlSupported && RuntimeActiveNetwork is not null);
@@ -160,6 +160,11 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         private set
         {
             _state = value;
+            if (!PageIsVisible(_page))
+            {
+                _page = AppPage.Devices;
+                OnPropertyChanged(nameof(Page));
+            }
             OnPropertyChanged();
             RaiseDerivedStateChanged();
         }
@@ -170,15 +175,16 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         get => _page;
         set
         {
-            if (_page == value)
+            var nextPage = PageIsVisible(value) ? value : AppPage.Devices;
+            if (_page == nextPage)
             {
                 return;
             }
-            if (_page == AppPage.AddNetwork && value != AppPage.AddNetwork)
+            if (_page == AppPage.AddNetwork && nextPage != AppPage.AddNetwork)
             {
                 AddNetworkJoinStatus = "";
             }
-            _page = value;
+            _page = nextPage;
             OnPropertyChanged();
         }
     }
@@ -441,6 +447,10 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         State.PaidRouteMarket.Supported
         && !ActionInFlight
         && !string.IsNullOrWhiteSpace(PaidRouteWithdrawInvoice);
+
+    public bool PaidRouteMarketVisible => State.PaidRouteMarket.Supported;
+
+    public bool PaidExitSellerVisible => State.PaidExitSeller.Supported;
 
     // Bullet-style radio indicators next to each exit-node row.
     public string DirectExitMarker =>
@@ -1778,6 +1788,14 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         return string.IsNullOrWhiteSpace(network.Name) ? "Private network" : network.Name;
     }
 
+    private bool PageIsVisible(AppPage page) =>
+        page switch
+        {
+            AppPage.PublicExits or AppPage.Wallet => PaidRouteMarketVisible,
+            AppPage.SellAccess => PaidExitSellerVisible,
+            _ => true,
+        };
+
     private void RaiseDerivedStateChanged()
     {
         if (!string.IsNullOrWhiteSpace(_shownNetworkId)
@@ -1828,6 +1846,8 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(DirectExitMarker));
         OnPropertyChanged(nameof(WireguardExitMarker));
         OnPropertyChanged(nameof(WireguardExitSubtitle));
+        OnPropertyChanged(nameof(PaidRouteMarketVisible));
+        OnPropertyChanged(nameof(PaidExitSellerVisible));
         OnPropertyChanged(nameof(PaidRouteWalletBalanceText));
         OnPropertyChanged(nameof(PaidRouteMarketStatusText));
         OnPropertyChanged(nameof(PaidExitSellerStatusText));

@@ -117,6 +117,23 @@ struct RootView: View {
         }
     }
 
+    private var paidRouteMarketAvailable: Bool {
+        state.paidRouteMarket.supported
+    }
+
+    private var paidExitSellerAvailable: Bool {
+        state.paidExitSeller.supported
+    }
+
+    private var paidInternetAvailable: Bool {
+        paidRouteMarketAvailable || paidExitSellerAvailable
+    }
+
+    private var visibleSidebarItem: SidebarItem {
+        let item = selectedSidebarItem ?? .devices
+        return sidebarItemVisible(item) ? item : .devices
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             headerBar
@@ -139,9 +156,13 @@ struct RootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
         .ignoresSafeArea(.container, edges: .top)
-        .onAppear(perform: syncDrafts)
+        .onAppear {
+            syncDrafts()
+            normalizeSidebarSelection()
+        }
         .onChange(of: state.rev) { _, _ in
             syncDrafts()
+            normalizeSidebarSelection()
         }
         .onChange(of: shownNetwork?.enabled) { _, enabled in
             if addDevicePresented && enabled != true {
@@ -431,10 +452,18 @@ struct RootView: View {
         VStack(alignment: .leading, spacing: 5) {
             sidebarButton(.devices, "Devices", "circle.grid.2x2.fill")
             sidebarButton(.internet, "Internet", "network")
-            sidebarGroupLabel("Internet market")
-            sidebarButton(.publicExits, "Buy Internet", "cart.fill")
-            sidebarButton(.sellExit, "Share Internet", "bitcoinsign.circle.fill")
-            sidebarButton(.wallet, "Wallet", "creditcard.fill")
+            if paidInternetAvailable {
+                sidebarGroupLabel("Internet market")
+                if paidRouteMarketAvailable {
+                    sidebarButton(.publicExits, "Buy Internet", "cart.fill")
+                }
+                if paidExitSellerAvailable {
+                    sidebarButton(.sellExit, "Share Internet", "bitcoinsign.circle.fill")
+                }
+                if paidRouteMarketAvailable {
+                    sidebarButton(.wallet, "Wallet", "creditcard.fill")
+                }
+            }
             sidebarGroupLabel("App")
             sidebarButton(.settings, "Settings", "gearshape")
             Spacer(minLength: 0)
@@ -455,7 +484,7 @@ struct RootView: View {
     }
 
     private func sidebarButton(_ item: SidebarItem, _ title: String, _ systemImage: String) -> some View {
-        let selected = (selectedSidebarItem ?? .devices) == item
+        let selected = visibleSidebarItem == item
         return Button {
             selectedSidebarItem = item
         } label: {
@@ -483,7 +512,7 @@ struct RootView: View {
 
     @ViewBuilder
     private var detailPane: some View {
-        switch selectedSidebarItem ?? .devices {
+        switch visibleSidebarItem {
         case .devices:
             if let shownNetwork {
                 devicesPane(shownNetwork)
@@ -519,6 +548,23 @@ struct RootView: View {
                 pageTitle("Settings", "gearshape")
                 settingsSection
             }
+        }
+    }
+
+    private func sidebarItemVisible(_ item: SidebarItem) -> Bool {
+        switch item {
+        case .publicExits, .wallet:
+            return paidRouteMarketAvailable
+        case .sellExit:
+            return paidExitSellerAvailable
+        case .devices, .internet, .settings:
+            return true
+        }
+    }
+
+    private func normalizeSidebarSelection() {
+        if let selectedSidebarItem, !sidebarItemVisible(selectedSidebarItem) {
+            self.selectedSidebarItem = .devices
         }
     }
 

@@ -34,13 +34,13 @@
           <Button Style="{StaticResource NavButton}" Command="{Binding ShowInternetCommand}">
             <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE774;" Width="24" /><TextBlock Text="Internet" /></StackPanel>
           </Button>
-          <Button Style="{StaticResource NavButton}" Command="{Binding ShowPublicExitsCommand}">
+          <Button Style="{StaticResource NavButton}" Command="{Binding ShowPublicExitsCommand}" Visibility="{Binding PaidRouteMarketVisible, Converter={StaticResource BoolToVisibility}}">
             <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE7BF;" Width="24" /><TextBlock Text="Buy Internet" /></StackPanel>
           </Button>
-          <Button Style="{StaticResource NavButton}" Command="{Binding ShowWalletCommand}">
+          <Button Style="{StaticResource NavButton}" Command="{Binding ShowWalletCommand}" Visibility="{Binding PaidRouteMarketVisible, Converter={StaticResource BoolToVisibility}}">
             <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C7;" Width="24" /><TextBlock Text="Wallet" /></StackPanel>
           </Button>
-          <Button Style="{StaticResource NavButton}" Command="{Binding ShowSellAccessCommand}">
+          <Button Style="{StaticResource NavButton}" Command="{Binding ShowSellAccessCommand}" Visibility="{Binding PaidExitSellerVisible, Converter={StaticResource BoolToVisibility}}">
             <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B8;" Width="24" /><TextBlock Text="Sell Internet" /></StackPanel>
           </Button>
           <Button Style="{StaticResource NavButton}" Command="{Binding ShowSettingsCommand}">

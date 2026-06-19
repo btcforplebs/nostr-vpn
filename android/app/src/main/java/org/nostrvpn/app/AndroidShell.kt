@@ -87,6 +87,12 @@ private enum class Page(val title: String) {
     Settings("Settings"),
 }
 
+private fun Page.visibleIn(state: AppState): Boolean =
+    when (this) {
+        Page.PublicExits, Page.Wallet -> state.paidRouteMarket.supported
+        Page.Devices, Page.Internet, Page.Settings -> true
+    }
+
 @Composable
 internal fun NostrVpnTheme(content: @Composable () -> Unit) {
     val darkTheme = isSystemInDarkTheme()
@@ -146,9 +152,16 @@ internal fun NostrVpnApp(
         ?: activeNetwork
         ?: state.networks.firstOrNull()
     val hasIncomingJoinRequests = state.networks.any { it.inboundJoinRequests.isNotEmpty() }
+    val visiblePages = Page.entries.filter { it.visibleIn(state) }
+    val effectivePage = if (page.visibleIn(state)) page else Page.Devices
     LaunchedEffect(showAddDevice, network?.enabled) {
         if (showAddDevice && network?.enabled != true) {
             showAddDevice = false
+        }
+    }
+    LaunchedEffect(state.paidRouteMarket.supported) {
+        if (!page.visibleIn(state)) {
+            page = Page.Devices
         }
     }
     Scaffold(
@@ -169,14 +182,14 @@ internal fun NostrVpnApp(
             // surface as the entire screen body.
             if (network != null) {
                 NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                    Page.entries.forEach { item ->
+                    visiblePages.forEach { item ->
                         NavigationBarItem(
-                            selected = page == item,
+                            selected = effectivePage == item,
                             onClick = { page = item },
                             icon = {
                                 NavIcon(
                                     item,
-                                    selected = page == item,
+                                    selected = effectivePage == item,
                                     attention = item == Page.Devices && hasIncomingJoinRequests,
                                 )
                             },
@@ -200,7 +213,7 @@ internal fun NostrVpnApp(
             if (network == null) {
                 addNetworkBody(state, scanQr, dispatch)
             } else {
-                when (page) {
+                when (effectivePage) {
                     Page.Devices -> devicesPage(
                         state,
                         network,
@@ -993,7 +1006,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.internetPage(
             }
         }
     }
-    item { PaidExitSellerStatusCard(state) }
+    if (state.paidExitSeller.supported) {
+        item { PaidExitSellerStatusCard(state) }
+    }
     item { WireGuardSettingsCard(state, dispatch, importWireGuardConfigFile) }
 }
 

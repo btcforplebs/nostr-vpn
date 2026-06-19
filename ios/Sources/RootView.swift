@@ -25,6 +25,10 @@ struct RootView: View {
         }
     }
 
+    private var paidRouteMarketAvailable: Bool {
+        model.state.paidRouteMarket.supported
+    }
+
     var body: some View {
         Group {
             if model.state.networks.isEmpty {
@@ -56,21 +60,23 @@ struct RootView: View {
                     .tabItem { Label("Internet", systemImage: "network") }
                     .tag(AppTab.internet)
 
-                    NavigationStack {
-                        PublicExitsPage(model: model)
-                            .navigationTitle("Buy Internet")
-                            .toolbar { networkSwitcherToolbar }
-                    }
-                    .tabItem { Label("Buy Internet", systemImage: "cart.fill") }
-                    .tag(AppTab.publicExits)
+                    if paidRouteMarketAvailable {
+                        NavigationStack {
+                            PublicExitsPage(model: model)
+                                .navigationTitle("Buy Internet")
+                                .toolbar { networkSwitcherToolbar }
+                        }
+                        .tabItem { Label("Buy Internet", systemImage: "cart.fill") }
+                        .tag(AppTab.publicExits)
 
-                    NavigationStack {
-                        PaidRouteWalletPage(model: model)
-                            .navigationTitle("Wallet")
-                            .toolbar { networkSwitcherToolbar }
+                        NavigationStack {
+                            PaidRouteWalletPage(model: model)
+                                .navigationTitle("Wallet")
+                                .toolbar { networkSwitcherToolbar }
+                        }
+                        .tabItem { Label("Wallet", systemImage: "creditcard.fill") }
+                        .tag(AppTab.wallet)
                     }
-                    .tabItem { Label("Wallet", systemImage: "creditcard.fill") }
-                    .tag(AppTab.wallet)
 
                     NavigationStack {
                         SettingsPage(model: model)
@@ -117,6 +123,7 @@ struct RootView: View {
             if model.vpnDisclosurePromptVisible && !vpnDisclosureAccepted {
                 presentVpnDisclosure(startVpnAfterAccept: true)
             }
+            normalizeSelectedTab()
         }
         .onChange(of: model.vpnDisclosurePromptVisible) { _, visible in
             if visible && !vpnDisclosureAccepted {
@@ -128,6 +135,7 @@ struct RootView: View {
                !model.state.networks.contains(where: { $0.id == shownNetworkId }) {
                 self.shownNetworkId = nil
             }
+            normalizeSelectedTab()
         }
     }
 
@@ -155,6 +163,12 @@ struct RootView: View {
     private func presentVpnDisclosure(startVpnAfterAccept: Bool) {
         startVpnAfterDisclosure = startVpnAfterAccept
         vpnDisclosurePresented = true
+    }
+
+    private func normalizeSelectedTab() {
+        if !paidRouteMarketAvailable && (selectedTab == .publicExits || selectedTab == .wallet) {
+            selectedTab = .devices
+        }
     }
 
     private static func initialTab() -> AppTab {

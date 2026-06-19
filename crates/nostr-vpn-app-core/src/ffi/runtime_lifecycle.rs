@@ -365,13 +365,10 @@ impl NativeAppRuntime {
             },
             paid_exit_seller: NativePaidExitSellerState {
                 supported: false,
-                status_text: "Paid exit seller actions are not available in this build"
-                    .to_string(),
                 ..NativePaidExitSellerState::default()
             },
             paid_route_market: NativePaidRouteMarketState {
                 supported: false,
-                status_text: "Paid route actions are not available in this build".to_string(),
                 wallet: NativePaidRouteWalletState {
                     last_action: self.paid_route_wallet_last_action.clone(),
                     ..NativePaidRouteWalletState::default()

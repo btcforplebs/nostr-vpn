@@ -13,13 +13,9 @@ use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use nostr_vpn_app_core::native_state::{
-    NativePaidExitSellerState, NativePaidRouteMarketState, NativePaidRoutePaymentActionState,
-    NativePaidRouteWalletActionState,
-};
 use nostr_vpn_app_core::{
-    FfiApp, NativeAppAction, NativeAppState, NativeNetworkState, NativePaidRouteOfferState,
-    NativePaidRouteSessionState, NativeParticipantState, SettingsPatch, UpdateAutoCheckPolicy,
+    FfiApp, NativeAppAction, NativeAppState, NativeNetworkState, NativeParticipantState,
+    SettingsPatch, UpdateAutoCheckPolicy,
 };
 
 const APP_ID: &str = "to.iris.nvpn";
@@ -42,10 +38,7 @@ struct AppRuntime {
 enum Page {
     Devices,
     Share,
-    Internet,
-    PublicExits,
-    Wallet,
-    SellAccess,
+    ExitNodes,
     Settings,
 }
 
@@ -53,10 +46,7 @@ enum Page {
 struct PageScrollOffsets {
     devices: f64,
     share: f64,
-    internet: f64,
-    public_exits: f64,
-    wallet: f64,
-    sell_access: f64,
+    exit_nodes: f64,
     settings: f64,
 }
 
@@ -65,10 +55,7 @@ impl PageScrollOffsets {
         match page {
             Page::Devices => self.devices,
             Page::Share => self.share,
-            Page::Internet => self.internet,
-            Page::PublicExits => self.public_exits,
-            Page::Wallet => self.wallet,
-            Page::SellAccess => self.sell_access,
+            Page::ExitNodes => self.exit_nodes,
             Page::Settings => self.settings,
         }
     }
@@ -77,10 +64,7 @@ impl PageScrollOffsets {
         match page {
             Page::Devices => self.devices = offset,
             Page::Share => self.share = offset,
-            Page::Internet => self.internet = offset,
-            Page::PublicExits => self.public_exits = offset,
-            Page::Wallet => self.wallet = offset,
-            Page::SellAccess => self.sell_access = offset,
+            Page::ExitNodes => self.exit_nodes = offset,
             Page::Settings => self.settings = offset,
         }
     }
@@ -105,16 +89,6 @@ struct Drafts {
     advertised_routes: String,
     exit_search: String,
     wireguard_exit_config: String,
-    paid_route_mint_url: String,
-    paid_route_topup_amount: String,
-    paid_route_send_amount: String,
-    paid_route_receive_token: String,
-    paid_route_withdraw_invoice: String,
-    paid_route_filter_country: String,
-    paid_route_filter_network_class: String,
-    paid_route_filter_sort: String,
-    paid_route_filter_ipv4: bool,
-    paid_route_filter_ipv6: bool,
 }
 
 impl Drafts {
@@ -126,22 +100,6 @@ impl Drafts {
         self.fips_host_inbound_tcp_ports = state.fips_host_inbound_tcp_ports.clone();
         self.advertised_routes = state.advertised_routes.join(", ");
         self.wireguard_exit_config = state.wireguard_exit_config.clone();
-        if self.paid_route_mint_url.trim().is_empty() {
-            self.paid_route_mint_url = state.paid_route_market.wallet.default_mint.clone();
-        }
-        if self.paid_route_filter_country.trim().is_empty() {
-            self.paid_route_filter_country = state.paid_route_market.filter.country_code.clone();
-        }
-        if self.paid_route_filter_network_class.trim().is_empty() {
-            self.paid_route_filter_network_class =
-                state.paid_route_market.filter.network_class.clone();
-        }
-        if self.paid_route_filter_sort.trim().is_empty() {
-            self.paid_route_filter_sort =
-                non_empty_or(&state.paid_route_market.filter.sort, "quality").to_string();
-        }
-        self.paid_route_filter_ipv4 = state.paid_route_market.filter.require_ipv4;
-        self.paid_route_filter_ipv6 = state.paid_route_market.filter.require_ipv6;
         if let Some(network) = active_network(state) {
             self.network_name = display_network_name(network);
             self.mesh_id = display_network_id(&network.network_id);
