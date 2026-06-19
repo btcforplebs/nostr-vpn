@@ -34,6 +34,12 @@ struct TunPipelinePacket {
 type TunPipelineBatch = Vec<TunPipelinePacket>;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+struct TunWriteBatch {
+    priority: Vec<Vec<u8>>,
+    bulk: Vec<Vec<u8>>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct TunPipelineQueueTx {
     priority: mpsc::UnboundedSender<TunPipelineBatch>,
     bulk: mpsc::Sender<TunPipelineBatch>,
@@ -83,6 +89,32 @@ impl TunPipelinePacket {
         match self.class.lane() {
             EndpointPayloadLane::Priority => TunPipelineLane::Priority,
             EndpointPayloadLane::Bulk => TunPipelineLane::Bulk,
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl TunWriteBatch {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            priority: Vec::with_capacity(capacity.min(16)),
+            bulk: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.priority.clear();
+        self.bulk.clear();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.priority.is_empty() && self.bulk.is_empty()
+    }
+
+    fn push(&mut self, packet: Vec<u8>) {
+        match classify_endpoint_payload(&packet).lane() {
+            EndpointPayloadLane::Priority => self.priority.push(packet),
+            EndpointPayloadLane::Bulk => self.bulk.push(packet),
         }
     }
 }

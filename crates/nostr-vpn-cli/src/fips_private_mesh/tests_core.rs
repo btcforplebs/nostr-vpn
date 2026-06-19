@@ -30,8 +30,9 @@
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::{
         BorrowedTunFd, TunPipelineLane, TunPipelinePacket, TunPipelineQueueTx,
-        TunQueueSubmit, parse_fips_tun_to_mesh_queue_cap, raw_write_packet_to_tun,
-        release_tun_bulk_packet_slots, submit_tun_packet_batch_to_mesh_queue,
+        TunQueueSubmit, TunWriteBatch, parse_fips_tun_to_mesh_queue_cap,
+        push_mesh_packet_for_tun, raw_write_packet_to_tun, release_tun_bulk_packet_slots,
+        submit_tun_packet_batch_to_mesh_queue,
         submit_tun_packet_batch_to_mesh_queue_with_backpressure,
         tun_pipeline_packet_lane,
     };
@@ -691,6 +692,22 @@
             TunPipelineLane::Bulk
         );
         assert_eq!(tun_pipeline_packet_lane(&[0xaa; 32]), TunPipelineLane::Bulk);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn mesh_receive_write_batch_prioritizes_liveness_packets() {
+        let bulk = test_ipv4_tcp_packet(0x18, 512);
+        let ping = test_ipv4_icmp_packet();
+        let mut batch = TunWriteBatch::with_capacity(2);
+
+        push_mesh_packet_for_tun(bulk, &mut batch);
+        push_mesh_packet_for_tun(ping, &mut batch);
+
+        assert_eq!(batch.priority.len(), 1);
+        assert_eq!(batch.bulk.len(), 1);
+        assert_eq!(batch.priority[0][9], 1);
+        assert_eq!(batch.bulk[0][9], 6);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

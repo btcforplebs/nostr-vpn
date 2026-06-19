@@ -382,7 +382,7 @@ fn spawn_mesh_recv_task(
         let recv_burst = fips_mesh_recv_burst();
         let mut messages = Vec::with_capacity(recv_burst);
         let mut events = Vec::with_capacity(recv_burst);
-        let mut packet_batch = Vec::with_capacity(recv_burst);
+        let mut packet_batch = TunWriteBatch::with_capacity(recv_burst);
         loop {
             match mesh
                 .recv_mesh_event_batch_into(&mut messages, &mut events, recv_burst)
@@ -438,7 +438,7 @@ fn spawn_blocking_mesh_recv_worker(
         .name("nvpn-fips-mesh-recv".to_string())
         .spawn(move || {
             let recv_burst = fips_mesh_recv_burst();
-            let mut packet_batch = Vec::with_capacity(recv_burst);
+            let mut packet_batch = TunWriteBatch::with_capacity(recv_burst);
             while !thread_stop.load(Ordering::Acquire) {
                 packet_batch.clear();
                 let mut packet_count = 0usize;
@@ -526,7 +526,7 @@ async fn forward_mesh_event_to_tun_batched(
     event: FipsPrivateMeshEvent,
     tun_fd: &AsyncFd<BorrowedTunFd>,
     event_tx: &mpsc::Sender<FipsPrivateMeshEvent>,
-    packet_batch: &mut Vec<Vec<u8>>,
+    packet_batch: &mut TunWriteBatch,
 ) -> bool {
     match event {
         FipsPrivateMeshEvent::Packet(packet) => {
@@ -549,7 +549,7 @@ async fn cooperate_after_mesh_recv_packet() {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn push_mesh_packet_for_tun(mut packet: Vec<u8>, packet_batch: &mut Vec<Vec<u8>>) {
+fn push_mesh_packet_for_tun(mut packet: Vec<u8>, packet_batch: &mut TunWriteBatch) {
     nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut packet);
     if fips_unix_packet_debug_enabled() {
         eprintln!(
@@ -564,7 +564,7 @@ fn push_mesh_packet_for_tun(mut packet: Vec<u8>, packet_batch: &mut Vec<Vec<u8>>
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn flush_mesh_packet_batch_to_tun(
     tun_fd: &AsyncFd<BorrowedTunFd>,
-    packet_batch: &mut Vec<Vec<u8>>,
+    packet_batch: &mut TunWriteBatch,
 ) {
     if packet_batch.is_empty() {
         return;
@@ -572,15 +572,21 @@ async fn flush_mesh_packet_batch_to_tun(
 
     #[cfg(target_os = "linux")]
     if tun_fd.get_ref().vnet_hdr {
-        let packet_count = packet_batch.len();
-        write_linux_vnet_packet_batch_to_tun(tun_fd, packet_batch).await;
+        let packet_count = packet_batch.priority.len() + packet_batch.bulk.len();
+        write_linux_vnet_packet_batch_to_tun(tun_fd, &mut packet_batch.priority).await;
+        write_linux_vnet_packet_batch_to_tun(tun_fd, &mut packet_batch.bulk).await;
         for _ in 0..packet_count {
             cooperate_after_mesh_recv_packet().await;
         }
         return;
     }
 
-    for packet in packet_batch.drain(..) {
+    for packet in packet_batch.priority.drain(..) {
+        write_packet_to_tun(tun_fd, &packet).await;
+        cooperate_after_mesh_recv_packet().await;
+    }
+
+    for packet in packet_batch.bulk.drain(..) {
         // Hot path. Write to TUN inline and DON'T forward Packet events
         // upstream: the control-loop consumer discards packet events. The
         // raw fd write below still waits on utun writability instead of
@@ -596,7 +602,7 @@ fn forward_mesh_event_to_tun_blocking_batched(
     tun_fd: BorrowedTunFd,
     event_tx: &mpsc::Sender<FipsPrivateMeshEvent>,
     stop: &AtomicBool,
-    packet_batch: &mut Vec<Vec<u8>>,
+    packet_batch: &mut TunWriteBatch,
 ) -> bool {
     match event {
         FipsPrivateMeshEvent::Packet(packet) => {
@@ -613,7 +619,7 @@ fn forward_mesh_event_to_tun_blocking_batched(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn flush_mesh_packet_batch_to_tun_blocking(
     tun_fd: BorrowedTunFd,
-    packet_batch: &mut Vec<Vec<u8>>,
+    packet_batch: &mut TunWriteBatch,
     stop: &AtomicBool,
 ) {
     if packet_batch.is_empty() {
@@ -622,11 +628,16 @@ fn flush_mesh_packet_batch_to_tun_blocking(
 
     #[cfg(target_os = "linux")]
     if tun_fd.vnet_hdr {
-        write_linux_vnet_packet_batch_to_tun_blocking(tun_fd, packet_batch, stop);
+        write_linux_vnet_packet_batch_to_tun_blocking(tun_fd, &mut packet_batch.priority, stop);
+        write_linux_vnet_packet_batch_to_tun_blocking(tun_fd, &mut packet_batch.bulk, stop);
         return;
     }
 
-    for packet in packet_batch.drain(..) {
+    for packet in packet_batch.priority.drain(..) {
+        write_packet_to_tun_blocking(tun_fd, &packet, stop);
+    }
+
+    for packet in packet_batch.bulk.drain(..) {
         write_packet_to_tun_blocking(tun_fd, &packet, stop);
     }
 }
