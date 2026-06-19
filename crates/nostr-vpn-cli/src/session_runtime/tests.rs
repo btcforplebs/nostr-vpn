@@ -60,4 +60,39 @@ mod tests {
             endpoint_peer_signature(&reconnect_config)
         );
     }
+
+    #[cfg(feature = "embedded-fips")]
+    #[test]
+    fn stale_participant_path_refresh_targets_only_matching_endpoint_peers() {
+        use nostr_sdk::prelude::{Keys, ToBech32};
+
+        let stale_key = Keys::generate();
+        let other_key = Keys::generate();
+        let stale_npub = stale_key.public_key().to_bech32().expect("stale npub");
+        let other_npub = other_key.public_key().to_bech32().expect("other npub");
+        let peers = vec![
+            crate::fips_private_mesh::FipsEndpointPeerTransportConfig {
+                npub: stale_npub.clone(),
+                addresses: Vec::new(),
+                auto_reconnect: true,
+                discovery_fallback_transit: false,
+            },
+            crate::fips_private_mesh::FipsEndpointPeerTransportConfig {
+                npub: other_npub,
+                addresses: Vec::new(),
+                auto_reconnect: true,
+                discovery_fallback_transit: false,
+            },
+        ];
+
+        let selected_from_hex =
+            endpoint_peers_for_participant_refresh(&peers, &[stale_key.public_key().to_hex()]);
+        assert_eq!(selected_from_hex.len(), 1);
+        assert_eq!(selected_from_hex[0].npub, stale_npub);
+
+        let selected_from_npub =
+            endpoint_peers_for_participant_refresh(&peers, std::slice::from_ref(&stale_npub));
+        assert_eq!(selected_from_npub.len(), 1);
+        assert_eq!(selected_from_npub[0].npub, stale_npub);
+    }
 }

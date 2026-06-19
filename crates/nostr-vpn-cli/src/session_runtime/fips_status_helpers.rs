@@ -271,6 +271,38 @@ fn endpoint_peer_signature(
         .collect()
 }
 
+#[cfg(feature = "embedded-fips")]
+fn endpoint_peers_for_participant_refresh(
+    endpoint_peers: &[crate::fips_private_mesh::FipsEndpointPeerTransportConfig],
+    participants: &[String],
+) -> Vec<crate::fips_private_mesh::FipsEndpointPeerTransportConfig> {
+    if participants.is_empty() {
+        return Vec::new();
+    }
+
+    let participant_keys = participants
+        .iter()
+        .filter_map(|participant| {
+            nostr_sdk::prelude::PublicKey::parse(participant.trim())
+                .ok()
+                .map(|key| *key.as_bytes())
+        })
+        .collect::<std::collections::HashSet<_>>();
+    if participant_keys.is_empty() {
+        return Vec::new();
+    }
+
+    endpoint_peers
+        .iter()
+        .filter(|peer| {
+            nostr_sdk::prelude::PublicKey::parse(peer.npub.trim())
+                .ok()
+                .is_some_and(|key| participant_keys.contains(key.as_bytes()))
+        })
+        .cloned()
+        .collect()
+}
+
 /// Snapshot the runtime's authenticated peer transport addresses, update
 /// the on-disk recent-peers cache, and hand fips the refreshed peer hint
 /// list via `update_peers` so new direct candidates race the existing ones
@@ -401,13 +433,14 @@ async fn restart_fips_tunnel_runtime_after_stale_participants(
         "daemon: refreshing FIPS peer paths after {} participant(s) stopped responding while endpoint links stayed connected",
         stale_participants.len()
     );
-    refresh_fips_tunnel_runtime_peer_paths(runtime, context).await
+    refresh_fips_tunnel_runtime_peer_paths(runtime, context, &stale_participants).await
 }
 
 #[cfg(feature = "embedded-fips")]
 async fn refresh_fips_tunnel_runtime_peer_paths(
     runtime: &mut Option<crate::fips_private_mesh::FipsPrivateTunnelRuntime>,
     context: FipsRestartContext<'_>,
+    stale_participants: &[String],
 ) -> Result<bool> {
     let Some(current) = runtime.as_ref() else {
         return Ok(false);
@@ -424,11 +457,26 @@ async fn refresh_fips_tunnel_runtime_peer_paths(
     )?;
     let endpoint_peer_signature = endpoint_peer_signature(&config.endpoint_peers);
     let outcome = current.update_peers(&config.endpoint_peers).await?;
-    let refreshed = current.refresh_peer_paths(&config.endpoint_peers).await?;
+    let refresh_endpoint_peers =
+        endpoint_peers_for_participant_refresh(&config.endpoint_peers, stale_participants);
+    if refresh_endpoint_peers.is_empty() {
+        eprintln!(
+            "daemon: no matching FIPS endpoint peer paths for {} stale participant(s)",
+            stale_participants.len()
+        );
+        *context.last_endpoint_peer_signature = endpoint_peer_signature;
+        return Ok(false);
+    }
+    let refreshed = current.refresh_peer_paths(&refresh_endpoint_peers).await?;
     *context.last_endpoint_peer_signature = endpoint_peer_signature;
     eprintln!(
-        "daemon: refreshed FIPS endpoint peer paths in place (added={} updated={} unchanged={} removed={} direct_refreshes={})",
-        outcome.added, outcome.updated, outcome.unchanged, outcome.removed, refreshed
+        "daemon: refreshed stale FIPS endpoint peer paths in place (targets={} added={} updated={} unchanged={} removed={} direct_refreshes={})",
+        refresh_endpoint_peers.len(),
+        outcome.added,
+        outcome.updated,
+        outcome.unchanged,
+        outcome.removed,
+        refreshed
     );
     Ok(false)
 }
