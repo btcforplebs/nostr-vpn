@@ -18,7 +18,6 @@ union LinuxIfReqIfru {
     ifru_flags: libc::c_short,
     ifru_mtu: libc::c_int,
 }
-
 #[repr(C)]
 struct LinuxIfReq {
     ifr_name: [libc::c_uchar; libc::IFNAMSIZ],

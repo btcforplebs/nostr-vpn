@@ -1,3 +1,4 @@
+use crate::join_requests::MeshJoinRequest;
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, PublicKey, Tag, Timestamp};
@@ -5,9 +6,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-use crate::join_requests::MeshJoinRequest;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkRoster {
     #[serde(default)]
@@ -21,16 +19,13 @@ pub struct NetworkRoster {
     #[serde(default)]
     pub signed_at: u64,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedRoster {
     pub event: Event,
 }
-
 const SIGNED_ROSTER_KIND: u16 = 30_388;
 const SIGNED_ROSTER_VERSION: &str = "1";
 const SIGNED_ROSTER_APP: &str = "nostr-vpn/shared-roster";
-
 impl SignedRoster {
     pub fn sign(network_id: impl Into<String>, roster: NetworkRoster, keys: &Keys) -> Result<Self> {
         let event = EventBuilder::new(Kind::Custom(SIGNED_ROSTER_KIND), "")
@@ -221,7 +216,6 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
 fn roster_tag(parts: &[&str]) -> Result<Tag> {
     Tag::parse(parts.iter().copied()).map_err(|error| anyhow!("invalid roster event tag: {error}"))
 }
-
 fn normalize_roster_pubkeys(values: &[String], role: &str) -> Result<Vec<String>> {
     values
         .iter()
@@ -234,7 +228,6 @@ fn normalize_roster_pubkey(value: &str, role: &str) -> Result<String> {
         .map(|pubkey| pubkey.to_hex())
         .map_err(|error| anyhow!("invalid roster {role} pubkey: {error}"))
 }
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerCapabilities {
     #[serde(default)]
@@ -250,7 +243,6 @@ pub struct PeerCapabilities {
 pub fn local_fips_dataplane_features() -> Vec<String> {
     Vec::new()
 }
-
 impl PeerCapabilities {
     pub fn supports_dataplane_feature(&self, feature: &str) -> bool {
         self.dataplane_features
@@ -258,7 +250,6 @@ impl PeerCapabilities {
             .any(|value| value.eq_ignore_ascii_case(feature))
     }
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerEndpointHint {
     #[serde(default = "default_peer_endpoint_hint_transport")]

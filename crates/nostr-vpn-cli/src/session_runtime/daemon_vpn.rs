@@ -917,8 +917,9 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                             );
                         }
                     }
-                    match persist_daemon_runtime_state(
+                    if persist_daemon_runtime_and_cleanup_state(
                         &state_file,
+                        &config_path,
                         &app,
                         vpn_enabled,
                         expected_peers,
@@ -930,15 +931,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         &network_snapshot.summary(network_changed_at, captive_portal),
                         &port_mapping_runtime.status(),
                     ) {
-                        Ok(()) => last_state_persisted_at = Instant::now(),
-                        Err(error) => {
-                            eprintln!("daemon: failed to persist runtime state: {error}");
-                        }
-                    }
-                    if let Err(error) =
-                        persist_daemon_network_cleanup_state(&config_path, &tunnel_runtime)
-                    {
-                        eprintln!("daemon: failed to persist network cleanup state: {error}");
+                        last_state_persisted_at = Instant::now();
                     }
                 }
                 if let Some((executable, launched_fingerprint)) =
@@ -965,33 +958,21 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                     vpn_status = "VPN on".to_string();
                 }
                 if last_state_persisted_at.elapsed() >= daemon_state_persist_interval {
-                    let fips_peer_statuses = current_fips_peer_statuses!(fips_tunnel_runtime);
-                    let fips_relay_statuses =
-                        current_fips_relay_statuses(&fips_tunnel_runtime).await;
-                    let fips_advertised_routes =
-                        current_fips_advertised_routes!(fips_tunnel_runtime, &app);
-                    match persist_daemon_runtime_state(
+                    if persist_daemon_runtime_and_cleanup_state(
                         &state_file,
+                        &config_path,
                         &app,
                         vpn_enabled,
                         expected_peers,
                         &tunnel_runtime,
-                        &fips_peer_statuses,
-                        &fips_relay_statuses,
-                        &fips_advertised_routes,
+                        &current_fips_peer_statuses!(fips_tunnel_runtime),
+                        &current_fips_relay_statuses(&fips_tunnel_runtime).await,
+                        &current_fips_advertised_routes!(fips_tunnel_runtime, &app),
                         &vpn_status,
                         &network_snapshot.summary(network_changed_at, captive_portal),
                         &port_mapping_runtime.status(),
                     ) {
-                        Ok(()) => last_state_persisted_at = Instant::now(),
-                        Err(error) => {
-                            eprintln!("daemon: failed to persist runtime state: {error}");
-                        }
-                    }
-                    if let Err(error) =
-                        persist_daemon_network_cleanup_state(&config_path, &tunnel_runtime)
-                    {
-                        eprintln!("daemon: failed to persist network cleanup state: {error}");
+                        last_state_persisted_at = Instant::now();
                     }
                 }
             }
@@ -1009,29 +990,11 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
     if let Err(error) = persist_daemon_network_cleanup_state(&config_path, &tunnel_runtime) {
         eprintln!("daemon: failed to clear network cleanup state: {error}");
     }
-
-    let final_state = DaemonRuntimeState {
-        updated_at: unix_timestamp(),
-        binary_version: PRODUCT_VERSION.to_string(),
-        local_endpoint: String::new(),
-        advertised_endpoint: String::new(),
-        listen_port: 0,
-        vpn_enabled: false,
-        vpn_active: false,
-        vpn_status: "Disconnected".to_string(),
-        expected_peer_count: expected_peers,
-        connected_peer_count: 0,
-        fips_direct_roster_peer_count: 0,
-        fips_other_peer_count: 0,
-        mesh_ready: false,
-        health: Vec::new(),
-        network: network_snapshot.summary(network_changed_at, captive_portal),
-        port_mapping: PortMappingStatus::default(),
-        relays: Vec::new(),
-        peers: Vec::new(),
-    };
+    let final_state = disconnected_daemon_runtime_state(
+        expected_peers,
+        &network_snapshot.summary(network_changed_at, captive_portal),
+    );
     let _ = write_daemon_state(&state_file, &final_state);
     remove_current_daemon_pid_record(&pid_file);
-
     Ok(())
 }

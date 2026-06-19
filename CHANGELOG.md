@@ -15,6 +15,8 @@ All notable changes to this project are documented in this file.
 - macOS FIPS private-mesh sending now sequences endpoint flows independently
   on the ordered Darwin sender path, so one bulk TCP flow cannot block
   latency-sensitive tunnel traffic to the same peer.
+- The workspace now depends on the published FIPS 0.3.61/0.3.36 crates that
+  contain the matching private-mesh reliability fixes.
 
 ### Fixed
 
