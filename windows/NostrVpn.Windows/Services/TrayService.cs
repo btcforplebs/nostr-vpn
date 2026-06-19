@@ -96,17 +96,17 @@ public sealed class TrayService : IDisposable
             }
             menu.Items.Add(devices);
 
-            var exitNodes = new ToolStripMenuItem("Exit Node");
+            var exitNodes = new ToolStripMenuItem("Internet Source");
             if (!string.IsNullOrWhiteSpace(viewModel.State.ExitNodeStatusText))
             {
                 exitNodes.DropDownItems.Add(Item(viewModel.State.ExitNodeStatusText, (_, _) => { }, false));
             }
-            var offerExit = Item("Offer This Device",
+            var offerExit = Item("Share This Device",
                 async (_, _) => await viewModel.SetAdvertiseExitNodeAsync(!viewModel.State.AdvertiseExitNode));
             offerExit.Checked = viewModel.State.AdvertiseExitNode;
             exitNodes.DropDownItems.Add(offerExit);
             exitNodes.DropDownItems.Add(new ToolStripSeparator());
-            var noExit = Item("No exit node", async (_, _) => await viewModel.SetExitNodeAsync(""));
+            var noExit = Item("This device", async (_, _) => await viewModel.SetExitNodeAsync(""));
             noExit.Checked = string.IsNullOrWhiteSpace(viewModel.State.ExitNode);
             exitNodes.DropDownItems.Add(noExit);
             foreach (var participant in network.Participants.Where(participant => participant.OffersExitNode && !participant.IsSelf))

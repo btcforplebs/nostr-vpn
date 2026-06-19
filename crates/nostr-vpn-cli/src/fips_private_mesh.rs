@@ -20,8 +20,10 @@ use nostr_vpn_core::fips_control::{
     SignedRoster, decode_fips_control_frame, encode_fips_control_frame,
     encode_fips_control_messages,
 };
-use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
+use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime, FipsPaidRouteAdmission};
 use nostr_vpn_core::join_requests::MeshJoinRequest;
+use nostr_vpn_core::paid_route_store::PaidRouteSellerAdmission;
+use nostr_vpn_core::paid_routes::PaidExitConfig;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -40,7 +42,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 #[cfg(target_os = "windows")]
 use std::thread::{self, JoinHandle as ThreadJoinHandle};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::io::Interest;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -78,6 +80,14 @@ const FIPS_ENDPOINT_REKEY_AFTER_SECS: u64 = 3600;
 const FIPS_PEER_ACTIVE_PING_INTERVAL_SECS: u64 = 5;
 const FIPS_PEER_LINK_PING_INTERVAL_SECS: u64 = 5;
 const FIPS_PEER_DISCOVERY_PROBE_INTERVAL_SECS: u64 = 30;
+const FIPS_CONTROL_SEND_TIMEOUT_SECS: u64 = 5;
+const FIPS_PAID_ROUTE_USAGE_FLUSH_INTERVAL_MS: u64 = 1_000;
+const FIPS_PAID_ROUTE_USAGE_FLUSH_PACKET_THRESHOLD: u64 = 64;
+const FIPS_PAID_ROUTE_USAGE_FLUSH_BYTE_THRESHOLD: u64 = 64 * 1024;
+const FIPS_PAID_ROUTE_PAYMENT_RECEIVE_LIMIT: usize = 100;
+const FIPS_PAID_ROUTE_PAYMENT_RECEIVE_SINCE_SECS: u64 = 3_600;
+const FIPS_PAID_ROUTE_PAYMENT_RECEIVER_RETRY_SECS: u64 = 5;
+const FIPS_PAID_ROUTE_PAYMENT_SEEN_MAX: usize = 4096;
 const FIPS_CONTROL_RTT_MAX_ACCEPT_MS: u128 = 10_000;
 const MESH_LAN_UNDERLAY_UDP_MTU: u16 = 1420;
 const MESH_LAN_TUNNEL_MTU: u16 = 1290;
@@ -92,6 +102,8 @@ const FIPS_TUN_READ_BURST: usize = 128;
 #[cfg(target_os = "macos")]
 const FIPS_TUN_READ_BURST: usize = 64;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+const FIPS_TUN_WRITE_BURST: usize = 64;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 const FIPS_MESH_SEND_BURST: usize = 64;
 #[cfg(target_os = "macos")]
 const FIPS_MESH_PRIORITY_SEND_BURST: usize = 16;
@@ -268,7 +280,7 @@ use nostr_vpn_wintun::load_wintun;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use tokio::task::JoinHandle;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use tokio::time::{Duration, sleep};
+use tokio::time::sleep;
 #[cfg(target_os = "windows")]
 use wintun::{Adapter, MAX_RING_CAPACITY, Session};
 

@@ -65,6 +65,8 @@ info:
     @echo "  just e2e-active-network"
     @echo "  just e2e-umbrel-web"
     @echo "  just e2e-exit-node"
+    @echo "  just e2e-paid-exit"
+    @echo "  just e2e-paid-exit-token"
     @echo "  just e2e-fips-routed-udp"
     @echo "  just e2e-join-request"
     @echo "  just e2e-lan-pairing"
@@ -237,6 +239,12 @@ e2e-divergent-roster:
 
 e2e-exit-node:
     ./scripts/e2e-exit-node-docker.sh
+
+e2e-paid-exit:
+    ./scripts/e2e-paid-exit-docker.sh
+
+e2e-paid-exit-token:
+    ./scripts/e2e-paid-exit-token-docker.sh
 
 e2e-fips-routed-udp:
     ./scripts/e2e-fips-routed-udp-docker.sh

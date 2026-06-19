@@ -114,6 +114,9 @@ enum Command {
     /// this does not create a tun device and does not modify routes.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     WgUpstreamTest(WgUpstreamTestArgs),
+    /// Manage Cashu-paid public exit routing.
+    #[command(name = "paid-exit")]
+    PaidExit(PaidExitArgs),
     /// Internal config import helper for elevated GUI writes.
     #[command(hide = true)]
     ApplyConfig(ApplyConfigArgs),
@@ -415,6 +418,38 @@ struct SetArgs {
     advertise_routes: Option<String>,
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     advertise_exit_node: Option<bool>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    paid_exit_enabled: Option<bool>,
+    #[arg(long)]
+    paid_exit_meter: Option<String>,
+    #[arg(long)]
+    paid_exit_upstream: Option<String>,
+    #[arg(long)]
+    paid_exit_price_msat: Option<u64>,
+    #[arg(long, value_name = "UNITS")]
+    paid_exit_per_units: Option<String>,
+    #[arg(long)]
+    paid_exit_accepted_mints: Option<String>,
+    #[arg(long)]
+    paid_exit_country_code: Option<String>,
+    #[arg(long)]
+    paid_exit_region: Option<String>,
+    #[arg(long)]
+    paid_exit_asn: Option<u32>,
+    #[arg(long)]
+    paid_exit_network_class: Option<String>,
+    #[arg(long)]
+    paid_exit_ipv4: Option<bool>,
+    #[arg(long)]
+    paid_exit_ipv6: Option<bool>,
+    #[arg(long)]
+    paid_exit_max_channel_capacity_sat: Option<u64>,
+    #[arg(long)]
+    paid_exit_channel_expiry_secs: Option<u64>,
+    #[arg(long, value_name = "UNITS")]
+    paid_exit_free_probe_units: Option<String>,
+    #[arg(long, value_name = "UNITS")]
+    paid_exit_grace_units: Option<String>,
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     wireguard_exit_enabled: Option<bool>,
     #[arg(long)]

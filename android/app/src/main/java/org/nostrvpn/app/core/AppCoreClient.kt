@@ -66,6 +66,115 @@ object NativeActions {
     fun setParticipantEndpointHints(npub: String, endpointHints: List<String>) =
         action("set_participant_endpoint_hints", "npub" to npub, "endpointHints" to endpointHints)
 
+    fun addPaidRouteWalletMint(url: String, label: String?) =
+        action("add_paid_route_wallet_mint", "url" to url, "label" to label)
+
+    fun removePaidRouteWalletMint(url: String) =
+        action("remove_paid_route_wallet_mint", "url" to url)
+
+    fun setPaidRouteDefaultMint(url: String) =
+        action("set_paid_route_default_mint", "url" to url)
+
+    fun refreshPaidRouteWallet(refresh: Boolean = true) =
+        action("refresh_paid_route_wallet", "refresh" to refresh)
+
+    fun topUpPaidRouteWallet(mintUrl: String?, amountSat: Long) =
+        action("top_up_paid_route_wallet", "mintUrl" to mintUrl, "amountSat" to amountSat)
+
+    fun receivePaidRouteWalletToken(token: String) =
+        action("receive_paid_route_wallet_token", "token" to token)
+
+    fun sendPaidRouteWalletToken(mintUrl: String?, amountSat: Long) =
+        action("send_paid_route_wallet_token", "mintUrl" to mintUrl, "amountSat" to amountSat)
+
+    fun withdrawPaidRouteWalletLightning(mintUrl: String?, invoice: String) =
+        action("withdraw_paid_route_wallet_lightning", "mintUrl" to mintUrl, "invoice" to invoice)
+
+    fun buyPaidRouteOffer(offerKey: String, mintUrl: String? = null, channelCapacitySat: Long? = null) =
+        action(
+            "buy_paid_route_offer",
+            "offerKey" to offerKey,
+            "mintUrl" to mintUrl,
+            "channelCapacitySat" to channelCapacitySat,
+        )
+
+    fun selectPaidRouteSession(sessionId: String, connect: Boolean) =
+        action("select_paid_route_session", "sessionId" to sessionId, "connect" to connect)
+
+    fun probePaidRouteSession(sessionId: String, timeoutSecs: Long) =
+        action("probe_paid_route_session", "sessionId" to sessionId, "timeoutSecs" to timeoutSecs)
+
+    fun openPaidRouteChannelFromWallet(
+        sessionId: String,
+        mintUrl: String? = null,
+        paidMsat: Long? = null,
+        maxAmountPerOutput: Long? = null,
+        keysetId: String? = null,
+    ) = action(
+        "open_paid_route_channel_from_wallet",
+        "sessionId" to sessionId,
+        "mintUrl" to mintUrl,
+        "paidMsat" to paidMsat,
+        "maxAmountPerOutput" to maxAmountPerOutput,
+        "keysetId" to keysetId,
+    )
+
+    fun signPaidRoutePaymentEnvelopeFromWallet(
+        sessionId: String,
+        kind: String = "balance-update",
+        deliveredUnits: Long? = null,
+        paidMsat: Long? = null,
+    ) = action(
+        "sign_paid_route_payment_envelope_from_wallet",
+        "sessionId" to sessionId,
+        "kind" to kind,
+        "deliveredUnits" to deliveredUnits,
+        "paidMsat" to paidMsat,
+    )
+
+    fun closePaidRouteChannelFromWallet(sessionId: String, publish: Boolean = true) =
+        action("close_paid_route_channel_from_wallet", "sessionId" to sessionId, "publish" to publish)
+
+    fun sendPaidRoutePaymentEnvelope(envelopeJson: String) =
+        action("send_paid_route_payment_envelope", "envelopeJson" to envelopeJson)
+
+    fun streamPaidRoutePayments(publish: Boolean = true, minIncrementMsat: Long = 1, limit: Long = 0) =
+        action(
+            "stream_paid_route_payments",
+            "publish" to publish,
+            "minIncrementMsat" to minIncrementMsat,
+            "limit" to limit,
+        )
+
+    fun receivePaidRoutePayments(durationSecs: Long = 5) =
+        action("receive_paid_route_payments", "durationSecs" to durationSecs)
+
+    fun collectDuePaidExitChannels() = action("collect_due_paid_exit_channels")
+
+    fun publishPaidExitOffer() = action("publish_paid_exit_offer")
+
+    fun setPaidRouteMarketFilter(
+        query: String = "",
+        countryCode: String = "",
+        networkClass: String = "",
+        mintUrl: String = "",
+        requireIpv4: Boolean = false,
+        requireIpv6: Boolean = false,
+        sort: String = "quality",
+    ) = action(
+        "set_paid_route_market_filter",
+        "query" to query,
+        "countryCode" to countryCode,
+        "networkClass" to networkClass,
+        "mintUrl" to mintUrl,
+        "requireIpv4" to requireIpv4,
+        "requireIpv6" to requireIpv6,
+        "sort" to sort,
+    )
+
+    fun discoverPaidRouteOffers(durationSecs: Long = 5) =
+        action("discover_paid_route_offers", "durationSecs" to durationSecs)
+
     fun updateSettings(vararg settings: Pair<String, Any?>): JSONObject =
         JSONObject()
             .put("type", "update_settings")

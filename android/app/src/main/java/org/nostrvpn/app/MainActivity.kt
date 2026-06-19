@@ -427,7 +427,7 @@ class MainActivity : ComponentActivity() {
             exitNode.isNotBlank() || (wireguardExitEnabled && wireguardExitConfigured)
         if (vpnEnabled && vpnLockdownActive && !fullTunnelConfigured) {
             return copy(
-                error = "Android VPN lockdown is on. Split tunnel cannot provide regular internet until lockdown is fully disabled or an exit node is selected.",
+                error = "Android VPN lockdown is on. Split tunnel cannot provide regular internet until lockdown is fully disabled or internet has been selected.",
             )
         }
         return this

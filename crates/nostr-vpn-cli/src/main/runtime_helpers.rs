@@ -409,11 +409,13 @@ fn drain_fips_mesh_events(
 async fn refresh_fips_tunnel_config(
     runtime: &mut crate::fips_private_mesh::FipsPrivateTunnelRuntime,
     app: &AppConfig,
+    config_path: &Path,
     network_id: &str,
     own_pubkey: Option<&str>,
 ) -> Result<()> {
     let config = fips_tunnel_config_from_app(
         app,
+        config_path,
         network_id,
         runtime.iface().to_string(),
         own_pubkey,
@@ -426,6 +428,7 @@ async fn refresh_fips_tunnel_config(
 #[cfg(feature = "embedded-fips")]
 fn fips_tunnel_config_from_app(
     app: &AppConfig,
+    config_path: &Path,
     network_id: &str,
     iface: impl Into<String>,
     own_pubkey: Option<&str>,
@@ -440,6 +443,11 @@ fn fips_tunnel_config_from_app(
         recent_peers,
         live_peer_endpoints,
     )?;
+    config.paid_exit = app.paid_exit.clone();
+    config.paid_route_store_path = paid_route_store_file_path(config_path);
+    config.paid_route_wallet_data_dir = paid_exit_wallet_data_dir(config_path);
+    config.paid_route_payment_relays = paid_exit_relay_urls(app, &[]);
+    config.paid_route_admissions = fips_paid_route_admissions_from_store(app, config_path)?;
     // Daemon no longer pre-discovers a public endpoint. fips-core's
     // build_overlay_advert performs its own STUN observation and advertises
     // <reflexive_ip>:<listen_port> directly; if that's wrong (e.g. symmetric
@@ -455,9 +463,33 @@ fn fips_tunnel_config_from_app(
 }
 
 #[cfg(feature = "embedded-fips")]
+fn fips_paid_route_admissions_from_store(
+    app: &AppConfig,
+    config_path: &Path,
+) -> Result<Vec<FipsPaidRouteAdmission>> {
+    if !app.paid_exit.enabled {
+        return Ok(Vec::new());
+    }
+    let network_id = app.effective_network_id();
+    let store_path = paid_route_store_file_path(config_path);
+    let store = load_paid_route_store(&store_path)?;
+    Ok(store
+        .seller_admissions(&app.paid_exit, unix_timestamp())
+        .into_iter()
+        .map(|admission| {
+            crate::fips_private_mesh::fips_paid_route_admission_from_seller_admission(
+                &network_id,
+                admission,
+            )
+        })
+        .collect())
+}
+
+#[cfg(feature = "embedded-fips")]
 async fn sync_fips_private_runtime(
     runtime: &mut Option<crate::fips_private_mesh::FipsPrivateTunnelRuntime>,
     app: &AppConfig,
+    config_path: &Path,
     network_id: &str,
     iface: &str,
     own_pubkey: Option<&str>,
@@ -485,6 +517,7 @@ async fn sync_fips_private_runtime(
         .unwrap_or_default();
     let config = fips_tunnel_config_from_app(
         app,
+        config_path,
         network_id,
         config_iface,
         own_pubkey,

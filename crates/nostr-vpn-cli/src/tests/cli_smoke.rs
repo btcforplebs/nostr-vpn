@@ -34,6 +34,7 @@ fn clap_includes_tailscale_style_commands() {
         "resume",
         "connect",
         "status",
+        "paid-exit",
         "set",
         "ping",
         "doctor",
@@ -118,6 +119,39 @@ fn clap_set_supports_route_advertisement_flags() {
             .any(|argument| argument.get_long() == Some("exit-node-leak-protection")),
         "missing --exit-node-leak-protection on set command"
     );
+}
+
+#[test]
+fn clap_set_supports_paid_exit_seller_flags() {
+    let command = Cli::command();
+    let set = command
+        .get_subcommands()
+        .find(|subcommand| subcommand.get_name() == "set")
+        .expect("set subcommand exists");
+    for flag in [
+        "paid-exit-enabled",
+        "paid-exit-meter",
+        "paid-exit-upstream",
+        "paid-exit-price-msat",
+        "paid-exit-per-units",
+        "paid-exit-accepted-mints",
+        "paid-exit-country-code",
+        "paid-exit-region",
+        "paid-exit-asn",
+        "paid-exit-network-class",
+        "paid-exit-ipv4",
+        "paid-exit-ipv6",
+        "paid-exit-max-channel-capacity-sat",
+        "paid-exit-channel-expiry-secs",
+        "paid-exit-free-probe-units",
+        "paid-exit-grace-units",
+    ] {
+        assert!(
+            set.get_arguments()
+                .any(|argument| argument.get_long() == Some(flag)),
+            "missing --{flag} on set command"
+        );
+    }
 }
 
 #[test]

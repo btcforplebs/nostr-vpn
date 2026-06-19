@@ -26,6 +26,7 @@ impl FipsPrivateTunnelRuntime {
                 config.peers.clone(),
                 endpoint_config,
                 config.local_allowed_ips(),
+                config.paid_route_admissions.clone(),
             )
             .await?,
         );
@@ -152,7 +153,11 @@ impl FipsPrivateTunnelRuntime {
 
     pub(crate) async fn apply_config(&mut self, config: FipsPrivateTunnelConfig) -> Result<()> {
         self.mesh
-            .replace_peers(config.peers.clone(), config.local_allowed_ips())?;
+            .replace_peers(
+                config.peers.clone(),
+                config.local_allowed_ips(),
+                config.paid_route_admissions.clone(),
+            )?;
         if let Err(error) = self.mesh.update_peers(&config.endpoint_peers).await {
             eprintln!("fips: update_peers during apply_config failed: {error}");
         }

@@ -137,6 +137,254 @@ pub struct NativeRelayState {
     pub enabled: bool,
 }
 
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePaidExitSellerState {
+    pub supported: bool,
+    pub enabled: bool,
+    pub status_text: String,
+    pub upstream: String,
+    pub private_vpn_access: String,
+    pub internet_text: String,
+    pub public_ip_text: String,
+    pub meter: String,
+    pub price_text: String,
+    pub price_msat: u64,
+    pub per_units: u64,
+    pub per_units_text: String,
+    pub accepted_mints: Vec<String>,
+    pub max_channel_capacity_sat: u64,
+    pub channel_expiry_secs: u64,
+    pub channel_expiry_text: String,
+    pub settlement_text: String,
+    pub free_probe_units: u64,
+    pub free_probe_text: String,
+    pub grace_units: u64,
+    pub grace_text: String,
+    pub country_code: String,
+    pub region: String,
+    pub asn: u32,
+    pub network_class: String,
+    pub ipv4: bool,
+    pub ipv6: bool,
+    pub channel_credit_msat: u64,
+    pub channel_credit_text: String,
+    pub channel_credit_title_text: String,
+    pub channel_credit_help_text: String,
+    pub channels: Vec<NativePaidRouteChannelState>,
+    pub sessions: Vec<NativePaidRouteSessionState>,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePaidRouteWalletMintState {
+    pub url: String,
+    pub label: String,
+    pub is_default: bool,
+    pub balance_known: bool,
+    pub balance_msat: u64,
+    pub balance_text: String,
+    pub last_checked_unix: u64,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePaidRouteWalletState {
+    pub default_mint: String,
+    pub balance_known: bool,
+    pub total_balance_msat: u64,
+    pub total_balance_text: String,
+    pub mints: Vec<NativePaidRouteWalletMintState>,
+    pub last_action: NativePaidRouteWalletActionState,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePaidRouteWalletActionState {
+    pub kind: String,
+    pub status_text: String,
+    pub mint_url: String,
+    pub amount_sat: u64,
+    pub amount_text: String,
+    pub fee_sat: u64,
+    pub fee_text: String,
+    pub quote_id: String,
+    pub payment_request: String,
+    pub token: String,
+    pub operation_id: String,
+    pub expires_at_unix: u64,
+    pub preimage: String,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePaidRoutePaymentActionState {
+    pub kind: String,
+    pub status_text: String,
+    pub payload_type: String,
+    pub session_id: String,
+    pub lease_id: String,
+    pub channel_id: String,
+    pub buyer_npub: String,
+    pub seller_npub: String,
+    pub envelope_json: String,
+    pub paid_msat: u64,
+    pub paid_text: String,
+    pub delivered_units: u64,
+    pub delivered_usage_text: String,
+    pub amount_due_msat: u64,
+    pub amount_due_text: String,
+    pub unpaid_msat: u64,
+    pub unpaid_text: String,
+    pub allow_routing: bool,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePaidRouteOfferState {
+    pub key: String,
+    pub offer_id: String,
+    pub seller_npub: String,
+    pub status_text: String,
+    pub price_text: String,
+    pub meter: String,
+    pub price_msat: u64,
+    pub per_units: u64,
+    pub per_units_text: String,
+    pub accepted_mints: Vec<String>,
+    pub max_channel_capacity_sat: u64,
+    pub channel_expiry_secs: u64,
+    pub free_probe_units: u64,
+    pub free_probe_text: String,
+    pub grace_units: u64,
+    pub grace_text: String,
+    pub country_code: String,
+    pub region: String,
+    pub asn: u32,
+    pub network_class: String,
+    pub ipv4: bool,
+    pub ipv6: bool,
+    pub has_quality: bool,
+    pub quality_text: String,
+    pub bandwidth_text: String,
+    pub latency_ms: u32,
+    pub jitter_ms: u32,
+    pub packet_loss_ppm: u32,
+    pub down_bps: u64,
+    pub up_bps: u64,
+    pub uptime_secs: u64,
+    pub first_seen_unix: u64,
+    pub last_seen_unix: u64,
+    pub relay_urls: Vec<String>,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePaidRouteMarketFilterState {
+    pub query: String,
+    pub country_code: String,
+    pub network_class: String,
+    pub mint_url: String,
+    pub require_ipv4: bool,
+    pub require_ipv6: bool,
+    pub sort: String,
+}
+
+impl Default for NativePaidRouteMarketFilterState {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            country_code: String::new(),
+            network_class: String::new(),
+            mint_url: String::new(),
+            require_ipv4: false,
+            require_ipv6: false,
+            sort: "quality".to_string(),
+        }
+    }
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePaidRouteChannelState {
+    pub channel_id: String,
+    pub offer_id: String,
+    pub role: String,
+    pub status: String,
+    pub mint_url: String,
+    pub counterparty_npub: String,
+    pub capacity_sat: u64,
+    pub capacity_text: String,
+    pub paid_msat: u64,
+    pub paid_text: String,
+    pub updated_at_unix: u64,
+    pub expires_at_unix: u64,
+    pub error: String,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePaidRouteSessionState {
+    pub session_id: String,
+    pub lease_id: String,
+    pub channel_id: String,
+    pub status_text: String,
+    pub lifecycle_status: String,
+    pub access_state: String,
+    pub title_text: String,
+    pub detail_text: String,
+    pub settlement_text: String,
+    pub collect_action_text: String,
+    pub collect_action_help_text: String,
+    pub payment_channel_ready: bool,
+    pub allow_routing: bool,
+    pub delivered_units: u64,
+    pub usage_text: String,
+    pub amount_due_msat: u64,
+    pub amount_due_text: String,
+    pub paid_msat: u64,
+    pub paid_text: String,
+    pub unpaid_msat: u64,
+    pub unpaid_text: String,
+    pub active_millis: u64,
+    pub bytes: u64,
+    pub packets: u64,
+    pub realized_exit_ip: String,
+    pub claimed_country_code: String,
+    pub observed_country_code: String,
+    pub country_claim_status: String,
+    pub location_text: String,
+    pub observed_asn: u32,
+    pub has_quality: bool,
+    pub quality_text: String,
+    pub bandwidth_text: String,
+    pub latency_ms: u32,
+    pub jitter_ms: u32,
+    pub packet_loss_ppm: u32,
+    pub down_bps: u64,
+    pub up_bps: u64,
+    pub updated_at_unix: u64,
+    pub expires_at_unix: u64,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePaidRouteMarketState {
+    pub supported: bool,
+    pub status_text: String,
+    pub store_path: String,
+    pub wallet: NativePaidRouteWalletState,
+    pub last_payment_action: NativePaidRoutePaymentActionState,
+    pub filter: NativePaidRouteMarketFilterState,
+    pub offers: Vec<NativePaidRouteOfferState>,
+    pub visible_offers: Vec<NativePaidRouteOfferState>,
+    pub hidden_offer_count: u64,
+    pub country_options: Vec<String>,
+    pub network_class_options: Vec<String>,
+    pub channels: Vec<NativePaidRouteChannelState>,
+    pub sessions: Vec<NativePaidRouteSessionState>,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -198,6 +446,8 @@ pub struct NativeAppState {
     pub wireguard_exit_mtu: u16,
     pub wireguard_exit_persistent_keepalive_secs: u16,
     pub wireguard_exit_config: String,
+    pub paid_exit_seller: NativePaidExitSellerState,
+    pub paid_route_market: NativePaidRouteMarketState,
     pub fips_host_tunnel_enabled: bool,
     pub connect_to_non_roster_fips_peers: bool,
     pub fips_nostr_discovery_enabled: bool,

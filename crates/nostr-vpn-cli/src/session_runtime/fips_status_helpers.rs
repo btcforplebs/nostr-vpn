@@ -127,6 +127,7 @@ struct RecentPeerRefresh<'a> {
 #[cfg(feature = "embedded-fips")]
 struct FipsRestartContext<'a> {
     app: &'a nostr_vpn_core::config::AppConfig,
+    config_path: &'a std::path::Path,
     network_id: &'a str,
     fallback_iface: &'a str,
     own_pubkey: Option<&'a str>,
@@ -358,6 +359,7 @@ async fn restart_fips_tunnel_runtime_after_link_event(
         .unwrap_or_default();
     let config = fips_tunnel_config_from_app(
         context.app,
+        context.config_path,
         context.network_id,
         config_iface,
         context.own_pubkey,
@@ -413,6 +415,7 @@ async fn refresh_fips_tunnel_runtime_peer_paths(
     let live_peer_endpoints = current.peer_endpoint_hints();
     let config = fips_tunnel_config_from_app(
         context.app,
+        context.config_path,
         context.network_id,
         current.iface().to_string(),
         context.own_pubkey,

@@ -10,6 +10,39 @@ impl AppConfig {
         config
     }
 
+    pub fn select_public_paid_exit_node(&mut self, seller: &str) -> Result<String> {
+        let seller_pubkey = normalize_nostr_pubkey(seller)
+            .map_err(|error| anyhow!("invalid paid exit seller pubkey: {error}"))?;
+        if let Ok(own_pubkey) = self.own_nostr_pubkey_hex()
+            && seller_pubkey == own_pubkey
+        {
+            return Err(anyhow!("cannot select this device as its own paid exit"));
+        }
+
+        self.exit_node = seller_pubkey.clone();
+        self.exit_node_public_paid_exit = true;
+        self.wireguard_exit.enabled = false;
+        self.connect_to_non_roster_fips_peers = true;
+        self.fips_nostr_discovery_enabled = true;
+        self.ensure_defaults();
+        if self.exit_node != seller_pubkey {
+            return Err(anyhow!(
+                "paid exit seller was not retained as the selected exit node"
+            ));
+        }
+        Ok(seller_pubkey)
+    }
+
+    pub fn public_paid_exit_node_pubkey_hex(&self) -> Option<String> {
+        if !self.exit_node_public_paid_exit
+            || !self.connect_to_non_roster_fips_peers
+            || !self.fips_nostr_discovery_enabled
+        {
+            return None;
+        }
+        normalize_nostr_pubkey(&self.exit_node).ok()
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read config {}", path.display()))?;

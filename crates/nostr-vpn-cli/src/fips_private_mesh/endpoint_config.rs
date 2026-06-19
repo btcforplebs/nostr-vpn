@@ -430,6 +430,11 @@ pub(crate) struct FipsPrivateTunnelConfig {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fips_host: Option<FipsHostTunnelConfig>,
     pub(crate) local_advertised_routes: Vec<String>,
+    pub(crate) paid_route_admissions: Vec<FipsPaidRouteAdmission>,
+    pub(crate) paid_exit: PaidExitConfig,
+    pub(crate) paid_route_store_path: PathBuf,
+    pub(crate) paid_route_wallet_data_dir: PathBuf,
+    pub(crate) paid_route_payment_relays: Vec<String>,
     pub(crate) wireguard_exit: WireGuardExitConfig,
     pub(crate) exit_node_leak_protection: bool,
     connected_udp: ConnectedUdpConfig,

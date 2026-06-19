@@ -119,6 +119,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
         if fips_private_runtime_active(&app, vpn_enabled, expected_peers) {
             let config = match fips_tunnel_config_from_app(
                 &app,
+                &config_path,
                 &network_id,
                 iface.clone(),
                 own_pubkey.as_deref(),
@@ -315,6 +316,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                             &mut fips_tunnel_runtime,
                             FipsRestartContext {
                                 app: &app,
+                                config_path: &config_path,
                                 network_id: &network_id,
                                 fallback_iface: &iface,
                                 own_pubkey: own_pubkey.as_deref(),
@@ -337,6 +339,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                             &mut fips_tunnel_runtime,
                             FipsRestartContext {
                                 app: &app,
+                                config_path: &config_path,
                                 network_id: &network_id,
                                 fallback_iface: &iface,
                                 own_pubkey: own_pubkey.as_deref(),
@@ -404,6 +407,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         &mut fips_tunnel_runtime,
                         FipsRestartContext {
                             app: &app,
+                            config_path: &config_path,
                             network_id: &network_id,
                             fallback_iface: &iface,
                             own_pubkey: own_pubkey.as_deref(),
@@ -423,6 +427,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         &mut fips_tunnel_runtime,
                         FipsRestartContext {
                             app: &app,
+                            config_path: &config_path,
                             network_id: &network_id,
                             fallback_iface: &iface,
                             own_pubkey: own_pubkey.as_deref(),
@@ -619,6 +624,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                                     &mut fips_tunnel_runtime,
                                     FipsRestartContext {
                                         app: &app,
+                                        config_path: &config_path,
                                         network_id: &network_id,
                                         fallback_iface: &iface,
                                         own_pubkey: own_pubkey.as_deref(),
@@ -711,6 +717,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                             if let Err(error) = refresh_fips_tunnel_config(
                                 runtime,
                                 &app,
+                                &config_path,
                                 &network_id,
                                 own_pubkey.as_deref(),
                             )
@@ -885,6 +892,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                     if let Err(error) = sync_fips_private_runtime(
                         &mut fips_tunnel_runtime,
                         &app,
+                        &config_path,
                         &network_id,
                         &iface,
                         own_pubkey.as_deref(),

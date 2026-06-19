@@ -46,6 +46,8 @@ struct AppState: Decodable {
     var wireguardExitMtu: Int = 0
     var wireguardExitPersistentKeepaliveSecs: Int = 0
     var wireguardExitConfig = ""
+    var paidExitSeller = PaidExitSellerState()
+    var paidRouteMarket = PaidRouteMarketState()
     var connectToNonRosterFipsPeers = true
     var fipsNostrDiscoveryEnabled = true
     var fipsBootstrapEnabled = true
@@ -78,6 +80,7 @@ struct AppState: Decodable {
         case wireguardExitPrivateKey, wireguardExitPeerPublicKey, wireguardExitPeerPresharedKey
         case wireguardExitEndpoint, wireguardExitAllowedIps, wireguardExitDns
         case wireguardExitMtu, wireguardExitPersistentKeepaliveSecs, wireguardExitConfig
+        case paidExitSeller, paidRouteMarket
         case connectToNonRosterFipsPeers
         case fipsNostrDiscoveryEnabled, fipsBootstrapEnabled
         case magicDnsSuffix, magicDnsStatus, autoconnect
@@ -135,6 +138,8 @@ struct AppState: Decodable {
         wireguardExitMtu = container.int(.wireguardExitMtu)
         wireguardExitPersistentKeepaliveSecs = container.int(.wireguardExitPersistentKeepaliveSecs)
         wireguardExitConfig = container.string(.wireguardExitConfig)
+        paidExitSeller = (try? container.decodeIfPresent(PaidExitSellerState.self, forKey: .paidExitSeller)) ?? PaidExitSellerState()
+        paidRouteMarket = (try? container.decodeIfPresent(PaidRouteMarketState.self, forKey: .paidRouteMarket)) ?? PaidRouteMarketState()
         connectToNonRosterFipsPeers = container.bool(.connectToNonRosterFipsPeers, default: true)
         fipsNostrDiscoveryEnabled = container.bool(.fipsNostrDiscoveryEnabled, default: true)
         fipsBootstrapEnabled = container.bool(.fipsBootstrapEnabled, default: true)
@@ -320,6 +325,244 @@ struct HealthIssue: Decodable, Identifiable {
     var detail = ""
 }
 
+struct PaidExitSellerState: Decodable, Equatable {
+    var supported = false
+    var enabled = false
+    var statusText = ""
+    var upstream = ""
+    var privateVpnAccess = ""
+    var internetText = ""
+    var publicIpText = ""
+    var meter = ""
+    var priceText = ""
+    var priceMsat: UInt64 = 0
+    var perUnits: UInt64 = 0
+    var perUnitsText = ""
+    var acceptedMints: [String] = []
+    var maxChannelCapacitySat: UInt64 = 0
+    var channelExpirySecs: UInt64 = 0
+    var channelExpiryText = ""
+    var settlementText = ""
+    var freeProbeUnits: UInt64 = 0
+    var freeProbeText = ""
+    var graceUnits: UInt64 = 0
+    var graceText = ""
+    var countryCode = ""
+    var region = ""
+    var asn: UInt32 = 0
+    var networkClass = ""
+    var ipv4 = false
+    var ipv6 = false
+    var channelCreditMsat: UInt64 = 0
+    var channelCreditText = ""
+    var channelCreditTitleText = ""
+    var channelCreditHelpText = ""
+    var channels: [PaidRouteChannelState] = []
+    var sessions: [PaidRouteSessionState] = []
+
+    init() {}
+}
+
+struct PaidRouteWalletMintState: Decodable, Identifiable, Equatable {
+    var id: String { url }
+    var url = ""
+    var label = ""
+    var isDefault = false
+    var balanceKnown = false
+    var balanceMsat: UInt64 = 0
+    var balanceText = ""
+    var lastCheckedUnix: UInt64 = 0
+
+    init() {}
+}
+
+struct PaidRouteWalletState: Decodable, Equatable {
+    var defaultMint = ""
+    var balanceKnown = false
+    var totalBalanceMsat: UInt64 = 0
+    var totalBalanceText = ""
+    var mints: [PaidRouteWalletMintState] = []
+    var lastAction = PaidRouteWalletActionState()
+
+    init() {}
+}
+
+struct PaidRouteWalletActionState: Decodable, Equatable {
+    var kind = ""
+    var statusText = ""
+    var mintUrl = ""
+    var amountSat: UInt64 = 0
+    var amountText = ""
+    var feeSat: UInt64 = 0
+    var feeText = ""
+    var quoteId = ""
+    var paymentRequest = ""
+    var token = ""
+    var operationId = ""
+    var expiresAtUnix: UInt64 = 0
+    var preimage = ""
+
+    init() {}
+}
+
+struct PaidRoutePaymentActionState: Decodable, Equatable {
+    var kind = ""
+    var statusText = ""
+    var payloadType = ""
+    var sessionId = ""
+    var leaseId = ""
+    var channelId = ""
+    var buyerNpub = ""
+    var sellerNpub = ""
+    var envelopeJson = ""
+    var paidMsat: UInt64 = 0
+    var paidText = ""
+    var deliveredUnits: UInt64 = 0
+    var deliveredUsageText = ""
+    var amountDueMsat: UInt64 = 0
+    var amountDueText = ""
+    var unpaidMsat: UInt64 = 0
+    var unpaidText = ""
+    var allowRouting = false
+
+    init() {}
+}
+
+struct PaidRouteOfferState: Decodable, Identifiable, Equatable {
+    var id: String { key.isEmpty ? "\(sellerNpub):\(offerId)" : key }
+    var key = ""
+    var offerId = ""
+    var sellerNpub = ""
+    var statusText = ""
+    var priceText = ""
+    var meter = ""
+    var priceMsat: UInt64 = 0
+    var perUnits: UInt64 = 0
+    var perUnitsText = ""
+    var acceptedMints: [String] = []
+    var maxChannelCapacitySat: UInt64 = 0
+    var channelExpirySecs: UInt64 = 0
+    var freeProbeUnits: UInt64 = 0
+    var freeProbeText = ""
+    var graceUnits: UInt64 = 0
+    var graceText = ""
+    var countryCode = ""
+    var region = ""
+    var asn: UInt32 = 0
+    var networkClass = ""
+    var ipv4 = false
+    var ipv6 = false
+    var hasQuality = false
+    var qualityText = ""
+    var bandwidthText = ""
+    var latencyMs: UInt32 = 0
+    var jitterMs: UInt32 = 0
+    var packetLossPpm: UInt32 = 0
+    var downBps: UInt64 = 0
+    var upBps: UInt64 = 0
+    var uptimeSecs: UInt64 = 0
+    var firstSeenUnix: UInt64 = 0
+    var lastSeenUnix: UInt64 = 0
+    var relayUrls: [String] = []
+
+    init() {}
+}
+
+struct PaidRouteChannelState: Decodable, Identifiable, Equatable {
+    var id: String { channelId }
+    var channelId = ""
+    var offerId = ""
+    var role = ""
+    var status = ""
+    var mintUrl = ""
+    var counterpartyNpub = ""
+    var capacitySat: UInt64 = 0
+    var capacityText = ""
+    var paidMsat: UInt64 = 0
+    var paidText = ""
+    var updatedAtUnix: UInt64 = 0
+    var expiresAtUnix: UInt64 = 0
+    var error = ""
+
+    init() {}
+}
+
+struct PaidRouteSessionState: Decodable, Identifiable, Equatable {
+    var id: String { sessionId }
+    var sessionId = ""
+    var leaseId = ""
+    var channelId = ""
+    var statusText = ""
+    var lifecycleStatus = ""
+    var accessState = ""
+    var titleText = ""
+    var detailText = ""
+    var settlementText = ""
+    var collectActionText = ""
+    var collectActionHelpText = ""
+    var paymentChannelReady = false
+    var allowRouting = false
+    var deliveredUnits: UInt64 = 0
+    var usageText = ""
+    var amountDueMsat: UInt64 = 0
+    var amountDueText = ""
+    var paidMsat: UInt64 = 0
+    var paidText = ""
+    var unpaidMsat: UInt64 = 0
+    var unpaidText = ""
+    var activeMillis: UInt64 = 0
+    var bytes: UInt64 = 0
+    var packets: UInt64 = 0
+    var realizedExitIp = ""
+    var claimedCountryCode = ""
+    var observedCountryCode = ""
+    var countryClaimStatus = ""
+    var locationText = ""
+    var observedAsn: UInt32 = 0
+    var hasQuality = false
+    var qualityText = ""
+    var bandwidthText = ""
+    var latencyMs: UInt32 = 0
+    var jitterMs: UInt32 = 0
+    var packetLossPpm: UInt32 = 0
+    var downBps: UInt64 = 0
+    var upBps: UInt64 = 0
+    var updatedAtUnix: UInt64 = 0
+    var expiresAtUnix: UInt64 = 0
+
+    init() {}
+}
+
+struct PaidRouteMarketFilterState: Decodable, Equatable {
+    var query = ""
+    var countryCode = ""
+    var networkClass = ""
+    var mintUrl = ""
+    var requireIpv4 = false
+    var requireIpv6 = false
+    var sort = "quality"
+
+    init() {}
+}
+
+struct PaidRouteMarketState: Decodable, Equatable {
+    var supported = false
+    var statusText = ""
+    var storePath = ""
+    var wallet = PaidRouteWalletState()
+    var lastPaymentAction = PaidRoutePaymentActionState()
+    var filter = PaidRouteMarketFilterState()
+    var offers: [PaidRouteOfferState] = []
+    var visibleOffers: [PaidRouteOfferState] = []
+    var hiddenOfferCount: UInt64 = 0
+    var countryOptions: [String] = []
+    var networkClassOptions: [String] = []
+    var channels: [PaidRouteChannelState] = []
+    var sessions: [PaidRouteSessionState] = []
+
+    init() {}
+}
+
 struct QrMatrix: Decodable {
     var width = 0
     var cells: [Bool] = []
@@ -351,4 +594,5 @@ private extension KeyedDecodingContainer {
     func array<T: Decodable>(_ key: Key) -> [T] {
         (try? decodeIfPresent([T].self, forKey: key)) ?? []
     }
+
 }

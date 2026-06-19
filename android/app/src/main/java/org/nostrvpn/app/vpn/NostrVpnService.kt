@@ -130,7 +130,7 @@ class NostrVpnService : VpnService() {
         if (lockdownActive && !config.hasDefaultRoute()) {
             Log.w(
                 "NostrVpnService",
-                "Android VPN lockdown is active without a default VPN route; non-nvpn internet will be blocked",
+                "Android VPN lockdown is active without a default internet route; non-nvpn internet will be blocked",
             )
         }
         config.put("dnsForwarders", currentUnderlyingDnsServers())

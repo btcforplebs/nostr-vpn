@@ -20,7 +20,10 @@ public enum AppPage
     Devices,
     AddNetwork,
     AddDevice,
-    ExitNodes,
+    Internet,
+    PublicExits,
+    Wallet,
+    SellAccess,
     Settings,
 }
 
@@ -51,6 +54,11 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     private string _fipsHostInboundTcpPorts = "";
     private string _advertisedRoutes = "";
     private string _wireguardExitConfig = "";
+    private string _paidRouteMintUrl = "";
+    private string _paidRouteTopUpAmount = "";
+    private string _paidRouteSendAmount = "";
+    private string _paidRouteReceiveToken = "";
+    private string _paidRouteWithdrawInvoice = "";
     private string _manualJoinAdminId = "";
     private string _manualJoinMeshId = "";
     private bool _manualJoinExpanded;
@@ -90,7 +98,10 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         ShowAddDeviceCommand = new RelayCommand(
             _ => Page = AppPage.AddDevice,
             _ => ActiveNetwork is { LocalIsAdmin: true, Enabled: true });
-        ShowExitNodesCommand = new RelayCommand(_ => Page = AppPage.ExitNodes);
+        ShowInternetCommand = new RelayCommand(_ => Page = AppPage.Internet);
+        ShowPublicExitsCommand = new RelayCommand(_ => Page = AppPage.PublicExits);
+        ShowWalletCommand = new RelayCommand(_ => Page = AppPage.Wallet);
+        ShowSellAccessCommand = new RelayCommand(_ => Page = AppPage.SellAccess);
         ShowSettingsCommand = new RelayCommand(_ => Page = AppPage.Settings);
         RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !ActionInFlight);
         ToggleVpnCommand = new AsyncRelayCommand(_ => ToggleVpnAsync(), _ => !ActionInFlight && State.VpnControlSupported && RuntimeActiveNetwork is not null);
@@ -180,6 +191,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             _actionInFlight = value;
             OnPropertyChanged();
             OnPropertyChanged(nameof(PublicFipsRoutingEnabled));
+            RaisePaidRouteWalletInputStateChanged();
             CommandManager.InvalidateRequerySuggested();
         }
     }
@@ -345,6 +357,91 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public string AdvertisedRoutes { get => _advertisedRoutes; set => SetField(ref _advertisedRoutes, value); }
     public string WireguardExitConfig { get => _wireguardExitConfig; set => SetField(ref _wireguardExitConfig, value); }
 
+    public string PaidRouteMintUrl
+    {
+        get => _paidRouteMintUrl;
+        set
+        {
+            if (SetField(ref _paidRouteMintUrl, value))
+            {
+                OnPropertyChanged(nameof(CanAddPaidRouteWalletMint));
+            }
+        }
+    }
+
+    public string PaidRouteTopUpAmount
+    {
+        get => _paidRouteTopUpAmount;
+        set
+        {
+            if (SetField(ref _paidRouteTopUpAmount, value))
+            {
+                OnPropertyChanged(nameof(CanTopUpPaidRouteWallet));
+            }
+        }
+    }
+
+    public string PaidRouteSendAmount
+    {
+        get => _paidRouteSendAmount;
+        set
+        {
+            if (SetField(ref _paidRouteSendAmount, value))
+            {
+                OnPropertyChanged(nameof(CanSendPaidRouteWalletToken));
+            }
+        }
+    }
+
+    public string PaidRouteReceiveToken
+    {
+        get => _paidRouteReceiveToken;
+        set
+        {
+            if (SetField(ref _paidRouteReceiveToken, value))
+            {
+                OnPropertyChanged(nameof(CanReceivePaidRouteWalletToken));
+            }
+        }
+    }
+
+    public string PaidRouteWithdrawInvoice
+    {
+        get => _paidRouteWithdrawInvoice;
+        set
+        {
+            if (SetField(ref _paidRouteWithdrawInvoice, value))
+            {
+                OnPropertyChanged(nameof(CanWithdrawPaidRouteWalletLightning));
+            }
+        }
+    }
+
+    public bool CanAddPaidRouteWalletMint =>
+        State.PaidRouteMarket.Supported
+        && !ActionInFlight
+        && !string.IsNullOrWhiteSpace(PaidRouteMintUrl);
+
+    public bool CanTopUpPaidRouteWallet =>
+        State.PaidRouteMarket.Supported
+        && !ActionInFlight
+        && ParsePositiveUInt64(PaidRouteTopUpAmount) is not null;
+
+    public bool CanSendPaidRouteWalletToken =>
+        State.PaidRouteMarket.Supported
+        && !ActionInFlight
+        && ParsePositiveUInt64(PaidRouteSendAmount) is not null;
+
+    public bool CanReceivePaidRouteWalletToken =>
+        State.PaidRouteMarket.Supported
+        && !ActionInFlight
+        && !string.IsNullOrWhiteSpace(PaidRouteReceiveToken);
+
+    public bool CanWithdrawPaidRouteWalletLightning =>
+        State.PaidRouteMarket.Supported
+        && !ActionInFlight
+        && !string.IsNullOrWhiteSpace(PaidRouteWithdrawInvoice);
+
     // Bullet-style radio indicators next to each exit-node row.
     public string DirectExitMarker =>
         (!State.WireguardExitEnabled && string.IsNullOrEmpty(State.ExitNode)) ? "●" : "○";
@@ -369,6 +466,88 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
                 : State.WireguardExitEndpoint;
         }
     }
+
+    public string PaidRouteWalletBalanceText =>
+        TextOr(State.PaidRouteMarket.Wallet.TotalBalanceText, FormatPaidRouteMsat(State.PaidRouteMarket.Wallet.TotalBalanceMsat));
+
+    public string PaidRouteMarketStatusText => string.IsNullOrWhiteSpace(State.PaidRouteMarket.StatusText)
+        ? $"{State.PaidRouteMarket.Offers.Count} internet sellers"
+        : State.PaidRouteMarket.StatusText;
+
+    public string PaidExitSellerStatusText
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(State.PaidExitSeller.StatusText))
+            {
+                return State.PaidExitSeller.StatusText
+                    .Replace("Paid exit selling", "Selling internet")
+                    .Replace("paid exit selling", "selling internet");
+            }
+            return State.PaidExitSeller.Supported
+                ? "People can pay to use my internet"
+                : "This platform cannot sell public internet access";
+        }
+    }
+
+    public string PaidExitSellerSummary =>
+        $"{TextOr(State.PaidExitSeller.CountryCode, "Country unset")} · {NativeDisplayText.NetworkClassTitle(State.PaidExitSeller.NetworkClass)} · {TextOr(State.PaidExitSeller.PriceText, NativeDisplayText.PriceText(State.PaidExitSeller.PriceMsat, State.PaidExitSeller.PerUnits, State.PaidExitSeller.Meter, State.PaidExitSeller.PerUnitsText))}";
+
+    public string PaidExitSellerTrialText =>
+        $"Free test: {TextOr(State.PaidExitSeller.FreeProbeText, NativeDisplayText.TrafficUnitText(State.PaidExitSeller.FreeProbeUnits, State.PaidExitSeller.Meter))} · Grace: {TextOr(State.PaidExitSeller.GraceText, NativeDisplayText.TrafficUnitText(State.PaidExitSeller.GraceUnits, State.PaidExitSeller.Meter))}";
+
+    public string PaidExitSellerChannelExpiryText =>
+        $"Channel expires: {TextOr(State.PaidExitSeller.ChannelExpiryText, FormatRemaining(State.PaidExitSeller.ChannelExpirySecs))}";
+
+    public string PaidExitSellerSettlementText => State.PaidExitSeller.SettlementText;
+
+    public string PaidExitSellerPublicIpText => string.IsNullOrWhiteSpace(State.PaidExitSeller.PublicIpText)
+        ? ""
+        : $"Public IP: {State.PaidExitSeller.PublicIpText}";
+
+    public string PaidExitSellerChannelCreditText =>
+        $"{TextOr(State.PaidExitSeller.ChannelCreditTitleText, "Pending buyer credit")}: {TextOr(State.PaidExitSeller.ChannelCreditText, FormatPaidRouteMsat(State.PaidExitSeller.ChannelCreditMsat))}";
+
+    public string PaidExitSellerChannelCreditHelpText => TextOr(
+        State.PaidExitSeller.ChannelCreditHelpText,
+        State.PaidExitSeller.ChannelCreditMsat > 0 ? "Collect to move it into wallet" : ""
+    );
+
+    public string PaidExitSellerPaymentStatusText
+    {
+        get
+        {
+            var action = State.PaidRouteMarket.LastPaymentAction;
+            if (string.IsNullOrWhiteSpace(action.Kind) && string.IsNullOrWhiteSpace(action.StatusText))
+            {
+                return "";
+            }
+            return $"Payments: {TextOr(action.StatusText, NativeDisplayText.PaymentActionTitle(action.Kind))}";
+        }
+    }
+
+    public string PaidExitSellerMintsText => State.PaidExitSeller.AcceptedMints.Count == 0
+        ? "No accepted mints configured"
+        : $"Accepted mints: {string.Join(", ", State.PaidExitSeller.AcceptedMints)}";
+
+    public string PaidExitSellerSessionsText =>
+        $"{State.PaidExitSeller.Sessions.Count} active customer{(State.PaidExitSeller.Sessions.Count == 1 ? "" : "s")}";
+
+    public IEnumerable<string> PaidRouteWalletMintRows => State.PaidRouteMarket.Wallet.Mints.Select(mint =>
+    {
+        var marker = mint.IsDefault ? "default" : "mint";
+        var balance = mint.BalanceKnown
+            ? $" · {TextOr(mint.BalanceText, FormatPaidRouteMsat(mint.BalanceMsat))}"
+            : "";
+        return $"{marker} · {TextOr(mint.Label, mint.Url)}{balance}";
+    });
+
+    public string PaidRouteWalletMintsStatusText => State.PaidRouteMarket.Wallet.Mints.Count == 0
+        ? "No wallet mints"
+        : "";
+
+    public bool PaidRouteHasStreamablePayments =>
+        State.PaidRouteMarket.Sessions.Any(PaidRouteSessionCanSignPayment);
 
     public bool UpdateChecking
     {
@@ -468,7 +647,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         get
         {
             var name = string.IsNullOrWhiteSpace(ActiveNetwork?.Name) ? "this network" : ActiveNetwork!.Name;
-            return $"Offer this device as an exit node in {name}";
+            return $"Share this device's internet in {name}";
         }
     }
     public IEnumerable<NativeNetworkState> InactiveNetworks => State.Networks.Where(network => !network.Enabled);
@@ -554,6 +733,18 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         {
             return "off";
         }
+        var days = seconds / 86_400;
+        if (days > 0)
+        {
+            var hours = seconds % 86_400 / 3_600;
+            return hours == 0 ? $"{days}d" : $"{days}d {hours}h";
+        }
+        var hoursOnly = seconds / 3_600;
+        if (hoursOnly > 0)
+        {
+            var minutesOnly = seconds % 3_600 / 60;
+            return minutesOnly == 0 ? $"{hoursOnly}h" : $"{hoursOnly}h {minutesOnly}m";
+        }
         var minutes = seconds / 60;
         if (minutes == 0)
         {
@@ -562,6 +753,20 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         var remSecs = seconds % 60;
         return remSecs == 0 ? $"{minutes}m" : $"{minutes}m{remSecs:D2}s";
     }
+
+    private static string FormatPaidRouteMsat(ulong msat)
+    {
+        if (msat == 0)
+        {
+            return "0 sat";
+        }
+        var whole = msat / 1_000;
+        var remainder = msat % 1_000;
+        return remainder == 0 ? $"{whole} sat" : $"{whole}.{remainder:D3} sat";
+    }
+
+    private static bool PaidRouteSessionCanSignPayment(NativePaidRouteSessionState session) =>
+        session.CanPay;
     public string ServiceSummary => State.ServiceInstalled ? "Service installed" : "Service missing";
     public string CliSummary => State.CliInstalled ? "CLI installed" : "CLI missing";
     public string SystemVersionLabel
@@ -628,7 +833,10 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     public ICommand ShowDevicesCommand { get; }
     public ICommand ShowAddNetworkCommand { get; }
     public ICommand ShowAddDeviceCommand { get; }
-    public ICommand ShowExitNodesCommand { get; }
+    public ICommand ShowInternetCommand { get; }
+    public ICommand ShowPublicExitsCommand { get; }
+    public ICommand ShowWalletCommand { get; }
+    public ICommand ShowSellAccessCommand { get; }
     public ICommand ShowSettingsCommand { get; }
     public ICommand RefreshCommand { get; }
     public ICommand ToggleVpnCommand { get; }
@@ -691,14 +899,14 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     {
         return DispatchAsync(
             NativeActions.UpdateSettings(new SettingsPatch { AdvertiseExitNode = enabled }),
-            "Saving routing");
+            "Saving internet sharing");
     }
 
     public Task SetExitNodeLeakProtectionAsync(bool enabled)
     {
         return DispatchAsync(
             NativeActions.UpdateSettings(new SettingsPatch { ExitNodeLeakProtection = enabled }),
-            "Saving route protection");
+            "Saving internet protection");
     }
 
     public Task SetWireGuardExitEnabledAsync(bool enabled)
@@ -712,10 +920,10 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
     {
         return DispatchAsync(
             NativeActions.UpdateSettings(new SettingsPatch { ExitNode = npub }),
-            "Saving exit node");
+            "Saving internet source");
     }
 
-    // Exit-node selection. The daemon enforces mutual exclusion
+    // Internet source selection. The daemon enforces mutual exclusion
     // between peer and WG (see settings_patch_enforces_exit_node_
     // mutual_exclusion in ffi.rs), so non-direct rows send only the
     // field they own. Direct flips both because that's the
@@ -730,7 +938,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
                 ExitNode = "",
                 WireguardExitEnabled = false,
             }),
-            "Saving exit node");
+            "Saving internet source");
     }
 
     public Task SelectWireGuardUpstreamExitAsync()
@@ -740,7 +948,7 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             {
                 WireguardExitEnabled = true,
             }),
-            "Saving exit node");
+            "Saving internet source");
     }
 
     public Task SelectPeerExitAsync(string npub)
@@ -750,7 +958,141 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             {
                 ExitNode = npub,
             }),
-            "Saving exit node");
+            "Saving internet source");
+    }
+
+    public Task DiscoverPaidRouteOffersAsync()
+    {
+        return DispatchAsync(NativeActions.DiscoverPaidRouteOffers(), "Finding sellers");
+    }
+
+    public Task RefreshPaidRouteWalletAsync()
+    {
+        return DispatchAsync(NativeActions.RefreshPaidRouteWallet(), "Refreshing wallet");
+    }
+
+    public Task AddPaidRouteWalletMintAsync()
+    {
+        var url = PaidRouteMintUrl.Trim();
+        return string.IsNullOrWhiteSpace(url)
+            ? Task.CompletedTask
+            : DispatchAsync(NativeActions.AddPaidRouteWalletMint(url), "Adding mint");
+    }
+
+    public Task TopUpPaidRouteWalletAsync()
+    {
+        var amount = ParsePositiveUInt64(PaidRouteTopUpAmount);
+        return amount is null
+            ? Task.CompletedTask
+            : DispatchAsync(
+                NativeActions.TopUpPaidRouteWallet(OptionalTrimmed(PaidRouteMintUrl), amount.Value),
+                "Creating top-up invoice");
+    }
+
+    public async Task ReceivePaidRouteWalletTokenAsync()
+    {
+        var token = PaidRouteReceiveToken.Trim();
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return;
+        }
+        await DispatchAsync(NativeActions.ReceivePaidRouteWalletToken(token), "Importing token");
+        PaidRouteReceiveToken = "";
+    }
+
+    public Task SendPaidRouteWalletTokenAsync()
+    {
+        var amount = ParsePositiveUInt64(PaidRouteSendAmount);
+        return amount is null
+            ? Task.CompletedTask
+            : DispatchAsync(
+                NativeActions.SendPaidRouteWalletToken(OptionalTrimmed(PaidRouteMintUrl), amount.Value),
+                "Exporting token");
+    }
+
+    public Task WithdrawPaidRouteWalletLightningAsync()
+    {
+        var invoice = PaidRouteWithdrawInvoice.Trim();
+        return string.IsNullOrWhiteSpace(invoice)
+            ? Task.CompletedTask
+            : DispatchAsync(
+                NativeActions.WithdrawPaidRouteWalletLightning(OptionalTrimmed(PaidRouteMintUrl), invoice),
+                "Paying invoice");
+    }
+
+    public Task BuyPaidRouteOfferAsync(NativePaidRouteOfferState offer)
+    {
+        return string.IsNullOrWhiteSpace(offer.Key)
+            ? Task.CompletedTask
+            : DispatchAsync(NativeActions.BuyPaidRouteOffer(offer.Key), "Connecting");
+    }
+
+    public Task SelectPaidRouteSessionAsync(NativePaidRouteSessionState session)
+    {
+        return string.IsNullOrWhiteSpace(session.SessionId)
+            ? Task.CompletedTask
+            : DispatchAsync(NativeActions.SelectPaidRouteSession(session.SessionId, true), "Connecting");
+    }
+
+    public Task ProbePaidRouteSessionAsync(NativePaidRouteSessionState session)
+    {
+        return string.IsNullOrWhiteSpace(session.SessionId)
+            ? Task.CompletedTask
+            : DispatchAsync(NativeActions.ProbePaidRouteSession(session.SessionId), "Checking connection");
+    }
+
+    public Task OpenPaidRouteChannelAsync(NativePaidRouteSessionState session)
+    {
+        return string.IsNullOrWhiteSpace(session.SessionId)
+            ? Task.CompletedTask
+            : DispatchAsync(NativeActions.OpenPaidRouteChannelFromWallet(session.SessionId), "Funding seller");
+    }
+
+    public Task SignPaidRoutePaymentAsync(NativePaidRouteSessionState session)
+    {
+        return string.IsNullOrWhiteSpace(session.SessionId)
+            ? Task.CompletedTask
+            : DispatchAsync(NativeActions.SignPaidRoutePaymentEnvelopeFromWallet(session.SessionId), "Paying seller");
+    }
+
+    public Task ClosePaidRouteChannelAsync(NativePaidRouteSessionState session)
+    {
+        return string.IsNullOrWhiteSpace(session.SessionId)
+            ? Task.CompletedTask
+            : DispatchAsync(NativeActions.ClosePaidRouteChannelFromWallet(session.SessionId), "Settling channel");
+    }
+
+    public Task SendPaidRoutePaymentEnvelopeAsync()
+    {
+        var envelope = State.PaidRouteMarket.LastPaymentAction.EnvelopeJson.Trim();
+        return string.IsNullOrWhiteSpace(envelope)
+            ? Task.CompletedTask
+            : DispatchAsync(NativeActions.SendPaidRoutePaymentEnvelope(envelope), "Sending payment");
+    }
+
+    public Task StreamPaidRoutePaymentsAsync()
+    {
+        return DispatchAsync(NativeActions.StreamPaidRoutePayments(), "Paying for usage");
+    }
+
+    public Task SetPaidExitEnabledAsync(bool enabled)
+    {
+        return DispatchAsync(
+            NativeActions.UpdateSettings(new SettingsPatch
+            {
+                PaidExitEnabled = enabled,
+            }),
+            "Saving listing");
+    }
+
+    public Task PublishPaidExitOfferAsync()
+    {
+        return DispatchAsync(NativeActions.PublishPaidExitOffer(), "Advertising listing");
+    }
+
+    public Task ReceivePaidRoutePaymentsAsync()
+    {
+        return DispatchAsync(NativeActions.ReceivePaidRoutePayments(), "Checking payments");
     }
 
     public Task SetLaunchOnStartupAsync(bool enabled)
@@ -1397,6 +1739,10 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         RelaysDraft = string.Join(Environment.NewLine, state.Relays.Select(relay => relay.Url));
         FipsHostInboundTcpPorts = state.FipsHostInboundTcpPorts;
         WireguardExitConfig = state.WireguardExitConfig;
+        if (string.IsNullOrWhiteSpace(PaidRouteMintUrl))
+        {
+            PaidRouteMintUrl = state.PaidRouteMarket.Wallet.DefaultMint;
+        }
         NetworkNameDraft = active?.Name ?? "";
         NetworkMeshIdDraft = DisplayNetworkId(active?.NetworkId ?? "");
     }
@@ -1482,6 +1828,32 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(DirectExitMarker));
         OnPropertyChanged(nameof(WireguardExitMarker));
         OnPropertyChanged(nameof(WireguardExitSubtitle));
+        OnPropertyChanged(nameof(PaidRouteWalletBalanceText));
+        OnPropertyChanged(nameof(PaidRouteMarketStatusText));
+        OnPropertyChanged(nameof(PaidExitSellerStatusText));
+        OnPropertyChanged(nameof(PaidExitSellerSummary));
+        OnPropertyChanged(nameof(PaidExitSellerTrialText));
+        OnPropertyChanged(nameof(PaidExitSellerChannelExpiryText));
+        OnPropertyChanged(nameof(PaidExitSellerSettlementText));
+        OnPropertyChanged(nameof(PaidExitSellerPublicIpText));
+        OnPropertyChanged(nameof(PaidExitSellerChannelCreditText));
+        OnPropertyChanged(nameof(PaidExitSellerChannelCreditHelpText));
+        OnPropertyChanged(nameof(PaidExitSellerPaymentStatusText));
+        OnPropertyChanged(nameof(PaidExitSellerMintsText));
+        OnPropertyChanged(nameof(PaidExitSellerSessionsText));
+        OnPropertyChanged(nameof(PaidRouteWalletMintRows));
+        OnPropertyChanged(nameof(PaidRouteWalletMintsStatusText));
+        OnPropertyChanged(nameof(PaidRouteHasStreamablePayments));
+        RaisePaidRouteWalletInputStateChanged();
+    }
+
+    private void RaisePaidRouteWalletInputStateChanged()
+    {
+        OnPropertyChanged(nameof(CanAddPaidRouteWalletMint));
+        OnPropertyChanged(nameof(CanTopUpPaidRouteWallet));
+        OnPropertyChanged(nameof(CanSendPaidRouteWalletToken));
+        OnPropertyChanged(nameof(CanReceivePaidRouteWalletToken));
+        OnPropertyChanged(nameof(CanWithdrawPaidRouteWalletLightning));
     }
 
     private void RaiseSelectedParticipantChanged()
@@ -1578,6 +1950,22 @@ public sealed class AppViewModel : INotifyPropertyChanged, IDisposable
             return first;
         }
         return string.IsNullOrWhiteSpace(second) ? fallback : second;
+    }
+
+    private static string TextOr(string value, string fallback)
+        => string.IsNullOrWhiteSpace(value) ? fallback : value;
+
+    private static string? OptionalTrimmed(string value)
+    {
+        var trimmed = value.Trim();
+        return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+    }
+
+    private static ulong? ParsePositiveUInt64(string value)
+    {
+        return ulong.TryParse(value.Trim(), out var parsed) && parsed > 0
+            ? parsed
+            : null;
     }
 
     private static bool LoadAutoInstallUpdates()

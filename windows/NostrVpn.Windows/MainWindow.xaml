@@ -31,8 +31,17 @@
               <Ellipse Grid.Column="2" Width="8" Height="8" Fill="{StaticResource Danger}" VerticalAlignment="Center" Margin="8,0,0,0" Visibility="{Binding HasIncomingJoinRequests, Converter={StaticResource BoolToVisibility}}" />
             </Grid>
           </Button>
-          <Button Style="{StaticResource NavButton}" Command="{Binding ShowExitNodesCommand}">
-            <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B8;" Width="24" /><TextBlock Text="Exit Nodes" /></StackPanel>
+          <Button Style="{StaticResource NavButton}" Command="{Binding ShowInternetCommand}">
+            <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE774;" Width="24" /><TextBlock Text="Internet" /></StackPanel>
+          </Button>
+          <Button Style="{StaticResource NavButton}" Command="{Binding ShowPublicExitsCommand}">
+            <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE7BF;" Width="24" /><TextBlock Text="Buy Internet" /></StackPanel>
+          </Button>
+          <Button Style="{StaticResource NavButton}" Command="{Binding ShowWalletCommand}">
+            <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C7;" Width="24" /><TextBlock Text="Wallet" /></StackPanel>
+          </Button>
+          <Button Style="{StaticResource NavButton}" Command="{Binding ShowSellAccessCommand}">
+            <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B8;" Width="24" /><TextBlock Text="Sell Internet" /></StackPanel>
           </Button>
           <Button Style="{StaticResource NavButton}" Command="{Binding ShowSettingsCommand}">
             <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE713;" Width="24" /><TextBlock Text="Settings" /></StackPanel>
@@ -585,15 +594,15 @@
             </Border>
           </StackPanel>
 
-          <StackPanel Visibility="{Binding Page, Converter={StaticResource PageVisibility}, ConverterParameter=ExitNodes}">
+          <StackPanel Visibility="{Binding Page, Converter={StaticResource PageVisibility}, ConverterParameter=Internet}">
             <Border Style="{StaticResource Card}">
               <StackPanel>
-                <TextBlock Text="Exit Node" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
+                <TextBlock Text="Internet Source" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
                 <Button Click="DirectExit_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Margin="0,0,0,8">
                   <DockPanel LastChildFill="False">
-                    <TextBlock DockPanel.Dock="Right" Text="No exit node — your own internet" Foreground="{StaticResource TextSecondary}" Margin="12,0,0,0" />
+                    <TextBlock DockPanel.Dock="Right" Text="Use this device's normal internet" Foreground="{StaticResource TextSecondary}" Margin="12,0,0,0" />
                     <TextBlock Text="{Binding DirectExitMarker}" Margin="0,0,8,0" />
-                    <TextBlock Text="Direct" FontWeight="SemiBold" />
+                    <TextBlock Text="This device" FontWeight="SemiBold" />
                   </DockPanel>
                 </Button>
                 <Button Click="WireguardExit_Click" IsEnabled="{Binding State.WireguardExitConfigured}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Margin="0,0,0,8">
@@ -620,47 +629,218 @@
 
             <Border Style="{StaticResource Card}">
               <StackPanel>
-                <TextBlock Text="Relays" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
+                <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Share this device's internet" IsChecked="{Binding State.AdvertiseExitNode, Mode=OneWay}" Click="AdvertiseExit_Click" />
+                <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Block internet if source disconnects" IsChecked="{Binding State.ExitNodeLeakProtection, Mode=OneWay}" Click="ExitLeakProtection_Click" Margin="0,10,0,0" />
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+              <StackPanel>
+                <TextBlock Text="WireGuard Upstream" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
+                <TextBlock Text="Paste a WireGuard config from an upstream VPN provider such as Mullvad or Proton VPN." Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,10" />
+                <TextBox Text="{Binding WireguardExitConfig, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" MinHeight="180" />
+                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                  <Button Content="Import File" Command="{Binding ImportWireGuardExitCommand}" Margin="0,0,8,0" />
+                  <Button Content="Save WireGuard" Command="{Binding SaveWireGuardExitCommand}" />
+                </StackPanel>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+
+          <StackPanel Visibility="{Binding Page, Converter={StaticResource PageVisibility}, ConverterParameter=PublicExits}">
+            <Border Style="{StaticResource Card}">
+              <StackPanel>
                 <DockPanel LastChildFill="True" Margin="0,0,0,10">
-                  <Button DockPanel.Dock="Right" Content="Add" Command="{Binding AddRelayCommand}" Margin="8,0,0,0" />
-                  <TextBox Text="{Binding RelayInput, UpdateSourceTrigger=PropertyChanged}" />
+                  <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button Content="Find" Click="DiscoverPaidRoutes_Click" Margin="0,0,8,0" />
+                    <Button Content="Pay" Click="StreamPaidRoutePayments_Click" IsEnabled="{Binding PaidRouteHasStreamablePayments}" />
+                  </StackPanel>
+                  <StackPanel>
+                    <TextBlock Text="Find Internet to Buy" FontSize="18" FontWeight="SemiBold" />
+                    <TextBlock Foreground="{StaticResource TextSecondary}">
+                      <Run Text="Wallet " /><Run Text="{Binding PaidRouteWalletBalanceText}" />
+                    </TextBlock>
+                  </StackPanel>
                 </DockPanel>
-                <ItemsControl ItemsSource="{Binding State.Relays}">
+                <TextBlock Text="{Binding PaidRouteMarketStatusText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                <TextBlock Text="{Binding State.PaidRouteMarket.LastPaymentAction.DisplayStatusText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Visibility="{Binding State.PaidRouteMarket.LastPaymentAction.DisplayStatusText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                <Button Content="Send payment" Click="SendPaidRoutePaymentEnvelope_Click" HorizontalAlignment="Left" Margin="0,6,0,10" Visibility="{Binding State.PaidRouteMarket.LastPaymentAction.EnvelopeJson, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                <TextBlock Text="Available" FontWeight="SemiBold" Margin="0,8,0,6" />
+                <ItemsControl ItemsSource="{Binding State.PaidRouteMarket.Offers}">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                      <DockPanel Margin="0,0,0,6" LastChildFill="True">
-                        <Ellipse DockPanel.Dock="Left" Width="9" Height="9" Margin="0,5,8,0">
-                          <Ellipse.Style>
-                            <Style TargetType="Ellipse">
-                              <Setter Property="Fill" Value="#9CA3AF" />
-                              <Style.Triggers>
-                                <DataTrigger Binding="{Binding Connected}" Value="True">
-                                  <Setter Property="Fill" Value="#16A34A" />
-                                </DataTrigger>
-                              </Style.Triggers>
-                            </Style>
-                          </Ellipse.Style>
-                        </Ellipse>
-                        <Button DockPanel.Dock="Right" Content="Delete" Tag="{Binding}" Click="RemoveRelay_Click" Margin="8,0,0,0" />
-                        <CheckBox DockPanel.Dock="Right" IsChecked="{Binding Enabled, Mode=OneWay}" Tag="{Binding}" Click="RelayEnabled_Click" VerticalAlignment="Center" />
-                        <TextBlock Text="{Binding Url}" TextTrimming="CharacterEllipsis" />
+                      <DockPanel Margin="0,0,0,8" LastChildFill="True">
+                        <Button DockPanel.Dock="Right" Content="Connect" Tag="{Binding}" Click="BuyPaidRouteOffer_Click" Margin="8,0,0,0" />
+                        <StackPanel>
+                          <WrapPanel>
+                            <TextBlock Text="{Binding DisplayCountry}" FontWeight="SemiBold" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding DisplayNetworkClass}" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding DisplayPrice}" Foreground="{StaticResource TextSecondary}" />
+                          </WrapPanel>
+                          <TextBlock Text="{Binding StatusText}" Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" />
+                          <TextBlock Text="{Binding DisplayMetricText}" Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" Visibility="{Binding DisplayMetricText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                        </StackPanel>
+                      </DockPanel>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <TextBlock Text="Your Paid Internet" FontWeight="SemiBold" Margin="0,8,0,6" />
+                <ItemsControl ItemsSource="{Binding State.PaidRouteMarket.Sessions}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <DockPanel Margin="0,0,0,10" LastChildFill="True">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                          <Button Content="Connect" Tag="{Binding}" Click="UsePaidRouteSession_Click" Margin="0,0,6,0" />
+                          <Button Content="Probe" Tag="{Binding}" Click="ProbePaidRouteSession_Click" Margin="0,0,6,0" />
+                          <Button Content="Fund" Tag="{Binding}" Click="OpenPaidRouteChannel_Click" IsEnabled="{Binding CanOpenChannel}" Margin="0,0,6,0" />
+                          <Button Content="Pay" Tag="{Binding}" Click="SignPaidRoutePayment_Click" IsEnabled="{Binding CanPay}" Margin="0,0,6,0" />
+                          <Button Content="Settle" Tag="{Binding}" Click="ClosePaidRouteChannel_Click" IsEnabled="{Binding CanSettleChannel}" />
+                        </StackPanel>
+                        <StackPanel>
+                          <TextBlock Text="{Binding DisplayTitle}" FontWeight="SemiBold" />
+                          <WrapPanel>
+                            <TextBlock Text="{Binding DisplayDetail}" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding DisplayLocationText}" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,0" Visibility="{Binding DisplayLocationText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                            <TextBlock Text="{Binding DisplayPaidText}" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding DisplayBehindText}" Foreground="{StaticResource TextSecondary}" Visibility="{Binding DisplayBehindText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                          </WrapPanel>
+                          <TextBlock Text="{Binding DisplayMetricText}" Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" Visibility="{Binding DisplayMetricText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                          <TextBlock Text="{Binding DisplaySettlementText}" Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" Visibility="{Binding DisplaySettlementText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                        </StackPanel>
                       </DockPanel>
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
                 </ItemsControl>
               </StackPanel>
             </Border>
+          </StackPanel>
 
+          <StackPanel Visibility="{Binding Page, Converter={StaticResource PageVisibility}, ConverterParameter=Wallet}">
             <Border Style="{StaticResource Card}">
               <StackPanel>
-                <CheckBox Content="Offer this device as an exit node" IsChecked="{Binding State.AdvertiseExitNode, Mode=OneWay}" Click="AdvertiseExit_Click" />
-                <CheckBox Content="Block internet if exit node disconnects" IsChecked="{Binding State.ExitNodeLeakProtection, Mode=OneWay}" Click="ExitLeakProtection_Click" Margin="0,10,0,0" />
-                <TextBlock Text="WireGuard Upstream" FontSize="18" FontWeight="SemiBold" Margin="0,16,0,10" />
-                <TextBlock Text="Paste a WireGuard config from an upstream VPN provider such as Mullvad or Proton VPN." Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,10" />
-                <TextBox Text="{Binding WireguardExitConfig, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" MinHeight="180" />
-                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                  <Button Content="Import File" Command="{Binding ImportWireGuardExitCommand}" Margin="0,0,8,0" />
-                  <Button Content="Save WireGuard" Command="{Binding SaveWireGuardExitCommand}" />
+                <DockPanel LastChildFill="True" Margin="0,0,0,10">
+                  <Button DockPanel.Dock="Right" Content="Refresh" Click="RefreshPaidRouteWallet_Click" />
+                  <StackPanel>
+                    <TextBlock Text="Cashu Wallet" FontSize="18" FontWeight="SemiBold" />
+                    <TextBlock Foreground="{StaticResource TextSecondary}">
+                      <Run Text="Balance " /><Run Text="{Binding PaidRouteWalletBalanceText}" />
+                    </TextBlock>
+                  </StackPanel>
+                </DockPanel>
+                <TextBlock Text="{Binding State.PaidRouteMarket.Wallet.LastAction.DisplayStatusText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Visibility="{Binding State.PaidRouteMarket.Wallet.LastAction.DisplayStatusText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+
+                <TextBlock Text="Mints and Tokens" FontWeight="SemiBold" Margin="0,10,0,6" />
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="130" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                  </Grid.RowDefinitions>
+
+                  <TextBlock Grid.Row="0" Text="Mint URL" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,10,8" />
+                  <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding PaidRouteMintUrl, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,8" />
+                  <Button Grid.Row="0" Grid.Column="2" Content="Add Mint" Click="AddPaidRouteWalletMint_Click" IsEnabled="{Binding CanAddPaidRouteWalletMint}" Margin="0,0,0,8" />
+
+                  <TextBlock Grid.Row="1" Text="Top-up sats" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,10,8" />
+                  <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding PaidRouteTopUpAmount, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,8" />
+                  <Button Grid.Row="1" Grid.Column="2" Content="Top Up" Click="TopUpPaidRouteWallet_Click" IsEnabled="{Binding CanTopUpPaidRouteWallet}" Margin="0,0,0,8" />
+
+                  <TextBlock Grid.Row="2" Text="Export sats" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,10,8" />
+                  <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PaidRouteSendAmount, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,8" />
+                  <Button Grid.Row="2" Grid.Column="2" Content="Export" Click="SendPaidRouteWalletToken_Click" IsEnabled="{Binding CanSendPaidRouteWalletToken}" Margin="0,0,0,8" />
+
+                  <TextBlock Grid.Row="3" Text="Cashu token" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,10,8" />
+                  <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding PaidRouteReceiveToken, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,8" />
+                  <Button Grid.Row="3" Grid.Column="2" Content="Import" Click="ReceivePaidRouteWalletToken_Click" IsEnabled="{Binding CanReceivePaidRouteWalletToken}" Margin="0,0,0,8" />
+
+                  <TextBlock Grid.Row="4" Text="Lightning invoice" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,10,0" />
+                  <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding PaidRouteWithdrawInvoice, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
+                  <Button Grid.Row="4" Grid.Column="2" Content="Withdraw" Click="WithdrawPaidRouteWalletLightning_Click" IsEnabled="{Binding CanWithdrawPaidRouteWalletLightning}" />
+                </Grid>
+
+                <StackPanel Margin="0,10,0,0" Visibility="{Binding State.PaidRouteMarket.Wallet.LastAction.PaymentRequest, Converter={StaticResource NonEmptyStringToVisibility}}">
+                  <TextBlock Text="Invoice" FontWeight="SemiBold" Margin="0,0,0,4" />
+                  <DockPanel LastChildFill="True">
+                    <Button DockPanel.Dock="Right" Content="Copy" Tag="{Binding State.PaidRouteMarket.Wallet.LastAction.PaymentRequest}" Click="CopyWalletValue_Click" Margin="8,0,0,0" />
+                    <TextBox Text="{Binding State.PaidRouteMarket.Wallet.LastAction.PaymentRequest}" IsReadOnly="True" />
+                  </DockPanel>
+                </StackPanel>
+                <StackPanel Margin="0,10,0,0" Visibility="{Binding State.PaidRouteMarket.Wallet.LastAction.Token, Converter={StaticResource NonEmptyStringToVisibility}}">
+                  <TextBlock Text="Token" FontWeight="SemiBold" Margin="0,0,0,4" />
+                  <DockPanel LastChildFill="True">
+                    <Button DockPanel.Dock="Right" Content="Copy" Tag="{Binding State.PaidRouteMarket.Wallet.LastAction.Token}" Click="CopyWalletValue_Click" Margin="8,0,0,0" />
+                    <TextBox Text="{Binding State.PaidRouteMarket.Wallet.LastAction.Token}" IsReadOnly="True" />
+                  </DockPanel>
+                </StackPanel>
+                <StackPanel Margin="0,10,0,0" Visibility="{Binding State.PaidRouteMarket.Wallet.LastAction.Preimage, Converter={StaticResource NonEmptyStringToVisibility}}">
+                  <TextBlock Text="Preimage" FontWeight="SemiBold" Margin="0,0,0,4" />
+                  <DockPanel LastChildFill="True">
+                    <Button DockPanel.Dock="Right" Content="Copy" Tag="{Binding State.PaidRouteMarket.Wallet.LastAction.Preimage}" Click="CopyWalletValue_Click" Margin="8,0,0,0" />
+                    <TextBox Text="{Binding State.PaidRouteMarket.Wallet.LastAction.Preimage}" IsReadOnly="True" />
+                  </DockPanel>
+                </StackPanel>
+
+                <TextBlock Text="Mints" FontWeight="SemiBold" Margin="0,10,0,6" />
+                <TextBlock Text="{Binding PaidRouteWalletMintsStatusText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Visibility="{Binding PaidRouteWalletMintsStatusText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                <ItemsControl ItemsSource="{Binding PaidRouteWalletMintRows}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Text="{Binding}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+
+          <StackPanel Visibility="{Binding Page, Converter={StaticResource PageVisibility}, ConverterParameter=SellAccess}">
+            <Border Style="{StaticResource Card}">
+              <StackPanel>
+                <TextBlock Text="Share My Internet" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
+                <TextBlock Text="{Binding PaidExitSellerStatusText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                <StackPanel Visibility="{Binding State.PaidExitSeller.Supported, Converter={StaticResource BoolToVisibility}}">
+                  <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Share my internet" IsChecked="{Binding State.PaidExitSeller.Enabled, Mode=OneWay}" Click="PaidExitEnabled_Click" />
+                  <StackPanel Orientation="Horizontal" Margin="0,10,0,10">
+                    <Button Content="Advertise" Click="PublishPaidExitOffer_Click" IsEnabled="{Binding State.PaidExitSeller.Enabled}" Margin="0,0,8,0" />
+                    <Button Content="Payments" Click="ReceivePaidRoutePayments_Click" IsEnabled="{Binding State.PaidExitSeller.Enabled}" />
+                  </StackPanel>
+                  <TextBlock Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6">
+                    <Run Text="Spendable wallet " /><Run Text="{Binding PaidRouteWalletBalanceText}" />
+                  </TextBlock>
+                  <TextBlock Text="{Binding PaidExitSellerChannelCreditText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6" />
+                  <TextBlock Text="{Binding PaidExitSellerChannelCreditHelpText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="{Binding PaidExitSellerChannelCreditHelpText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                  <TextBlock Text="{Binding PaidExitSellerPaymentStatusText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="{Binding PaidExitSellerPaymentStatusText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                  <TextBlock Text="{Binding PaidExitSellerSummary}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6" />
+                  <TextBlock Text="{Binding PaidExitSellerTrialText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6" />
+                  <TextBlock Text="{Binding PaidExitSellerChannelExpiryText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6" />
+                  <TextBlock Text="{Binding PaidExitSellerSettlementText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="{Binding PaidExitSellerSettlementText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                  <TextBlock Text="{Binding PaidExitSellerPublicIpText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6" Visibility="{Binding PaidExitSellerPublicIpText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                  <TextBlock Text="{Binding PaidExitSellerMintsText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6" />
+                  <TextBlock Text="{Binding PaidExitSellerSessionsText}" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,10" />
+                  <TextBlock Text="Active Customers" FontWeight="SemiBold" Margin="0,8,0,6" />
+                  <ItemsControl ItemsSource="{Binding State.PaidExitSeller.Sessions}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <StackPanel Margin="0,0,0,8">
+                          <TextBlock Text="{Binding DisplayTitle}" FontWeight="SemiBold" />
+                          <WrapPanel>
+                            <TextBlock Text="{Binding DisplayDetail}" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding DisplayPaidText}" Foreground="{StaticResource TextSecondary}" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding DisplayBehindText}" Foreground="{StaticResource TextSecondary}" Visibility="{Binding DisplayBehindText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                          </WrapPanel>
+                          <TextBlock Text="{Binding DisplayMetricText}" Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" Visibility="{Binding DisplayMetricText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                          <TextBlock Text="{Binding DisplaySettlementText}" Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" Visibility="{Binding DisplaySettlementText, Converter={StaticResource NonEmptyStringToVisibility}}" />
+                        </StackPanel>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
                 </StackPanel>
               </StackPanel>
             </Border>
@@ -705,6 +885,39 @@
 
             <Border Style="{StaticResource Card}">
               <StackPanel>
+                <TextBlock Text="Relays" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
+                <DockPanel LastChildFill="True" Margin="0,0,0,10">
+                  <Button DockPanel.Dock="Right" Content="Add" Command="{Binding AddRelayCommand}" Margin="8,0,0,0" />
+                  <TextBox Text="{Binding RelayInput, UpdateSourceTrigger=PropertyChanged}" />
+                </DockPanel>
+                <ItemsControl ItemsSource="{Binding State.Relays}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <DockPanel Margin="0,0,0,6" LastChildFill="True">
+                        <Ellipse DockPanel.Dock="Left" Width="9" Height="9" Margin="0,5,8,0">
+                          <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                              <Setter Property="Fill" Value="#9CA3AF" />
+                              <Style.Triggers>
+                                <DataTrigger Binding="{Binding Connected}" Value="True">
+                                  <Setter Property="Fill" Value="#16A34A" />
+                                </DataTrigger>
+                              </Style.Triggers>
+                            </Style>
+                          </Ellipse.Style>
+                        </Ellipse>
+                        <Button DockPanel.Dock="Right" Content="Delete" Tag="{Binding}" Click="RemoveRelay_Click" Margin="8,0,0,0" />
+                        <CheckBox DockPanel.Dock="Right" IsChecked="{Binding Enabled, Mode=OneWay}" Tag="{Binding}" Click="RelayEnabled_Click" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding Url}" TextTrimming="CharacterEllipsis" />
+                      </DockPanel>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+              <StackPanel>
                 <TextBlock Text="FIPS" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10" />
                 <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Connect to non-roster FIPS peers" IsChecked="{Binding State.ConnectToNonRosterFipsPeers, Mode=OneWay}" Click="ConnectToNonRosterFipsPeers_Click" />
                 <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Find peers over Nostr relays" IsChecked="{Binding State.FipsNostrDiscoveryEnabled, Mode=OneWay}" Click="FipsNostrDiscoveryEnabled_Click" />
@@ -719,7 +932,7 @@
                   <Run Text="FIPS gives .fips addresses end-to-end encryption and identity-based routing. Hosts can reach each other without static IPs, domain names, TLS certificates, or NAT port forwarding. " />
                   <Hyperlink NavigateUri="https://learn.fips.network/" RequestNavigate="OpenHyperlink_RequestNavigate">Learn FIPS</Hyperlink>
                 </TextBlock>
-                <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Route npub.fips outside VPN" IsChecked="{Binding State.FipsHostTunnelEnabled, Mode=OneWay}" Click="FipsHostTunnel_Click" />
+                <CheckBox Style="{StaticResource SwitchCheckBox}" Content="Keep npub.fips outside the tunnel" IsChecked="{Binding State.FipsHostTunnelEnabled, Mode=OneWay}" Click="FipsHostTunnel_Click" />
                 <Grid Margin="0,8,0,0" IsEnabled="{Binding State.FipsHostTunnelEnabled}">
                   <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="210" />

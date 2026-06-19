@@ -249,9 +249,14 @@ impl FipsPrivateMeshRuntime {
         &self,
         peers: Vec<FipsMeshPeerConfig>,
         local_allowed_ips: Vec<String>,
+        paid_route_admissions: Vec<FipsPaidRouteAdmission>,
     ) -> Result<()> {
         let peer_identities = peer_identity_map(&peers);
-        let mesh = FipsMeshRuntime::with_local_routes(peers, local_allowed_ips);
+        let mesh = FipsMeshRuntime::with_local_routes_and_paid_route_admissions(
+            peers,
+            local_allowed_ips,
+            paid_route_admissions,
+        );
         let configured = mesh.peer_pubkeys();
         let previous_activity = self.peer_activity.load();
         let peer_activity = peer_activity_map(&configured, Some(&**previous_activity));

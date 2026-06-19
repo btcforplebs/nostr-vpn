@@ -99,6 +99,115 @@ pub enum NativeAppAction {
         npub: String,
         endpoint_hints: Vec<String>,
     },
+    AddPaidRouteWalletMint {
+        url: String,
+        label: Option<String>,
+    },
+    RemovePaidRouteWalletMint {
+        url: String,
+    },
+    SetPaidRouteDefaultMint {
+        url: String,
+    },
+    RefreshPaidRouteWallet {
+        refresh: bool,
+    },
+    TopUpPaidRouteWallet {
+        mint_url: Option<String>,
+        amount_sat: u64,
+    },
+    ReceivePaidRouteWalletToken {
+        token: String,
+    },
+    SendPaidRouteWalletToken {
+        mint_url: Option<String>,
+        amount_sat: u64,
+    },
+    WithdrawPaidRouteWalletLightning {
+        mint_url: Option<String>,
+        invoice: String,
+    },
+    BuyPaidRouteOffer {
+        offer_key: String,
+        mint_url: Option<String>,
+        channel_capacity_sat: Option<u64>,
+    },
+    SelectPaidRouteSession {
+        session_id: String,
+        connect: bool,
+    },
+    ProbePaidRouteSession {
+        session_id: String,
+        timeout_secs: u64,
+    },
+    RecordPaidRouteProbe {
+        session_id: String,
+        realized_exit_ip: Option<String>,
+        observed_country_code: Option<String>,
+        observed_asn: Option<u32>,
+        latency_ms: Option<u32>,
+        jitter_ms: Option<u32>,
+        packet_loss_ppm: Option<u32>,
+        down_bps: Option<u64>,
+        up_bps: Option<u64>,
+        uptime_secs: Option<u64>,
+        last_seen_unix: Option<u64>,
+    },
+    CreatePaidRoutePaymentEnvelope {
+        session_id: String,
+        kind: String,
+        payment_json: String,
+        delivered_units: Option<u64>,
+        paid_msat: Option<u64>,
+    },
+    OpenPaidRouteChannelFromWallet {
+        session_id: String,
+        mint_url: Option<String>,
+        paid_msat: Option<u64>,
+        max_amount_per_output: Option<u64>,
+        keyset_id: Option<String>,
+    },
+    SignPaidRoutePaymentEnvelopeFromWallet {
+        session_id: String,
+        kind: String,
+        delivered_units: Option<u64>,
+        paid_msat: Option<u64>,
+    },
+    ClosePaidRouteChannelFromWallet {
+        session_id: String,
+        publish: bool,
+    },
+    ApplyPaidRoutePaymentEnvelope {
+        envelope_json: String,
+    },
+    SendPaidRoutePaymentEnvelope {
+        envelope_json: String,
+    },
+    StreamPaidRoutePayments {
+        publish: bool,
+        min_increment_msat: u64,
+        limit: u64,
+    },
+    ReceivePaidRoutePayments {
+        duration_secs: u64,
+    },
+    CollectPaidExitChannel {
+        channel_id: String,
+    },
+    CollectDuePaidExitChannels,
+    PublishPaidExitOffer,
+    SetPaidRouteMarketFilter {
+        query: String,
+        country_code: String,
+        network_class: String,
+        mint_url: String,
+        require_ipv4: bool,
+        require_ipv6: bool,
+        sort: String,
+    },
+    DiscoverPaidRouteOffers {
+        duration_secs: u64,
+    },
     UpdateSettings {
         patch: SettingsPatch,
     },
@@ -146,6 +255,326 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<NativeAppAction>(&encoded).expect("parse action"),
             action
+        );
+    }
+
+    #[test]
+    fn paid_route_wallet_actions_use_camel_case_fields() {
+        let action = NativeAppAction::AddPaidRouteWalletMint {
+            url: "https://mint.minibits.cash/Bitcoin".to_string(),
+            label: Some("Minibits".to_string()),
+        };
+
+        let encoded = serde_json::to_string(&action).expect("serialize action");
+        assert_eq!(
+            encoded,
+            r#"{"type":"add_paid_route_wallet_mint","url":"https://mint.minibits.cash/Bitcoin","label":"Minibits"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse action"),
+            action
+        );
+    }
+
+    #[test]
+    fn paid_route_buy_action_uses_camel_case_fields() {
+        let action = NativeAppAction::BuyPaidRouteOffer {
+            offer_key: "seller:internet-exit".to_string(),
+            mint_url: Some("https://mint.minibits.cash/Bitcoin".to_string()),
+            channel_capacity_sat: Some(100),
+        };
+
+        let encoded = serde_json::to_string(&action).expect("serialize action");
+        assert_eq!(
+            encoded,
+            r#"{"type":"buy_paid_route_offer","offerKey":"seller:internet-exit","mintUrl":"https://mint.minibits.cash/Bitcoin","channelCapacitySat":100}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse action"),
+            action
+        );
+
+        let select = NativeAppAction::SelectPaidRouteSession {
+            session_id: "session-1".to_string(),
+            connect: true,
+        };
+        let encoded = serde_json::to_string(&select).expect("serialize select");
+        assert_eq!(
+            encoded,
+            r#"{"type":"select_paid_route_session","sessionId":"session-1","connect":true}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse select"),
+            select
+        );
+    }
+
+    #[test]
+    fn paid_route_probe_action_uses_camel_case_fields() {
+        let probe = NativeAppAction::ProbePaidRouteSession {
+            session_id: "session-1".to_string(),
+            timeout_secs: 5,
+        };
+        let encoded = serde_json::to_string(&probe).expect("serialize action");
+        assert_eq!(
+            encoded,
+            r#"{"type":"probe_paid_route_session","sessionId":"session-1","timeoutSecs":5}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse action"),
+            probe
+        );
+
+        let action = NativeAppAction::RecordPaidRouteProbe {
+            session_id: "session-1".to_string(),
+            realized_exit_ip: Some("198.51.100.42".to_string()),
+            observed_country_code: Some("FI".to_string()),
+            observed_asn: Some(14_593),
+            latency_ms: Some(42),
+            jitter_ms: Some(7),
+            packet_loss_ppm: Some(500),
+            down_bps: Some(10_000_000),
+            up_bps: Some(1_000_000),
+            uptime_secs: Some(3600),
+            last_seen_unix: Some(123),
+        };
+
+        let encoded = serde_json::to_string(&action).expect("serialize action");
+        assert_eq!(
+            encoded,
+            r#"{"type":"record_paid_route_probe","sessionId":"session-1","realizedExitIp":"198.51.100.42","observedCountryCode":"FI","observedAsn":14593,"latencyMs":42,"jitterMs":7,"packetLossPpm":500,"downBps":10000000,"upBps":1000000,"uptimeSecs":3600,"lastSeenUnix":123}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse action"),
+            action
+        );
+    }
+
+    #[test]
+    fn paid_route_real_wallet_actions_use_camel_case_fields() {
+        let top_up = NativeAppAction::TopUpPaidRouteWallet {
+            mint_url: Some("https://mint.minibits.cash/Bitcoin".to_string()),
+            amount_sat: 21,
+        };
+        let encoded = serde_json::to_string(&top_up).expect("serialize top-up");
+        assert_eq!(
+            encoded,
+            r#"{"type":"top_up_paid_route_wallet","mintUrl":"https://mint.minibits.cash/Bitcoin","amountSat":21}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse top-up"),
+            top_up
+        );
+
+        let receive = NativeAppAction::ReceivePaidRouteWalletToken {
+            token: "cashuAexample".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_string(&receive).expect("serialize receive"),
+            r#"{"type":"receive_paid_route_wallet_token","token":"cashuAexample"}"#
+        );
+
+        let send = NativeAppAction::SendPaidRouteWalletToken {
+            mint_url: None,
+            amount_sat: 7,
+        };
+        assert_eq!(
+            serde_json::to_string(&send).expect("serialize send"),
+            r#"{"type":"send_paid_route_wallet_token","mintUrl":null,"amountSat":7}"#
+        );
+
+        let withdraw = NativeAppAction::WithdrawPaidRouteWalletLightning {
+            mint_url: None,
+            invoice: "lnbc1test".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_string(&withdraw).expect("serialize withdraw"),
+            r#"{"type":"withdraw_paid_route_wallet_lightning","mintUrl":null,"invoice":"lnbc1test"}"#
+        );
+
+        let refresh = NativeAppAction::RefreshPaidRouteWallet { refresh: true };
+        assert_eq!(
+            serde_json::to_string(&refresh).expect("serialize refresh"),
+            r#"{"type":"refresh_paid_route_wallet","refresh":true}"#
+        );
+    }
+
+    #[test]
+    fn paid_route_relay_actions_use_camel_case_fields() {
+        assert_eq!(
+            serde_json::to_string(&NativeAppAction::PublishPaidExitOffer)
+                .expect("serialize action"),
+            r#"{"type":"publish_paid_exit_offer"}"#
+        );
+
+        let filter = NativeAppAction::SetPaidRouteMarketFilter {
+            query: "fiber".to_string(),
+            country_code: "FI".to_string(),
+            network_class: "residential".to_string(),
+            mint_url: "https://mint.example".to_string(),
+            require_ipv4: true,
+            require_ipv6: false,
+            sort: "price".to_string(),
+        };
+        let encoded = serde_json::to_string(&filter).expect("serialize filter");
+        assert_eq!(
+            encoded,
+            r#"{"type":"set_paid_route_market_filter","query":"fiber","countryCode":"FI","networkClass":"residential","mintUrl":"https://mint.example","requireIpv4":true,"requireIpv6":false,"sort":"price"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse filter"),
+            filter
+        );
+
+        let action = NativeAppAction::DiscoverPaidRouteOffers { duration_secs: 5 };
+        let encoded = serde_json::to_string(&action).expect("serialize action");
+        assert_eq!(
+            encoded,
+            r#"{"type":"discover_paid_route_offers","durationSecs":5}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse action"),
+            action
+        );
+    }
+
+    #[test]
+    fn paid_route_payment_actions_use_camel_case_fields() {
+        let create = NativeAppAction::CreatePaidRoutePaymentEnvelope {
+            session_id: "session-1".to_string(),
+            kind: "balance_update".to_string(),
+            payment_json: r#"{"channel_id":"channel-1"}"#.to_string(),
+            delivered_units: Some(100),
+            paid_msat: Some(1_000),
+        };
+        let encoded = serde_json::to_string(&create).expect("serialize create");
+        assert_eq!(
+            encoded,
+            r#"{"type":"create_paid_route_payment_envelope","sessionId":"session-1","kind":"balance_update","paymentJson":"{\"channel_id\":\"channel-1\"}","deliveredUnits":100,"paidMsat":1000}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse create"),
+            create
+        );
+
+        let open = NativeAppAction::OpenPaidRouteChannelFromWallet {
+            session_id: "session-1".to_string(),
+            mint_url: Some("https://mint.minibits.cash/Bitcoin".to_string()),
+            paid_msat: Some(1_000),
+            max_amount_per_output: Some(64),
+            keyset_id: Some("00abcd".to_string()),
+        };
+        let encoded = serde_json::to_string(&open).expect("serialize open");
+        assert_eq!(
+            encoded,
+            r#"{"type":"open_paid_route_channel_from_wallet","sessionId":"session-1","mintUrl":"https://mint.minibits.cash/Bitcoin","paidMsat":1000,"maxAmountPerOutput":64,"keysetId":"00abcd"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse open"),
+            open
+        );
+
+        let sign = NativeAppAction::SignPaidRoutePaymentEnvelopeFromWallet {
+            session_id: "session-1".to_string(),
+            kind: "balance-update".to_string(),
+            delivered_units: Some(200),
+            paid_msat: Some(2_000),
+        };
+        let encoded = serde_json::to_string(&sign).expect("serialize sign");
+        assert_eq!(
+            encoded,
+            r#"{"type":"sign_paid_route_payment_envelope_from_wallet","sessionId":"session-1","kind":"balance-update","deliveredUnits":200,"paidMsat":2000}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse sign"),
+            sign
+        );
+
+        let close = NativeAppAction::ClosePaidRouteChannelFromWallet {
+            session_id: "session-1".to_string(),
+            publish: true,
+        };
+        let encoded = serde_json::to_string(&close).expect("serialize close");
+        assert_eq!(
+            encoded,
+            r#"{"type":"close_paid_route_channel_from_wallet","sessionId":"session-1","publish":true}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse close"),
+            close
+        );
+
+        let apply = NativeAppAction::ApplyPaidRoutePaymentEnvelope {
+            envelope_json: r#"{"lease_id":"lease-1"}"#.to_string(),
+        };
+        let encoded = serde_json::to_string(&apply).expect("serialize apply");
+        assert_eq!(
+            encoded,
+            r#"{"type":"apply_paid_route_payment_envelope","envelopeJson":"{\"lease_id\":\"lease-1\"}"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse apply"),
+            apply
+        );
+
+        let send = NativeAppAction::SendPaidRoutePaymentEnvelope {
+            envelope_json: r#"{"lease_id":"lease-1"}"#.to_string(),
+        };
+        let encoded = serde_json::to_string(&send).expect("serialize send");
+        assert_eq!(
+            encoded,
+            r#"{"type":"send_paid_route_payment_envelope","envelopeJson":"{\"lease_id\":\"lease-1\"}"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse send"),
+            send
+        );
+
+        let stream = NativeAppAction::StreamPaidRoutePayments {
+            publish: true,
+            min_increment_msat: 100,
+            limit: 5,
+        };
+        let encoded = serde_json::to_string(&stream).expect("serialize stream");
+        assert_eq!(
+            encoded,
+            r#"{"type":"stream_paid_route_payments","publish":true,"minIncrementMsat":100,"limit":5}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse stream"),
+            stream
+        );
+
+        let receive = NativeAppAction::ReceivePaidRoutePayments { duration_secs: 5 };
+        let encoded = serde_json::to_string(&receive).expect("serialize receive");
+        assert_eq!(
+            encoded,
+            r#"{"type":"receive_paid_route_payments","durationSecs":5}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse receive"),
+            receive
+        );
+
+        let collect = NativeAppAction::CollectPaidExitChannel {
+            channel_id: "channel-1".to_string(),
+        };
+        let encoded = serde_json::to_string(&collect).expect("serialize collect");
+        assert_eq!(
+            encoded,
+            r#"{"type":"collect_paid_exit_channel","channelId":"channel-1"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse collect"),
+            collect
+        );
+
+        let collect_due = NativeAppAction::CollectDuePaidExitChannels;
+        let encoded = serde_json::to_string(&collect_due).expect("serialize collect due");
+        assert_eq!(encoded, r#"{"type":"collect_due_paid_exit_channels"}"#);
+        assert_eq!(
+            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse collect due"),
+            collect_due
         );
     }
 

@@ -42,7 +42,8 @@ use std::fs;
 use std::fs::OpenOptions;
 #[cfg(any(target_os = "macos", test))]
 use std::hash::{Hash, Hasher};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::io::Read;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -57,11 +58,26 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
+use cashu_service::{
+    CashuSpilmanPayment, CashuSpilmanPaymentSigner, CashuSpilmanReceiverCloseResult,
+    CashuWalletOverview, FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig,
+    FileSpilmanPaymentSigner, StreamingRouteCashuTokenLease,
+    StreamingRouteOpenCashuSpilmanChannelFromWalletRequest, StreamingRoutePaymentEnvelope,
+    create_topup_quote, import_payment_proofs, load_or_create_cashu_spilman_receiver_key,
+    load_wallet_activity, load_wallet_overview, normalize_mint_url,
+    open_streaming_route_cashu_spilman_channel_from_wallet, receive_payment_token,
+    send_lightning_payment, send_payment_token,
+};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use nostr_sdk::{
+    Client,
+    prelude::{Event, Keys, RelayPoolNotification, ToBech32},
+};
 use nostr_vpn_core::config::{
     AppConfig, SharedNetworkRoster, derive_mesh_tunnel_ip, exit_node_default_routes,
     maybe_autoconfigure_node, normalize_advertised_route, normalize_fips_peer_endpoint_hint,
-    normalize_nostr_pubkey, normalize_runtime_network_id, parse_wireguard_exit_config,
+    normalize_nostr_pubkey, normalize_relay_urls, normalize_runtime_network_id,
+    parse_wireguard_exit_config,
 };
 use nostr_vpn_core::control::PeerAnnouncement;
 use nostr_vpn_core::data_plane::MeshPeerStatus;
@@ -72,10 +88,42 @@ use nostr_vpn_core::fips_control::{
     NetworkRoster, PeerCapabilities, PeerEndpointHint, SignedRoster, local_fips_dataplane_features,
 };
 #[cfg(feature = "embedded-fips")]
+use nostr_vpn_core::fips_mesh::FipsPaidRouteAdmission;
+#[cfg(feature = "embedded-fips")]
 use nostr_vpn_core::join_requests::{FIPS_JOIN_REQUEST_RETRY_SECS, MeshJoinRequest};
 use nostr_vpn_core::magic_dns::{
     MagicDnsResolverConfig, MagicDnsServer, build_magic_dns_records, install_system_resolver,
     uninstall_system_resolver,
+};
+use nostr_vpn_core::paid_route_probe::{
+    DEFAULT_PAID_ROUTE_BANDWIDTH_BYTES, DEFAULT_PAID_ROUTE_DOWNLOAD_URL,
+    DEFAULT_PAID_ROUTE_GEOIP_URL_TEMPLATE, DEFAULT_PAID_ROUTE_PUBLIC_IP_URL,
+    DEFAULT_PAID_ROUTE_UPLOAD_URL, PaidRouteProbeMeasurement, PaidRouteProbeSample,
+    build_paid_route_probe_measurement, paid_route_bandwidth_bps, paid_route_download_url,
+    paid_route_geoip_url, paid_route_stun_binding_request, paid_route_stun_host_port,
+    paid_route_stun_transaction_id, parse_paid_route_geoip_response,
+    parse_paid_route_public_ip_response, parse_paid_route_stun_binding_response,
+};
+use nostr_vpn_core::paid_route_store::{
+    ApplyPaidRouteSellerPaymentRequest, AttachPaidRouteBuyerSpilmanChannelRequest,
+    BuildPaidRouteBuyerPaymentEnvelopeKind, BuildPaidRouteBuyerPaymentEnvelopeRequest,
+    BuildPaidRouteBuyerPaymentEnvelopeResult, BuildPaidRouteBuyerSignedPaymentEnvelopeRequest,
+    BuildPaidRouteBuyerTokenLeaseEnvelopeRequest, OpenPaidRouteBuyerSessionRequest,
+    OpenPaidRouteBuyerSessionResult, PaidRouteBuyerPaymentUpdateDue,
+    PaidRouteBuyerPaymentUpdatesDueRequest, PaidRouteChannelRecord, PaidRouteChannelRole,
+    PaidRouteLifecycleStatus, PaidRouteSellerCollectionState, PaidRouteSessionRecord,
+    PaidRouteStore, UpdatePaidRouteSessionProbeRequest, UpdatePaidRouteSessionProbeResult,
+    load_paid_route_store, paid_route_store_file_path, upsert_paid_route_offer,
+    write_paid_route_store,
+};
+#[cfg(test)]
+use nostr_vpn_core::paid_routes::signed_paid_exit_offer_from_config;
+use nostr_vpn_core::paid_routes::{
+    ExitNetworkClass, PaidExitConfig, PaidExitUpstream, PaidRouteMeter, PaidRouteOffer,
+    PaidRouteQualityMetrics, PaidRouteRoutingDecision, SignedPaidRouteOffer,
+    gift_wrap_paid_route_payment, paid_route_country_claim, paid_route_offer_filter,
+    paid_route_payment_filter, signed_paid_exit_offer_from_config_with_receiver,
+    unwrap_paid_route_payment,
 };
 #[cfg(target_os = "windows")]
 use nostr_vpn_core::platform_paths::{
@@ -181,6 +229,7 @@ include!("main/command_dispatch.rs");
 include!("main/wg_self_test.rs");
 include!("main/roster_sync.rs");
 include!("main/status_types.rs");
+include!("main/paid_exit.rs");
 include!("main/runtime_helpers.rs");
 include!("main/daemon_commands.rs");
 include!("main/doctor_and_parsing.rs");

@@ -185,6 +185,8 @@ pub struct AppConfig {
     pub mesh_tunnel_mtu: u16,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub exit_node: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exit_node_public_paid_exit: bool,
     #[serde(
         default = "default_exit_node_leak_protection",
         skip_serializing_if = "is_true"
@@ -196,6 +198,8 @@ pub struct AppConfig {
     pub magic_dns_suffix: String,
     #[serde(default, skip_serializing_if = "WireGuardExitConfig::is_default")]
     pub wireguard_exit: WireGuardExitConfig,
+    #[serde(default, skip_serializing_if = "PaidExitConfig::is_default")]
+    pub paid_exit: PaidExitConfig,
     #[serde(default = "default_peer_aliases")]
     pub peer_aliases: HashMap<String, String>,
     #[serde(default)]
@@ -747,10 +751,12 @@ impl Default for AppConfig {
             mesh_underlay_udp_mtu: 0,
             mesh_tunnel_mtu: 0,
             exit_node: String::new(),
+            exit_node_public_paid_exit: false,
             exit_node_leak_protection: default_exit_node_leak_protection(),
             close_to_tray_on_close: default_close_to_tray_on_close(),
             magic_dns_suffix: default_magic_dns_suffix(),
             wireguard_exit: WireGuardExitConfig::default(),
+            paid_exit: PaidExitConfig::default(),
             peer_aliases: default_peer_aliases(),
             nat: NatConfig::default(),
             nostr: NostrConfig::default(),

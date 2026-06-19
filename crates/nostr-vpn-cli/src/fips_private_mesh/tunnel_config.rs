@@ -1,3 +1,14 @@
+pub(crate) fn fips_paid_route_admission_from_seller_admission(
+    network_id: &str,
+    admission: PaidRouteSellerAdmission,
+) -> FipsPaidRouteAdmission {
+    let mut admission = FipsPaidRouteAdmission::from(admission);
+    admission.allowed_ips = derive_mesh_tunnel_ip(network_id, &admission.participant_pubkey)
+        .map(|tunnel_ip| vec![format!("{}/32", strip_cidr(&tunnel_ip))])
+        .unwrap_or_default();
+    admission
+}
+
 impl FipsPrivateTunnelConfig {
     pub(crate) fn from_app(
         app: &AppConfig,
@@ -34,8 +45,25 @@ impl FipsPrivateTunnelConfig {
             }
         }
 
-        for participant in app
-            .active_network_signal_pubkeys_hex()
+        if let Some(public_paid_exit) = app.public_paid_exit_node_pubkey_hex()
+            && Some(public_paid_exit.as_str()) != own_pubkey
+        {
+            let exit_routes = crate::runtime_exit_node_default_routes();
+            route_targets.extend(exit_routes.iter().cloned());
+            route_by_participant
+                .entry(public_paid_exit)
+                .or_default()
+                .extend(exit_routes);
+        }
+
+        let mut route_participants = app.active_network_signal_pubkeys_hex();
+        if let Some(public_paid_exit) = app.public_paid_exit_node_pubkey_hex() {
+            route_participants.push(public_paid_exit);
+        }
+        route_participants.sort();
+        route_participants.dedup();
+
+        for participant in route_participants
             .into_iter()
             .filter(|participant| Some(participant.as_str()) != own_pubkey)
         {
@@ -171,6 +199,11 @@ impl FipsPrivateTunnelConfig {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             fips_host,
             local_advertised_routes: crate::runtime_effective_advertised_routes(app),
+            paid_route_admissions: Vec::new(),
+            paid_exit: app.paid_exit.clone(),
+            paid_route_store_path: PathBuf::new(),
+            paid_route_wallet_data_dir: PathBuf::new(),
+            paid_route_payment_relays: Vec::new(),
             wireguard_exit: app.wireguard_exit.clone(),
             exit_node_leak_protection: app.exit_node_leak_protection,
             connected_udp: app.node.connected_udp.clone(),

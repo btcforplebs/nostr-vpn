@@ -14,6 +14,32 @@ struct RootView: View {
     @State private var relayInput = ""
     @State private var fipsHostInboundTcpPorts = ""
     @State private var wireguardExitConfig = ""
+    @State private var paidExitMeter = "bytes"
+    @State private var paidExitPriceMsat = ""
+    @State private var paidExitPerUnits = ""
+    @State private var paidExitAcceptedMints = ""
+    @State private var paidExitMaxChannelCapacitySat = ""
+    @State private var paidExitChannelExpirySecs = ""
+    @State private var paidExitFreeProbeUnits = ""
+    @State private var paidExitGraceUnits = ""
+    @State private var paidExitCountryCode = ""
+    @State private var paidExitRegion = ""
+    @State private var paidExitAsn = ""
+    @State private var paidExitNetworkClass = "unknown"
+    @State private var paidExitIpv4 = true
+    @State private var paidExitIpv6 = false
+    @State private var paidRouteMintUrl = "https://mint.minibits.cash/Bitcoin"
+    @State private var paidRouteMintLabel = "Minibits"
+    @State private var paidRouteTopupAmount = "1000"
+    @State private var paidRouteReceiveToken = ""
+    @State private var paidRouteSendAmount = "1000"
+    @State private var paidRouteWithdrawInvoice = ""
+    @State private var paidExitAdvancedTermsExpanded = RootView.initialPaidExitAdvancedTermsExpanded()
+    @State private var paidExitListingAdvancedExpanded = false
+    @State private var wireGuardUpstreamExpanded = RootView.initialWireGuardUpstreamExpanded()
+    @State private var paidRouteOfferCountryFilter = "all"
+    @State private var paidRouteOfferNetworkFilter = "all"
+    @State private var paidRouteOfferSort = "quality"
     @State private var networkNameInput = ""
     @State private var selectedDevicePubkeyHex: String?
     @State private var networkNameDrafts: [String: String] = [:]
@@ -24,7 +50,7 @@ struct RootView: View {
     @State private var addByDeviceIdAlias = ""
     @State private var diagnosticsExpanded = false
     @State private var showingQrScanner = false
-    @State private var selectedSidebarItem: SidebarItem? = .devices
+    @State private var selectedSidebarItem: SidebarItem? = RootView.initialSidebarItem()
     @State private var shownNetworkId: String?
     @State private var addNetworkPresented = false
     @State private var addDevicePresented = false
@@ -38,6 +64,7 @@ struct RootView: View {
     @State private var lastSyncedListenPort: UInt32 = 0
     @State private var lastSyncedFipsHostInboundTcpPorts = ""
     @State private var lastSyncedWireguardExitConfig: String? = nil
+    @State private var lastSyncedPaidExitSeller: NativePaidExitSellerState? = nil
 
     private var state: NativeAppState {
         manager.state
@@ -45,6 +72,35 @@ struct RootView: View {
 
     private var activeNetwork: NativeNetworkState? {
         manager.activeNetwork
+    }
+
+    private static func initialSidebarItem() -> SidebarItem {
+        let arguments = Set(CommandLine.arguments)
+        if arguments.contains("--nvpn-screenshot-paid-seller") {
+            return .sellExit
+        }
+        if arguments.contains("--nvpn-screenshot-paid-market") {
+            return .publicExits
+        }
+        if arguments.contains("--nvpn-screenshot-paid-wallet") {
+            return .wallet
+        }
+        if arguments.contains("--nvpn-screenshot-exit-nodes")
+            || arguments.contains("--nvpn-screenshot-upstream") {
+            return .internet
+        }
+        if arguments.contains("--nvpn-screenshot-settings") {
+            return .settings
+        }
+        return .devices
+    }
+
+    private static func initialWireGuardUpstreamExpanded() -> Bool {
+        Set(CommandLine.arguments).contains("--nvpn-screenshot-upstream")
+    }
+
+    private static func initialPaidExitAdvancedTermsExpanded() -> Bool {
+        false
     }
 
     private var shownNetwork: NativeNetworkState? {
@@ -76,8 +132,12 @@ struct RootView: View {
                     .frame(width: 250)
                 Divider()
                 detailPane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
         .ignoresSafeArea(.container, edges: .top)
         .onAppear(perform: syncDrafts)
         .onChange(of: state.rev) { _, _ in
@@ -370,7 +430,12 @@ struct RootView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 5) {
             sidebarButton(.devices, "Devices", "circle.grid.2x2.fill")
-            sidebarButton(.routing, "Exit Nodes", "arrow.triangle.branch")
+            sidebarButton(.internet, "Internet", "network")
+            sidebarGroupLabel("Internet market")
+            sidebarButton(.publicExits, "Buy Internet", "cart.fill")
+            sidebarButton(.sellExit, "Share Internet", "bitcoinsign.circle.fill")
+            sidebarButton(.wallet, "Wallet", "creditcard.fill")
+            sidebarGroupLabel("App")
             sidebarButton(.settings, "Settings", "gearshape")
             Spacer(minLength: 0)
         }
@@ -378,6 +443,15 @@ struct RootView: View {
         .padding(.top, 32)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func sidebarGroupLabel(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.top, 14)
+            .padding(.bottom, 2)
     }
 
     private func sidebarButton(_ item: SidebarItem, _ title: String, _ systemImage: String) -> some View {
@@ -416,14 +490,29 @@ struct RootView: View {
             } else {
                 setupPane
             }
-        case .routing:
+        case .internet:
             pageScroll {
-                pageTitle("Exit Nodes", "arrow.triangle.branch")
+                pageTitle("Internet", "network")
                 if let shownNetwork {
-                    routingSection(shownNetwork)
+                    internetSection(shownNetwork)
                 } else {
                     wireGuardExitSettings
                 }
+            }
+        case .publicExits:
+            pageScroll {
+                pageTitle("Buy Internet", "cart.fill")
+                paidRouteMarketSettings
+            }
+        case .sellExit:
+            pageScroll {
+                pageTitle("Share Internet", "bitcoinsign.circle.fill")
+                paidExitSellerSettings
+            }
+        case .wallet:
+            pageScroll {
+                pageTitle("Wallet", "creditcard.fill")
+                paidRouteWalletSettings
             }
         case .settings:
             pageScroll {
@@ -441,9 +530,10 @@ struct RootView: View {
             .padding(.horizontal, 28)
             .padding(.top, 28)
             .padding(.bottom, 32)
-            .frame(maxWidth: 920, alignment: .leading)
+            .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -1179,83 +1269,125 @@ struct RootView: View {
 
     private func formatRemaining(_ seconds: UInt64) -> String {
         if seconds == 0 { return "off" }
+        let days = seconds / 86_400
+        if days > 0 {
+            let hours = (seconds % 86_400) / 3_600
+            return hours == 0 ? "\(days)d" : "\(days)d \(hours)h"
+        }
+        let hours = seconds / 3_600
+        if hours > 0 {
+            let minutes = (seconds % 3_600) / 60
+            return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
+        }
         let minutes = seconds / 60
         if minutes == 0 { return "\(seconds)s" }
         let secs = seconds % 60
         return secs == 0 ? "\(minutes)m" : String(format: "%dm%02ds", minutes, secs)
     }
 
-    private func routingSection(_ network: NativeNetworkState) -> some View {
+    private func internetSection(_ network: NativeNetworkState) -> some View {
         LocalSearchScope { search in
-            routingSection(network, search: search)
+            internetSection(network, search: search)
         }
     }
 
-    private func routingSection(_ network: NativeNetworkState, search: Binding<String>) -> some View {
-        let allPeerExitCandidates = exitNodeCandidates(network, search: "")
-        let showSearch = allPeerExitCandidates.count > searchVisibilityThreshold
-        return VStack(alignment: .leading, spacing: 14) {
-            surface {
-                sectionHeader("Exit Nodes", systemImage: "arrow.triangle.branch")
-                if showSearch {
-                    TextField("Search devices", text: search)
-                        .textFieldStyle(.roundedBorder)
+    private func internetSection(_ network: NativeNetworkState, search: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            internetChoiceSettings
+            trustedDeviceInternetSettings(network, search: search)
+            shareInternetSettings
+            wireGuardUpstreamSettings
+        }
+    }
+
+    private var internetChoiceSettings: some View {
+        let publicSession = state.paidRouteMarket.sessions.first { paidRouteSessionIsSelected($0) }
+        return surface {
+            sectionHeader("Use Internet", systemImage: "network")
+            VStack(spacing: 8) {
+                routeChoice(
+                    title: "My internet",
+                    subtitle: "Use my normal connection",
+                    selected: !state.wireguardExitEnabled && state.exitNode.isEmpty,
+                    enabled: true
+                ) {
+                    manager.selectDirectExit()
                 }
 
-                VStack(spacing: 8) {
-                    routeChoice(
-                        title: "Direct",
-                        subtitle: "Use normal internet routing",
-                        selected: !state.wireguardExitEnabled && state.exitNode.isEmpty,
-                        enabled: true
-                    ) {
-                        manager.selectDirectExit()
-                    }
+                routeChoice(
+                    title: "Bought internet",
+                    subtitle: publicSession.map(paidPublicExitSubtitle) ?? "Connect in Buy Internet",
+                    selected: publicSession != nil,
+                    enabled: true
+                ) {
+                    selectedSidebarItem = .publicExits
+                }
 
-                    routeChoice(
-                        title: "WireGuard upstream",
-                        subtitle: wireguardUpstreamSubtitle,
-                        selected: state.wireguardExitEnabled,
-                        enabled: state.wireguardExitConfigured
-                    ) {
-                        manager.selectWireGuardUpstreamExit()
-                    }
+                routeChoice(
+                    title: "Upstream VPN",
+                    subtitle: wireguardUpstreamSubtitle,
+                    selected: state.wireguardExitEnabled,
+                    enabled: state.wireguardExitConfigured
+                ) {
+                    manager.selectWireGuardUpstreamExit()
+                }
+            }
+        }
+    }
 
-                    let activeSearch = showSearch ? search.wrappedValue : ""
-                    let peerExitCandidates = exitNodeCandidates(network, search: activeSearch)
-                    if peerExitCandidates.isEmpty {
-                        emptyRow(
-                            activeSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                ? "No exit nodes offered"
-                                : "No exit nodes found",
-                            systemImage: "tray"
-                        )
-                    } else {
-                        ForEach(peerExitCandidates, id: \.pubkeyHex) { participant in
-                            routeChoice(
-                                title: deviceName(participant),
-                                subtitle: participant.statusText.isEmpty ? "Exit node" : participant.statusText,
-                                selected: !state.wireguardExitEnabled && state.exitNode == participant.npub,
-                                enabled: true
-                            ) {
-                                manager.selectPeerExit(participant.npub)
-                            }
+    private func trustedDeviceInternetSettings(_ network: NativeNetworkState, search: Binding<String>) -> some View {
+        let allPeerExitCandidates = exitNodeCandidates(network, search: "")
+        let showSearch = allPeerExitCandidates.count > searchVisibilityThreshold
+        let activeSearch = showSearch ? search.wrappedValue : ""
+        let peerExitCandidates = exitNodeCandidates(network, search: activeSearch)
+
+        return surface {
+            sectionHeader("Trusted Devices", systemImage: "lock.shield.fill")
+            if showSearch {
+                TextField("Search devices", text: search)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            VStack(spacing: 8) {
+                if peerExitCandidates.isEmpty {
+                    emptyRow(
+                        activeSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? "No trusted devices sharing internet"
+                            : "No trusted devices found",
+                        systemImage: "tray"
+                    )
+                } else {
+                    ForEach(peerExitCandidates, id: \.pubkeyHex) { participant in
+                        routeChoice(
+                            title: deviceName(participant),
+                            subtitle: participant.statusText.isEmpty ? "Trusted device" : participant.statusText,
+                            selected: !state.wireguardExitEnabled && state.exitNode == participant.npub,
+                            enabled: true
+                        ) {
+                            manager.selectPeerExit(participant.npub)
                         }
                     }
                 }
+            }
+        }
+    }
 
-                Divider()
-
-                Toggle(
-                    "Offer this device as an exit node in \(shownNetworkLabel)",
-                    isOn: Binding(
-                        get: { state.advertiseExitNode },
-                        set: { manager.setAdvertiseExitNode($0) }
-                    )
-                )
+    private var shareInternetSettings: some View {
+        surface {
+            HStack(spacing: 12) {
+                sectionHeader("Share with Trusted Devices", systemImage: "lock.shield.fill")
+                Spacer(minLength: 16)
+                Toggle("", isOn: Binding(
+                    get: { state.advertiseExitNode },
+                    set: { manager.setAdvertiseExitNode($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
                 .disabled(manager.actionInFlight)
             }
-            wireGuardExitSettings
+            Text("Only devices in \(shownNetworkLabel) can use it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -1263,15 +1395,1384 @@ struct RootView: View {
         shownNetwork.map(displayName) ?? "this network"
     }
 
+    private var paidExitSellerSummaryText: String {
+        if !state.paidExitSeller.enabled {
+            return "People can pay to use this Mac's internet connection."
+        }
+        return "Sharing is on. Save changes before advertising a new listing."
+    }
+
     private var wireguardUpstreamSubtitle: String {
         if !state.wireguardExitConfigured {
-            return "Paste a config below to enable"
+            return "Set up a WireGuard provider"
         }
         let endpoint = state.wireguardExitEndpoint
         if endpoint.isEmpty {
             return "Configured"
         }
         return "via \(endpoint)"
+    }
+
+    private var paidExitCurrentUpstream: String {
+        state.wireguardExitEnabled ? "wireguard_exit" : "host_default"
+    }
+
+    private var paidExitCurrentInternetTitle: String {
+        state.wireguardExitEnabled ? "My internet through WireGuard" : "My internet"
+    }
+
+    private var paidExitCurrentInternetDetail: String {
+        if state.wireguardExitEnabled {
+            return wireguardUpstreamSubtitle
+        }
+        return "The same connection this Mac already uses"
+    }
+
+    private var paidExitSellerSettings: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            paidExitSellerStatusSettings
+            if state.paidExitSeller.supported {
+                paidExitSellerListingSettings
+                paidExitSellerPaymentSettings
+                paidExitSellerActivitySettings
+                paidRouteWalletSection(state.paidRouteMarket.wallet)
+                paidExitSellerTermsSettings
+            }
+        }
+    }
+
+    private var paidExitSellerStatusSettings: some View {
+        surface {
+            HStack(spacing: 12) {
+                sectionHeader("Share My Internet", systemImage: "bitcoinsign.circle.fill")
+                Spacer(minLength: 16)
+                Toggle("", isOn: Binding(
+                    get: { state.paidExitSeller.enabled },
+                    set: { manager.setPaidExitEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .disabled(manager.actionInFlight || !state.paidExitSeller.supported)
+            }
+            if !state.paidExitSeller.supported {
+                Text("Selling internet is unavailable on this platform.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(paidExitSellerSummaryText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if state.paidExitSeller.supported {
+                paidExitSellerStatusBadges
+                paidExitSellerInternetSummary
+            }
+        }
+    }
+
+    private var paidExitSellerStatusBadges: some View {
+        HStack(spacing: 8) {
+            badge(state.paidExitSeller.enabled ? "Selling" : "Off", style: state.paidExitSeller.enabled ? .ok : .muted)
+            badge(fallbackText(state.paidExitSeller.internetText, paidExitCurrentInternetTitle), style: .muted)
+            if !state.paidExitSeller.publicIpText.isEmpty {
+                badge("Public IP \(state.paidExitSeller.publicIpText)", style: .muted)
+            }
+        }
+    }
+
+    private var paidExitSellerInternetSummary: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            paidExitSummaryRow(
+                title: "Internet",
+                value: fallbackText(state.paidExitSeller.internetText, paidExitCurrentInternetTitle),
+                detail: paidExitCurrentInternetDetail,
+                systemImage: "network"
+            )
+            if !state.paidExitSeller.priceText.isEmpty {
+                paidExitSummaryRow(
+                    title: "Price",
+                    value: state.paidExitSeller.priceText,
+                    detail: state.paidExitSeller.acceptedMints.first ?? "",
+                    systemImage: "creditcard.fill"
+                )
+            }
+            paidExitSummaryRow(
+                title: fallbackText(state.paidExitSeller.channelCreditTitleText, "Pending buyer credit"),
+                value: fallbackText(
+                    state.paidExitSeller.channelCreditText,
+                    formatPaidRouteMsat(state.paidExitSeller.channelCreditMsat)
+                ),
+                detail: fallbackText(
+                    state.paidExitSeller.channelCreditHelpText,
+                    state.paidExitSeller.channelCreditMsat > 0 ? "Collect to move it into wallet" : ""
+                ),
+                systemImage: "person.crop.circle.badge.checkmark"
+            )
+        }
+    }
+
+    private func paidExitSummaryRow(
+        title: String,
+        value: String,
+        detail: String,
+        systemImage: String
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .frame(width: 104, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+    }
+
+    private var paidExitSellerListingSettings: some View {
+        surface {
+            HStack(spacing: 12) {
+                sectionHeader("What Buyers See", systemImage: "mappin.and.ellipse")
+                Spacer(minLength: 16)
+                paidExitSellerSaveButton
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                paidExitFormRow("Country") {
+                    HStack(spacing: 8) {
+                        TextField("FI", text: $paidExitCountryCode)
+                            .frame(width: 70)
+                        TextField("Region", text: $paidExitRegion)
+                    }
+                }
+                paidExitFormRow("Connection") {
+                    Picker("", selection: $paidExitNetworkClass) {
+                        ForEach(["unknown", "datacenter", "residential", "mobile", "satellite", "community_mesh"], id: \.self) { value in
+                            Text(paidExitNetworkClassTitle(value)).tag(value)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 260)
+                }
+                paidExitFormRow("Works with") {
+                    HStack(spacing: 16) {
+                        Toggle("IPv4", isOn: $paidExitIpv4)
+                        Toggle("IPv6", isOn: $paidExitIpv6)
+                    }
+                }
+            }
+            disclosureSection(
+                title: "More Details",
+                systemImage: "slider.horizontal.3",
+                isExpanded: $paidExitListingAdvancedExpanded,
+                font: .subheadline.weight(.semibold)
+            ) {
+                VStack(alignment: .leading, spacing: 10) {
+                    paidExitFormRow("ASN") {
+                        TextField("12345", text: $paidExitAsn)
+                            .frame(width: 120)
+                    }
+                }
+                .padding(.top, 8)
+            }
+        }
+    }
+
+    private var paidExitSellerPaymentSettings: some View {
+        surface {
+            sectionHeader("Price", systemImage: "creditcard.fill")
+            VStack(alignment: .leading, spacing: 10) {
+                paidExitFormRow("Meter") {
+                    Picker("", selection: $paidExitMeter) {
+                        ForEach(["bytes", "milliseconds", "packets"], id: \.self) { meter in
+                            Text(paidExitMeterTitle(meter)).tag(meter)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 320)
+                }
+                paidExitFormRow("Charge") {
+                    HStack(spacing: 8) {
+                        TextField("msat", text: $paidExitPriceMsat)
+                            .frame(width: 130)
+                        Text("per")
+                            .foregroundStyle(.secondary)
+                        paidExitPriceUnitControl
+                    }
+                }
+                paidExitFormRow("Mint") {
+                    TextField("https://mint.minibits.cash/Bitcoin", text: $paidExitAcceptedMints)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var paidExitPriceUnitControl: some View {
+        if paidExitMeter == "bytes" {
+            Picker("", selection: $paidExitPerUnits) {
+                ForEach(paidExitBytePriceUnitOptions, id: \.value) { option in
+                    Text(option.label).tag(option.value)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 150)
+        } else {
+            TextField("units", text: $paidExitPerUnits)
+                .frame(width: 130)
+        }
+    }
+
+    private var paidExitBytePriceUnitOptions: [(label: String, value: String)] {
+        var options: [(label: String, value: String)] = [
+            ("100 KB", "100 KB"),
+            ("1 MB", "1 MB"),
+            ("10 MB", "10 MB"),
+            ("100 MB", "100 MB"),
+            ("1 GB", "1 GB")
+        ]
+        let current = paidExitPerUnits.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !current.isEmpty && !options.contains(where: { $0.value == current }) {
+            let label = UInt64(current)
+                .map { paidRouteMeterUnitText($0, meter: paidExitMeter) } ?? current
+            options.insert((label, current), at: 0)
+        }
+        return options
+    }
+
+    private var paidExitSellerTermsSettings: some View {
+        surface {
+            disclosureSection(
+                title: "Trial and Limits",
+                systemImage: "slider.horizontal.3",
+                isExpanded: $paidExitAdvancedTermsExpanded,
+                font: .headline
+            ) {
+                VStack(alignment: .leading, spacing: 10) {
+                    paidExitFormRow("Per buyer") {
+                        HStack(spacing: 8) {
+                            paidExitTermInput("Max balance", "250 sat", text: $paidExitMaxChannelCapacitySat)
+                            paidExitTermInput("Channel expires", "1 day", text: $paidExitChannelExpirySecs)
+                        }
+                    }
+                    paidExitFormRow("Free test") {
+                        HStack(spacing: 8) {
+                            paidExitTermInput("Before payment", paidExitMeter == "bytes" ? "1 MB" : "units", text: $paidExitFreeProbeUnits)
+                            paidExitTermInput("After payment runs out", paidExitMeter == "bytes" ? "256 KB" : "units", text: $paidExitGraceUnits)
+                        }
+                    }
+                    if !state.paidExitSeller.settlementText.isEmpty {
+                        Text(state.paidExitSeller.settlementText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 8)
+            }
+        }
+    }
+
+    private func paidExitTermInput(_ title: String, _ placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField(placeholder, text: text)
+                .frame(width: 132)
+        }
+    }
+
+    private func paidExitFormRow<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(title)
+                .foregroundStyle(.secondary)
+                .frame(width: 96, alignment: .leading)
+            content()
+        }
+    }
+
+    private var paidExitSellerActivitySettings: some View {
+        surface {
+            HStack(spacing: 12) {
+                sectionHeader("Customers", systemImage: "person.2.fill")
+                Spacer(minLength: 16)
+                paidExitSellerAdvertiseButton
+                paidExitSellerPaymentsButton
+            }
+            paidRoutePaymentActionResult(state.paidRouteMarket.lastPaymentAction)
+            if state.paidExitSeller.sessions.isEmpty {
+                emptyRow("No customers connected", systemImage: "person.2")
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(state.paidExitSeller.sessions, id: \.sessionId) { session in
+                        paidExitSellerSessionRow(session)
+                    }
+                }
+            }
+        }
+    }
+
+    private var paidExitSellerActionButtons: some View {
+        HStack(spacing: 8) {
+            paidExitSellerSaveButton
+            paidExitSellerAdvertiseButton
+            paidExitSellerPaymentsButton
+        }
+    }
+
+    private var paidExitSellerSaveButton: some View {
+        Button {
+            manager.savePaidExitSellerSettings(
+                upstream: paidExitCurrentUpstream,
+                meter: paidExitMeter,
+                priceMsat: paidExitPriceMsat,
+                perUnits: paidExitPerUnits,
+                acceptedMints: paidExitAcceptedMints,
+                maxChannelCapacitySat: paidExitMaxChannelCapacitySat,
+                channelExpirySecs: paidExitChannelExpirySecs,
+                freeProbeUnits: paidExitFreeProbeUnits,
+                graceUnits: paidExitGraceUnits,
+                countryCode: paidExitCountryCode,
+                region: paidExitRegion,
+                asn: paidExitAsn,
+                networkClass: paidExitNetworkClass,
+                ipv4: paidExitIpv4,
+                ipv6: paidExitIpv6
+            )
+        } label: {
+            Label("Save", systemImage: "checkmark")
+        }
+        .disabled(manager.actionInFlight)
+    }
+
+    private var paidExitSellerAdvertiseButton: some View {
+        Button {
+            manager.publishPaidExitOffer()
+        } label: {
+            Label("Advertise", systemImage: "paperplane.fill")
+        }
+        .disabled(manager.actionInFlight || !state.paidExitSeller.enabled)
+    }
+
+    private var paidExitSellerPaymentsButton: some View {
+        Button {
+            manager.receivePaidRoutePayments()
+        } label: {
+            Label("Payments", systemImage: "tray.and.arrow.down.fill")
+        }
+        .disabled(manager.actionInFlight || !state.paidExitSeller.enabled)
+    }
+
+    private var paidRouteMarketSettings: some View {
+        let market = state.paidRouteMarket
+        return VStack(alignment: .leading, spacing: 14) {
+            if market.supported && !market.sessions.isEmpty {
+                paidRouteActiveSessionSection(market)
+                paidRouteOfferDiscoverySection(market)
+            } else {
+                paidRouteOfferDiscoverySection(market)
+            }
+        }
+    }
+
+    private func paidRouteActiveSessionSection(_ market: NativePaidRouteMarketState) -> some View {
+        surface {
+            HStack(spacing: 12) {
+                sectionHeader("Current Internet", systemImage: "bolt.horizontal.circle.fill")
+                Spacer(minLength: 16)
+                Button {
+                    manager.streamPaidRoutePayments()
+                } label: {
+                    Label("Pay", systemImage: "arrow.up.right.circle.fill")
+                }
+                .controlSize(.small)
+                .disabled(manager.actionInFlight || !paidRouteHasStreamablePayments(market.sessions))
+                .help("Send due payments")
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(market.sessions, id: \.sessionId) { session in
+                    paidRouteSessionRow(session)
+                }
+            }
+            paidRoutePaymentActionResult(market.lastPaymentAction)
+        }
+    }
+
+    private func paidRouteOfferDiscoverySection(_ market: NativePaidRouteMarketState) -> some View {
+        let visibleOffers = paidRouteVisibleOffers(market)
+        return surface {
+            HStack(spacing: 12) {
+                sectionHeader("Find Internet", systemImage: "cart.fill")
+                Spacer(minLength: 16)
+                Button {
+                    manager.discoverPaidRouteOffers()
+                } label: {
+                    Label("Find", systemImage: "magnifyingglass")
+                }
+                .controlSize(.small)
+                .disabled(manager.actionInFlight || !market.supported)
+            }
+
+            if !market.statusText.isEmpty {
+                Text(market.statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if market.supported && !market.offers.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        label("Available")
+                        Spacer(minLength: 8)
+                        Picker("Country", selection: $paidRouteOfferCountryFilter) {
+                            Text("Any country").tag("all")
+                            ForEach(market.countryOptions, id: \.self) { country in
+                                Text(country).tag(country)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .controlSize(.small)
+                        .help("Country")
+                        Picker("Class", selection: $paidRouteOfferNetworkFilter) {
+                            Text("Any class").tag("all")
+                            ForEach(market.networkClassOptions, id: \.self) { networkClass in
+                                Text(paidExitNetworkClassTitle(networkClass)).tag(networkClass)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .controlSize(.small)
+                        .help("Network class")
+                        Picker("Sort", selection: $paidRouteOfferSort) {
+                            Text("Quality").tag("quality")
+                            Text("Price").tag("price")
+                            Text("Newest").tag("newest")
+                        }
+                        .pickerStyle(.segmented)
+                        .controlSize(.small)
+                        .frame(width: 210)
+                    }
+                    .onChange(of: paidRouteOfferCountryFilter) { _, _ in
+                        applyPaidRouteMarketFilter()
+                    }
+                    .onChange(of: paidRouteOfferNetworkFilter) { _, _ in
+                        applyPaidRouteMarketFilter()
+                    }
+                    .onChange(of: paidRouteOfferSort) { _, _ in
+                        applyPaidRouteMarketFilter()
+                    }
+                    if visibleOffers.isEmpty {
+                        Text("No matching offers")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(visibleOffers, id: \.key) { offer in
+                            paidRouteOfferRow(offer)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var paidRouteWalletSettings: some View {
+        let market = state.paidRouteMarket
+        return VStack(alignment: .leading, spacing: 14) {
+            if market.supported {
+                paidRouteWalletSection(market.wallet)
+            } else {
+                surface {
+                    sectionHeader("Cashu Wallet", systemImage: "creditcard.fill")
+                    if !market.statusText.isEmpty {
+                        Text(market.statusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func paidRouteWalletSection(_ wallet: NativePaidRouteWalletState) -> some View {
+        surface {
+            HStack(spacing: 10) {
+                sectionHeader("Cashu Wallet", systemImage: "creditcard.fill")
+                if wallet.balanceKnown {
+                    Text(fallbackText(wallet.totalBalanceText, formatPaidRouteMsat(wallet.totalBalanceMsat)))
+                        .font(.caption.weight(.medium))
+                }
+                if !wallet.defaultMint.isEmpty {
+                    Text(wallet.defaultMint)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 12)
+                Button {
+                    manager.refreshPaidRouteWallet()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh wallet")
+                .disabled(manager.actionInFlight)
+            }
+
+            VStack(spacing: 6) {
+                HStack(spacing: 8) {
+                    TextField("Mint URL", text: $paidRouteMintUrl)
+                    TextField("Label", text: $paidRouteMintLabel)
+                        .frame(width: 120)
+                    Button {
+                        manager.addPaidRouteWalletMint(url: paidRouteMintUrl, label: paidRouteMintLabel)
+                    } label: {
+                        Label("Add", systemImage: "plus.circle.fill")
+                    }
+                    .disabled(manager.actionInFlight)
+                }
+
+                HStack(spacing: 8) {
+                    TextField("Top up sats", text: $paidRouteTopupAmount)
+                        .frame(width: 110)
+                    Button {
+                        manager.topUpPaidRouteWallet(mintUrl: nil, amountSat: paidRouteTopupAmount)
+                    } label: {
+                        Label("Top Up", systemImage: "arrow.down.circle.fill")
+                    }
+                    .disabled(manager.actionInFlight || parsePositiveUInt64(paidRouteTopupAmount) == nil)
+
+                    TextField("Send sats", text: $paidRouteSendAmount)
+                        .frame(width: 105)
+                    Button {
+                        manager.sendPaidRouteWalletToken(mintUrl: nil, amountSat: paidRouteSendAmount)
+                    } label: {
+                        Label("Export", systemImage: "paperplane.fill")
+                    }
+                    .disabled(manager.actionInFlight || parsePositiveUInt64(paidRouteSendAmount) == nil)
+                }
+
+                HStack(spacing: 8) {
+                    TextField("Cashu token", text: $paidRouteReceiveToken)
+                    Button {
+                        manager.receivePaidRouteWalletToken(paidRouteReceiveToken)
+                    } label: {
+                        Label("Receive", systemImage: "tray.and.arrow.down.fill")
+                    }
+                    .disabled(manager.actionInFlight || paidRouteReceiveToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                HStack(spacing: 8) {
+                    TextField("Lightning invoice", text: $paidRouteWithdrawInvoice)
+                    Button {
+                        manager.withdrawPaidRouteWalletLightning(mintUrl: nil, invoice: paidRouteWithdrawInvoice)
+                    } label: {
+                        Label("Withdraw", systemImage: "bolt.fill")
+                    }
+                    .disabled(manager.actionInFlight || paidRouteWithdrawInvoice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+
+            if wallet.mints.isEmpty {
+                emptyRow("No wallet mints", systemImage: "creditcard")
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(wallet.mints, id: \.url) { mint in
+                        paidRouteMintRow(mint)
+                    }
+                }
+            }
+
+            paidRouteWalletActionResult(wallet.lastAction)
+        }
+    }
+
+    @ViewBuilder
+    private func paidRouteWalletActionResult(_ action: NativePaidRouteWalletActionState) -> some View {
+        if !action.kind.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Image(systemName: paidRouteWalletActionIcon(action.kind))
+                        .foregroundStyle(.secondary)
+                    Text(action.statusText.isEmpty ? paidRouteWalletActionTitle(action.kind) : action.statusText)
+                        .font(.caption.weight(.medium))
+                    if action.amountSat > 0 {
+                        Text(fallbackText(action.amountText, "\(action.amountSat) sat"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if action.feeSat > 0 {
+                        Text(fallbackText(action.feeText, "\(action.feeSat) sat fee"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !action.paymentRequest.isEmpty {
+                    paidRouteWalletOutputRow("Invoice", value: action.paymentRequest, copied: .paymentRequest)
+                }
+                if !action.token.isEmpty {
+                    paidRouteWalletOutputRow("Token", value: action.token, copied: .cashuToken)
+                }
+                if !action.preimage.isEmpty {
+                    paidRouteWalletOutputRow("Preimage", value: action.preimage, copied: .lightningPreimage)
+                }
+            }
+        }
+    }
+
+    private func paidRouteWalletOutputRow(_ title: String, value: String, copied: CopyValue) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 56, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            Spacer(minLength: 8)
+            copyButton(value: value, copied: copied, systemImage: "doc.on.doc")
+        }
+    }
+
+    @ViewBuilder
+    private func paidRoutePaymentActionResult(_ action: NativePaidRoutePaymentActionState) -> some View {
+        if !action.kind.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Image(systemName: paidRoutePaymentActionIcon(action.kind))
+                        .foregroundStyle(.secondary)
+                    Text(action.statusText.isEmpty ? paidRoutePaymentActionTitle(action.kind) : action.statusText)
+                        .font(.caption.weight(.medium))
+                    if action.paidMsat > 0 {
+                        Text(fallbackText(action.paidText, "\(formatPaidRouteMsat(action.paidMsat)) paid"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if action.unpaidMsat > 0 {
+                        Text(fallbackText(action.unpaidText, "\(formatPaidRouteMsat(action.unpaidMsat)) behind"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !action.envelopeJson.isEmpty {
+                    paidRouteWalletOutputRow("Payment", value: action.envelopeJson, copied: .paymentEnvelope)
+                }
+            }
+        }
+    }
+
+    private func paidRouteMintRow(_ mint: NativePaidRouteWalletMintState) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                manager.setPaidRouteDefaultMint(mint.url)
+            } label: {
+                Image(systemName: mint.isDefault ? "star.fill" : "star")
+                    .foregroundStyle(mint.isDefault ? .yellow : .secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(manager.actionInFlight || mint.isDefault)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(mint.label.isEmpty ? mint.url : mint.label)
+                    .lineLimit(1)
+                Text(mint.url)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 12)
+            if mint.balanceKnown {
+                Text(fallbackText(mint.balanceText, formatPaidRouteMsat(mint.balanceMsat)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Button {
+                manager.removePaidRouteWalletMint(mint.url)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.plain)
+            .disabled(manager.actionInFlight)
+        }
+    }
+
+    private func paidRouteOfferRow(_ offer: NativePaidRouteOfferState) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "network")
+                    .foregroundStyle(.secondary)
+                Text(paidRouteOfferTitle(offer))
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                Spacer(minLength: 12)
+                Text(offer.priceText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if paidRouteOfferHasBuyerChannel(offer) {
+                    Label("Ready", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                } else {
+                    Button {
+                        manager.buyPaidRouteOffer(offer)
+                    } label: {
+                        Label("Connect", systemImage: "arrow.right.circle.fill")
+                    }
+                    .controlSize(.small)
+                    .disabled(manager.actionInFlight)
+                }
+            }
+            HStack(spacing: 10) {
+                Text(offer.statusText)
+                let metricText = paidRouteMetricText(
+                    fallbackText(
+                        offer.qualityText,
+                        paidRouteQualityText(
+                            latencyMs: offer.latencyMs,
+                            jitterMs: offer.jitterMs,
+                            packetLossPpm: offer.packetLossPpm
+                        )
+                    ),
+                    offer.bandwidthText
+                )
+                if !metricText.isEmpty {
+                    Text(metricText)
+                }
+                Text(paidRouteIpText(ipv4: offer.ipv4, ipv6: offer.ipv6))
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+    }
+
+    private func paidRouteOfferHasBuyerChannel(_ offer: NativePaidRouteOfferState) -> Bool {
+        state.paidRouteMarket.channels.contains { channel in
+            channel.offerId == offer.offerId
+                && channel.counterpartyNpub == offer.sellerNpub
+                && channel.role == "buyer"
+                && ["opening", "probing", "active", "paused"].contains(channel.status)
+        }
+    }
+
+    private func paidRouteSessionIsSelected(_ session: NativePaidRouteSessionState) -> Bool {
+        let seller = paidRouteSessionSellerNpub(session)
+        return !seller.isEmpty && !state.wireguardExitEnabled && state.exitNode == seller
+    }
+
+    private func paidRouteSessionSellerNpub(_ session: NativePaidRouteSessionState) -> String {
+        state.paidRouteMarket.channels.first { channel in
+            channel.channelId == session.channelId && channel.role == "buyer"
+        }?.counterpartyNpub ?? ""
+    }
+
+    private func paidRouteSessionRow(_ session: NativePaidRouteSessionState) -> some View {
+        let selected = paidRouteSessionIsSelected(session)
+        let metricText = paidRouteMetricText(
+            fallbackText(
+                session.qualityText,
+                paidRouteQualityText(
+                    latencyMs: session.latencyMs,
+                    jitterMs: session.jitterMs,
+                    packetLossPpm: session.packetLossPpm
+                )
+            ),
+            session.bandwidthText
+        )
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: session.allowRouting ? "bolt.horizontal.circle.fill" : "pause.circle.fill")
+                    .foregroundStyle(session.allowRouting ? .green : .orange)
+                Text(paidRouteBuyerSessionTitle(session, selected: selected))
+                    .fontWeight(.medium)
+                Spacer(minLength: 12)
+                if selected {
+                    Button {
+                        manager.selectDirectExit()
+                    } label: {
+                        Label("Stop", systemImage: "stop.circle.fill")
+                    }
+                    .controlSize(.small)
+                    .disabled(manager.actionInFlight)
+                    .help("Stop using this seller")
+                } else {
+                    Button {
+                        manager.usePaidRouteSession(session)
+                    } label: {
+                        Label("Connect", systemImage: "arrow.right.circle.fill")
+                    }
+                    .controlSize(.small)
+                    .disabled(manager.actionInFlight || !session.allowRouting)
+                    .help("Use this seller")
+                }
+                Button {
+                    manager.probePaidRouteSession(session)
+                } label: {
+                    Image(systemName: "speedometer")
+                }
+                .buttonStyle(.borderless)
+                .disabled(manager.actionInFlight)
+                .help("Probe exit quality")
+                if paidRouteSessionCanOpenChannel(session) {
+                    Button {
+                        manager.openPaidRouteChannelFromWallet(session)
+                    } label: {
+                        Image(systemName: "creditcard.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(manager.actionInFlight || state.paidRouteMarket.wallet.defaultMint.isEmpty)
+                    .help("Fund this exit")
+                }
+                if paidRouteSessionCanSignPayment(session) {
+                    Button {
+                        manager.signPaidRoutePaymentEnvelopeFromWallet(session)
+                    } label: {
+                        Image(systemName: "arrow.up.forward.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(manager.actionInFlight)
+                    .help("Pay due usage")
+                }
+                if !selected && paidRouteSessionCanCloseChannel(session) {
+                    Button {
+                        manager.closePaidRouteChannelFromWallet(session)
+                    } label: {
+                        Label("Close", systemImage: "checkmark.seal.fill")
+                    }
+                    .controlSize(.small)
+                    .disabled(manager.actionInFlight)
+                    .help("Close and settle channel")
+                }
+                if paidRouteSessionHasSendableEnvelope(session) {
+                    Button {
+                        manager.sendPaidRoutePaymentEnvelope(state.paidRouteMarket.lastPaymentAction.envelopeJson)
+                    } label: {
+                        Image(systemName: "paperplane.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(manager.actionInFlight)
+                    .help("Send payment")
+                }
+                Text(fallbackText(session.paidText, "\(formatPaidRouteMsat(session.paidMsat)) paid"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 10) {
+                Text(fallbackText(session.usageText, paidRouteUsageText(session)))
+                Text(fallbackText(session.amountDueText, "\(formatPaidRouteMsat(session.amountDueMsat)) due"))
+                if session.unpaidMsat > 0 {
+                    Text(fallbackText(session.unpaidText, "\(formatPaidRouteMsat(session.unpaidMsat)) behind"))
+                }
+                if !session.locationText.isEmpty {
+                    Text(session.locationText)
+                        .foregroundStyle(session.countryClaimStatus == "mismatch" ? Color.orange : Color.secondary)
+                } else {
+                    if !session.realizedExitIp.isEmpty {
+                        Text(session.realizedExitIp)
+                    }
+                    if !session.observedCountryCode.isEmpty {
+                        Text(session.observedCountryCode)
+                    }
+                    if let countryClaimText = paidRouteCountryClaimText(session) {
+                        Text(countryClaimText)
+                            .foregroundStyle(session.countryClaimStatus == "mismatch" ? Color.orange : Color.green)
+                    }
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            if !metricText.isEmpty {
+                Text(metricText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            if !session.settlementText.isEmpty {
+                Text(session.settlementText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func paidRouteSessionCanOpenChannel(_ session: NativePaidRouteSessionState) -> Bool {
+        !session.paymentChannelReady
+            && ["free_probe", "grace", "suspended"].contains(session.accessState)
+            && ["opening", "probing", "active", "paused"].contains(session.lifecycleStatus)
+    }
+
+    private func paidRouteSessionCanSignPayment(_ session: NativePaidRouteSessionState) -> Bool {
+        session.paymentChannelReady
+            && session.amountDueMsat > session.paidMsat
+            && ["grace", "suspended"].contains(session.accessState)
+            && ["probing", "active", "paused"].contains(session.lifecycleStatus)
+    }
+
+    private func paidRouteSessionCanCloseChannel(_ session: NativePaidRouteSessionState) -> Bool {
+        session.paymentChannelReady
+            && !session.sessionId.isEmpty
+            && ["closed", "expired"].contains(session.lifecycleStatus) == false
+    }
+
+    private func paidRouteHasStreamablePayments(_ sessions: [NativePaidRouteSessionState]) -> Bool {
+        sessions.contains { paidRouteSessionCanSignPayment($0) }
+    }
+
+    private func paidRouteSessionHasSendableEnvelope(_ session: NativePaidRouteSessionState) -> Bool {
+        let action = state.paidRouteMarket.lastPaymentAction
+        return ["create", "open_channel", "sign", "close"].contains(action.kind)
+            && action.sessionId == session.sessionId
+            && !action.envelopeJson.isEmpty
+    }
+
+    private func paidRouteCountryClaimText(_ session: NativePaidRouteSessionState) -> String? {
+        switch session.countryClaimStatus {
+        case "match":
+            return session.claimedCountryCode.isEmpty ? nil : "verified"
+        case "mismatch":
+            return session.claimedCountryCode.isEmpty ? "country mismatch" : "claimed \(session.claimedCountryCode)"
+        default:
+            return nil
+        }
+    }
+
+    private func paidRouteBuyerSessionTitle(_ session: NativePaidRouteSessionState, selected: Bool) -> String {
+        if selected {
+            return session.allowRouting ? "Connected" : "Selected"
+        }
+        if !session.titleText.isEmpty {
+            return session.titleText
+        }
+        if session.allowRouting {
+            return "Ready"
+        }
+        if session.unpaidMsat > 0 {
+            return "Payment needed"
+        }
+        if !session.paymentChannelReady {
+            return "Needs funds"
+        }
+        return paidRoutePlainStatus(session.statusText, fallback: session.lifecycleStatus)
+    }
+
+    private func paidPublicExitSubtitle(_ session: NativePaidRouteSessionState) -> String {
+        if !session.observedCountryCode.isEmpty && !session.realizedExitIp.isEmpty {
+            return "\(session.observedCountryCode), \(session.realizedExitIp)"
+        }
+        if !session.statusText.isEmpty {
+            return session.statusText
+        }
+        return "Paid internet seller"
+    }
+
+    private func paidExitSellerSessionRow(_ session: NativePaidRouteSessionState) -> some View {
+        let metricText = paidRouteMetricText(
+            fallbackText(
+                session.qualityText,
+                paidRouteQualityText(
+                    latencyMs: session.latencyMs,
+                    jitterMs: session.jitterMs,
+                    packetLossPpm: session.packetLossPpm
+                )
+            ),
+            session.bandwidthText
+        )
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: session.allowRouting ? "bolt.horizontal.circle.fill" : "pause.circle.fill")
+                    .foregroundStyle(session.allowRouting ? .green : .orange)
+                Text(paidExitSellerSessionTitle(session))
+                    .fontWeight(.medium)
+                Spacer(minLength: 12)
+                if paidExitSellerSessionCanCollect(session) {
+                    Button {
+                        manager.collectPaidExitChannel(session)
+                    } label: {
+                        Label(paidExitSellerCollectButtonTitle(session), systemImage: paidExitSellerCollectButtonIcon(session))
+                    }
+                    .controlSize(.small)
+                    .disabled(manager.actionInFlight || !state.paidExitSeller.enabled)
+                    .help(paidExitSellerCollectButtonHelp(session))
+                }
+                Text(fallbackText(session.paidText, "\(formatPaidRouteMsat(session.paidMsat)) paid"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 10) {
+                Text(fallbackText(session.usageText, paidRouteUsageText(session)))
+                Text(fallbackText(session.amountDueText, "\(formatPaidRouteMsat(session.amountDueMsat)) due"))
+                if session.unpaidMsat > 0 {
+                    Text(fallbackText(session.unpaidText, "\(formatPaidRouteMsat(session.unpaidMsat)) behind"))
+                }
+                if session.packets > 0 {
+                    Text("\(session.packets) packets")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            if !metricText.isEmpty {
+                Text(metricText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            if !session.settlementText.isEmpty {
+                Text(session.settlementText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func paidExitSellerSessionCanCollect(_ session: NativePaidRouteSessionState) -> Bool {
+        session.paymentChannelReady
+            && session.paidMsat > 0
+            && !session.channelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func paidExitSellerCollectButtonTitle(_ session: NativePaidRouteSessionState) -> String {
+        fallbackText(session.collectActionText, session.allowRouting ? "End & Collect" : "Collect")
+    }
+
+    private func paidExitSellerCollectButtonIcon(_ session: NativePaidRouteSessionState) -> String {
+        session.allowRouting ? "stop.circle.fill" : "checkmark.seal.fill"
+    }
+
+    private func paidExitSellerCollectButtonHelp(_ session: NativePaidRouteSessionState) -> String {
+        fallbackText(session.collectActionHelpText, session.allowRouting ? "Stop routing and move paid channel funds to wallet" : "Move paid channel funds to wallet")
+    }
+
+    private func paidExitSellerSessionTitle(_ session: NativePaidRouteSessionState) -> String {
+        if !session.titleText.isEmpty {
+            return session.titleText
+        }
+        if session.allowRouting {
+            return "Buyer online"
+        }
+        if session.unpaidMsat > 0 {
+            return "Waiting for payment"
+        }
+        return session.statusText.isEmpty ? "Buyer session" : session.statusText
+    }
+
+    private func paidExitMeterTitle(_ value: String) -> String {
+        switch value {
+        case "milliseconds": return "Time"
+        case "packets": return "Packets"
+        default: return "Bytes"
+        }
+    }
+
+    private func paidExitNetworkClassTitle(_ value: String) -> String {
+        switch value {
+        case "datacenter": return "Datacenter"
+        case "residential": return "Residential"
+        case "mobile": return "Mobile"
+        case "satellite": return "Satellite"
+        case "community_mesh": return "Community mesh"
+        default: return "Unknown"
+        }
+    }
+
+    private func paidExitPrivateAccessTitle(_ value: String) -> String {
+        value == "denied" ? "Denied" : value
+    }
+
+    private func paidRouteOfferTitle(_ offer: NativePaidRouteOfferState) -> String {
+        let country = offer.countryCode.isEmpty ? "Unknown country" : offer.countryCode
+        let network = paidExitNetworkClassTitle(offer.networkClass)
+        return "\(country) - \(network)"
+    }
+
+    private func paidRouteVisibleOffers(_ market: NativePaidRouteMarketState) -> [NativePaidRouteOfferState] {
+        if market.hiddenOfferCount > 0 || !market.visibleOffers.isEmpty {
+            return market.visibleOffers
+        }
+        return market.offers
+    }
+
+    private func applyPaidRouteMarketFilter() {
+        manager.setPaidRouteMarketFilter(
+            countryCode: paidRouteOfferCountryFilter,
+            networkClass: paidRouteOfferNetworkFilter,
+            sort: paidRouteOfferSort
+        )
+    }
+
+    private func paidRouteWalletActionTitle(_ kind: String) -> String {
+        switch kind {
+        case "topup": return "Top up"
+        case "receive": return "Received"
+        case "send": return "Token ready"
+        case "withdraw": return "Withdrawn"
+        case "refresh": return "Wallet refreshed"
+        case "open_channel": return "Exit funded"
+        case "close": return "Channel closed"
+        default: return kind
+        }
+    }
+
+    private func paidRouteWalletActionIcon(_ kind: String) -> String {
+        switch kind {
+        case "topup": return "arrow.down.circle.fill"
+        case "receive": return "tray.and.arrow.down.fill"
+        case "send": return "paperplane.fill"
+        case "withdraw": return "bolt.fill"
+        case "open_channel": return "creditcard.fill"
+        default: return "creditcard.fill"
+        }
+    }
+
+    private func paidRoutePaymentActionTitle(_ kind: String) -> String {
+        switch kind {
+        case "send": return "Payment sent"
+        case "receive": return "Payment received"
+        case "apply": return "Payment applied"
+        case "create": return "Payment ready"
+        case "open_channel": return "Exit funded"
+        case "sign": return "Payment ready"
+        case "close": return "Channel closed"
+        case "collect": return "Collected"
+        case "stream": return "Payments sent"
+        case "probe": return "Quality checked"
+        default:
+            return kind.isEmpty ? "Payment" : kind.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private func paidRoutePaymentActionIcon(_ kind: String) -> String {
+        switch kind {
+        case "send": return "paperplane.fill"
+        case "receive": return "tray.and.arrow.down.fill"
+        case "apply": return "checkmark.seal.fill"
+        case "create": return "doc.badge.plus"
+        case "open_channel": return "creditcard.fill"
+        case "sign": return "arrow.up.forward.circle.fill"
+        case "close": return "checkmark.seal.fill"
+        case "collect": return "checkmark.seal.fill"
+        case "stream": return "arrow.up.right.circle.fill"
+        case "probe": return "speedometer"
+        default: return "creditcard.fill"
+        }
+    }
+
+    private func paidRouteIpText(ipv4: Bool, ipv6: Bool) -> String {
+        switch (ipv4, ipv6) {
+        case (true, true): return "IPv4/IPv6"
+        case (true, false): return "IPv4"
+        case (false, true): return "IPv6"
+        default: return "IP unknown"
+        }
+    }
+
+    private func paidRouteQualityText(latencyMs: UInt32, jitterMs: UInt32, packetLossPpm: UInt32) -> String {
+        if latencyMs == 0, jitterMs == 0, packetLossPpm == 0 {
+            return "Quality unmeasured"
+        }
+        let lossPercent = Double(packetLossPpm) / 10_000.0
+        return "\(latencyMs) ms · \(jitterMs) ms jitter · \(String(format: "%.2f", lossPercent))% loss"
+    }
+
+    private func paidRouteMetricText(_ qualityText: String, _ bandwidthText: String) -> String {
+        [qualityText, bandwidthText]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "Quality unmeasured" }
+            .joined(separator: " · ")
+    }
+
+    private func paidRouteSessionDetail(_ session: NativePaidRouteSessionState) -> String {
+        if !session.detailText.isEmpty {
+            return session.detailText
+        }
+        let access = paidRouteAccessTitle(session.accessState, fallback: session.lifecycleStatus)
+        let used = paidRouteUsageText(session)
+        return "\(access), \(used), \(formatPaidRouteMsat(session.amountDueMsat)) due"
+    }
+
+    private func paidRouteUsageText(_ session: NativePaidRouteSessionState) -> String {
+        if !session.usageText.isEmpty {
+            return session.usageText
+        }
+        if session.bytes > 0 {
+            return "\(formatBytes(session.bytes)) used"
+        }
+        if session.packets > 0 {
+            return "\(session.packets) packets"
+        }
+        return "\(session.deliveredUnits) units"
+    }
+
+    private func paidRouteAccessTitle(_ value: String, fallback: String) -> String {
+        switch value {
+        case "paid": return "Paid"
+        case "free_probe": return "Free test"
+        case "grace": return "Grace"
+        case "suspended": return "Paused"
+        default:
+            return paidRoutePlainStatus(value, fallback: fallback)
+        }
+    }
+
+    private func paidRoutePlainStatus(_ value: String, fallback: String) -> String {
+        let raw = value.isEmpty ? fallback : value
+        switch raw {
+        case "opening": return "Opening"
+        case "probing": return "Checking quality"
+        case "active": return "Active"
+        case "paused": return "Paused"
+        case "closed": return "Closed"
+        case "session": return "Session"
+        default:
+            return raw
+                .replacingOccurrences(of: "_", with: " ")
+                .capitalized
+        }
+    }
+
+    private func formatPaidRouteMsat(_ msat: UInt64) -> String {
+        if msat >= 1_000 {
+            let sats = Double(msat) / 1_000.0
+            return "\(String(format: "%.3f", sats)) sat"
+        }
+        return "\(msat) msat"
+    }
+
+    private func fallbackText(_ value: String, _ fallback: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : value
+    }
+
+    private func paidRoutePriceText(priceMsat: UInt64, perUnits: UInt64, meter: String, perUnitsText: String = "") -> String {
+        "\(formatPaidRouteMsat(priceMsat)) / \(fallbackText(perUnitsText, paidRouteMeterUnitText(perUnits, meter: meter)))"
+    }
+
+    private func paidRouteMeterUnitText(_ units: UInt64, meter: String) -> String {
+        switch meter {
+        case "bytes":
+            return formatDecimalBytes(units)
+        case "milliseconds", "millisecond", "ms":
+            return "\(units) ms"
+        case "packets", "packet":
+            return units == 1 ? "1 packet" : "\(units) packets"
+        case "":
+            return "\(units) units"
+        default:
+            return "\(units) \(meter)"
+        }
+    }
+
+    private func paidExitTrafficUnitDraft(_ units: UInt64, meter: String) -> String {
+        switch meter {
+        case "bytes":
+            return formatBinaryBytesCompact(units)
+        default:
+            return String(units)
+        }
+    }
+
+    private func paidExitPricingUnitDraft(_ units: UInt64, meter: String) -> String {
+        switch meter {
+        case "bytes":
+            return formatDecimalBytes(units)
+        default:
+            return String(units)
+        }
+    }
+
+    private func paidExitDurationDraft(_ seconds: UInt64) -> String {
+        if seconds == 0 {
+            return "0 sec"
+        }
+        if seconds % 86_400 == 0 {
+            let days = seconds / 86_400
+            return days == 1 ? "1 day" : "\(days) days"
+        }
+        if seconds % 3_600 == 0 {
+            let hours = seconds / 3_600
+            return hours == 1 ? "1 hour" : "\(hours) hours"
+        }
+        if seconds % 60 == 0 {
+            let minutes = seconds / 60
+            return minutes == 1 ? "1 min" : "\(minutes) min"
+        }
+        return "\(seconds) sec"
+    }
+
+    private func formatDecimalBytes(_ bytes: UInt64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var value = Double(bytes)
+        var index = 0
+        while value >= 1_000, index < units.count - 1 {
+            value /= 1_000
+            index += 1
+        }
+        if index == 0 {
+            return "\(bytes) B"
+        }
+        if value.rounded() == value {
+            return String(format: "%.0f %@", value, units[index])
+        }
+        return String(format: "%.1f %@", value, units[index])
+    }
+
+    private func formatBinaryBytesCompact(_ bytes: UInt64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var value = Double(bytes)
+        var index = 0
+        while value >= 1_024, index < units.count - 1 {
+            value /= 1_024
+            index += 1
+        }
+        if index == 0 {
+            return "\(bytes) B"
+        }
+        if value.rounded() == value {
+            return String(format: "%.0f %@", value, units[index])
+        }
+        return String(format: "%.1f %@", value, units[index])
+    }
+
+    private func formatBytes(_ bytes: UInt64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var value = Double(bytes)
+        var index = 0
+        while value >= 1_024, index < units.count - 1 {
+            value /= 1_024
+            index += 1
+        }
+        if index == 0 {
+            return "\(bytes) B"
+        }
+        if value.rounded() == value {
+            return String(format: "%.0f %@", value, units[index])
+        }
+        return String(format: "%.1f %@", value, units[index])
+    }
+
+    private func parsePositiveUInt64(_ value: String) -> UInt64? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = UInt64(trimmed), parsed > 0 else {
+            return nil
+        }
+        return parsed
     }
 
     private func routeChoice(
@@ -1415,7 +2916,7 @@ struct RootView: View {
                     get: { state.closeToTrayOnClose },
                     set: { manager.setCloseToTray($0) }
                 ), disabled: !state.trayBehaviorSupported)
-                settingsToggleRow("Block internet if exit node disconnects", isOn: Binding(
+                settingsToggleRow("Block internet if selected source disconnects", isOn: Binding(
                     get: { state.exitNodeLeakProtection },
                     set: { manager.setExitNodeLeakProtection($0) }
                 ), disabled: manager.actionInFlight)
@@ -1426,9 +2927,9 @@ struct RootView: View {
 
     private var publicFipsSettings: some View {
         surface {
-            sectionHeader("Public FIPS routing", systemImage: "network")
+            sectionHeader("Public .fips Addresses", systemImage: "network")
             VStack(alignment: .leading, spacing: 8) {
-                Text("FIPS gives .fips addresses end-to-end encryption and identity-based routing. Hosts can reach each other without static IPs, domain names, TLS certificates, or NAT port forwarding.")
+                Text("Public .fips addresses let hosts reach each other with end-to-end encryption, without static IPs, TLS certificates, or NAT port forwarding.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1436,7 +2937,7 @@ struct RootView: View {
                     Link("Learn FIPS", destination: url)
                         .font(.caption)
                 }
-                settingsToggleRow("Route npub.fips outside VPN", isOn: Binding(
+                settingsToggleRow("Let this Mac serve its public .fips address", isOn: Binding(
                     get: { state.fipsHostTunnelEnabled },
                     set: { manager.setFipsHostTunnel($0) }
                 ))
@@ -1500,13 +3001,33 @@ struct RootView: View {
     private var wireGuardExitSettings: some View {
         surface {
             sectionHeader("WireGuard Upstream", systemImage: "network")
-            Text("Paste a WireGuard config from an upstream VPN provider such as Mullvad or Proton VPN.")
+            wireGuardUpstreamEditor
+        }
+    }
+
+    private var wireGuardUpstreamSettings: some View {
+        surface {
+            disclosureSection(
+                title: "Upstream VPN",
+                systemImage: "network",
+                isExpanded: $wireGuardUpstreamExpanded,
+                font: .headline
+            ) {
+                wireGuardUpstreamEditor
+                    .padding(.top, 8)
+            }
+        }
+    }
+
+    private var wireGuardUpstreamEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Optional: paste a WireGuard config if you use a separate VPN provider.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             TextEditor(text: $wireguardExitConfig)
                 .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 180)
+                .frame(minHeight: 160)
                 .padding(6)
                 .background(Color(nsColor: .textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -1933,6 +3454,24 @@ struct RootView: View {
         if lastSyncedWireguardExitConfig != state.wireguardExitConfig {
             wireguardExitConfig = state.wireguardExitConfig
             lastSyncedWireguardExitConfig = state.wireguardExitConfig
+        }
+        if lastSyncedPaidExitSeller != state.paidExitSeller {
+            let seller = state.paidExitSeller
+            paidExitMeter = seller.meter
+            paidExitPriceMsat = String(seller.priceMsat)
+            paidExitPerUnits = fallbackText(seller.perUnitsText, paidExitPricingUnitDraft(seller.perUnits, meter: seller.meter))
+            paidExitAcceptedMints = seller.acceptedMints.joined(separator: ", ")
+            paidExitMaxChannelCapacitySat = String(seller.maxChannelCapacitySat)
+            paidExitChannelExpirySecs = paidExitDurationDraft(seller.channelExpirySecs)
+            paidExitFreeProbeUnits = fallbackText(seller.freeProbeText, paidExitTrafficUnitDraft(seller.freeProbeUnits, meter: seller.meter))
+            paidExitGraceUnits = fallbackText(seller.graceText, paidExitTrafficUnitDraft(seller.graceUnits, meter: seller.meter))
+            paidExitCountryCode = seller.countryCode
+            paidExitRegion = seller.region
+            paidExitAsn = seller.asn == 0 ? "" : String(seller.asn)
+            paidExitNetworkClass = seller.networkClass
+            paidExitIpv4 = seller.ipv4
+            paidExitIpv6 = seller.ipv6
+            lastSyncedPaidExitSeller = seller
         }
 
         for network in state.networks {
@@ -2380,7 +3919,10 @@ struct InviteQRCodeView: View {
 
 enum SidebarItem: Hashable {
     case devices
-    case routing
+    case internet
+    case publicExits
+    case sellExit
+    case wallet
     case settings
 }
 
@@ -2432,6 +3974,9 @@ private func formatBytes(_ bytes: UInt64) -> String {
     }
     if unitIndex == 0 {
         return "\(bytes) B"
+    }
+    if value.rounded() == value {
+        return String(format: "%.0f %@", value, units[unitIndex])
     }
     return String(format: "%.1f %@", value, units[unitIndex])
 }

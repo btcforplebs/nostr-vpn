@@ -235,6 +235,7 @@
             }],
             direct_udp_endpoint_config(alice_port, &bob_npub, bob_port, true),
             vec![format!("{alice_ip}/32")],
+            Vec::new(),
         )
         .await
         .expect("alice endpoint should bind");
@@ -248,6 +249,7 @@
             }],
             direct_udp_endpoint_config(bob_port, &alice_npub, alice_port, false),
             vec![format!("{bob_ip}/32")],
+            Vec::new(),
         )
         .await
         .expect("bob endpoint should bind");
@@ -319,6 +321,7 @@
             ],
             direct_udp_endpoint_config_many(alice_port, &[(&bob_npub, bob_port, true)]),
             vec![format!("{alice_ip}/32")],
+            Vec::new(),
         )
         .await
         .expect("alice endpoint should bind");
@@ -345,6 +348,7 @@
                 ],
             ),
             vec![format!("{bob_ip}/32")],
+            Vec::new(),
         )
         .await
         .expect("bob endpoint should bind");
@@ -365,6 +369,7 @@
             ],
             direct_udp_endpoint_config_many(carol_port, &[(&bob_npub, bob_port, true)]),
             vec![format!("{carol_ip}/32")],
+            Vec::new(),
         )
         .await
         .expect("carol endpoint should bind");

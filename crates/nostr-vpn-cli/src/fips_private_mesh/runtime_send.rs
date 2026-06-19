@@ -12,7 +12,7 @@ impl FipsPrivateMeshRuntime {
             private_mesh_mtu_from_app(None),
             fips_nostr_discovery_policy_from_env(),
         );
-        Self::bind_with_config(identity_nsec, scope, peers, config, Vec::new()).await
+        Self::bind_with_config(identity_nsec, scope, peers, config, Vec::new(), Vec::new()).await
     }
 
     async fn bind_with_config(
@@ -21,6 +21,7 @@ impl FipsPrivateMeshRuntime {
         peers: Vec<FipsMeshPeerConfig>,
         config: Config,
         local_allowed_ips: Vec<String>,
+        paid_route_admissions: Vec<FipsPaidRouteAdmission>,
     ) -> Result<Self> {
         let scope = scope.into();
         let endpoint = FipsEndpoint::builder()
@@ -32,7 +33,11 @@ impl FipsPrivateMeshRuntime {
             .await
             .context("failed to bind embedded FIPS endpoint")?;
         let peer_identities = peer_identity_map(&peers);
-        let mesh = FipsMeshRuntime::with_local_routes(peers, local_allowed_ips);
+        let mesh = FipsMeshRuntime::with_local_routes_and_paid_route_admissions(
+            peers,
+            local_allowed_ips,
+            paid_route_admissions,
+        );
         let peer_activity = peer_activity_map(&mesh.peer_pubkeys(), None);
 
         Ok(Self {

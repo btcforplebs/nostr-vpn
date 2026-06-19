@@ -32,6 +32,26 @@ public static class NativeActions
     public static string RemoveAdmin(string networkId, string npub) => AppCoreClient.Action(new { type = "remove_admin", networkId, npub });
     public static string SetParticipantAlias(string npub, string alias) => AppCoreClient.Action(new { type = "set_participant_alias", npub, alias });
     public static string SetParticipantEndpointHints(string npub, List<string> endpointHints) => AppCoreClient.Action(new { type = "set_participant_endpoint_hints", npub, endpointHints });
+    public static string AddPaidRouteWalletMint(string url, string? label = null) => AppCoreClient.Action(new { type = "add_paid_route_wallet_mint", url, label });
+    public static string RemovePaidRouteWalletMint(string url) => AppCoreClient.Action(new { type = "remove_paid_route_wallet_mint", url });
+    public static string SetPaidRouteDefaultMint(string url) => AppCoreClient.Action(new { type = "set_paid_route_default_mint", url });
+    public static string RefreshPaidRouteWallet(bool refresh = true) => AppCoreClient.Action(new { type = "refresh_paid_route_wallet", refresh });
+    public static string TopUpPaidRouteWallet(string? mintUrl, ulong amountSat) => AppCoreClient.Action(new { type = "top_up_paid_route_wallet", mintUrl, amountSat });
+    public static string ReceivePaidRouteWalletToken(string token) => AppCoreClient.Action(new { type = "receive_paid_route_wallet_token", token });
+    public static string SendPaidRouteWalletToken(string? mintUrl, ulong amountSat) => AppCoreClient.Action(new { type = "send_paid_route_wallet_token", mintUrl, amountSat });
+    public static string WithdrawPaidRouteWalletLightning(string? mintUrl, string invoice) => AppCoreClient.Action(new { type = "withdraw_paid_route_wallet_lightning", mintUrl, invoice });
+    public static string BuyPaidRouteOffer(string offerKey, string? mintUrl = null, ulong? channelCapacitySat = null) => AppCoreClient.Action(new { type = "buy_paid_route_offer", offerKey, mintUrl, channelCapacitySat });
+    public static string SelectPaidRouteSession(string sessionId, bool connect) => AppCoreClient.Action(new { type = "select_paid_route_session", sessionId, connect });
+    public static string ProbePaidRouteSession(string sessionId, ulong timeoutSecs = 5) => AppCoreClient.Action(new { type = "probe_paid_route_session", sessionId, timeoutSecs });
+    public static string OpenPaidRouteChannelFromWallet(string sessionId, string? mintUrl = null, ulong? paidMsat = null, ulong? maxAmountPerOutput = null, string? keysetId = null) => AppCoreClient.Action(new { type = "open_paid_route_channel_from_wallet", sessionId, mintUrl, paidMsat, maxAmountPerOutput, keysetId });
+    public static string SignPaidRoutePaymentEnvelopeFromWallet(string sessionId, string kind = "balance-update", ulong? deliveredUnits = null, ulong? paidMsat = null) => AppCoreClient.Action(new { type = "sign_paid_route_payment_envelope_from_wallet", sessionId, kind, deliveredUnits, paidMsat });
+    public static string ClosePaidRouteChannelFromWallet(string sessionId, bool publish = true) => AppCoreClient.Action(new { type = "close_paid_route_channel_from_wallet", sessionId, publish });
+    public static string SendPaidRoutePaymentEnvelope(string envelopeJson) => AppCoreClient.Action(new { type = "send_paid_route_payment_envelope", envelopeJson });
+    public static string StreamPaidRoutePayments(bool publish = true, ulong minIncrementMsat = 1, ulong limit = 0) => AppCoreClient.Action(new { type = "stream_paid_route_payments", publish, minIncrementMsat, limit });
+    public static string ReceivePaidRoutePayments(ulong durationSecs = 5) => AppCoreClient.Action(new { type = "receive_paid_route_payments", durationSecs });
+    public static string CollectDuePaidExitChannels() => AppCoreClient.Action(new { type = "collect_due_paid_exit_channels" });
+    public static string PublishPaidExitOffer() => AppCoreClient.Action(new { type = "publish_paid_exit_offer" });
+    public static string DiscoverPaidRouteOffers(ulong durationSecs = 5) => AppCoreClient.Action(new { type = "discover_paid_route_offers", durationSecs });
     public static string UpdateSettings(SettingsPatch patch) => AppCoreClient.Action(new { type = "update_settings", patch });
 }
 
@@ -59,6 +79,22 @@ public sealed class SettingsPatch
     public ushort? WireguardExitMtu { get; set; }
     public ushort? WireguardExitPersistentKeepaliveSecs { get; set; }
     public string? WireguardExitConfig { get; set; }
+    public bool? PaidExitEnabled { get; set; }
+    public string? PaidExitUpstream { get; set; }
+    public string? PaidExitMeter { get; set; }
+    public ulong? PaidExitPriceMsat { get; set; }
+    public ulong? PaidExitPerUnits { get; set; }
+    public string? PaidExitAcceptedMints { get; set; }
+    public ulong? PaidExitMaxChannelCapacitySat { get; set; }
+    public ulong? PaidExitChannelExpirySecs { get; set; }
+    public ulong? PaidExitFreeProbeUnits { get; set; }
+    public ulong? PaidExitGraceUnits { get; set; }
+    public string? PaidExitCountryCode { get; set; }
+    public string? PaidExitRegion { get; set; }
+    public string? PaidExitAsn { get; set; }
+    public string? PaidExitNetworkClass { get; set; }
+    public bool? PaidExitIpv4 { get; set; }
+    public bool? PaidExitIpv6 { get; set; }
     public bool? FipsHostTunnelEnabled { get; set; }
     public bool? ConnectToNonRosterFipsPeers { get; set; }
     public bool? FipsNostrDiscoveryEnabled { get; set; }

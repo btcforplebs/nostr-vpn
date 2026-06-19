@@ -22,6 +22,7 @@ impl AppConfig {
         self.fips_host_inbound_tcp_ports.sort_unstable();
         self.fips_host_inbound_tcp_ports.dedup();
         normalize_wireguard_exit_config(&mut self.wireguard_exit);
+        self.paid_exit.normalize();
         self.nostr.relays = normalize_relay_urls(std::mem::take(&mut self.nostr.relays));
         self.nostr.disabled_relays =
             normalize_relay_urls(std::mem::take(&mut self.nostr.disabled_relays));
@@ -64,6 +65,13 @@ impl AppConfig {
             && self.exit_node == own_pubkey
         {
             self.exit_node.clear();
+            self.exit_node_public_paid_exit = false;
+        }
+        if self.exit_node.is_empty()
+            || !self.connect_to_non_roster_fips_peers
+            || !self.fips_nostr_discovery_enabled
+        {
+            self.exit_node_public_paid_exit = false;
         }
 
         let mut used_ids = HashSet::new();

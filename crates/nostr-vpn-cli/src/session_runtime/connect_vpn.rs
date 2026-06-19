@@ -60,6 +60,7 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
     let mut fips_tunnel_runtime = {
         let config = fips_tunnel_config_from_app(
             &app,
+            &config_path,
             &network_id,
             iface.clone(),
             own_pubkey.as_deref(),
@@ -133,6 +134,7 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
                             if let Err(error) = refresh_fips_tunnel_config(
                                 runtime,
                                 &app,
+                                &config_path,
                                 &network_id,
                                 own_pubkey.as_deref(),
                             )

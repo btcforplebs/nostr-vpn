@@ -14,6 +14,8 @@ RUN case "$NVPN_E2E_BUILDER_APT_INSTALL" in \
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY --from=cashu-service . /app/cashu-service
+COPY --from=cashu-spilman-channels . /app/cashu_spilman_channels
 COPY --from=fips . /app/fips
 
 ARG NVPN_PATCH_LOCAL_FIPS=0
@@ -40,8 +42,11 @@ RUN case "$NVPN_PATCH_LOCAL_FIPS" in \
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/nostr-vpn/target \
+    --mount=type=cache,target=/app/cashu_spilman_channels/target \
     cargo build --release --features embedded-fips -p nvpn \
-    && cp target/release/nvpn /tmp/nvpn
+    && cargo build --release --manifest-path /app/cashu_spilman_channels/Cargo.toml -p cdk-spilman-test-mint \
+    && cp target/release/nvpn /tmp/nvpn \
+    && cp /app/cashu_spilman_channels/target/release/cdk-spilman-test-mintd /tmp/cdk-spilman-test-mintd
 
 FROM ${NVPN_E2E_RUNTIME_IMAGE} AS runtime
 ARG NVPN_E2E_RUNTIME_APT_INSTALL=1
@@ -53,5 +58,6 @@ RUN case "$NVPN_E2E_RUNTIME_APT_INSTALL" in \
       esac
 
 COPY --from=builder /tmp/nvpn /usr/local/bin/nvpn
+COPY --from=builder /tmp/cdk-spilman-test-mintd /usr/local/bin/cdk-spilman-test-mintd
 
 ENV RUST_LOG=info

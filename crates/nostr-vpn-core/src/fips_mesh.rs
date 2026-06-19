@@ -8,6 +8,8 @@ use sha2::{Digest, Sha256};
 
 use crate::config::normalize_nostr_pubkey;
 use crate::data_plane::{MeshPeerStatus, PrivatePacket};
+use crate::paid_route_store::PaidRouteSellerAdmission;
+use crate::paid_routes::PaidRouteAccessState;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FipsMeshPeerConfig {
@@ -45,6 +47,38 @@ pub struct OutgoingFipsPacket {
     pub bytes: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FipsPaidRouteAdmission {
+    pub participant_pubkey: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_ips: Vec<String>,
+    pub allow_routing: bool,
+    pub state: PaidRouteAccessState,
+    pub amount_due_msat: u64,
+    pub paid_msat: u64,
+    pub unpaid_msat: u64,
+    pub expires_at_unix: u64,
+    pub updated_at_unix: u64,
+}
+
+impl From<PaidRouteSellerAdmission> for FipsPaidRouteAdmission {
+    fn from(value: PaidRouteSellerAdmission) -> Self {
+        Self {
+            participant_pubkey: value.buyer_pubkey,
+            session_id: value.session_id,
+            allowed_ips: Vec::new(),
+            allow_routing: value.allow_routing,
+            state: value.state,
+            amount_due_msat: value.amount_due_msat,
+            paid_msat: value.paid_msat,
+            unpaid_msat: value.unpaid_msat,
+            expires_at_unix: value.expires_at_unix,
+            updated_at_unix: value.updated_at_unix,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct RoutedFipsPacket<'a> {
     pub participant_pubkey: &'a str,
@@ -73,6 +107,8 @@ pub struct AcceptedFipsPacket<'a> {
 pub struct FipsMeshRuntime {
     peers: Vec<FipsMeshPeerRuntime>,
     local_routes: Vec<IpRoute>,
+    paid_route_admissions: HashMap<[u8; 32], FipsPaidRouteAdmission>,
+    paid_route_peers: Vec<FipsMeshPeerRuntime>,
     participant_peer_index: HashMap<[u8; 32], usize>,
     endpoint_pubkey_peer_index: HashMap<[u8; 32], usize>,
     endpoint_node_addr_peer_index: HashMap<[u8; 16], usize>,
@@ -118,6 +154,14 @@ impl FipsMeshRuntime {
         peers: Vec<FipsMeshPeerConfig>,
         local_allowed_ips: Vec<String>,
     ) -> Self {
+        Self::with_local_routes_and_paid_route_admissions(peers, local_allowed_ips, Vec::new())
+    }
+
+    pub fn with_local_routes_and_paid_route_admissions(
+        peers: Vec<FipsMeshPeerConfig>,
+        local_allowed_ips: Vec<String>,
+        paid_route_admissions: Vec<FipsPaidRouteAdmission>,
+    ) -> Self {
         let peers = peers
             .into_iter()
             .map(|peer| {
@@ -155,9 +199,14 @@ impl FipsMeshRuntime {
             .filter_map(|route| IpRoute::parse(route))
             .collect();
 
+        let paid_route_admissions = normalize_paid_route_admissions(paid_route_admissions);
+        let paid_route_peers = paid_route_peers_from_admissions(&paid_route_admissions);
+
         Self {
             peers,
             local_routes,
+            paid_route_admissions,
+            paid_route_peers,
             participant_peer_index,
             endpoint_pubkey_peer_index,
             endpoint_node_addr_peer_index,
@@ -165,6 +214,14 @@ impl FipsMeshRuntime {
             prefix_v4_route_peer_index,
             prefix_v6_route_peer_index,
         }
+    }
+
+    pub fn replace_paid_route_admissions(
+        &mut self,
+        paid_route_admissions: Vec<FipsPaidRouteAdmission>,
+    ) {
+        self.paid_route_admissions = normalize_paid_route_admissions(paid_route_admissions);
+        self.paid_route_peers = paid_route_peers_from_admissions(&self.paid_route_admissions);
     }
 
     pub fn route_outbound_packet(&self, packet: &[u8]) -> Option<OutgoingFipsPacket> {
@@ -326,15 +383,9 @@ impl FipsMeshRuntime {
         if peer.endpoint_pubkey.as_ref()? != &source_pubkey {
             return None;
         }
-        if !self.local_routes.is_empty() {
-            let packet_destination = packet_destination(data)?;
-            if !self
-                .local_routes
-                .iter()
-                .any(|route| route.matches(packet_destination))
-            {
-                return None;
-            }
+        let packet_destination = packet_destination(data)?;
+        if !self.peer_allows_inbound_destination(peer, packet_destination) {
+            return None;
         }
         Some(peer)
     }
@@ -505,9 +556,144 @@ impl FipsMeshRuntime {
         if ambiguous {
             None
         } else {
-            best_peer_index.and_then(|peer_index| self.peers.get(peer_index))
+            best_peer_index
+                .and_then(|peer_index| self.peers.get(peer_index))
+                .or_else(|| select_paid_route_peer_for_ip(&self.paid_route_peers, destination))
         }
     }
+
+    fn peer_allows_inbound_destination(
+        &self,
+        peer: &FipsMeshPeerRuntime,
+        destination: IpAddr,
+    ) -> bool {
+        let paid_admission = peer
+            .participant_pubkey
+            .as_ref()
+            .and_then(|participant| self.paid_route_admissions.get(participant));
+        if paid_admission.is_some_and(|admission| !admission.allow_routing) {
+            return false;
+        }
+        if self.local_routes.is_empty() {
+            return true;
+        }
+        let Some(local_route) = self.select_local_route_for_ip(destination) else {
+            return false;
+        };
+        if paid_admission.is_some() {
+            return local_route.is_default_route();
+        }
+        true
+    }
+
+    fn select_local_route_for_ip(&self, destination: IpAddr) -> Option<IpRoute> {
+        self.local_routes
+            .iter()
+            .copied()
+            .filter(|route| route.matches(destination))
+            .max_by_key(|route| route.prefix_len)
+    }
+}
+
+fn normalize_paid_route_admissions(
+    admissions: Vec<FipsPaidRouteAdmission>,
+) -> HashMap<[u8; 32], FipsPaidRouteAdmission> {
+    let mut by_participant = HashMap::new();
+    for mut admission in admissions {
+        let Some(participant_pubkey) = parse_nostr_pubkey_bytes(&admission.participant_pubkey)
+        else {
+            continue;
+        };
+        admission.participant_pubkey = hex::encode(participant_pubkey);
+        let replace = by_participant
+            .get(&participant_pubkey)
+            .is_none_or(|existing| paid_route_admission_preferred(&admission, existing));
+        if replace {
+            by_participant.insert(participant_pubkey, admission);
+        }
+    }
+    by_participant
+}
+
+fn paid_route_admission_preferred(
+    candidate: &FipsPaidRouteAdmission,
+    existing: &FipsPaidRouteAdmission,
+) -> bool {
+    match (candidate.allow_routing, existing.allow_routing) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => candidate.updated_at_unix > existing.updated_at_unix,
+    }
+}
+
+fn paid_route_peers_from_admissions(
+    admissions: &HashMap<[u8; 32], FipsPaidRouteAdmission>,
+) -> Vec<FipsMeshPeerRuntime> {
+    let mut peers = admissions
+        .values()
+        .filter_map(|admission| {
+            let routes = admission
+                .allowed_ips
+                .iter()
+                .filter_map(|route| IpRoute::parse(route))
+                .collect::<Vec<_>>();
+            if routes.is_empty() {
+                return None;
+            }
+            let participant_pubkey = parse_nostr_pubkey_bytes(&admission.participant_pubkey)?;
+            let endpoint_node_addr = endpoint_node_addr_from_pubkey_bytes(participant_pubkey);
+            let endpoint_npub = npub_for_pubkey_bytes(&participant_pubkey).ok()?;
+            Some(FipsMeshPeerRuntime {
+                participant_pubkey: Some(participant_pubkey),
+                participant_pubkey_hex: hex::encode(participant_pubkey),
+                endpoint_npub: Some(endpoint_npub),
+                endpoint_pubkey: Some(participant_pubkey),
+                endpoint_node_addr: Some(endpoint_node_addr),
+                routes,
+            })
+        })
+        .collect::<Vec<_>>();
+    peers.sort_by(|left, right| left.participant_pubkey_hex.cmp(&right.participant_pubkey_hex));
+    peers.dedup_by(|left, right| same_participant(left, right));
+    peers
+}
+
+fn select_paid_route_peer_for_ip(
+    peers: &[FipsMeshPeerRuntime],
+    destination: IpAddr,
+) -> Option<&FipsMeshPeerRuntime> {
+    let mut best_peer = None;
+    let mut best_prefix = None;
+    let mut ambiguous = false;
+
+    for peer in peers {
+        for route in &peer.routes {
+            if !route.matches(destination) {
+                continue;
+            }
+            match best_prefix {
+                None => {
+                    best_peer = Some(peer);
+                    best_prefix = Some(route.prefix_len);
+                    ambiguous = false;
+                }
+                Some(prefix) if route.prefix_len > prefix => {
+                    best_peer = Some(peer);
+                    best_prefix = Some(route.prefix_len);
+                    ambiguous = false;
+                }
+                Some(prefix)
+                    if route.prefix_len == prefix
+                        && best_peer.is_some_and(|best| !same_participant(best, peer)) =>
+                {
+                    ambiguous = true;
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    if ambiguous { None } else { best_peer }
 }
 
 fn participant_peer_index(peers: &[FipsMeshPeerRuntime]) -> HashMap<[u8; 32], usize> {
@@ -665,6 +851,16 @@ impl IpRoute {
             IpAddr::V6(ip) if self.prefix_len == 128 => Some(IpAddr::V6(ip)),
             _ => None,
         }
+    }
+
+    fn is_default_route(self) -> bool {
+        matches!(
+            (self.network, self.prefix_len),
+            (IpAddr::V4(ip), 0) if ip == Ipv4Addr::UNSPECIFIED
+        ) || matches!(
+            (self.network, self.prefix_len),
+            (IpAddr::V6(ip), 0) if ip == Ipv6Addr::UNSPECIFIED
+        )
     }
 }
 

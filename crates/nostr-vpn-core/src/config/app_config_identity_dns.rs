@@ -109,6 +109,13 @@ impl AppConfig {
             return;
         }
 
+        if self.exit_node_public_paid_exit
+            && self.connect_to_non_roster_fips_peers
+            && self.fips_nostr_discovery_enabled
+        {
+            return;
+        }
+
         if !self
             .active_network_signal_pubkeys_hex()
             .iter()
