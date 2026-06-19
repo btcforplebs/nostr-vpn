@@ -238,6 +238,10 @@ run_loaded_latency_dry_run() {
     || fail "loaded latency dry-run did not include sample interval"
   grep -Fq 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_P99_MS=1000' "$out" \
     || fail "loaded latency dry-run did not include default p99 threshold"
+  grep -Fq 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_SUB_1MBPS_INTERVALS=0' "$out" \
+    || fail "loaded latency dry-run did not include default sub-1 Mbps threshold"
+  grep -Fq 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_STALL_INTERVALS=1' "$out" \
+    || fail "loaded latency dry-run did not include default stall threshold"
   grep -Fq 'release-gate-host-pair-loaded-latency.sh' "$out" \
     || fail "loaded latency dry-run did not include script path"
   rm -rf "$dir"

@@ -31,7 +31,8 @@ MAX_PING_P99_MS="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_P99_MS:-1000}"
 MAX_PING_GT350="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_GT350:-10}"
 MAX_PING_GT350_PERCENT="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_GT350_PERCENT:-1.0}"
 MAX_PING_GT1000="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_GT1000:-0}"
-MAX_IPERF_STALL_INTERVALS="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_STALL_INTERVALS:-0}"
+MAX_IPERF_SUB_1MBPS_INTERVALS="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_SUB_1MBPS_INTERVALS:-0}"
+MAX_IPERF_STALL_INTERVALS="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_STALL_INTERVALS:-1}"
 OUTPUT_DIR="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_OUTPUT_DIR:-$ROOT_DIR/artifacts/host-pair-loaded-latency/$(date -u +%Y%m%dT%H%M%SZ)}"
 
 is_disabled() {
@@ -117,6 +118,7 @@ print_dry_run_env() {
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_PING_INTERVAL_SECS=%q\n' "$PING_INTERVAL_SECS"
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_IPERF_DURATION_SECS=%q\n' "$IPERF_DURATION_SECS"
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MIN_INTERVAL_MBPS=%q\n' "$MIN_IPERF_INTERVAL_MBPS"
+  printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_SUB_1MBPS_INTERVALS=%q\n' "$MAX_IPERF_SUB_1MBPS_INTERVALS"
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_STALL_INTERVALS=%q\n' "$MAX_IPERF_STALL_INTERVALS"
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_P99_MS=%q\n' "$MAX_PING_P99_MS"
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_GT350=%q\n' "$MAX_PING_GT350"
@@ -286,9 +288,10 @@ run_gate() {
   printf 'host-pair loaded latency iperf summary:\n'
   cat "$OUTPUT_DIR/iperf-summary.tsv"
 
-  local count loss avg p95 p99 max spikes350 spikes1000 nulls min_stalls gt350_pct
+  local count loss avg p95 p99 max spikes350 spikes1000 nulls sub1_stalls min_stalls gt350_pct
   read -r count loss avg p95 p99 max spikes350 spikes1000 < <(sed -n '2p' "$OUTPUT_DIR/ping-summary.tsv")
   nulls="$(awk -F '\t' 'NR > 1 && $3 == "null" {c++} END{print c+0}' "$OUTPUT_DIR/iperf-summary.tsv")"
+  sub1_stalls="$(awk -F '\t' 'NR > 1 {c += $5} END{print c+0}' "$OUTPUT_DIR/iperf-summary.tsv")"
   min_stalls="$(awk -F '\t' 'NR > 1 {c += $6} END{print c+0}' "$OUTPUT_DIR/iperf-summary.tsv")"
   gt350_pct="$(awk -v spikes="$spikes350" -v count="$count" 'BEGIN{if(count <= 0) print 100; else printf "%.6f", (spikes * 100.0) / count}')"
 
@@ -298,6 +301,8 @@ run_gate() {
   assert_float_at_most "$gt350_pct" "$MAX_PING_GT350_PERCENT" "ping spikes >350 ms %"
   assert_int_at_most "$spikes1000" "$MAX_PING_GT1000" "ping spikes >1000 ms"
   assert_int_at_most "$nulls" "$MAX_IPERF_NULL_SAMPLES" "iperf null samples"
+  assert_int_at_most "$sub1_stalls" "$MAX_IPERF_SUB_1MBPS_INTERVALS" \
+    "iperf intervals below 1 Mbps"
   assert_int_at_most "$min_stalls" "$MAX_IPERF_STALL_INTERVALS" \
     "iperf intervals below ${MIN_IPERF_INTERVAL_MBPS} Mbps"
 }
