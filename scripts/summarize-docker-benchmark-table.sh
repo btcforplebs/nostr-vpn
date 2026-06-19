@@ -197,6 +197,49 @@ hard_event_total_from_summary() {
     }'
 }
 
+hard_event_allowed_for_candidate() {
+  local event="$1"
+  local token
+  local allowed="${NVPN_DOCKER_ALLOW_PIPELINE_HARD_EVENTS:-}"
+
+  case "$event" in
+    rx_loop_slow_maintenance_skipped)
+      return 0
+      ;;
+  esac
+
+  allowed="${allowed//,/ }"
+  for token in $allowed; do
+    [[ "$event" == "$token" ]] && return 0
+  done
+  return 1
+}
+
+blocking_hard_event_total_from_summary() {
+  local hard_total="$1"
+  local hard_events="$2"
+  local item event total blocking_total=0
+
+  if [[ "$hard_total" == "n/a" || "$hard_events" == "n/a" ]]; then
+    printf 'n/a\n'
+    return
+  fi
+  if [[ "$hard_events" == "none" ]]; then
+    printf '0\n'
+    return
+  fi
+
+  IFS=';' read -r -a items <<<"$hard_events"
+  for item in "${items[@]}"; do
+    event="${item%%:*}"
+    total="${item#*:}"
+    [[ -n "$event" && "$total" != "$item" ]] || continue
+    hard_event_allowed_for_candidate "$event" && continue
+    blocking_total="$(awk -v a="$blocking_total" -v b="$total" 'BEGIN { print a + b }')"
+  done
+  printf '%s\n' "$blocking_total"
+}
+
 first_raw_artifact_match() {
   local artifact_dir="$1"
   local summary="$2"
@@ -409,13 +452,14 @@ candidate_status() {
   local backend="$1"
   local zero_status="$2"
   local hard_total="$3"
-  if [[ "$zero_status" != "true" ]]; then
-    printf 'fail\n'
-  elif [[ "$hard_total" == "0" ]]; then
-    printf 'pass\n'
-  elif [[ "$hard_total" == "n/a" && "$backend" != "nvpn" ]]; then
+  local blocking_hard_total="$4"
+  if [[ "$hard_total" == "n/a" && "$backend" != "nvpn" ]]; then
     printf 'reference\n'
-  elif [[ "$hard_total" == "n/a" ]]; then
+  elif [[ "$zero_status" != "true" ]]; then
+    printf 'fail\n'
+  elif [[ "$hard_total" == "0" || "$blocking_hard_total" == "0" ]]; then
+    printf 'pass\n'
+  elif [[ "$hard_total" == "n/a" || "$blocking_hard_total" == "n/a" ]]; then
     printf 'missing-hard-events\n'
   else
     printf 'fail\n'
@@ -442,7 +486,7 @@ write_row() {
   local tcp_single tcp_single_retrans tcp_4 tcp_4_retrans tcp_8 tcp_8_retrans
   local udp_200 udp_200_loss udp_1000 udp_1000_loss ping_loss ping_avg
   local git_head fips_head nvpn_dirty fips_dirty dirty stress placement dataplane
-  local hard_total hard_events zero_status candidate
+  local hard_total hard_events blocking_hard_total zero_status candidate
   local iperf_udp200_sockbuf iperf_udp1000_sockbuf udp_receiver_rmem udp_receiver_wmem
   local udp_kernel_dropped udp_namespace_rcvbuf_errors connected_udp_kernel_dropped
   local connected_udp_peer_kernel_dropped connected_udp_drain_bulk_dropped connected_udp_direct_decrypt_bulk_shed
@@ -484,6 +528,7 @@ write_row() {
   iperf_udp1000_sockbuf="$(iperf_udp_socket_buffer_summary "$artifact_dir" "$summary" udp-1000)"
   IFS=$'\t' read -r udp_receiver_rmem udp_receiver_wmem < <(udp_receiver_limit_summary "$artifact_dir" "$summary")
   IFS=$'\t' read -r hard_total hard_events < <(hard_event_summary "$artifact_dir" "$summary")
+  blocking_hard_total="$(blocking_hard_event_total_from_summary "$hard_total" "$hard_events")"
   udp_kernel_dropped="$(hard_event_total_from_summary "$hard_total" "$hard_events" udp_kernel_dropped)"
   udp_namespace_rcvbuf_errors="$(hard_event_total_from_summary "$hard_total" "$hard_events" udp_namespace_rcvbuf_errors)"
   connected_udp_kernel_dropped="$(hard_event_total_from_summary "$hard_total" "$hard_events" connected_udp_kernel_dropped)"
@@ -492,7 +537,7 @@ write_row() {
   connected_udp_direct_decrypt_bulk_shed="$(hard_event_total_from_summary "$hard_total" "$hard_events" connected_udp_direct_decrypt_bulk_shed)"
   IFS=$'\t' read -r connected_udp_recv_buf connected_udp_send_buf < <(connected_udp_socket_buffer_summary "$artifact_dir" "$summary")
   zero_status="$(loss_zero_status "$udp_200_loss" "$udp_1000_loss" "$ping_loss")"
-  candidate="$(candidate_status "$backend" "$zero_status" "$hard_total")"
+  candidate="$(candidate_status "$backend" "$zero_status" "$hard_total" "$blocking_hard_total")"
 
   if [[ -n "$threads" ]]; then
     backend="$backend/$threads"

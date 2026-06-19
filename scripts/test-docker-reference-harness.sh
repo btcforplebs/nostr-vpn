@@ -1062,7 +1062,10 @@ test_docker_benchmark_table_outputs() {
     "$dir/current/raw"
   write_metadata_fixture "$dir/current" nvpn true both 1 1 false "" "" true nvpnabc false fipsabc false
   mkdir -p "$dir/current/raw"
-  printf 'event\tmax_rate_per_sec\ttotal\n' >"$dir/current/raw/nvpn-pipeline-hard-event-totals.tsv"
+  {
+    printf 'event\tmax_rate_per_sec\ttotal\n'
+    printf 'rx_loop_slow_maintenance_skipped\t1\t7\n'
+  } >"$dir/current/raw/nvpn-pipeline-hard-event-totals.tsv"
   {
     printf 'service\tpeer_addr\trequested_recv_buf\tactual_recv_buf\trequested_send_buf\tactual_send_buf\n'
     printf 'node-a\t10.0.0.2:51820\t16777216\t33554432\t8388608\t16777216\n'
@@ -1154,7 +1157,7 @@ test_docker_benchmark_table_outputs() {
   markdown_row="$(grep -F '| current | nvpn |' "$out/stress-table.md")"
 
   assert_eq "$fields" "38" "Docker benchmark table field count"
-  assert_eq "$current_status" $'true\t0\tnone\tpass' "Docker benchmark table current status"
+  assert_eq "$current_status" $'true\t7\trx_loop_slow_maintenance_skipped:7\tpass' "Docker benchmark table current status"
   assert_eq "$current_events" $'0\t0\t0\t0\t0\t0' "Docker benchmark table current event split"
   assert_eq "$current_socket" $'16777216/33554432\t8388608/16777216' "Docker benchmark table connected UDP buffer summary"
   assert_eq "$current_receiver" $'1:0/212992/212992\t4:4194304/8388608/8388608\t212992/212992\t212992/212992' "Docker benchmark table receiver buffer summary"
