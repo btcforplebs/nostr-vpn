@@ -87,6 +87,13 @@ PIPELINE_TRACE="${NVPN_PERF_PIPELINE_TRACE:-1}"
 PIPELINE_INTERVAL_SECS="${NVPN_PERF_PIPELINE_INTERVAL_SECS:-5}"
 FAIL_ON_PRIORITY_HARD_EVENTS="${NVPN_PERF_FAIL_ON_PRIORITY_HARD_EVENTS:-1}"
 MAX_PRIORITY_QUEUE_WAIT_MS="${NVPN_PERF_MAX_PRIORITY_QUEUE_WAIT_MS:-50}"
+if [[ -n "${NVPN_PERF_RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS+x}" ]]; then
+  RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS="$NVPN_PERF_RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS"
+elif awk -v threshold_ms="$MAX_PRIORITY_QUEUE_WAIT_MS" 'BEGIN { exit !((threshold_ms + 0) > 0) }'; then
+  RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS=150
+else
+  RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS="$MAX_PRIORITY_QUEUE_WAIT_MS"
+fi
 EXTRA_ENV="${NVPN_PERF_EXTRA_ENV:-}"
 DIRECT_COUNTER_COMMENT="nvpn-direct-underlay"
 PERF_OUTPUT_DIR="${NVPN_PERF_OUTPUT_DIR:-}"
@@ -142,6 +149,7 @@ Examples:
   NVPN_DOCKER_CPU_STRESS=1 NVPN_DOCKER_CPU_STRESS_SIDES=remote $(basename "$0") --phase clean-underlay
   NVPN_PERF_FAIL_ON_PRIORITY_HARD_EVENTS=0 $(basename "$0") --phase worker-queue-pressure
   NVPN_PERF_MAX_PRIORITY_QUEUE_WAIT_MS=0 $(basename "$0") --phase clean-underlay
+  NVPN_PERF_RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS=200 $(basename "$0") --phase rx-maintenance-fault
 EOF
 }
 
@@ -2114,6 +2122,8 @@ run_rx_maintenance_fault_phase() {
   stop_connects
   start_connects "$RX_MAINT_FAULT_MS"
   wait_for_mesh
+  local saved_max_priority_queue_wait_ms="$MAX_PRIORITY_QUEUE_WAIT_MS"
+  MAX_PRIORITY_QUEUE_WAIT_MS="$RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS"
   run_perf_phase \
     "rx-maintenance-fault" \
     "$RX_MAINT_MIN_TCP_MBIT" \
@@ -2128,6 +2138,7 @@ run_rx_maintenance_fault_phase() {
     "$RX_MAINT_POST_MAX_PING_P95_MS" \
     "$RX_MAINT_POST_MAX_PING_P99_MS" \
     "$RX_MAINT_POST_MAX_PING_MAX_MS"
+  MAX_PRIORITY_QUEUE_WAIT_MS="$saved_max_priority_queue_wait_ms"
 
   for service in node-a node-b; do
     if ! "${COMPOSE[@]}" exec -T "$service" sh -lc \

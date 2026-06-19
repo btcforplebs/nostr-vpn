@@ -923,6 +923,30 @@ EOF
   assert_eq "$got" "ok" "priority queue wait guard opt-out"
 }
 
+test_rx_maintenance_priority_queue_wait_threshold() {
+  local got
+
+  got="$(
+    bash -c 'source "$1"; printf "%s" "$RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS"' \
+      bash "$PERF_SCRIPT"
+  )"
+  assert_eq "$got" "150" "rx-maintenance default priority wait threshold"
+
+  got="$(
+    NVPN_PERF_MAX_PRIORITY_QUEUE_WAIT_MS=0 \
+      bash -c 'source "$1"; printf "%s" "$RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS"' \
+      bash "$PERF_SCRIPT"
+  )"
+  assert_eq "$got" "0" "rx-maintenance honors global priority wait opt-out"
+
+  got="$(
+    NVPN_PERF_RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS=90 \
+      bash -c 'source "$1"; printf "%s" "$RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS"' \
+      bash "$PERF_SCRIPT"
+  )"
+  assert_eq "$got" "90" "rx-maintenance priority wait threshold override"
+}
+
 test_phase_argument_selection() {
   local got
 
@@ -1404,6 +1428,7 @@ test_pipeline_udp_send_batch_summary
 test_pipeline_hard_event_summary
 test_priority_hard_event_guard
 test_priority_queue_wait_guard
+test_rx_maintenance_priority_queue_wait_threshold
 test_phase_argument_selection
 test_phase_summary_pipeline_columns
 test_start_compose_services_supports_skip_build
