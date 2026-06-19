@@ -24,6 +24,7 @@ import {
   shouldBlockLocalLinuxAmd64Qemu,
   splitCsv,
   validateReleaseAssetSet,
+  validateStagedReleaseTree,
 } from './local-release-lib.mjs'
 
 test('parseEnvFile reads basic dotenv syntax', () => {
@@ -309,6 +310,64 @@ test('buildReleaseManifestFiles writes legacy manifest alias', () => {
   assert.deepEqual(files.map(([name]) => name), ['release.json', 'manifest.json'])
   assert.equal(files[0][1], files[1][1])
   assert.deepEqual(JSON.parse(files[0][1]), manifest)
+})
+
+test('validateStagedReleaseTree rejects missing manifest assets', () => {
+  const root = mkdtempSync(join(tmpdir(), 'nostr-vpn-release-missing-asset-test-'))
+  const manifest = {
+    assets: [
+      {
+        name: 'nostr-vpn-v4.0.77-macos-arm64.dmg',
+        path: 'assets/nostr-vpn-v4.0.77-macos-arm64.dmg',
+        size: 31_537_430,
+      },
+    ],
+  }
+
+  assert.throws(
+    () => validateStagedReleaseTree(root, manifest),
+    /lists missing asset: assets\/nostr-vpn-v4\.0\.77-macos-arm64\.dmg/,
+  )
+})
+
+test('validateStagedReleaseTree rejects unsafe asset paths', () => {
+  const root = mkdtempSync(join(tmpdir(), 'nostr-vpn-release-unsafe-asset-test-'))
+  const manifest = {
+    assets: [
+      {
+        name: 'nostr-vpn-v4.0.77-macos-arm64.dmg',
+        path: '../nostr-vpn-v4.0.77-macos-arm64.dmg',
+        size: 1,
+      },
+    ],
+  }
+
+  assert.throws(
+    () => validateStagedReleaseTree(root, manifest),
+    /unsafe asset path/,
+  )
+})
+
+test('validateStagedReleaseTree rejects staged asset size mismatches', () => {
+  const root = mkdtempSync(join(tmpdir(), 'nostr-vpn-release-size-asset-test-'))
+  const assetsDir = join(root, 'assets')
+  mkdirSync(assetsDir)
+  writeFileSync(join(assetsDir, 'nostr-vpn-v4.0.77-macos-arm64.dmg'), 'tiny')
+
+  const manifest = {
+    assets: [
+      {
+        name: 'nostr-vpn-v4.0.77-macos-arm64.dmg',
+        path: 'assets/nostr-vpn-v4.0.77-macos-arm64.dmg',
+        size: 31_537_430,
+      },
+    ],
+  }
+
+  assert.throws(
+    () => validateStagedReleaseTree(root, manifest),
+    /size mismatch/,
+  )
 })
 
 test('extractChangelogSection returns the matching version body', () => {

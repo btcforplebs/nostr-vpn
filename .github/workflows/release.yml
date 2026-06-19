@@ -96,7 +96,7 @@ jobs:
 
       - name: Build CLI natively
         if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }} -p nvpn
+        run: cargo build --release --locked -p nvpn --target ${{ matrix.target }}
 
       - name: Test macOS WireGuard exit native dataplane
         if: ${{ runner.os == 'macOS' }}
