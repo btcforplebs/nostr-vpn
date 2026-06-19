@@ -649,7 +649,7 @@
     }
 
     #[test]
-    fn static_peer_endpoint_does_not_disable_connected_udp_globally() {
+    fn static_peer_endpoint_disables_connected_udp_fast_path() {
         let alice_keys = Keys::generate();
         let bob_keys = Keys::generate();
         let alice_pubkey = alice_keys.public_key().to_hex();
@@ -691,8 +691,8 @@
         );
 
         assert!(
-            endpoint_config.node.connected_udp.enabled,
-            "static UDP peer endpoints are skipped per-peer by fips; they must not disable connected UDP for the rest of the roster"
+            !endpoint_config.node.connected_udp.enabled,
+            "static UDP peer endpoints stay on wildcard UDP because mixed static/recent macOS rosters can otherwise black-hole tunnel traffic"
         );
     }
 
