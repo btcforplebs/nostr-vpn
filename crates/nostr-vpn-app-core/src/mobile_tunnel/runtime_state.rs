@@ -471,9 +471,9 @@ fn update_mobile_peer_hints(
         .iter()
         .filter_map(peer_endpoint_hint_addr)
         .map(|addr| FipsPeerAddressHint {
+            priority: mobile_fips_endpoint_hint_priority(&addr, FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY),
             addr,
             seen_at_ms: Some(seen_at_ms),
-            priority: FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY,
         })
         .collect::<Vec<_>>();
     hints.sort_by(|left, right| left.addr.cmp(&right.addr));

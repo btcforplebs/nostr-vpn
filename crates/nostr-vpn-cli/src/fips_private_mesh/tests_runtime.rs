@@ -532,7 +532,7 @@
     }
 
     #[test]
-    fn endpoint_config_advertises_app_owned_endpoint_over_nostr() {
+    fn endpoint_config_keeps_private_app_endpoint_off_public_nostr_advert() {
         let keys = Keys::generate();
         let participant_pubkey = keys.public_key().to_hex();
         let peer = FipsMeshPeerConfig::from_participant_pubkey(
@@ -598,9 +598,38 @@
         assert_eq!(udp.bind_addr.as_deref(), Some("0.0.0.0:51820"));
         assert!(!udp.outbound_only());
         assert!(udp.advertise_on_nostr());
+        assert!(!udp.is_public());
         assert!(udp.accept_connections());
-        assert_eq!(udp.external_addr.as_deref(), Some("192.168.50.20:51820"));
+        assert_eq!(udp.external_addr.as_deref(), None);
         assert_eq!(config.peers.len(), 1);
+    }
+
+    #[test]
+    fn endpoint_config_advertises_public_app_endpoint_over_nostr() {
+        let transport = FipsEndpointTransportConfig {
+            listen_port: 51820,
+            advertised_endpoint: "198.51.100.20:51820".to_string(),
+            advertise_public_endpoint: true,
+            nostr_discovery_enabled: true,
+            stun_servers: Vec::new(),
+            nostr_relays: Vec::new(),
+            share_local_candidates: false,
+        };
+
+        let config = fips_endpoint_config(
+            &[],
+            Some(&transport),
+            super::resolve_private_mesh_mtu(None, None, None),
+            NostrDiscoveryPolicy::Open,
+        );
+        let udp = match config.transports.udp {
+            fips_endpoint::TransportInstances::Single(udp) => udp,
+            _ => panic!("expected one UDP transport"),
+        };
+
+        assert!(udp.advertise_on_nostr());
+        assert!(udp.is_public());
+        assert_eq!(udp.external_addr.as_deref(), Some("198.51.100.20:51820"));
     }
 
     #[test]

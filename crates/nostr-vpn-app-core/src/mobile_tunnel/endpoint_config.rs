@@ -105,7 +105,11 @@ fn fips_peer_config_from_hint(
         .flatten()
         .map(|hint| {
             let (transport, addr) = split_peer_transport_addr(&hint.addr);
-            let mut addr = PeerAddress::with_priority(transport, addr, hint.priority);
+            let mut addr = PeerAddress::with_priority(
+                transport,
+                addr,
+                mobile_fips_peer_address_hint_effective_priority(hint),
+            );
             if let Some(seen_at_ms) = hint.seen_at_ms {
                 addr = addr.with_seen_at_ms(seen_at_ms);
             }
@@ -156,14 +160,20 @@ fn fips_address_hints(
                     // tcp: bootstrap addresses survive into the peer config.
                     let (transport, rest) = split_peer_transport_addr(endpoint.trim());
                     let hint = PeerEndpointHint::udp(rest);
-                    peer_endpoint_hint_addr(&hint).map(|addr| FipsPeerAddressHint {
-                        addr: if transport == "udp" {
+                    peer_endpoint_hint_addr(&hint).map(|addr| {
+                        let addr = if transport == "udp" {
                             addr
                         } else {
                             format!("{transport}:{addr}")
-                        },
-                        seen_at_ms: None,
-                        priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
+                        };
+                        FipsPeerAddressHint {
+                            priority: mobile_fips_endpoint_hint_priority(
+                                &addr,
+                                FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
+                            ),
+                            addr,
+                            seen_at_ms: None,
+                        }
                     })
                 })
                 .collect::<Vec<_>>();
@@ -425,6 +435,54 @@ fn endpoint_hint_ip_is_unusable(ip: IpAddr) -> bool {
                 || ip.is_multicast()
         }
     }
+}
+
+fn mobile_fips_peer_address_hint_effective_priority(hint: &FipsPeerAddressHint) -> u8 {
+    mobile_fips_endpoint_hint_priority(&hint.addr, hint.priority)
+}
+
+fn mobile_fips_endpoint_hint_priority(addr: &str, normal_priority: u8) -> u8 {
+    if endpoint_addr_is_private_or_local(addr) {
+        FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY
+    } else {
+        normal_priority
+    }
+}
+
+fn endpoint_addr_is_private_or_local(endpoint: &str) -> bool {
+    endpoint_addr_ip(endpoint).is_some_and(endpoint_ip_is_private_or_local)
+}
+
+fn endpoint_ip_is_private_or_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ipv4_is_cgnat_addr(ip)
+                || ip.is_link_local()
+                || ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+                || ipv4_is_benchmark_addr(ip)
+        }
+        IpAddr::V6(ip) => {
+            ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+        }
+    }
+}
+
+fn ipv4_is_cgnat_addr(addr: Ipv4Addr) -> bool {
+    let octets = addr.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+fn ipv4_is_benchmark_addr(addr: Ipv4Addr) -> bool {
+    let octets = addr.octets();
+    octets[0] == 198 && (18..=19).contains(&octets[1])
 }
 
 fn endpoint_uses_tunnel_ip(endpoint: &str, tunnel_ip: &str) -> bool {

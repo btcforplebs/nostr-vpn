@@ -411,6 +411,38 @@
     }
 
     #[test]
+    fn endpoint_peer_hints_make_private_recent_addresses_last_resort() {
+        let endpoint_peers = fips_endpoint_peers_from_mesh(
+            &[],
+            Vec::new(),
+            vec![(
+                "peer".to_string(),
+                vec![("192.168.178.91:51830".to_string(), 123_000)],
+            )],
+        );
+
+        let peer = endpoint_peers
+            .iter()
+            .find(|peer| peer.npub == "peer")
+            .expect("peer");
+        let recent_hint = peer
+            .addresses
+            .iter()
+            .find(|hint| hint.addr == "192.168.178.91:51830")
+            .expect("recent hint");
+
+        assert_eq!(recent_hint.seen_at_ms, Some(123_000));
+        assert_eq!(
+            recent_hint.priority,
+            FIPS_PRIVATE_STATIC_PEER_ENDPOINT_PRIORITY
+        );
+        assert_eq!(
+            fips_peer_address_from_hint(recent_hint).priority,
+            FIPS_PRIVATE_STATIC_PEER_ENDPOINT_PRIORITY
+        );
+    }
+
+    #[test]
     fn endpoint_peer_hints_keep_public_static_addresses_preferred() {
         let endpoint_peers = fips_endpoint_peers_from_mesh(
             &[],

@@ -418,7 +418,7 @@
             &vec![FipsPeerAddressHint {
                 addr: "192.168.50.10:51820".to_string(),
                 seen_at_ms: None,
-                priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
+                priority: FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY,
             }]
         );
     }
@@ -472,7 +472,7 @@
             &vec![FipsPeerAddressHint {
                 addr: "192.168.50.10:51820".to_string(),
                 seen_at_ms: None,
-                priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
+                priority: FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY,
             }]
         );
         let endpoint_config =
@@ -483,6 +483,10 @@
             .expect("admin endpoint config");
         assert_eq!(endpoint_peer.addresses.len(), 1);
         assert_eq!(endpoint_peer.addresses[0].addr, "192.168.50.10:51820");
+        assert_eq!(
+            endpoint_peer.addresses[0].priority,
+            FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY
+        );
     }
 
     #[test]

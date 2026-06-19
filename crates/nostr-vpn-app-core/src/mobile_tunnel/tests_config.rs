@@ -725,7 +725,7 @@
         assert_eq!(peer_config.addresses[0].addr, "192.168.50.10:51820");
         assert_eq!(
             peer_config.addresses[0].priority,
-            FIPS_STATIC_PEER_ENDPOINT_PRIORITY
+            FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY
         );
     }
 
@@ -768,7 +768,7 @@
         assert_eq!(transit_config.addresses[0].seen_at_ms, Some(1234));
         assert_eq!(
             transit_config.addresses[0].priority,
-            FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY
+            FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY
         );
         assert!(
             transit_config.discovery_fallback_transit,
