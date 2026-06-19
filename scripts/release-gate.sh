@@ -15,6 +15,7 @@ MACOS_GUI_SMOKE_TIMEOUT_SECS="${NVPN_RELEASE_GATE_MACOS_GUI_SMOKE_TIMEOUT_SECS:-
 WINDOWS_GUI_SMOKE_TIMEOUT_SECS="${NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE_TIMEOUT_SECS:-1800}"
 
 release_cargo_config_args=()
+release_cargo_lock_args=(--locked)
 release_cargo_lock_backup=""
 release_fips_path=""
 
@@ -51,13 +52,40 @@ prepare_release_cargo_config() {
     --config "patch.crates-io.fips-identity.path=\"$fips_path/crates/fips-identity\""
   )
   echo "Using local FIPS crates from $fips_path"
+  case "${NVPN_PATCH_LOCAL_FIPS:-1}" in
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On)
+      export NVPN_PATCH_LOCAL_FIPS=1
+      echo "Using local FIPS crates in Docker e2e builds."
+      ;;
+    *)
+      cat >&2 <<EOF
+NVPN_FIPS_REPO_PATH requires NVPN_PATCH_LOCAL_FIPS=1 during the release gate so
+Docker e2e builds test the same local FIPS crates as host Cargo.
+EOF
+      exit 2
+      ;;
+  esac
 
   release_cargo_lock_backup="$(mktemp "${TMPDIR:-/tmp}/nvpn-release-gate-Cargo.lock.XXXXXX")"
   cp "$ROOT_DIR/Cargo.lock" "$release_cargo_lock_backup"
   trap restore_release_cargo_lock EXIT
-  release_cargo update -p fips-core
-  release_cargo update -p fips-endpoint
-  release_cargo update -p fips-identity
+  if release_cargo metadata --locked --format-version=1 >/dev/null 2>/dev/null; then
+    echo "Local FIPS crates satisfy existing Cargo.lock; skipping temporary lock refresh."
+    return
+  fi
+
+  echo "Preparing temporary Cargo.lock for local FIPS path patches."
+  release_cargo metadata --format-version=1 >/dev/null
+  if ! release_cargo metadata --offline --format-version=1 >/dev/null; then
+    cat >&2 <<EOF
+Local FIPS crates do not satisfy Cargo.lock after a temporary metadata refresh.
+Publish/update the FIPS crate versions and update nvpn's dependency/lock before
+running the release gate with NVPN_FIPS_REPO_PATH.
+EOF
+    exit 2
+  fi
+  release_cargo_lock_args=(--offline)
+  echo "Using offline Cargo resolution for local FIPS path patches."
 }
 
 run_local_fips_regression_tests() {
@@ -86,19 +114,19 @@ node scripts/sync-versions.mjs
 cargo fmt --check
 prepare_release_cargo_config
 run_local_fips_regression_tests
-release_cargo clippy --locked --workspace --all-targets -- -D warnings
-release_cargo test --locked --workspace
+release_cargo clippy "${release_cargo_lock_args[@]}" --workspace --all-targets -- -D warnings
+release_cargo test "${release_cargo_lock_args[@]}" --workspace
 # Mobile VPN basics run in the blocking gate without requiring a device/emulator:
 # join request over FIPS, MagicDNS from a TUN packet, and Android WG socket
 # startup ordering before VpnService.protect(fd).
-release_cargo test --locked -p nostr-vpn-app-core mobile_join_request_sends_and_records_over_real_fips_endpoint
-release_cargo test --locked -p nostr-vpn-app-core mobile_magic_dns_answers_peer_name_from_tun_packet
-release_cargo test --locked -p nostr-vpn-app-core mobile_wireguard_exit_dns_forwarders_prefer_configured_tunnel_dns
-release_cargo test --locked -p nostr-vpn-app-core mobile_wireguard_start_returns_before_handshake_watchdog
-release_cargo test --locked -p nostr-vpn-app-core mobile_fips_exit_node_routes_default_traffic_to_selected_member
+release_cargo test "${release_cargo_lock_args[@]}" -p nostr-vpn-app-core mobile_join_request_sends_and_records_over_real_fips_endpoint
+release_cargo test "${release_cargo_lock_args[@]}" -p nostr-vpn-app-core mobile_magic_dns_answers_peer_name_from_tun_packet
+release_cargo test "${release_cargo_lock_args[@]}" -p nostr-vpn-app-core mobile_wireguard_exit_dns_forwarders_prefer_configured_tunnel_dns
+release_cargo test "${release_cargo_lock_args[@]}" -p nostr-vpn-app-core mobile_wireguard_start_returns_before_handshake_watchdog
+release_cargo test "${release_cargo_lock_args[@]}" -p nostr-vpn-app-core mobile_fips_exit_node_routes_default_traffic_to_selected_member
 # Shared userspace WG dataplane, including the mpsc channel path used by
 # Android VpnService and iOS NEPacketTunnelProvider.
-release_cargo test --locked -p nostr-vpn-core channels_round_trip_plaintext_packets_against_paired_responder
+release_cargo test "${release_cargo_lock_args[@]}" -p nostr-vpn-core channels_round_trip_plaintext_packets_against_paired_responder
 ./scripts/e2e-update-cli.sh
 
 run_auto_windows_vm_app_smoke() {
@@ -133,6 +161,12 @@ release_gate_perf_output_dir() {
 }
 
 run_wireguard_exit_platform_gates() {
+  local macos_wg_exit_available=0
+  if [[ "$(uname -s)" == "Darwin" ]] \
+    && { [[ "${EUID:-$(id -u)}" == "0" ]] || sudo -n true >/dev/null 2>&1; }; then
+    macos_wg_exit_available=1
+  fi
+
   case "${NVPN_RELEASE_GATE_MACOS_WG_EXIT_E2E:-auto}" in
     0|false|FALSE|False|no|NO|No|off|OFF|Off)
       echo "Skipping macOS WG exit e2e because NVPN_RELEASE_GATE_MACOS_WG_EXIT_E2E=${NVPN_RELEASE_GATE_MACOS_WG_EXIT_E2E}"
@@ -143,8 +177,12 @@ run_wireguard_exit_platform_gates() {
       ;;
     auto|AUTO|Auto|"")
       if [[ "$(uname -s)" == "Darwin" ]]; then
-        release_gate_run_with_timeout "macOS WG exit e2e" "$MACOS_WG_EXIT_TIMEOUT_SECS" \
-          ./scripts/e2e-wireguard-exit-host.sh
+        if [[ "$macos_wg_exit_available" == "1" ]]; then
+          release_gate_run_with_timeout "macOS WG exit e2e" "$MACOS_WG_EXIT_TIMEOUT_SECS" \
+            ./scripts/e2e-wireguard-exit-host.sh
+        else
+          echo "Skipping macOS WG exit e2e because passwordless sudo is unavailable."
+        fi
       else
         echo "Skipping macOS WG exit e2e on this host."
       fi
@@ -181,9 +219,10 @@ run_desktop_app_launch_smokes() {
       ;;
   esac
 
-  case "${NVPN_RELEASE_GATE_LINUX_GUI_SMOKE:-$linux_gui_smoke_default}" in
+  local linux_gui_smoke="${NVPN_RELEASE_GATE_LINUX_GUI_SMOKE:-$linux_gui_smoke_default}"
+  case "$linux_gui_smoke" in
     0|false|FALSE|False|no|NO|No|off|OFF|Off)
-      echo "Skipping Linux GUI launch smoke because NVPN_RELEASE_GATE_LINUX_GUI_SMOKE=${NVPN_RELEASE_GATE_LINUX_GUI_SMOKE}"
+      echo "Skipping Linux GUI launch smoke because NVPN_RELEASE_GATE_LINUX_GUI_SMOKE=$linux_gui_smoke"
       ;;
     *)
       release_gate_run_with_timeout "Linux GUI launch smoke" "$LINUX_GUI_SMOKE_TIMEOUT_SECS" \
@@ -191,9 +230,10 @@ run_desktop_app_launch_smokes() {
       ;;
   esac
 
-  case "${NVPN_RELEASE_GATE_MACOS_GUI_SMOKE:-auto}" in
+  local macos_gui_smoke="${NVPN_RELEASE_GATE_MACOS_GUI_SMOKE:-auto}"
+  case "$macos_gui_smoke" in
     0|false|FALSE|False|no|NO|No|off|OFF|Off)
-      echo "Skipping macOS app launch smoke because NVPN_RELEASE_GATE_MACOS_GUI_SMOKE=${NVPN_RELEASE_GATE_MACOS_GUI_SMOKE}"
+      echo "Skipping macOS app launch smoke because NVPN_RELEASE_GATE_MACOS_GUI_SMOKE=$macos_gui_smoke"
       ;;
     1|true|TRUE|True|yes|YES|Yes|on|ON|On)
       release_gate_run_with_timeout "macOS app launch smoke" "$MACOS_GUI_SMOKE_TIMEOUT_SECS" \
@@ -208,14 +248,15 @@ run_desktop_app_launch_smokes() {
       fi
       ;;
     *)
-      echo "Unsupported NVPN_RELEASE_GATE_MACOS_GUI_SMOKE=${NVPN_RELEASE_GATE_MACOS_GUI_SMOKE}" >&2
+      echo "Unsupported NVPN_RELEASE_GATE_MACOS_GUI_SMOKE=$macos_gui_smoke" >&2
       exit 2
       ;;
   esac
 
-  case "${NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE:-auto}" in
+  local windows_gui_smoke="${NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE:-auto}"
+  case "$windows_gui_smoke" in
     0|false|FALSE|False|no|NO|No|off|OFF|Off)
-      echo "Skipping Windows app launch smoke because NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE=${NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE}"
+      echo "Skipping Windows app launch smoke because NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE=$windows_gui_smoke"
       ;;
     1|true|TRUE|True|yes|YES|Yes|on|ON|On|windows-vm)
       release_gate_run_with_timeout "Windows VM app launch smoke" "$WINDOWS_GUI_SMOKE_TIMEOUT_SECS" \
@@ -225,7 +266,7 @@ run_desktop_app_launch_smokes() {
       run_auto_windows_vm_app_smoke
       ;;
     *)
-      echo "Unsupported NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE=${NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE}" >&2
+      echo "Unsupported NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE=$windows_gui_smoke" >&2
       exit 2
       ;;
   esac

@@ -55,7 +55,17 @@ release_gate_run_with_timeout() {
     "$@" &
     pid=$!
     (
-      sleep "$timeout_secs"
+      sleep_pid=""
+      cleanup_watchdog_sleep() {
+        if [[ -n "$sleep_pid" ]]; then
+          kill "$sleep_pid" >/dev/null 2>&1 || true
+          wait "$sleep_pid" >/dev/null 2>&1 || true
+        fi
+      }
+      trap 'cleanup_watchdog_sleep; exit 0' TERM INT
+      sleep "$timeout_secs" &
+      sleep_pid=$!
+      wait "$sleep_pid" || exit 0
       if kill -0 "$pid" >/dev/null 2>&1; then
         printf '%s timed out after %ss\n' "$label" "$timeout_secs" >&2
         : >"$marker"

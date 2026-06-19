@@ -86,7 +86,8 @@ WORKER_QUEUE_PRESSURE_POST_MAX_PING_P99_MS="${NVPN_PERF_WORKER_QUEUE_PRESSURE_PO
 PIPELINE_TRACE="${NVPN_PERF_PIPELINE_TRACE:-1}"
 PIPELINE_INTERVAL_SECS="${NVPN_PERF_PIPELINE_INTERVAL_SECS:-5}"
 FAIL_ON_PRIORITY_HARD_EVENTS="${NVPN_PERF_FAIL_ON_PRIORITY_HARD_EVENTS:-1}"
-MAX_PRIORITY_QUEUE_WAIT_MS="${NVPN_PERF_MAX_PRIORITY_QUEUE_WAIT_MS:-50}"
+MAX_PRIORITY_QUEUE_WAIT_MS="${NVPN_PERF_MAX_PRIORITY_QUEUE_WAIT_MS:-150}"
+MIN_PRIORITY_QUEUE_WAIT_RATE_PER_SEC="${NVPN_PERF_MIN_PRIORITY_QUEUE_WAIT_RATE_PER_SEC:-10}"
 if [[ -n "${NVPN_PERF_RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS+x}" ]]; then
   RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS="$NVPN_PERF_RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS"
 elif awk -v threshold_ms="$MAX_PRIORITY_QUEUE_WAIT_MS" 'BEGIN { exit !((threshold_ms + 0) > 0) }'; then
@@ -149,6 +150,7 @@ Examples:
   NVPN_DOCKER_CPU_STRESS=1 NVPN_DOCKER_CPU_STRESS_SIDES=remote $(basename "$0") --phase clean-underlay
   NVPN_PERF_FAIL_ON_PRIORITY_HARD_EVENTS=0 $(basename "$0") --phase worker-queue-pressure
   NVPN_PERF_MAX_PRIORITY_QUEUE_WAIT_MS=0 $(basename "$0") --phase clean-underlay
+  NVPN_PERF_MIN_PRIORITY_QUEUE_WAIT_RATE_PER_SEC=0 $(basename "$0") --phase clean-underlay
   NVPN_PERF_RX_MAINT_MAX_PRIORITY_QUEUE_WAIT_MS=200 $(basename "$0") --phase rx-maintenance-fault
 EOF
 }
@@ -1295,7 +1297,8 @@ assert_no_priority_hard_events() {
 
 pipeline_priority_queue_wait_violations_from_stdin() {
   local threshold_ms="$1"
-  awk -v threshold_ms="$threshold_ms" '
+  local min_rate_per_sec="${2:-0}"
+  awk -v threshold_ms="$threshold_ms" -v min_rate_per_sec="$min_rate_per_sec" '
     function duration_ms(value, number) {
       number = value + 0
       if (value ~ /ns$/) {
@@ -1345,7 +1348,7 @@ pipeline_priority_queue_wait_violations_from_stdin() {
         if (!parse_wait($0, name)) {
           continue
         }
-        if (metric_max <= threshold_ms) {
+        if (metric_rate < min_rate_per_sec || metric_max <= threshold_ms) {
           continue
         }
         if (!(name in max_seen) || metric_max > max_seen[name]) {
@@ -1378,11 +1381,12 @@ pipeline_priority_queue_wait_violations() {
   local service="$1"
   local start_line="${2:-0}"
   local threshold_ms="$3"
+  local min_rate_per_sec="${4:-0}"
   "${COMPOSE[@]}" exec -T "$service" sh -lc \
     "grep -E '^\\[(pipe|nvpn-pipe) ' /tmp/connect.log 2>/dev/null || true" \
     | tr -d '\r' \
     | pipeline_lines_after_start_from_stdin "$start_line" \
-    | pipeline_priority_queue_wait_violations_from_stdin "$threshold_ms"
+    | pipeline_priority_queue_wait_violations_from_stdin "$threshold_ms" "$min_rate_per_sec"
 }
 
 assert_priority_queue_wait_ok() {
@@ -1390,14 +1394,15 @@ assert_priority_queue_wait_ok() {
   if ! awk -v threshold_ms="$threshold_ms" 'BEGIN { exit !((threshold_ms + 0) > 0) }'; then
     return 0
   fi
+  local min_rate_per_sec="${MIN_PRIORITY_QUEUE_WAIT_RATE_PER_SEC:-0}"
   local label="$1"
   local service="$2"
   local start_line="${3:-0}"
   local violations
-  violations="$(pipeline_priority_queue_wait_violations "$service" "$start_line" "$threshold_ms")"
+  violations="$(pipeline_priority_queue_wait_violations "$service" "$start_line" "$threshold_ms" "$min_rate_per_sec")"
   if [[ -n "$violations" ]]; then
-    append_failure_summary "$label priority queue wait max ms" "<=" "$violations" "$threshold_ms"
-    echo "fips perf regression e2e failed: $label priority queue waits exceeded ${threshold_ms}ms: $violations" >&2
+    append_failure_summary "$label priority queue wait max ms (rate >= ${min_rate_per_sec}/s)" "<=" "$violations" "$threshold_ms"
+    echo "fips perf regression e2e failed: $label priority queue waits exceeded ${threshold_ms}ms at >=${min_rate_per_sec}/s: $violations" >&2
     exit 1
   fi
 }

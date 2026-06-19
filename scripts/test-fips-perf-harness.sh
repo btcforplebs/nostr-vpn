@@ -910,9 +910,26 @@ EOF
     "endpoint_priority_event_wait(max_ms=16.8,p99_ms=4.2,rate_per_sec=1);decrypt_fsp_worker_priority_queue_wait(max_ms=67.1,p99_ms=33.6,rate_per_sec=0.2)" \
     "priority wait violation summary"
 
+  got="$(
+    pipeline_priority_queue_wait_violations_from_stdin 10 10 <<'EOF'
+[pipe 5s] endpoint_priority_event_wait=6.8/s avg=2.8ms p50<=32.8us p95<=262.1us p99<=134.2ms max<=134.2ms fmp_worker_priority_queue_wait=4.6/s avg=45.1us p50<=65.5us p95<=131.1us p99<=262.1us max<=262.1us
+EOF
+  )"
+  assert_eq "$got" "" "priority wait guard ignores low-rate tail samples"
+
+  got="$(
+    pipeline_priority_queue_wait_violations_from_stdin 10 10 <<'EOF'
+[pipe 5s] endpoint_priority_event_wait=10/s avg=1.0ms p50<=1.0ms p95<=2.1ms p99<=4.2ms max<=16.8ms fmp_worker_priority_queue_wait=9.8/s avg=20.0us p50<=16.4us p95<=65.5us p99<=65.5us max<=131.1us
+EOF
+  )"
+  assert_eq \
+    "$got" \
+    "endpoint_priority_event_wait(max_ms=16.8,p99_ms=4.2,rate_per_sec=10)" \
+    "priority wait guard keeps sustained priority samples"
+
   assert_fails_with \
     "priority queue wait guard" \
-    "fixture node-a priority queue waits exceeded 10ms: endpoint_priority_event_wait(max_ms=16.8,p99_ms=4.2,rate_per_sec=1)" \
+    "fixture node-a priority queue waits exceeded 10ms at >=10/s: endpoint_priority_event_wait(max_ms=16.8,p99_ms=4.2,rate_per_sec=1)" \
     bash -c 'source "$1"; pipeline_priority_queue_wait_violations(){ printf "%s\n" "endpoint_priority_event_wait(max_ms=16.8,p99_ms=4.2,rate_per_sec=1)"; }; MAX_PRIORITY_QUEUE_WAIT_MS=10; assert_priority_queue_wait_ok "fixture node-a" node-a 0' \
     bash "$PERF_SCRIPT"
 
@@ -1116,7 +1133,7 @@ test_start_compose_services_supports_skip_build() {
 
 test_dockerfile_supports_local_base_images() {
   local dockerfile="$ROOT_DIR/Dockerfile.e2e"
-  local compose="$ROOT_DIR/docker-compose.e2e.yml"
+  local compose
 
   assert_file_not_contains "$dockerfile" "syntax=docker/dockerfile" "Dockerfile external frontend directive"
   assert_file_contains "$dockerfile" "ARG NVPN_E2E_BUILDER_IMAGE=rust:1.93-bookworm" "builder image arg"
@@ -1126,10 +1143,15 @@ test_dockerfile_supports_local_base_images() {
   assert_file_contains "$dockerfile" "ARG NVPN_E2E_BUILDER_APT_INSTALL=1" "builder apt arg"
   assert_file_contains "$dockerfile" "ARG NVPN_E2E_RUNTIME_APT_INSTALL=1" "runtime apt arg"
 
-  assert_file_contains "$compose" 'NVPN_E2E_BUILDER_IMAGE: ${NVPN_E2E_BUILDER_IMAGE:-rust:1.93-bookworm}' "compose builder image arg"
-  assert_file_contains "$compose" 'NVPN_E2E_RUNTIME_IMAGE: ${NVPN_E2E_RUNTIME_IMAGE:-debian:bookworm-slim}' "compose runtime image arg"
-  assert_file_contains "$compose" 'NVPN_E2E_BUILDER_APT_INSTALL: ${NVPN_E2E_BUILDER_APT_INSTALL:-1}' "compose builder apt arg"
-  assert_file_contains "$compose" 'NVPN_E2E_RUNTIME_APT_INSTALL: ${NVPN_E2E_RUNTIME_APT_INSTALL:-1}' "compose runtime apt arg"
+  for compose in \
+    "$ROOT_DIR/docker-compose.e2e.yml" \
+    "$ROOT_DIR/docker-compose.exit-node-e2e.yml" \
+    "$ROOT_DIR/docker-compose.wireguard-exit-e2e.yml"; do
+    assert_file_contains "$compose" 'NVPN_E2E_BUILDER_IMAGE: ${NVPN_E2E_BUILDER_IMAGE:-rust:1.93-bookworm}' "compose builder image arg"
+    assert_file_contains "$compose" 'NVPN_E2E_RUNTIME_IMAGE: ${NVPN_E2E_RUNTIME_IMAGE:-debian:bookworm-slim}' "compose runtime image arg"
+    assert_file_contains "$compose" 'NVPN_E2E_BUILDER_APT_INSTALL: ${NVPN_E2E_BUILDER_APT_INSTALL:-1}' "compose builder apt arg"
+    assert_file_contains "$compose" 'NVPN_E2E_RUNTIME_APT_INSTALL: ${NVPN_E2E_RUNTIME_APT_INSTALL:-1}' "compose runtime apt arg"
+  done
 }
 
 test_perf_harness_supports_cpu_stress() {
@@ -1141,6 +1163,7 @@ test_perf_harness_supports_cpu_stress() {
   assert_file_contains "$PERF_SCRIPT" "NVPN_PERF_MAX_TCP_RETRANS=1000" "perf harness retransmit ceiling help example"
   assert_file_contains "$PERF_SCRIPT" "NVPN_PERF_FAIL_ON_PRIORITY_HARD_EVENTS=0" "perf harness priority hard-event opt-out help example"
   assert_file_contains "$PERF_SCRIPT" "NVPN_PERF_MAX_PRIORITY_QUEUE_WAIT_MS=0" "perf harness priority wait opt-out help example"
+  assert_file_contains "$PERF_SCRIPT" "NVPN_PERF_MIN_PRIORITY_QUEUE_WAIT_RATE_PER_SEC=0" "perf harness priority wait rate opt-out help example"
   assert_file_contains "$PERF_SCRIPT" "docker_bench_stop_cpu_stress" "perf harness stops docker CPU stress"
   assert_file_contains "$PERF_SCRIPT" "docker_bench_start_cpu_stress" "perf harness starts docker CPU stress"
   assert_file_contains "$PERF_SCRIPT" "NVPN_DOCKER_CPU_STRESS=1 NVPN_DOCKER_CPU_STRESS_SIDES=remote" "perf harness CPU stress help example"

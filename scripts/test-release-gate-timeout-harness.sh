@@ -28,6 +28,12 @@ assert_status() {
 assert_status 0 "success command" \
   release_gate_run_with_timeout "success command" 5 bash -c 'exit 0'
 
+assert_status 0 "success watchdog cleanup" \
+  release_gate_run_with_timeout "success watchdog cleanup" 173 bash -c 'exit 0'
+if ps -axo command= | awk '$1 == "sleep" && $2 == "173" { found = 1 } END { exit found ? 0 : 1 }'; then
+  fail "success watchdog cleanup left sleep 173 running"
+fi
+
 assert_status 7 "failure propagation" \
   release_gate_run_with_timeout "failure command" 5 bash -c 'exit 7'
 
