@@ -31,6 +31,7 @@ MAX_PING_P99_MS="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_P99_MS:-250}"
 MAX_PING_GT350="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_GT350:-10}"
 MAX_PING_GT350_PERCENT="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_GT350_PERCENT:-1.0}"
 MAX_PING_GT1000="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_GT1000:-0}"
+MAX_IPERF_STALL_INTERVALS="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_STALL_INTERVALS:-0}"
 OUTPUT_DIR="${NVPN_RELEASE_GATE_HOST_PAIR_LOADED_OUTPUT_DIR:-$ROOT_DIR/artifacts/host-pair-loaded-latency/$(date -u +%Y%m%dT%H%M%SZ)}"
 
 is_disabled() {
@@ -87,13 +88,26 @@ first_local_cmd() {
 }
 
 ping_count_for_duration() {
-  awk -v duration="$DURATION_SECS" -v interval="$PING_INTERVAL_SECS" '
+  local interval="${1:-$PING_INTERVAL_SECS}"
+  awk -v duration="$DURATION_SECS" -v interval="$interval" '
     BEGIN {
       if (interval <= 0) interval = 1;
       count = int((duration / interval) + 0.999);
       if (count < 1) count = 1;
       print count;
     }'
+}
+
+effective_ping_interval_secs() {
+  if [[ "$(uname -s)" == "Darwin" && "${EUID:-$(id -u)}" -ne 0 ]]; then
+    awk -v interval="$PING_INTERVAL_SECS" '
+      BEGIN {
+        if (interval > 0 && interval < 1) print "1";
+        else print interval;
+      }'
+  else
+    printf '%s\n' "$PING_INTERVAL_SECS"
+  fi
 }
 
 print_dry_run_env() {
@@ -103,6 +117,7 @@ print_dry_run_env() {
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_PING_INTERVAL_SECS=%q\n' "$PING_INTERVAL_SECS"
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_IPERF_DURATION_SECS=%q\n' "$IPERF_DURATION_SECS"
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MIN_INTERVAL_MBPS=%q\n' "$MIN_IPERF_INTERVAL_MBPS"
+  printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_STALL_INTERVALS=%q\n' "$MAX_IPERF_STALL_INTERVALS"
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_GT350=%q\n' "$MAX_PING_GT350"
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_GT350_PERCENT=%q\n' "$MAX_PING_GT350_PERCENT"
   printf 'NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_GT1000=%q\n' "$MAX_PING_GT1000"
@@ -195,7 +210,7 @@ assert_int_at_most() {
 }
 
 run_gate() {
-  local iperf_bin ping_count ping_log remote_tunnel_ip start_epoch iter now sleep_for
+  local iperf_bin ping_count ping_interval ping_log remote_tunnel_ip start_epoch iter now sleep_for
   local fwd rev dir file mbps retrans lt1 lt10
 
   iperf_bin="$(first_local_cmd "$LOCAL_IPERF" /opt/homebrew/bin/iperf3 /usr/local/bin/iperf3 iperf3)" \
@@ -205,7 +220,12 @@ run_gate() {
   command -v "$LOCAL_NVPN" >/dev/null 2>&1 || fail "missing local nvpn binary: $LOCAL_NVPN"
 
   remote_tunnel_ip="$(select_remote_tunnel_ip)"
-  ping_count="$(ping_count_for_duration)"
+  ping_interval="$(effective_ping_interval_secs)"
+  if [[ "$ping_interval" != "$PING_INTERVAL_SECS" ]]; then
+    printf 'host-pair loaded latency gate: clamped ping interval from %s to %s on non-root Darwin\n' \
+      "$PING_INTERVAL_SECS" "$ping_interval"
+  fi
+  ping_count="$(ping_count_for_duration "$ping_interval")"
 
   mkdir -p "$OUTPUT_DIR"
   printf 'iteration\tdirection\tmbps\tretrans\tstall_lt_1mbps\tstall_lt_min_mbps\n' >"$OUTPUT_DIR/iperf-summary.tsv"
@@ -215,7 +235,7 @@ run_gate() {
   start_remote_iperf
   trap stop_remote_iperf EXIT
 
-  (ping -c "$ping_count" -i "$PING_INTERVAL_SECS" "$remote_tunnel_ip" >"$ping_log" 2>&1 || true) &
+  (ping -c "$ping_count" -i "$ping_interval" "$remote_tunnel_ip" >"$ping_log" 2>&1 || true) &
   ping_pid=$!
 
   start_epoch="$(date +%s)"
@@ -277,7 +297,8 @@ run_gate() {
   assert_float_at_most "$gt350_pct" "$MAX_PING_GT350_PERCENT" "ping spikes >350 ms %"
   assert_int_at_most "$spikes1000" "$MAX_PING_GT1000" "ping spikes >1000 ms"
   assert_int_at_most "$nulls" "$MAX_IPERF_NULL_SAMPLES" "iperf null samples"
-  assert_int_at_most "$min_stalls" 0 "iperf intervals below ${MIN_IPERF_INTERVAL_MBPS} Mbps"
+  assert_int_at_most "$min_stalls" "$MAX_IPERF_STALL_INTERVALS" \
+    "iperf intervals below ${MIN_IPERF_INTERVAL_MBPS} Mbps"
 }
 
 main() {

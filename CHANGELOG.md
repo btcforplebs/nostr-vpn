@@ -14,6 +14,10 @@ All notable changes to this project are documented in this file.
   default to prevent bulk tunnel traffic from creating multi-second LAN stalls.
 - Release-gate local-FIPS runs and the fast FIPS safety suite now include the
   overlay/update-peers regression filters that cover this stale-path class.
+- The optional host-pair loaded-latency release gate now clamps sub-second ping
+  intervals on non-root macOS and exposes an explicit
+  `NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_STALL_INTERVALS` threshold for live
+  Wi-Fi/LAN runs.
 
 ### Fixed
 
