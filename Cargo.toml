@@ -24,7 +24,7 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 boringtun = "0.7"
-cashu-service = { path = "../cashu-service/crates/cashu-service", default-features = false, features = ["spilman"] }
+cashu-service = { version = "0.2.56", default-features = false }
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
 fips-endpoint = "0.3.42"
