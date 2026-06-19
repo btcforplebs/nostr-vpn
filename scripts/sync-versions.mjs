@@ -38,6 +38,21 @@ function androidVersionCode(version) {
   return major * 10_000 + minor * 100 + patch
 }
 
+function appleVersionCode(version) {
+  const core = version.split(/[-+]/, 1)[0]
+  const parts = core.split('.').map((part) => parseInt(part, 10))
+  if (parts.length === 0 || parts.some((value) => Number.isNaN(value))) {
+    throw new Error(`Could not derive Apple build number from "${version}"`)
+  }
+  const [major = 0, minor = 0, patch = 0] = parts
+  if (minor > 999 || patch > 999) {
+    throw new Error(
+      `Apple build number formula needs an update for "${version}" (minor/patch > 999)`,
+    )
+  }
+  return major * 1_000_000 + minor * 1_000 + patch
+}
+
 function versionTag(version) {
   return version.startsWith('v') ? version : `v${version}`
 }
@@ -64,6 +79,30 @@ const targets = [
   // which is called by the entry-point scripts (tools/run-ios, scripts/ios-build,
   // scripts/macos-build) right before xcodegen runs. Nothing for sync-versions
   // to bump in project.yml itself — keeps a single source of truth.
+  makeTarget('macos/NostrVpnMac.xcodeproj/project.pbxproj', (text, version) => {
+    const code = appleVersionCode(version)
+    return text
+      .replace(
+        /(\bMARKETING_VERSION\s*=\s*)[^;]+(;)/g,
+        (_, prefix, suffix) => `${prefix}${version}${suffix}`,
+      )
+      .replace(
+        /(\bCURRENT_PROJECT_VERSION\s*=\s*)[^;]+(;)/g,
+        (_, prefix, suffix) => `${prefix}${code}${suffix}`,
+      )
+  }),
+  makeTarget('ios/NostrVpnIos.xcodeproj/project.pbxproj', (text, version) => {
+    const code = appleVersionCode(version)
+    return text
+      .replace(
+        /(\bMARKETING_VERSION\s*=\s*)[^;]+(;)/g,
+        (_, prefix, suffix) => `${prefix}${version}${suffix}`,
+      )
+      .replace(
+        /(\bCURRENT_PROJECT_VERSION\s*=\s*)[^;]+(;)/g,
+        (_, prefix, suffix) => `${prefix}${code}${suffix}`,
+      )
+  }),
   makeTarget('android/app/build.gradle.kts', (text, version) => {
     const code = androidVersionCode(version)
     return text
