@@ -17,6 +17,9 @@ All notable changes to this project are documented in this file.
   latency-sensitive tunnel traffic to the same peer.
 - The workspace now depends on the published FIPS 0.3.61/0.3.36 crates that
   contain the matching private-mesh reliability fixes.
+- Embedded FIPS endpoints now declare a silent direct path stale after 20s
+  instead of 30s, shortening real blackhole failover while keeping the
+  existing 15s traversal-path floor and 5s fast local-failure path.
 
 ### Fixed
 
