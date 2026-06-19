@@ -11,6 +11,8 @@ All notable changes to this project are documented in this file.
 - The workspace now depends on the published FIPS 0.3.64/0.3.39 crates, which
   skip slow RX-loop maintenance while queued dataplane work is waiting and
   shorten decrypt-worker bulk batches to bound priority stalls under LAN load.
+- Release-gate platform and desktop smoke checks now have bounded timeouts so
+  Docker perf evidence cannot be hidden behind a later hung smoke test.
 
 ## 4.0.78 - 2026-06-19
 
