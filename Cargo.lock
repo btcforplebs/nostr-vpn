@@ -3202,7 +3202,7 @@ dependencies = [
 
 [[package]]
 name = "nostr-vpn-app-core"
-version = "4.0.80"
+version = "4.0.81"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3227,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "nostr-vpn-core"
-version = "4.0.80"
+version = "4.0.81"
 dependencies = [
  "android-native-keyring-store",
  "anyhow",
@@ -3267,7 +3267,7 @@ dependencies = [
 
 [[package]]
 name = "nostr-vpn-web"
-version = "4.0.80"
+version = "4.0.81"
 dependencies = [
  "anyhow",
  "axum",
@@ -3288,7 +3288,7 @@ dependencies = [
 
 [[package]]
 name = "nostr-vpn-wintun"
-version = "4.0.80"
+version = "4.0.81"
 dependencies = [
  "anyhow",
  "wintun",
@@ -3383,7 +3383,7 @@ dependencies = [
 
 [[package]]
 name = "nvpn"
-version = "4.0.80"
+version = "4.0.81"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5373,9 +5373,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tun"
-version = "0.8.12"
+version = "0.8.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad93bcd64668e3539fd0debfe3f21696927d4a4c310204957373658d6304eb51"
+checksum = "2f5b5535b5fb263435229075e5ccc1cb74ccc01f288650b642b28e0b27869fcd"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -5385,6 +5385,7 @@ dependencies = [
  "libc",
  "log",
  "nix 0.31.3",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -5822,7 +5823,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
