@@ -8,9 +8,10 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-- The workspace now depends on the published FIPS 0.3.71/0.3.46 crates, carrying
-  the direct-path freshness, direct-probe routing, and degraded static-direct
-  route fixes used by the post-4.0.80 stabilization runs.
+- The workspace now depends on the published FIPS 0.3.73/0.3.48 crates, carrying
+  the direct-path freshness, direct-probe routing, degraded static-direct route,
+  and endpoint-priority scheduling fixes used by the post-4.0.80 stabilization
+  runs.
 - Cashu paid-exit buy/sell internet work remains opt-in behind the default-off
   `paid-exit` feature. Default builds keep Cashu out of the normal daemon
   dependency graph and hide unsupported Buy Internet, Share Internet, and Wallet
