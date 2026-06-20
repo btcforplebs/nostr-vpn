@@ -1507,12 +1507,20 @@ mod tests {
 
     #[test]
     fn route_usage_accounting_uses_cashu_service_spilman_policy() {
-        let mut config = PaidExitConfig::default();
-        config.enabled = true;
-        config.pricing.price_msat = 25;
-        config.pricing.per_units = 10;
-        config.channel.free_probe_units = 100;
-        config.channel.grace_units = 20;
+        let config = PaidExitConfig {
+            enabled: true,
+            pricing: PaidRoutePricing {
+                price_msat: 25,
+                per_units: 10,
+                ..PaidRoutePricing::default()
+            },
+            channel: PaidRouteChannelTerms {
+                free_probe_units: 100,
+                grace_units: 20,
+                ..PaidRouteChannelTerms::default()
+            },
+            ..PaidExitConfig::default()
+        };
 
         let usage = PaidRouteUsage {
             rx_bytes: 90,
@@ -1527,12 +1535,20 @@ mod tests {
 
     #[test]
     fn route_decision_reports_free_paid_grace_and_suspended_states() {
-        let mut config = PaidExitConfig::default();
-        config.enabled = true;
-        config.pricing.price_msat = 25;
-        config.pricing.per_units = 10;
-        config.channel.free_probe_units = 100;
-        config.channel.grace_units = 20;
+        let config = PaidExitConfig {
+            enabled: true,
+            pricing: PaidRoutePricing {
+                price_msat: 25,
+                per_units: 10,
+                ..PaidRoutePricing::default()
+            },
+            channel: PaidRouteChannelTerms {
+                free_probe_units: 100,
+                grace_units: 20,
+                ..PaidRouteChannelTerms::default()
+            },
+            ..PaidExitConfig::default()
+        };
 
         let free = config.routing_decision(&usage_bytes(100), 0);
         assert_eq!(free.state, PaidRouteAccessState::FreeProbe);
@@ -1560,13 +1576,20 @@ mod tests {
 
     #[test]
     fn session_routing_decision_uses_configured_meter() {
-        let mut config = PaidExitConfig::default();
-        config.enabled = true;
-        config.pricing.meter = PaidRouteMeter::Packets;
-        config.pricing.price_msat = 100;
-        config.pricing.per_units = 1;
-        config.channel.free_probe_units = 0;
-        config.channel.grace_units = 0;
+        let config = PaidExitConfig {
+            enabled: true,
+            pricing: PaidRoutePricing {
+                meter: PaidRouteMeter::Packets,
+                price_msat: 100,
+                per_units: 1,
+            },
+            channel: PaidRouteChannelTerms {
+                free_probe_units: 0,
+                grace_units: 0,
+                ..PaidRouteChannelTerms::default()
+            },
+            ..PaidExitConfig::default()
+        };
 
         let session = PaidRouteSession {
             session_id: "session-1".to_string(),
