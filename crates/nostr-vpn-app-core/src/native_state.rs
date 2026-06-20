@@ -137,6 +137,7 @@ pub struct NativeRelayState {
     pub enabled: bool,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativePaidExitSellerState {

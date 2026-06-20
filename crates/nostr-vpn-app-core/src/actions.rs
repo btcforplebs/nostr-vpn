@@ -217,6 +217,15 @@ pub enum NativeAppAction {
 mod tests {
     use super::*;
 
+    fn assert_action_json_roundtrip(action: &NativeAppAction, expected: &str) {
+        let encoded = serde_json::to_string(action).expect("serialize action");
+        assert_eq!(encoded, expected);
+        assert_eq!(
+            &serde_json::from_str::<NativeAppAction>(&encoded).expect("parse action"),
+            action
+        );
+    }
+
     #[test]
     fn action_json_uses_current_names() {
         assert_eq!(
@@ -447,14 +456,9 @@ mod tests {
             delivered_units: Some(100),
             paid_msat: Some(1_000),
         };
-        let encoded = serde_json::to_string(&create).expect("serialize create");
-        assert_eq!(
-            encoded,
-            r#"{"type":"create_paid_route_payment_envelope","sessionId":"session-1","kind":"balance_update","paymentJson":"{\"channel_id\":\"channel-1\"}","deliveredUnits":100,"paidMsat":1000}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse create"),
-            create
+        assert_action_json_roundtrip(
+            &create,
+            r#"{"type":"create_paid_route_payment_envelope","sessionId":"session-1","kind":"balance_update","paymentJson":"{\"channel_id\":\"channel-1\"}","deliveredUnits":100,"paidMsat":1000}"#,
         );
 
         let open = NativeAppAction::OpenPaidRouteChannelFromWallet {
@@ -464,14 +468,9 @@ mod tests {
             max_amount_per_output: Some(64),
             keyset_id: Some("00abcd".to_string()),
         };
-        let encoded = serde_json::to_string(&open).expect("serialize open");
-        assert_eq!(
-            encoded,
-            r#"{"type":"open_paid_route_channel_from_wallet","sessionId":"session-1","mintUrl":"https://mint.minibits.cash/Bitcoin","paidMsat":1000,"maxAmountPerOutput":64,"keysetId":"00abcd"}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse open"),
-            open
+        assert_action_json_roundtrip(
+            &open,
+            r#"{"type":"open_paid_route_channel_from_wallet","sessionId":"session-1","mintUrl":"https://mint.minibits.cash/Bitcoin","paidMsat":1000,"maxAmountPerOutput":64,"keysetId":"00abcd"}"#,
         );
 
         let sign = NativeAppAction::SignPaidRoutePaymentEnvelopeFromWallet {
@@ -480,54 +479,34 @@ mod tests {
             delivered_units: Some(200),
             paid_msat: Some(2_000),
         };
-        let encoded = serde_json::to_string(&sign).expect("serialize sign");
-        assert_eq!(
-            encoded,
-            r#"{"type":"sign_paid_route_payment_envelope_from_wallet","sessionId":"session-1","kind":"balance-update","deliveredUnits":200,"paidMsat":2000}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse sign"),
-            sign
+        assert_action_json_roundtrip(
+            &sign,
+            r#"{"type":"sign_paid_route_payment_envelope_from_wallet","sessionId":"session-1","kind":"balance-update","deliveredUnits":200,"paidMsat":2000}"#,
         );
 
         let close = NativeAppAction::ClosePaidRouteChannelFromWallet {
             session_id: "session-1".to_string(),
             publish: true,
         };
-        let encoded = serde_json::to_string(&close).expect("serialize close");
-        assert_eq!(
-            encoded,
-            r#"{"type":"close_paid_route_channel_from_wallet","sessionId":"session-1","publish":true}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse close"),
-            close
+        assert_action_json_roundtrip(
+            &close,
+            r#"{"type":"close_paid_route_channel_from_wallet","sessionId":"session-1","publish":true}"#,
         );
 
         let apply = NativeAppAction::ApplyPaidRoutePaymentEnvelope {
             envelope_json: r#"{"lease_id":"lease-1"}"#.to_string(),
         };
-        let encoded = serde_json::to_string(&apply).expect("serialize apply");
-        assert_eq!(
-            encoded,
-            r#"{"type":"apply_paid_route_payment_envelope","envelopeJson":"{\"lease_id\":\"lease-1\"}"}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse apply"),
-            apply
+        assert_action_json_roundtrip(
+            &apply,
+            r#"{"type":"apply_paid_route_payment_envelope","envelopeJson":"{\"lease_id\":\"lease-1\"}"}"#,
         );
 
         let send = NativeAppAction::SendPaidRoutePaymentEnvelope {
             envelope_json: r#"{"lease_id":"lease-1"}"#.to_string(),
         };
-        let encoded = serde_json::to_string(&send).expect("serialize send");
-        assert_eq!(
-            encoded,
-            r#"{"type":"send_paid_route_payment_envelope","envelopeJson":"{\"lease_id\":\"lease-1\"}"}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse send"),
-            send
+        assert_action_json_roundtrip(
+            &send,
+            r#"{"type":"send_paid_route_payment_envelope","envelopeJson":"{\"lease_id\":\"lease-1\"}"}"#,
         );
 
         let stream = NativeAppAction::StreamPaidRoutePayments {
@@ -535,46 +514,28 @@ mod tests {
             min_increment_msat: 100,
             limit: 5,
         };
-        let encoded = serde_json::to_string(&stream).expect("serialize stream");
-        assert_eq!(
-            encoded,
-            r#"{"type":"stream_paid_route_payments","publish":true,"minIncrementMsat":100,"limit":5}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse stream"),
-            stream
+        assert_action_json_roundtrip(
+            &stream,
+            r#"{"type":"stream_paid_route_payments","publish":true,"minIncrementMsat":100,"limit":5}"#,
         );
 
         let receive = NativeAppAction::ReceivePaidRoutePayments { duration_secs: 5 };
-        let encoded = serde_json::to_string(&receive).expect("serialize receive");
-        assert_eq!(
-            encoded,
-            r#"{"type":"receive_paid_route_payments","durationSecs":5}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse receive"),
-            receive
+        assert_action_json_roundtrip(
+            &receive,
+            r#"{"type":"receive_paid_route_payments","durationSecs":5}"#,
         );
 
         let collect = NativeAppAction::CollectPaidExitChannel {
             channel_id: "channel-1".to_string(),
         };
-        let encoded = serde_json::to_string(&collect).expect("serialize collect");
-        assert_eq!(
-            encoded,
-            r#"{"type":"collect_paid_exit_channel","channelId":"channel-1"}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse collect"),
-            collect
+        assert_action_json_roundtrip(
+            &collect,
+            r#"{"type":"collect_paid_exit_channel","channelId":"channel-1"}"#,
         );
 
-        let collect_due = NativeAppAction::CollectDuePaidExitChannels;
-        let encoded = serde_json::to_string(&collect_due).expect("serialize collect due");
-        assert_eq!(encoded, r#"{"type":"collect_due_paid_exit_channels"}"#);
-        assert_eq!(
-            serde_json::from_str::<NativeAppAction>(&encoded).expect("parse collect due"),
-            collect_due
+        assert_action_json_roundtrip(
+            &NativeAppAction::CollectDuePaidExitChannels,
+            r#"{"type":"collect_due_paid_exit_channels"}"#,
         );
     }
 

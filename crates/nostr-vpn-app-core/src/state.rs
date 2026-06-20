@@ -296,6 +296,7 @@ pub struct UiState {
     pub lan_peers: Vec<LanPeerView>,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PaidExitSellerView {

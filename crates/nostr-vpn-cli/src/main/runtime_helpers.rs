@@ -491,22 +491,27 @@ fn fips_paid_route_admissions_from_store(
 }
 
 #[cfg(feature = "embedded-fips")]
-async fn sync_fips_private_runtime(
-    runtime: &mut Option<crate::fips_private_mesh::FipsPrivateTunnelRuntime>,
-    app: &AppConfig,
-    config_path: &Path,
-    network_id: &str,
-    iface: &str,
-    own_pubkey: Option<&str>,
+struct SyncFipsPrivateRuntimeContext<'a> {
+    app: &'a AppConfig,
+    config_path: &'a Path,
+    network_id: &'a str,
+    iface: &'a str,
+    own_pubkey: Option<&'a str>,
     vpn_enabled: bool,
     expected_peers: usize,
+}
+
+#[cfg(feature = "embedded-fips")]
+async fn sync_fips_private_runtime(
+    runtime: &mut Option<crate::fips_private_mesh::FipsPrivateTunnelRuntime>,
+    context: SyncFipsPrivateRuntimeContext<'_>,
 ) -> Result<()> {
-    if !fips_private_runtime_active(app, vpn_enabled, expected_peers) {
+    if !fips_private_runtime_active(context.app, context.vpn_enabled, context.expected_peers) {
         if let Some(runtime) = runtime.take() {
             runtime.stop().await?;
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if !app.fips_host_tunnel_enabled {
+        if !context.app.fips_host_tunnel_enabled {
             crate::fips_host_tunnel::FipsHostTunnelRuntime::cleanup_disabled_artifacts();
         }
         return Ok(());
@@ -515,17 +520,17 @@ async fn sync_fips_private_runtime(
     let config_iface = runtime
         .as_ref()
         .map(|runtime| runtime.iface().to_string())
-        .unwrap_or_else(|| iface.to_string());
+        .unwrap_or_else(|| context.iface.to_string());
     let live_peer_endpoints = runtime
         .as_ref()
         .map(|runtime| runtime.peer_endpoint_hints())
         .unwrap_or_default();
     let config = fips_tunnel_config_from_app(
-        app,
-        config_path,
-        network_id,
+        context.app,
+        context.config_path,
+        context.network_id,
         config_iface,
-        own_pubkey,
+        context.own_pubkey,
         None,
         &live_peer_endpoints,
     )?;

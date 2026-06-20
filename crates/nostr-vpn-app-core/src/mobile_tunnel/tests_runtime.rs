@@ -550,6 +550,7 @@
             rekey_in_progress: true,
             rekey_draining: false,
             current_k_bit: Some(true),
+            last_outbound_route: Some("direct".to_string()),
             direct_probe_pending: true,
             direct_probe_after_ms: Some(98_765),
             direct_probe_retry_count: 4,

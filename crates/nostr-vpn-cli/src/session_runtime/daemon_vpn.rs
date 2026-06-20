@@ -891,13 +891,15 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                     #[cfg(feature = "embedded-fips")]
                     if let Err(error) = sync_fips_private_runtime(
                         &mut fips_tunnel_runtime,
-                        &app,
-                        &config_path,
-                        &network_id,
-                        &iface,
-                        own_pubkey.as_deref(),
-                        vpn_enabled,
-                        expected_peers,
+                        SyncFipsPrivateRuntimeContext {
+                            app: &app,
+                            config_path: &config_path,
+                            network_id: &network_id,
+                            iface: &iface,
+                            own_pubkey: own_pubkey.as_deref(),
+                            vpn_enabled,
+                            expected_peers,
+                        },
                     )
                     .await
                     {
