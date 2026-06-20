@@ -683,6 +683,46 @@
     }
 
     #[test]
+    fn app_connected_udp_default_disables_fips_fast_path() {
+        let alice_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let alice_nsec = alice_keys.secret_key().to_bech32().expect("alice nsec");
+        let alice_pubkey = alice_keys.public_key().to_hex();
+        let bob_pubkey = bob_keys.public_key().to_hex();
+        let network_id = "connected-udp-default-test";
+
+        let mut app = AppConfig::default();
+        app.nostr.secret_key = alice_nsec;
+        app.networks[0].enabled = true;
+        app.networks[0].network_id = network_id.to_string();
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey];
+
+        let tunnel_config = FipsPrivateTunnelConfig::from_app(
+            &app,
+            network_id,
+            "utun-test",
+            Some(&alice_pubkey),
+            None,
+            &[],
+        )
+        .expect("fips tunnel config");
+
+        let endpoint_config = fips_endpoint_config_with_open_discovery_limit(
+            &tunnel_config.endpoint_peers,
+            None,
+            tunnel_config.mesh_mtu,
+            tunnel_config.nostr_discovery_policy,
+            tunnel_config.open_discovery_max_pending,
+            Some(&tunnel_config.connected_udp),
+        );
+
+        assert!(
+            !endpoint_config.node.connected_udp.enabled,
+            "nvpn should keep connected UDP opt-in until the live LAN loss regression is fixed"
+        );
+    }
+
+    #[test]
     fn static_peer_endpoint_keeps_connected_udp_fast_path_available() {
         let alice_keys = Keys::generate();
         let bob_keys = Keys::generate();

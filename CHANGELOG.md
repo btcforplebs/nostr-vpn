@@ -23,6 +23,10 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Default FIPS private-mesh builds now keep the connected-UDP fast path opt-in
+  after live roster testing showed it could cause burst packet loss on otherwise
+  clean LAN paths. `node.connected_udp.enabled = true` and `FIPS_CONNECTED_UDP=1`
+  remain available for explicit A/B runs.
 - FIPS path refresh now targets stale and pending direct-probe paths without
   churning fresh routes, and nvpn uses FIPS data-path freshness plus outbound
   route status to avoid keeping degraded static/private hints on the hot path.
