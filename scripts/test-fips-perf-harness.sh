@@ -1350,6 +1350,7 @@ test_selected_pipeline_summary_artifact() {
 
 test_nvpn_perf_docker_phase_summary_hooks() {
   local script="$ROOT_DIR/scripts/perf-docker.sh"
+  local summary_lib="$ROOT_DIR/scripts/lib-docker-bench-summary.sh"
   assert_file_contains "$script" "nvpn-pipeline-phase-ranges.tsv" "nvpn perf phase range artifact"
   assert_file_contains "$script" "nvpn-pipeline-phase-summary.tsv" "nvpn perf phase summary artifact"
   assert_file_contains "$script" "run_test_json tcp-single" "nvpn perf TCP single phase range"
@@ -1364,8 +1365,12 @@ test_nvpn_perf_docker_phase_summary_hooks() {
   assert_file_contains "$script" 'NVPN_DOCKER_PLACEMENT_PREFLIGHT="$PLACEMENT_PREFLIGHT"' "nvpn perf exports effective placement preflight"
   assert_file_contains "$script" "NVPN_DOCKER_PLACEMENT_PREFLIGHT_PING_SIZE" "nvpn perf bulk-sized placement preflight"
   assert_file_contains "$script" "NVPN_DOCKER_PLACEMENT_PROFILE" "nvpn perf deterministic placement profile"
-  assert_file_contains "$script" "FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER=1" "nvpn perf source-affine placement profile env"
-  assert_file_contains "$script" "FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1" "nvpn perf worker-open placement profile env"
+  assert_file_contains "$summary_lib" "FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER is retired" "nvpn perf retired source-affine env diagnostic"
+  assert_file_contains "$summary_lib" "FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER is retired" "nvpn perf retired worker-open env diagnostic"
+  assert_file_contains "$summary_lib" "FIPS_DECRYPT_FSP_AEAD_COMPLETION_BATCH_MAX is retired" "nvpn perf retired FSP completion batch env diagnostic"
+  assert_file_contains "$summary_lib" "FIPS_LINUX_BULK_UDP_PACE_MBPS|FIPS_LINUX_BULK_UDP_PACE_BURST_BYTES" "nvpn perf retired Linux bulk pacer env names"
+  assert_file_contains "$summary_lib" "Linux bulk UDP sends use the accepted unpaced" "nvpn perf retired Linux bulk pacer env diagnostic"
+  assert_file_contains "$summary_lib" "FIPS_MACOS_ORDERED_SENDER|FIPS_MACOS_WORKER_STRIDE" "nvpn perf retired macOS sender env names"
   assert_file_contains "$script" "run_placement_preflight" "nvpn perf placement preflight before benchmark"
   assert_file_contains "$script" "node_b_fsp_owner_placement_load_line" "nvpn perf live placement classifier"
   assert_file_contains "$script" "nvpn-fsp-owner-placement.tsv" "nvpn perf FSP placement artifact"

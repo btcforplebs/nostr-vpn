@@ -375,8 +375,6 @@ test_docker_dataplane_profile_reaches_daemon_env() {
     got="$(daemon_env)"
     assert_contains "$got" "NVPN_FIPS_LINUX_TUN_VNET=1" "daemon env linux vnet"
     assert_contains "$got" "NVPN_MESH_UNDERLAY_UDP_MTU=1472" "daemon env LAN MTU"
-    assert_contains "$got" "FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER=1" "daemon env source-affine placement"
-    assert_contains "$got" "FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1" "daemon env worker-open placement"
     assert_contains "$got" "FIPS_DECRYPT_WORKERS=2" "daemon env preserves soak extra env"
     assert_contains "$got" "NVPN_PIPELINE_TRACE=1" "daemon env pipeline trace"
     assert_contains "$got" "NVPN_PIPELINE_INTERVAL_SECS=15" "daemon env pipeline interval"

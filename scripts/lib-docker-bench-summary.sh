@@ -137,25 +137,7 @@ docker_bench_placement_profile_env() {
       return 0
       ;;
     worker-open)
-      local env_name placement_env=""
-      for env_name in \
-        FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER \
-        FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER; do
-        if docker_bench_env_assignment_present \
-          "$env_name" \
-          "${NVPN_DOCKER_EXTRA_ENV:-}"; then
-          if docker_bench_env_bool_assignment_enabled \
-            "$env_name" \
-            "${NVPN_DOCKER_EXTRA_ENV:-}"; then
-            continue
-          fi
-          printf 'perf: NVPN_DOCKER_PLACEMENT_PROFILE=worker-open conflicts with %s in NVPN_DOCKER_EXTRA_ENV\n' \
-            "$env_name" >&2
-          return 2
-        fi
-        placement_env="$(docker_bench_join_env_assignments "$placement_env" "$env_name=1")"
-      done
-      printf '%s\n' "$placement_env"
+      return 0
       ;;
     *)
       printf 'perf: unknown NVPN_DOCKER_PLACEMENT_PROFILE=%s (known: plain, worker-open)\n' \
@@ -190,13 +172,19 @@ docker_bench_validate_connect_env_scope() {
   local effective_env="$1"
   local name value failed=0
   for name in \
+    FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER \
+    FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER \
+    FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER; do
+    value="${!name:-}"
+    [[ -n "$value" ]] || continue
+    printf 'perf: %s\n' "$(docker_bench_extra_env_stale_assignment_message "$name")" >&2
+    failed=1
+  done
+  for name in \
     NVPN_FIPS_LINUX_TUN_VNET \
     NVPN_FIPS_LINUX_TUN_TX_QUEUE_LEN \
     NVPN_MESH_UNDERLAY_UDP_MTU \
     NVPN_MESH_MTU_PROFILE \
-    FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER \
-    FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER \
-    FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER \
     FIPS_DECRYPT_FSP_OPEN_POOL; do
     value="${!name:-}"
     [[ -n "$value" ]] || continue
@@ -220,9 +208,13 @@ docker_bench_direct_fmp_forced_enabled() {
 docker_bench_extra_env_stale_assignment_message() {
   local name="$1"
   case "$name" in
-    FIPS_FMP_AEAD_HELPERS)
+    FIPS_FMP_AEAD_HELPERS|FIPS_DECRYPT_FMP_AEAD_HELPERS)
       printf '%s\n' \
-        "FIPS_FMP_AEAD_HELPERS is not read by current FIPS; use FIPS_DECRYPT_FMP_AEAD_HELPERS"
+        "$name is retired; FMP decrypt stays on the source-affine owner path"
+      ;;
+    FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER is retired; FMP decrypt always uses the canonical source-affine owner path"
       ;;
     FIPS_FSP_AEAD_HELPERS)
       printf '%s\n' \
@@ -235,6 +227,30 @@ docker_bench_extra_env_stale_assignment_message() {
     FIPS_DECRYPT_FSP_ORDERED_AEAD_HELPERS)
       printf '%s\n' \
         "FIPS_DECRYPT_FSP_ORDERED_AEAD_HELPERS is retired; use worker-open placement instead of the FSP helper lane"
+      ;;
+    FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER is retired; same-owner bulk worker-open is the default when multiple decrypt workers are available"
+      ;;
+    FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER is retired; remote FSP worker-open bench placement is no longer a production dataplane knob"
+      ;;
+    FIPS_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG is retired; worker-open pressure is bounded by the ordered receive window and worker queues"
+      ;;
+    FIPS_DECRYPT_FSP_AEAD_COMPLETION_BATCH_MAX)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FSP_AEAD_COMPLETION_BATCH_MAX is retired; FSP completion batching uses the accepted fixed worker-open width"
+      ;;
+    FIPS_LINUX_BULK_UDP_PACE_MBPS|FIPS_LINUX_BULK_UDP_PACE_BURST_BYTES|FIPS_LINUX_BULK_UDP_PACE_SPIN_NS)
+      printf '%s\n' \
+        "$name is retired; Linux bulk UDP sends use the accepted unpaced deferred/WG-batch sender shape"
+      ;;
+    FIPS_MACOS_ORDERED_SENDER|FIPS_MACOS_WORKER_STRIDE|FIPS_MACOS_SEND_FLOW_IDLE_MS)
+      printf '%s\n' \
+        "$name is retired; macOS uses the accepted hash-by-send-target worker sender"
       ;;
     FIPS_DECRYPT_FMP_PREOWNER_AEAD_HELPERS)
       printf '%s\n' \

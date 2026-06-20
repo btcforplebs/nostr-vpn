@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Retired stale dataplane benchmark knobs for FIPS source-affine/FSP worker-open
+  placement, FSP completion width, Linux bulk UDP pacing, and macOS ordered
+  sender experiments. Current FIPS defaults now own those shapes directly, and
+  Docker benchmark harnesses reject the old env names instead of silently
+  recording misleading evidence.
+
 ## 4.0.80 - 2026-06-19
 
 ### Changed

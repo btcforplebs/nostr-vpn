@@ -29,12 +29,10 @@
 #     expands to the Linux vnet TUN + LAN MTU daemon env used for peak Linux
 #     Docker dataplane measurements.
 #   NVPN_DOCKER_PLACEMENT_PROFILE=worker-open
-#     pins the protocol-neutral direct-peer same-owner FSP local-open topology
-#     with FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER=1 and
-#     FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1, then defaults
-#     NVPN_DOCKER_EXPECT_FSP_OWNER_PLACEMENT=worker-open and exclusive
-#     placement guards so the direct-peer benchmark lane is reproducible even
-#     when those knobs are already defaults. Set
+#     pins the protocol-neutral direct-peer same-owner FSP local-open expectation
+#     by defaulting NVPN_DOCKER_EXPECT_FSP_OWNER_PLACEMENT=worker-open and
+#     exclusive placement guards. The topology is the current FIPS default, so
+#     this profile no longer injects retired FIPS placement envs. Set
 #     NVPN_DOCKER_EXPECT_FSP_OWNER_PLACEMENT_EXCLUSIVE=0 for diagnostics.
 #   NVPN_DOCKER_EXTRA_ENV="NAME=value ..." still passes explicit env into
 #     `nvpn connect`; setting connect-only env outside those knobs is rejected.

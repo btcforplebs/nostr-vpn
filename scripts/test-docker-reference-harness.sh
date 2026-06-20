@@ -515,7 +515,6 @@ test_dataplane_profile_expands_connect_env() {
 
   (
     export NVPN_DOCKER_DATAPLANE_PROFILE=linux-vnet-lan
-    export NVPN_DOCKER_EXTRA_ENV="FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1"
     effective="$(docker_bench_effective_extra_env)"
     printf '%s' "$effective" >"$dir/effective-env"
     docker_bench_validate_connect_env_scope "$effective"
@@ -523,7 +522,7 @@ test_dataplane_profile_expands_connect_env() {
   )
 
   effective="$(cat "$dir/effective-env")"
-  assert_eq "$effective" "NVPN_FIPS_LINUX_TUN_VNET=1 NVPN_MESH_UNDERLAY_UDP_MTU=1472 FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1" "profile effective connect env"
+  assert_eq "$effective" "NVPN_FIPS_LINUX_TUN_VNET=1 NVPN_MESH_UNDERLAY_UDP_MTU=1472" "profile effective connect env"
   assert_eq "$(jq -r '.run_env.dataplane_profile' "$metadata")" "linux-vnet-lan" "metadata dataplane profile"
   assert_eq "$(jq -r '.run_env.extra_connect_env' "$metadata")" "$effective" "metadata effective extra env"
 
@@ -550,7 +549,7 @@ test_placement_profile_expands_worker_open_connect_env() {
   )
 
   effective="$(cat "$dir/effective-env")"
-  assert_eq "$effective" "FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER=1 FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1" "placement profile effective connect env"
+  assert_eq "$effective" "" "placement profile effective connect env"
   assert_eq "$(jq -r '.run_env.placement_profile' "$metadata")" "worker-open" "metadata placement profile"
   assert_eq "$(jq -r '.run_env.expected_fsp_owner_placement' "$metadata")" "worker-open" "metadata expected placement"
   assert_eq "$(jq -r '.run_env.expected_fsp_owner_placement_exclusive' "$metadata")" "true" "metadata expected exclusive placement"
@@ -581,54 +580,6 @@ test_placement_profile_allows_explicit_nonexclusive_worker_open_guard() {
   assert_eq "$(jq -r '.run_env.expected_fsp_owner_placement_exclusive' "$metadata")" "false" "metadata explicit nonexclusive placement"
 
   rm -rf "$dir"
-}
-
-test_placement_profile_allows_explicit_truthy_worker_open_env() {
-  local output status
-  set +e
-  output="$(
-    NVPN_DOCKER_PLACEMENT_PROFILE=worker-open \
-    NVPN_DOCKER_EXTRA_ENV=FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1 \
-      docker_bench_effective_extra_env 2>&1
-  )"
-  status=$?
-  set -e
-
-  [[ "$status" == "0" ]] || fail "truthy explicit worker-open env was rejected: $output"
-  assert_eq "$output" "FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER=1 FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1" "truthy explicit worker-open env"
-}
-
-test_placement_profile_rejects_conflicting_worker_open_env() {
-  local output status
-  set +e
-  output="$(
-    NVPN_DOCKER_PLACEMENT_PROFILE=worker-open \
-    NVPN_DOCKER_EXTRA_ENV=FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=0 \
-      docker_bench_effective_extra_env 2>&1
-  )"
-  status=$?
-  set -e
-
-  [[ "$status" != "0" ]] || fail "conflicting worker-open placement env was accepted"
-  case "$output" in
-    *"NVPN_DOCKER_PLACEMENT_PROFILE=worker-open conflicts"*) ;;
-    *) fail "conflicting placement diagnostic missing: $output" ;;
-  esac
-
-  set +e
-  output="$(
-    NVPN_DOCKER_PLACEMENT_PROFILE=worker-open \
-    NVPN_DOCKER_EXTRA_ENV=FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER=0 \
-      docker_bench_effective_extra_env 2>&1
-  )"
-  status=$?
-  set -e
-
-  [[ "$status" != "0" ]] || fail "conflicting source-affine placement env was accepted"
-  case "$output" in
-    *"NVPN_DOCKER_PLACEMENT_PROFILE=worker-open conflicts with FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER"*) ;;
-    *) fail "conflicting source-affine placement diagnostic missing: $output" ;;
-  esac
 }
 
 test_dataplane_profile_rejects_unknown_profile() {
@@ -731,14 +682,50 @@ test_metadata_writer_records_pipeline_hard_event_guard() {
   rm -rf "$dir"
 }
 
-test_extra_env_validation_accepts_current_fips_parallel_open_names() {
-  local output
+test_extra_env_validation_rejects_retired_dataplane_knob_names() {
+  local output status
+  set +e
   output="$(
     docker_bench_validate_extra_env_assignments \
-      "FIPS_DECRYPT_FMP_AEAD_HELPERS=2 FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1 NVPN_FIPS_LINUX_TUN_VNET=1" \
+      "FIPS_DECRYPT_FMP_AEAD_HELPERS=2 FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER=1 FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER=1 FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER=1 FIPS_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG=64 FIPS_DECRYPT_FSP_AEAD_COMPLETION_BATCH_MAX=64 FIPS_LINUX_BULK_UDP_PACE_MBPS=2500 FIPS_LINUX_BULK_UDP_PACE_BURST_BYTES=65536 FIPS_LINUX_BULK_UDP_PACE_SPIN_NS=200000 FIPS_MACOS_ORDERED_SENDER=1 FIPS_MACOS_WORKER_STRIDE=16 FIPS_MACOS_SEND_FLOW_IDLE_MS=60000 NVPN_FIPS_LINUX_TUN_VNET=1" \
       2>&1
-  )" || fail "current FIPS parallel-open env names were rejected: $output"
-  assert_eq "$output" "" "current parallel-open env validation output"
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" != "0" ]] || fail "retired dataplane knob env names were accepted"
+  case "$output" in
+    *"FIPS_DECRYPT_FMP_AEAD_HELPERS is retired"*) ;;
+    *) fail "retired FMP AEAD helper diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER is retired"*) ;;
+    *) fail "retired source-affine diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER is retired"*) ;;
+    *) fail "retired FSP local worker-open diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER is retired"*) ;;
+    *) fail "retired FSP remote worker-open diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"FIPS_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG is retired"*) ;;
+    *) fail "retired FSP worker-open backlog diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"FIPS_DECRYPT_FSP_AEAD_COMPLETION_BATCH_MAX is retired"*) ;;
+    *) fail "retired FSP completion batch diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"FIPS_LINUX_BULK_UDP_PACE_MBPS is retired"*) ;;
+    *) fail "retired Linux bulk pacer diagnostic missing: $output" ;;
+  esac
+  case "$output" in
+    *"FIPS_MACOS_ORDERED_SENDER is retired"*) ;;
+    *) fail "retired macOS ordered sender diagnostic missing: $output" ;;
+  esac
 }
 
 test_extra_env_validation_rejects_stale_fips_helper_names() {
@@ -766,7 +753,7 @@ test_extra_env_validation_rejects_stale_fips_helper_names() {
     *) fail "stale FSP helper completion diagnostic missing: $output" ;;
   esac
   case "$output" in
-    *"FIPS_FMP_AEAD_HELPERS is not read by current FIPS"*) ;;
+    *"FIPS_FMP_AEAD_HELPERS is retired"*) ;;
     *) fail "stale FMP helper diagnostic missing: $output" ;;
   esac
   case "$output" in
@@ -1581,14 +1568,12 @@ test_metadata_writer_records_run_provenance
 test_dataplane_profile_expands_connect_env
 test_placement_profile_expands_worker_open_connect_env
 test_placement_profile_allows_explicit_nonexclusive_worker_open_guard
-test_placement_profile_allows_explicit_truthy_worker_open_env
-test_placement_profile_rejects_conflicting_worker_open_env
 test_dataplane_profile_rejects_unknown_profile
 test_connect_env_scope_rejects_stranded_outer_env
 test_metadata_writer_records_direct_fmp_guard
 test_metadata_writer_records_fsp_aead_helper_guard
 test_metadata_writer_records_pipeline_hard_event_guard
-test_extra_env_validation_accepts_current_fips_parallel_open_names
+test_extra_env_validation_rejects_retired_dataplane_knob_names
 test_extra_env_validation_rejects_stale_fips_helper_names
 test_pipeline_summary_helpers
 test_nvpn_tun_write_summary_prefers_coalesced_frame_interval
