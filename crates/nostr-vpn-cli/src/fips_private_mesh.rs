@@ -69,10 +69,10 @@ const FIPS_RECENT_NON_ROSTER_TRANSIT_MAX_SEEDS: usize = 4;
 const FIPS_NOSTR_FAILURE_STREAK_THRESHOLD: u32 = 6;
 const FIPS_NOSTR_EXTENDED_COOLDOWN_SECS: u64 = 60;
 const FIPS_NOSTR_STARTUP_SWEEP_MAX_AGE_SECS: u64 = 300;
-// Keep traversal/NAT paths warm enough for interactive traffic. FIPS core
-// proactively refreshes/degrades quiet traversal paths after one heartbeat,
-// while full link-dead still has a floor to avoid false stale transitions.
-const FIPS_ENDPOINT_HEARTBEAT_INTERVAL_SECS: u64 = 5;
+// Keep traversal/NAT paths warm enough for interactive traffic. FIPS core uses
+// this cadence plus fast_link_dead_timeout_secs for recent-path recovery, while
+// authenticated payload traffic keeps healthy paths from false-staling.
+const FIPS_ENDPOINT_HEARTBEAT_INTERVAL_SECS: u64 = 2;
 const FIPS_ENDPOINT_LINK_DEAD_TIMEOUT_SECS: u64 = 30;
 const FIPS_ENDPOINT_FAST_LINK_DEAD_TIMEOUT_SECS: u64 = 5;
 const FIPS_ENDPOINT_SESSION_IDLE_TIMEOUT_SECS: u64 = 0;

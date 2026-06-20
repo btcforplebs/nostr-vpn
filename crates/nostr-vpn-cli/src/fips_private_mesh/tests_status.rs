@@ -127,6 +127,48 @@
     }
 
     #[test]
+    fn seen_participant_refreshes_endpoint_path_when_direct_probe_is_pending() {
+        let keys = Keys::generate();
+        let npub = keys.public_key().to_bech32().expect("npub");
+        let mut peer = FipsEndpointPeer {
+            npub,
+            node_addr: NodeAddr::from_bytes([9; 16]),
+            connected: false,
+            transport_addr: Some("203.0.113.9:9000".to_string()),
+            transport_type: Some("udp".to_string()),
+            link_id: 42,
+            srtt_ms: Some(70),
+            srtt_age_ms: Some(120_000),
+            packets_sent: 100,
+            packets_recv: 20,
+            bytes_sent: 8192,
+            bytes_recv: 1024,
+            rekey_in_progress: false,
+            rekey_draining: false,
+            current_k_bit: None,
+            direct_probe_pending: true,
+            direct_probe_after_ms: Some(12_345),
+            direct_probe_retry_count: 3,
+            direct_probe_auto_reconnect: true,
+            direct_probe_expires_at_ms: Some(67_890),
+            nostr_traversal_consecutive_failures: 0,
+            nostr_traversal_in_cooldown: false,
+            nostr_traversal_cooldown_until_ms: None,
+            nostr_traversal_last_observed_skew_ms: None,
+        };
+
+        assert!(super::endpoint_path_refresh_due(&peer, Some(120), 123));
+        assert!(super::endpoint_path_refresh_due(&peer, Some(80), 123));
+        assert!(!super::endpoint_path_refresh_due(&peer, None, 123));
+
+        peer.direct_probe_pending = false;
+        assert!(!super::endpoint_path_refresh_due(&peer, Some(120), 123));
+
+        peer.connected = true;
+        assert!(super::endpoint_path_refresh_due(&peer, Some(80), 123));
+    }
+
+    #[test]
     fn retry_only_endpoint_peer_status_keeps_probe_separate_from_link() {
         let status = mesh_status_from_endpoint_peer(
             "peer".to_string(),

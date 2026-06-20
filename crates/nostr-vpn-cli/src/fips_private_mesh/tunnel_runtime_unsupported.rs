@@ -17,7 +17,7 @@ impl FipsPrivateTunnelRuntime {
         Vec::new()
     }
 
-    pub(crate) fn stale_participants_with_connected_links(&self, _now: u64) -> Vec<String> {
+    pub(crate) fn stale_participants_needing_path_refresh(&self, _now: u64) -> Vec<String> {
         Vec::new()
     }
 

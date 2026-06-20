@@ -103,8 +103,8 @@ impl FipsPrivateTunnelRuntime {
         self.mesh.peer_statuses()
     }
 
-    pub(crate) fn stale_participants_with_connected_links(&self, now: u64) -> Vec<String> {
-        self.mesh.stale_participants_with_connected_links(now)
+    pub(crate) fn stale_participants_needing_path_refresh(&self, now: u64) -> Vec<String> {
+        self.mesh.stale_participants_needing_path_refresh(now)
     }
 
     pub(crate) async fn relay_statuses(&self) -> Result<Vec<FipsRelayStatus>> {

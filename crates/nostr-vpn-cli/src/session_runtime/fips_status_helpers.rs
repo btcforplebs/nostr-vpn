@@ -421,7 +421,7 @@ async fn restart_fips_tunnel_runtime_after_stale_participants(
 ) -> Result<bool> {
     let stale_participants = runtime
         .as_ref()
-        .map(|runtime| runtime.stale_participants_with_connected_links(now))
+        .map(|runtime| runtime.stale_participants_needing_path_refresh(now))
         .unwrap_or_default();
     if stale_participants.is_empty() {
         return Ok(false);
@@ -430,7 +430,7 @@ async fn restart_fips_tunnel_runtime_after_stale_participants(
         return Ok(false);
     }
     eprintln!(
-        "daemon: refreshing FIPS peer paths after {} participant(s) stopped responding while endpoint links stayed connected",
+        "daemon: refreshing FIPS peer paths after {} participant(s) stopped responding while endpoint paths need refresh",
         stale_participants.len()
     );
     refresh_fips_tunnel_runtime_peer_paths(runtime, context, &stale_participants).await

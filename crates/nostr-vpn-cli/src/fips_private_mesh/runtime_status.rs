@@ -1,3 +1,19 @@
+fn endpoint_link_refreshable_after_stale_participant(peer_link: &FipsEndpointPeer) -> bool {
+    peer_link.connected || peer_link.direct_probe_pending
+}
+
+fn endpoint_path_refresh_due(
+    peer_link: &FipsEndpointPeer,
+    last_seen_at: Option<u64>,
+    now: u64,
+) -> bool {
+    if peer_link.direct_probe_pending && last_seen_at.is_some() {
+        return true;
+    }
+    endpoint_link_refreshable_after_stale_participant(peer_link)
+        && fips_peer_presence_stale(last_seen_at, now)
+}
+
 impl FipsPrivateMeshRuntime {
     pub(crate) fn peer_statuses(&self) -> Vec<MeshPeerStatus> {
         let now = unix_timestamp();
@@ -82,7 +98,7 @@ impl FipsPrivateMeshRuntime {
         statuses
     }
 
-    pub(crate) fn stale_participants_with_connected_links(&self, now: u64) -> Vec<String> {
+    pub(crate) fn stale_participants_needing_path_refresh(&self, now: u64) -> Vec<String> {
         let Some(presence) = self.presence.read().ok() else {
             return Vec::new();
         };
@@ -96,12 +112,9 @@ impl FipsPrivateMeshRuntime {
             .peer_pubkeys()
             .into_iter()
             .filter(|participant| {
-                let link_connected = link_status
-                    .get(participant)
-                    .is_some_and(|peer_link| peer_link.connected);
-                if !link_connected {
+                let Some(peer_link) = link_status.get(participant) else {
                     return false;
-                }
+                };
                 let participant_key = participant_pubkey_bytes(participant);
                 let last_seen_at = participant_key
                     .as_ref()
@@ -112,7 +125,7 @@ impl FipsPrivateMeshRuntime {
                             .get(participant)
                             .and_then(|presence| presence.last_seen_at)
                     });
-                fips_peer_presence_stale(last_seen_at, now)
+                endpoint_path_refresh_due(peer_link, last_seen_at, now)
             })
             .collect::<Vec<_>>();
         participants.sort();
