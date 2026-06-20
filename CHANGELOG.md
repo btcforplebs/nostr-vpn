@@ -4,13 +4,30 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.81 - 2026-06-20
+
 ### Changed
 
+- The workspace now depends on the published FIPS 0.3.71/0.3.46 crates, carrying
+  the direct-path freshness, direct-probe routing, and degraded static-direct
+  route fixes used by the post-4.0.80 stabilization runs.
+- Cashu paid-exit buy/sell internet work remains opt-in behind the default-off
+  `paid-exit` feature. Default builds keep Cashu out of the normal daemon
+  dependency graph and hide unsupported Buy Internet, Share Internet, and Wallet
+  UI instead of showing placeholder "not available" pages.
 - Retired stale dataplane benchmark knobs for FIPS source-affine/FSP worker-open
   placement, FSP completion width, Linux bulk UDP pacing, and macOS ordered
   sender experiments. Current FIPS defaults now own those shapes directly, and
   Docker benchmark harnesses reject the old env names instead of silently
   recording misleading evidence.
+
+### Fixed
+
+- FIPS path refresh now targets stale and pending direct-probe paths without
+  churning fresh routes, and nvpn uses FIPS data-path freshness plus outbound
+  route status to avoid keeping degraded static/private hints on the hot path.
+- Release-gate coverage now includes the degraded static FIPS routing
+  regression so roster/static-route recovery stays protected.
 
 ## 4.0.80 - 2026-06-19
 
