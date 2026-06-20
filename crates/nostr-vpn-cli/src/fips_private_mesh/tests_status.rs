@@ -127,7 +127,7 @@
     }
 
     #[test]
-    fn seen_participant_refreshes_endpoint_path_when_direct_probe_is_pending() {
+    fn stale_participant_refreshes_endpoint_path_when_direct_probe_is_pending() {
         let keys = Keys::generate();
         let npub = keys.public_key().to_bech32().expect("npub");
         let mut peer = FipsEndpointPeer {
@@ -157,7 +157,10 @@
             nostr_traversal_last_observed_skew_ms: None,
         };
 
-        assert!(super::endpoint_path_refresh_due(&peer, Some(120), 123));
+        assert!(
+            !super::endpoint_path_refresh_due(&peer, Some(120), 123),
+            "fresh participant traffic must not churn same-path direct probes"
+        );
         assert!(super::endpoint_path_refresh_due(&peer, Some(80), 123));
         assert!(!super::endpoint_path_refresh_due(&peer, None, 123));
 

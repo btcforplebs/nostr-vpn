@@ -7,9 +7,6 @@ fn endpoint_path_refresh_due(
     last_seen_at: Option<u64>,
     now: u64,
 ) -> bool {
-    if peer_link.direct_probe_pending && last_seen_at.is_some() {
-        return true;
-    }
     endpoint_link_refreshable_after_stale_participant(peer_link)
         && fips_peer_presence_stale(last_seen_at, now)
 }
