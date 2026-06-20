@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.82 - 2026-06-20
+
+### Fixed
+
+- Windows default builds no longer crash at startup when hidden paid-route view
+  markup is loaded. Paid-route buy/sell/wallet UI remains hidden unless the
+  default-off paid-exit feature and runtime support are enabled.
+
 ## 4.0.81 - 2026-06-20
 
 ### Changed
