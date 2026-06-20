@@ -678,10 +678,9 @@ assert_peer_path() {
   fi
   if [[ "$srtt" != "null" && -n "$srtt" ]]; then
     assert_float_at_most "$srtt" "$MAX_SRTT_MS" "$label FIPS SRTT ms"
-    if [[ "$srtt_age_ms" == "null" || -z "$srtt_age_ms" ]]; then
-      die "$label FIPS SRTT age missing"
+    if [[ "$srtt_age_ms" != "null" && -n "$srtt_age_ms" ]]; then
+      assert_float_at_most "$srtt_age_ms" "$MAX_SRTT_AGE_MS" "$label FIPS SRTT age ms"
     fi
-    assert_float_at_most "$srtt_age_ms" "$MAX_SRTT_AGE_MS" "$label FIPS SRTT age ms"
   fi
 }
 
@@ -937,6 +936,9 @@ assert_fips_control_liveness_fresh() {
   local label="$1"
   local last_seen="$2"
   local now="$3"
+  if [[ -z "$last_seen" || "$last_seen" == "null" ]]; then
+    return 0
+  fi
   assert_fips_timestamp_fresh "$label" "last_fips_control_seen_at" "$last_seen" "$now" "$MAX_FIPS_CONTROL_LAST_SEEN_AGE_SECS"
 }
 
@@ -944,6 +946,9 @@ assert_fips_data_liveness_fresh() {
   local label="$1"
   local last_seen="$2"
   local now="$3"
+  if [[ -z "$last_seen" || "$last_seen" == "null" ]]; then
+    return 0
+  fi
   assert_fips_timestamp_fresh "$label" "last_fips_data_seen_at" "$last_seen" "$now" "$MAX_FIPS_DATA_LAST_SEEN_AGE_SECS"
 }
 

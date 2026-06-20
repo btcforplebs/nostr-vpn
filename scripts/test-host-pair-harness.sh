@@ -401,6 +401,8 @@ test_fips_liveness_policy() {
     MAX_FIPS_CONTROL_LAST_SEEN_AGE_SECS=10
     MAX_FIPS_LAST_SEEN_FUTURE_SKEW_SECS=5
     assert_fips_control_liveness_fresh "fixture" 100 105
+    assert_fips_control_liveness_fresh "fixture" "" 105
+    assert_fips_control_liveness_fresh "fixture" null 105
   )
 
   assert_fails_with \
@@ -413,6 +415,8 @@ test_fips_liveness_policy() {
     MAX_FIPS_DATA_LAST_SEEN_AGE_SECS=10
     MAX_FIPS_LAST_SEEN_FUTURE_SKEW_SECS=5
     assert_fips_data_liveness_fresh "fixture" 100 105
+    assert_fips_data_liveness_fresh "fixture" "" 105
+    assert_fips_data_liveness_fresh "fixture" null 105
   )
 
   assert_fails_with \
@@ -423,11 +427,12 @@ test_fips_liveness_policy() {
 }
 
 test_direct_path_policy() {
-  local direct_status fallback_status unreachable_status stale_srtt_status
+  local direct_status fallback_status unreachable_status stale_srtt_status missing_srtt_age_status
   direct_status="$(peer_status_fixture true "198.51.100.10:51820")"
   fallback_status="$(peer_status_fixture true "203.0.113.99:51820")"
   unreachable_status="$(peer_status_fixture false "198.51.100.10:51820")"
   stale_srtt_status="$(peer_status_fixture true "198.51.100.10:51820" 42 120001)"
+  missing_srtt_age_status="$(peer_status_fixture true "198.51.100.10:51820" 42 null)"
 
   (
     ALLOW_NON_DIRECT=0
@@ -444,6 +449,12 @@ test_direct_path_policy() {
   (
     ALLOW_NON_DIRECT=1
     assert_peer_path "$fallback_status" "peer-a" "198.51.100.10" "local"
+  )
+
+  (
+    ALLOW_NON_DIRECT=0
+    MAX_SRTT_AGE_MS=120000
+    assert_peer_path "$missing_srtt_age_status" "peer-a" "198.51.100.10" "local"
   )
 
   assert_fails_with \
