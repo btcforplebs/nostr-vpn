@@ -60,6 +60,7 @@ pub struct MeshPeerStatus {
     pub rekey_in_progress: bool,
     pub rekey_draining: bool,
     pub current_k_bit: Option<bool>,
+    pub last_outbound_route: Option<String>,
     pub direct_probe_pending: bool,
     pub direct_probe_after_ms: Option<u64>,
     pub direct_probe_retry_count: u32,

@@ -79,6 +79,7 @@ fn mesh_status_from_endpoint_peer(
         rekey_in_progress: peer.rekey_in_progress,
         rekey_draining: peer.rekey_draining,
         current_k_bit: peer.current_k_bit,
+        last_outbound_route: peer.last_outbound_route.clone(),
         direct_probe_pending: peer.direct_probe_pending,
         direct_probe_after_ms: peer.direct_probe_after_ms,
         direct_probe_retry_count: peer.direct_probe_retry_count,

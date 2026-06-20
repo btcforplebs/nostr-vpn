@@ -36,6 +36,7 @@
             rekey_in_progress: false,
             rekey_draining: false,
             current_k_bit: None,
+            last_outbound_route: None,
             direct_probe_pending: false,
             direct_probe_after_ms: None,
             direct_probe_retry_count: 0,
