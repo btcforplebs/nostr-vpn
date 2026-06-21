@@ -20,6 +20,8 @@ All notable changes to this project are documented in this file.
 - Release-gate local-FIPS coverage now checks that traversal/recent-endpoint
   paths keep their mobile-safe liveness floor instead of falling back to the 5s
   local-route-failure timeout.
+- Release-gate local-FIPS coverage now rejects configured-only Nostr traversal
+  regressions where non-roster handoffs are adopted before roster admission.
 
 ## 4.0.82 - 2026-06-20
 
