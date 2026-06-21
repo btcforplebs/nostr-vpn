@@ -41,6 +41,8 @@ fn fips_peer_presence_stale(last_seen_at: Option<u64>, now: u64) -> bool {
 fn fips_peer_ping_interval_secs(last_seen_at: Option<u64>, link_connected: bool, now: u64) -> u64 {
     if fips_peer_presence_fresh(last_seen_at, now) {
         FIPS_PEER_ACTIVE_PING_INTERVAL_SECS
+    } else if last_seen_at.is_some() {
+        FIPS_PEER_DISCOVERY_PROBE_INTERVAL_SECS
     } else if link_connected {
         FIPS_PEER_LINK_PING_INTERVAL_SECS
     } else {

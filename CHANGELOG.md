@@ -22,6 +22,9 @@ All notable changes to this project are documented in this file.
   local-route-failure timeout.
 - Release-gate local-FIPS coverage now rejects configured-only Nostr traversal
   regressions where non-roster handoffs are adopted before roster admission.
+- FIPS private-mesh maintenance now probes stale peers on the slower discovery
+  cadence and caps peer pings per heartbeat to avoid synchronized control bursts
+  from stale/offline roster members.
 
 ## 4.0.82 - 2026-06-20
 

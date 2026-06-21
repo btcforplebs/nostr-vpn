@@ -455,6 +455,9 @@
         assert!(!super::fips_peer_ping_due(None, Some(116), true, 120));
         assert!(super::fips_peer_ping_due(None, Some(115), true, 120));
 
+        assert!(!super::fips_peer_ping_due(Some(90), Some(91), true, 120));
+        assert!(super::fips_peer_ping_due(Some(90), Some(90), true, 120));
+
         assert!(!super::fips_peer_ping_due(None, Some(91), false, 120));
         assert!(super::fips_peer_ping_due(None, Some(90), false, 120));
     }
