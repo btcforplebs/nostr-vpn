@@ -1,4 +1,6 @@
 use crate::*;
+#[cfg(feature = "embedded-fips")]
+use fips_core::discovery::nostr::{OverlayEndpointAdvert, OverlayTransportKind};
 #[cfg(feature = "paid-exit")]
 use futures_util::{SinkExt, StreamExt};
 #[cfg(feature = "embedded-fips")]
@@ -1882,7 +1884,7 @@ fn local_fips_endpoint_hints_share_public_configured_endpoint_with_roster() {
     app.node.tunnel_ip = "10.44.1.1/32".to_string();
     app.lan_discovery_enabled = true;
 
-    let hints = local_fips_endpoint_hints(&app, vec![Ipv4Addr::new(192, 168, 50, 10)]);
+    let hints = local_fips_endpoint_hints(&app, vec![Ipv4Addr::new(192, 168, 50, 10)], &[]);
     let addrs = hints.into_iter().map(|hint| hint.addr).collect::<Vec<_>>();
 
     assert_eq!(
@@ -1896,6 +1898,35 @@ fn local_fips_endpoint_hints_share_public_configured_endpoint_with_roster() {
 
 #[cfg(feature = "embedded-fips")]
 #[test]
+fn local_fips_endpoint_hints_share_fips_advertised_udp_endpoint_with_roster() {
+    let mut app = AppConfig::generated();
+    app.node.endpoint = "127.0.0.1:1111".to_string();
+    app.node.listen_port = 51820;
+    app.node.tunnel_ip = "10.44.1.1/32".to_string();
+    app.lan_discovery_enabled = false;
+    let advertised = vec![
+        OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Udp,
+            addr: "8.8.8.8:51820".to_string(),
+        },
+        OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Udp,
+            addr: "nat".to_string(),
+        },
+        OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Tcp,
+            addr: "8.8.4.4:443".to_string(),
+        },
+    ];
+
+    let hints = local_fips_endpoint_hints(&app, Vec::new(), &advertised);
+    let addrs = hints.into_iter().map(|hint| hint.addr).collect::<Vec<_>>();
+
+    assert_eq!(addrs, vec!["8.8.8.8:51820"]);
+}
+
+#[cfg(feature = "embedded-fips")]
+#[test]
 fn local_fips_endpoint_hints_do_not_share_lan_when_disabled() {
     let mut app = AppConfig::generated();
     app.node.endpoint = "127.0.0.1:1111".to_string();
@@ -1903,7 +1934,7 @@ fn local_fips_endpoint_hints_do_not_share_lan_when_disabled() {
     app.node.tunnel_ip = "10.44.1.1/32".to_string();
     app.lan_discovery_enabled = false;
 
-    let hints = local_fips_endpoint_hints(&app, vec![Ipv4Addr::new(192, 168, 50, 10)]);
+    let hints = local_fips_endpoint_hints(&app, vec![Ipv4Addr::new(192, 168, 50, 10)], &[]);
 
     assert!(hints.is_empty());
 }
@@ -1917,7 +1948,7 @@ fn local_fips_endpoint_hints_keep_configured_lan_when_lan_discovery_disabled() {
     app.node.tunnel_ip = "10.44.1.1/32".to_string();
     app.lan_discovery_enabled = false;
 
-    let hints = local_fips_endpoint_hints(&app, vec![Ipv4Addr::new(192, 168, 50, 10)]);
+    let hints = local_fips_endpoint_hints(&app, vec![Ipv4Addr::new(192, 168, 50, 10)], &[]);
 
     assert_eq!(hints.len(), 1);
     assert_eq!(hints[0].addr, "192.168.50.22:51820");
@@ -1932,7 +1963,7 @@ fn local_fips_endpoint_hints_do_not_share_cgnat_candidates() {
     app.node.tunnel_ip = "10.44.1.1/32".to_string();
     app.lan_discovery_enabled = true;
 
-    let hints = local_fips_endpoint_hints(&app, vec![Ipv4Addr::new(100, 120, 94, 10)]);
+    let hints = local_fips_endpoint_hints(&app, vec![Ipv4Addr::new(100, 120, 94, 10)], &[]);
 
     assert!(hints.is_empty());
 }
@@ -1946,7 +1977,7 @@ fn local_fips_endpoint_hints_do_not_share_loopback_when_lan_enabled() {
     app.node.tunnel_ip = "10.44.1.1/32".to_string();
     app.lan_discovery_enabled = true;
 
-    let hints = local_fips_endpoint_hints(&app, Vec::new());
+    let hints = local_fips_endpoint_hints(&app, Vec::new(), &[]);
 
     assert!(hints.is_empty());
 }
@@ -1960,7 +1991,7 @@ fn local_fips_endpoint_hints_do_not_share_tunnel_endpoint() {
     app.node.tunnel_ip = "10.44.1.1/32".to_string();
     app.lan_discovery_enabled = true;
 
-    let hints = local_fips_endpoint_hints(&app, Vec::new());
+    let hints = local_fips_endpoint_hints(&app, Vec::new(), &[]);
 
     assert!(hints.is_empty());
 }
@@ -1974,7 +2005,7 @@ fn local_fips_endpoint_hints_keep_dns_endpoint_and_listen_port() {
     app.node.tunnel_ip = "10.44.1.1/32".to_string();
     app.lan_discovery_enabled = false;
 
-    let hints = local_fips_endpoint_hints(&app, Vec::new());
+    let hints = local_fips_endpoint_hints(&app, Vec::new(), &[]);
 
     assert_eq!(hints.len(), 1);
     assert_eq!(hints[0].addr, "peer.example.com:51820");

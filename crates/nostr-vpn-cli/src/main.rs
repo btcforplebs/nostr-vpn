@@ -35,6 +35,8 @@ mod windows_tunnel;
 #[cfg(target_os = "linux")]
 mod wireguard_exit;
 
+#[cfg(feature = "embedded-fips")]
+use fips_core::discovery::nostr::{OverlayEndpointAdvert, OverlayTransportKind};
 use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "windows")]
 use std::ffi::OsString;

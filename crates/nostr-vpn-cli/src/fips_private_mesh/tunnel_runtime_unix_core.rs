@@ -117,6 +117,10 @@ impl FipsPrivateTunnelRuntime {
         self.mesh.relay_statuses().await
     }
 
+    pub(crate) async fn local_advertised_endpoints(&self) -> Result<Vec<OverlayEndpointAdvert>> {
+        self.mesh.local_advertised_endpoints().await
+    }
+
     pub(crate) fn peer_pubkeys(&self) -> Vec<String> {
         self.mesh.peer_pubkeys()
     }

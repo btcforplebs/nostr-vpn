@@ -174,6 +174,13 @@ impl FipsPrivateMeshRuntime {
             })
     }
 
+    pub(crate) async fn local_advertised_endpoints(&self) -> Result<Vec<OverlayEndpointAdvert>> {
+        self.endpoint
+            .local_advertised_endpoints()
+            .await
+            .context("failed to snapshot FIPS local advertised endpoints")
+    }
+
     pub(crate) async fn update_relays(&self, relays: &[String]) -> Result<()> {
         self.endpoint
             .update_relays(relays.to_vec(), relays.to_vec())

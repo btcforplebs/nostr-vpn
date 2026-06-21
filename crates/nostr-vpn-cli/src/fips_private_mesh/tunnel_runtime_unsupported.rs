@@ -25,6 +25,10 @@ impl FipsPrivateTunnelRuntime {
         Ok(Vec::new())
     }
 
+    pub(crate) async fn local_advertised_endpoints(&self) -> Result<Vec<OverlayEndpointAdvert>> {
+        Ok(Vec::new())
+    }
+
     pub(crate) fn peer_pubkeys(&self) -> Vec<String> {
         Vec::new()
     }

@@ -680,7 +680,15 @@ async fn broadcast_local_fips_capabilities(
     let advertised_routes = runtime_effective_advertised_routes(app);
     let local_ipv4_candidates =
         runtime_signal_ipv4_candidates(detect_runtime_primary_ipv4(), &app.node.tunnel_ip);
-    let endpoint_hints = local_fips_endpoint_hints(app, local_ipv4_candidates);
+    let local_advertised_endpoints = match runtime.local_advertised_endpoints().await {
+        Ok(endpoints) => endpoints,
+        Err(error) => {
+            eprintln!("fips: local advertised endpoint snapshot failed: {error}");
+            Vec::new()
+        }
+    };
+    let endpoint_hints =
+        local_fips_endpoint_hints(app, local_ipv4_candidates, &local_advertised_endpoints);
     let desired_hint_recipients = desired_fips_endpoint_hint_recipients(app);
     let signed_at = unix_timestamp();
     let mut sent = 0usize;
@@ -712,6 +720,7 @@ async fn broadcast_local_fips_capabilities(
 fn local_fips_endpoint_hints(
     app: &AppConfig,
     local_ipv4_candidates: Vec<Ipv4Addr>,
+    local_advertised_endpoints: &[OverlayEndpointAdvert],
 ) -> Vec<PeerEndpointHint> {
     let mut endpoints = Vec::new();
 
@@ -731,9 +740,24 @@ fn local_fips_endpoint_hints(
         }
     }
 
+    for endpoint in local_advertised_endpoints {
+        if let Some(addr) = local_advertised_udp_endpoint_hint_addr(endpoint) {
+            endpoints.push(addr);
+        }
+    }
+
     endpoints.sort();
     endpoints.dedup();
     endpoints.into_iter().map(PeerEndpointHint::udp).collect()
+}
+
+#[cfg(feature = "embedded-fips")]
+fn local_advertised_udp_endpoint_hint_addr(endpoint: &OverlayEndpointAdvert) -> Option<String> {
+    if endpoint.transport != OverlayTransportKind::Udp {
+        return None;
+    }
+    let hint = PeerEndpointHint::udp(endpoint.addr.trim());
+    nostr_vpn_core::fips_control::peer_endpoint_hint_addr(&hint)
 }
 
 #[cfg(feature = "embedded-fips")]
