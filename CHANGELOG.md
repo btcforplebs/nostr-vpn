@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- macOS FIPS private-mesh pacing defaults are now expressed as a bounded bulk
+  admission policy derived from send-turn, MTU, socket-buffer, and coalescing
+  cadence relationships instead of standalone emergency constants. The effective
+  defaults remain the 4.0.82 release values.
+
 ## 4.0.82 - 2026-06-20
 
 ### Fixed

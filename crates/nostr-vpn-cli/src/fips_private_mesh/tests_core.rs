@@ -95,6 +95,33 @@
     }
 
     #[test]
+    fn macos_bounded_bulk_policy_derives_release_defaults() {
+        assert_eq!(
+            super::macos_bounded_bulk_send_burst(super::FIPS_MESH_SEND_BURST),
+            16
+        );
+        assert_eq!(super::macos_default_udp_send_buf_size(), 256 * 1024);
+        assert_eq!(
+            super::macos_tun_to_mesh_queue_cap(
+                super::macos_default_udp_send_buf_size(),
+                super::MESH_MIN_UNDERLAY_UDP_MTU as usize,
+                64,
+            ),
+            256
+        );
+        assert_eq!(super::macos_tun_bulk_coalesce_micros(), 250);
+
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(super::FIPS_MESH_PRIORITY_SEND_BURST, 16);
+            assert_eq!(super::FIPS_MESH_BULK_SEND_BURST, 16);
+            assert_eq!(super::DEFAULT_FIPS_TUN_TO_MESH_QUEUE_CAP, 256);
+            assert_eq!(super::DEFAULT_FIPS_TUN_BULK_COALESCE_MICROS, 250);
+            assert_eq!(super::DEFAULT_FIPS_UDP_SEND_BUF_SIZE, Some(256 * 1024));
+        }
+    }
+
+    #[test]
     fn linux_tun_tx_queue_len_env_keeps_bounded_default() {
         assert_eq!(parse_linux_tun_tx_queue_len(None, 4096), Some(4096));
         assert_eq!(parse_linux_tun_tx_queue_len(Some(""), 4096), Some(4096));
