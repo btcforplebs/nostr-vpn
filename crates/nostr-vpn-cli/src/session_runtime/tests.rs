@@ -63,6 +63,24 @@ mod tests {
 
     #[cfg(feature = "embedded-fips")]
     #[test]
+    fn link_event_restart_does_not_seed_recent_direct_endpoint_cache() {
+        let idle = fips_link_event_refresh(false, false, false, false);
+        assert_eq!(idle, FipsLinkEventRefresh::None);
+        assert!(fips_link_event_should_seed_recent_peers(idle));
+
+        for refresh in [
+            fips_link_event_refresh(true, false, false, false),
+            fips_link_event_refresh(false, true, false, false),
+            fips_link_event_refresh(false, false, true, false),
+            fips_link_event_refresh(false, false, false, true),
+        ] {
+            assert_eq!(refresh, FipsLinkEventRefresh::RestartEndpoint);
+            assert!(!fips_link_event_should_seed_recent_peers(refresh));
+        }
+    }
+
+    #[cfg(feature = "embedded-fips")]
+    #[test]
     fn stale_participant_path_refresh_targets_only_matching_endpoint_peers() {
         use nostr_sdk::prelude::{Keys, ToBech32};
 

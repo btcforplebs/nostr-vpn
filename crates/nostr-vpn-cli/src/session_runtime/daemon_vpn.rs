@@ -586,6 +586,9 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                     underlay_repaired,
                     resumed_after_sleep,
                 );
+                #[cfg(feature = "embedded-fips")]
+                let seed_recent_fips_peers =
+                    fips_link_event_should_seed_recent_peers(fips_refresh);
 
                 if network_changed || underlay_repaired || resumed_after_sleep || endpoint_changed {
                     let refresh_reason = if network_changed {
@@ -628,7 +631,11 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                                         network_id: &network_id,
                                         fallback_iface: &iface,
                                         own_pubkey: own_pubkey.as_deref(),
-                                        recent_peers: Some(&recent_peers),
+                                        // A link-event restart means the old underlay or NAT mapping
+                                        // just changed. Keep the cache on disk, but make this runtime
+                                        // earn direct paths from fresh evidence on the current network.
+                                        recent_peers: seed_recent_fips_peers
+                                            .then_some(&recent_peers),
                                         last_endpoint_peer_signature:
                                             &mut last_fips_endpoint_peer_signature,
                                     },

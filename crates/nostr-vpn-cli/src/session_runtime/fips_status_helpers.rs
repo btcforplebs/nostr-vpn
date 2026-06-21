@@ -164,6 +164,13 @@ pub(crate) fn fips_link_event_refresh(
 }
 
 #[cfg(feature = "embedded-fips")]
+pub(crate) fn fips_link_event_should_seed_recent_peers(
+    refresh: FipsLinkEventRefresh,
+) -> bool {
+    matches!(refresh, FipsLinkEventRefresh::None)
+}
+
+#[cfg(feature = "embedded-fips")]
 pub(crate) fn fips_stale_participant_restart_due(
     last_restart_at: &mut Option<u64>,
     now: u64,
