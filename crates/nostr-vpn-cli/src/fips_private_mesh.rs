@@ -157,10 +157,9 @@ const fn macos_tun_to_mesh_queue_cap(
 
 #[cfg(any(target_os = "macos", test))]
 const fn macos_tun_bulk_coalesce_micros() -> u64 {
-    if MACOS_TUN_BULK_COALESCE_WAKEUPS_PER_MILLISECOND == 0 {
-        0
-    } else {
-        MICROS_PER_MILLISECOND / MACOS_TUN_BULK_COALESCE_WAKEUPS_PER_MILLISECOND
+    match MICROS_PER_MILLISECOND.checked_div(MACOS_TUN_BULK_COALESCE_WAKEUPS_PER_MILLISECOND) {
+        Some(micros) => micros,
+        None => 0,
     }
 }
 
