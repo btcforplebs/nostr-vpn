@@ -941,16 +941,21 @@ fn temporary_tun_read_error(error: &io::Error) -> bool {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn fips_unix_packet_debug_enabled() -> bool {
-    std::env::var("NVPN_FIPS_PACKET_DEBUG")
-        .ok()
-        .is_some_and(|value| {
-            let value = value.trim();
-            !(value.is_empty()
-                || value == "0"
-                || value.eq_ignore_ascii_case("false")
-                || value.eq_ignore_ascii_case("no")
-                || value.eq_ignore_ascii_case("off"))
-        })
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("NVPN_FIPS_PACKET_DEBUG")
+            .ok()
+            .is_some_and(|value| fips_packet_debug_value_enabled(&value))
+    })
+}
+
+fn fips_packet_debug_value_enabled(value: &str) -> bool {
+    let value = value.trim();
+    !(value.is_empty()
+        || value == "0"
+        || value.eq_ignore_ascii_case("false")
+        || value.eq_ignore_ascii_case("no")
+        || value.eq_ignore_ascii_case("off"))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
