@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.87 - 2026-06-22
+
+### Fixed
+
+- Refreshed stale embedded FIPS private-mesh direct paths using tunnel data
+  freshness when available, so fresh control traffic does not hide a dead
+  payload path and fresh payload data avoids unnecessary FIPS endpoint churn.
+
 ## 4.0.86 - 2026-06-22
 
 ### Fixed
