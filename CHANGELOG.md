@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 4.0.84 - 2026-06-22
+
+### Fixed
+
+- Preserved daemon-sourced FIPS reachability fields in `nvpn status --json`, so
+  GUI/device lists no longer collapse active roster peers to offline.
+- Stopped forcing macOS connected UDP on by default; macOS now inherits FIPS'
+  default-off behavior unless explicitly enabled.
+- Bumped to FIPS 0.3.76/0.3.51 for fresh endpoint peer liveness, preventing
+  stale receive counters from keeping dead mobile/NAT paths marked online.
+
 ## 4.0.83 - 2026-06-21
 
 ### Changed
