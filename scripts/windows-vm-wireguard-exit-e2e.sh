@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SSH_HOST="${NVPN_WINDOWS_SSH_HOST:-${1:-win11-dev}}"
 GUEST_REPO="${NVPN_WINDOWS_GUEST_REPO_PATH:-C:\\src\\nostr-vpn}"
+GUEST_FIPS_REPO="${NVPN_WINDOWS_GUEST_FIPS_REPO_PATH:-C:\\src\\fips}"
 
 run_ps() {
   local script="$1"
@@ -17,6 +18,7 @@ run_ps() {
 
 run_ps "\$ErrorActionPreference = 'Stop'
 Set-Location '$GUEST_REPO'
+if ('${NVPN_FIPS_REPO_PATH:-}' -ne '') { \$env:NVPN_FIPS_REPO_PATH = '$GUEST_FIPS_REPO' }
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\windows-build.ps1 -Configuration Debug
 if (\$LASTEXITCODE -ne 0) { exit \$LASTEXITCODE }
 \$Bin = Join-Path (Resolve-Path .) 'target\\debug\\nvpn.exe'
