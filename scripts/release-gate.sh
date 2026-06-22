@@ -17,6 +17,7 @@ WINDOWS_GUI_SMOKE_TIMEOUT_SECS="${NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE_TIMEOUT_SE
 release_cargo_config_args=()
 release_cargo_lock_args=(--locked)
 release_cargo_lock_backup=""
+release_cargo_wrapper_dir=""
 release_fips_path=""
 
 restore_release_cargo_lock() {
@@ -25,6 +26,28 @@ restore_release_cargo_lock() {
     rm -f "$release_cargo_lock_backup"
     release_cargo_lock_backup=""
   fi
+  if [[ -n "$release_cargo_wrapper_dir" ]]; then
+    rm -rf "$release_cargo_wrapper_dir"
+    release_cargo_wrapper_dir=""
+  fi
+}
+
+install_release_cargo_wrapper() {
+  if [[ ! ${#release_cargo_config_args[@]} -gt 0 || -n "$release_cargo_wrapper_dir" ]]; then
+    return
+  fi
+
+  local real_cargo
+  real_cargo="$(command -v cargo)"
+  release_cargo_wrapper_dir="$(mktemp -d "${TMPDIR:-/tmp}/nvpn-release-gate-cargo.XXXXXX")"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'exec %q' "$real_cargo"
+    printf ' %q' "${release_cargo_config_args[@]}"
+    printf ' "$@"\n'
+  } >"$release_cargo_wrapper_dir/cargo"
+  chmod +x "$release_cargo_wrapper_dir/cargo"
+  export PATH="$release_cargo_wrapper_dir:$PATH"
 }
 
 prepare_release_cargo_config() {
@@ -65,6 +88,7 @@ EOF
       exit 2
       ;;
   esac
+  install_release_cargo_wrapper
 
   release_cargo_lock_backup="$(mktemp "${TMPDIR:-/tmp}/nvpn-release-gate-Cargo.lock.XXXXXX")"
   cp "$ROOT_DIR/Cargo.lock" "$release_cargo_lock_backup"
