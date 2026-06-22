@@ -15,6 +15,7 @@ PING_PAYLOAD_SIZE=1000
 FALLBACK_DEADLINE_SECS="${NVPN_E2E_ROAMING_FALLBACK_SECS:-60}"
 DIRECT_RECOVERY_DEADLINE_SECS="${NVPN_E2E_DIRECT_RECOVERY_SECS:-25}"
 FALLBACK_HOLD_SECS="${NVPN_E2E_ROAMING_FALLBACK_HOLD_SECS:-12}"
+PAYLOAD_PROBE_INTERVAL_SECS="${NVPN_E2E_ROAMING_PAYLOAD_PROBE_INTERVAL_SECS:-1}"
 FIPS_NOSTR_DISCOVERY_POLICY="${NVPN_FIPS_NOSTR_DISCOVERY_POLICY:-configured_only}"
 
 cleanup() {
@@ -171,6 +172,28 @@ unblock_direct_alice_bob_udp() {
   '
 }
 
+make_direct_alice_bob_unreachable() {
+  "${COMPOSE[@]}" exec -T node-a sh -lc '
+    ip route replace unreachable 10.203.0.11/32 metric 1
+    ip route flush cache 2>/dev/null || true
+  '
+  "${COMPOSE[@]}" exec -T node-b sh -lc '
+    ip route replace unreachable 10.203.0.10/32 metric 1
+    ip route flush cache 2>/dev/null || true
+  '
+}
+
+restore_direct_alice_bob_route() {
+  "${COMPOSE[@]}" exec -T node-a sh -lc '
+    ip route del unreachable 10.203.0.11/32 2>/dev/null || ip route del 10.203.0.11/32 2>/dev/null || true
+    ip route flush cache 2>/dev/null || true
+  '
+  "${COMPOSE[@]}" exec -T node-b sh -lc '
+    ip route del unreachable 10.203.0.10/32 2>/dev/null || ip route del 10.203.0.10/32 2>/dev/null || true
+    ip route flush cache 2>/dev/null || true
+  '
+}
+
 wait_for_mesh() {
   local node="$1"
   local expected="$2"
@@ -218,11 +241,14 @@ peer_matches_direct_addr() {
 peer_matches_fallback_with_probe() {
   local status="$1"
   local peer_key="$2"
+  local _direct_addr="$3"
   jq -e --arg peer_key "$peer_key" '
     .daemon.state.peers
     | any(
       (.participant_pubkey == $peer_key or .fips_endpoint_npub == $peer_key)
+      and .reachable == true
       and (.direct_probe_pending == true or (.direct_probe_after_ms? != null))
+      and ((.last_fips_data_seen_at? // 0) > 0)
     )
   ' >/dev/null <<<"$status"
 }
@@ -252,13 +278,14 @@ wait_for_direct_peer() {
 wait_for_fallback_probe_peer() {
   local node="$1"
   local peer_key="$2"
-  local label="$3"
-  local deadline="$4"
+  local direct_addr="$3"
+  local label="$4"
+  local deadline="$5"
   local status=""
   local end=$(( $(date +%s) + deadline ))
   while [[ "$(date +%s)" -le "$end" ]]; do
     status="$(status_json "$node")"
-    if peer_matches_fallback_with_probe "$status" "$peer_key"; then
+    if peer_matches_fallback_with_probe "$status" "$peer_key" "$direct_addr"; then
       printf '%s\n' "$status"
       return 0
     fi
@@ -268,6 +295,65 @@ wait_for_fallback_probe_peer() {
   echo "fips roaming e2e failed: $label did not show fallback traffic with direct probing within ${deadline}s" >&2
   printf '%s\n' "$status" >&2
   exit 1
+}
+
+start_payload_probe() {
+  local node="$1"
+  local target_ip="$2"
+  local output="$3"
+  "${COMPOSE[@]}" exec -T "$node" sh -s -- \
+    "$target_ip" "$PING_PAYLOAD_SIZE" "$PAYLOAD_PROBE_INTERVAL_SECS" "$output" <<'SH'
+set -eu
+target_ip="$1"
+payload_size="$2"
+interval="$3"
+output="$4"
+rm -f "$output" "${output}.pid"
+(
+  while :; do
+    ts="$(date +%s)"
+    if ping -M do -s "$payload_size" -c 1 -W 1 "$target_ip" >/dev/null 2>&1; then
+      printf '%s ok\n' "$ts"
+    else
+      printf '%s fail\n' "$ts"
+    fi
+    sleep "$interval"
+  done
+) >"$output" 2>&1 &
+printf '%s\n' "$!" >"${output}.pid"
+SH
+}
+
+stop_payload_probe() {
+  local node="$1"
+  local output="$2"
+  "${COMPOSE[@]}" exec -T "$node" sh -s -- "$output" <<'SH'
+set -eu
+output="$1"
+if [ -s "${output}.pid" ]; then
+  kill "$(cat "${output}.pid")" 2>/dev/null || true
+  rm -f "${output}.pid"
+fi
+cat "$output" 2>/dev/null || true
+SH
+}
+
+assert_payload_probe_success_since() {
+  local node="$1"
+  local output="$2"
+  local since="$3"
+  local label="$4"
+  if ! "${COMPOSE[@]}" exec -T "$node" sh -s -- "$output" "$since" <<'SH'
+set -eu
+output="$1"
+since="$2"
+awk -v since="$since" '$1 >= since && $2 == "ok" { found = 1 } END { exit found ? 0 : 1 }' "$output"
+SH
+  then
+    echo "fips roaming e2e failed: $label did not recover tunnel payload after churn" >&2
+    "${COMPOSE[@]}" exec -T "$node" sh -lc "cat '$output' 2>/dev/null || true" >&2 || true
+    exit 1
+  fi
 }
 
 resolve_magic_dns() {
@@ -349,26 +435,63 @@ assert_no_transit_roster_peer() {
 
 run_roam_flap() {
   local flap_name="$1"
-  echo "--- $flap_name: drop direct Alice<->Bob UDP, expect FIPS fallback plus direct probe ---"
-  block_direct_alice_bob_udp
+  local flap_mode="${2:-drop}"
+  local alice_direct_addr="10.203.0.11:51820"
+  local bob_direct_addr="10.203.0.10:51820"
+  local alice_probe="/tmp/${flap_name}-alice-payload-probe.log"
+  local bob_probe="/tmp/${flap_name}-bob-payload-probe.log"
+  local churn_started
+
+  echo "--- $flap_name: churn direct Alice<->Bob path ($flap_mode), expect FIPS fallback plus direct probe ---"
+  start_payload_probe node-a "$BOB_TUNNEL_IP" "$alice_probe"
+  start_payload_probe node-b "$ALICE_TUNNEL_IP" "$bob_probe"
+  churn_started="$(date +%s)"
+  case "$flap_mode" in
+    drop)
+      block_direct_alice_bob_udp
+      ;;
+    route-unreachable)
+      make_direct_alice_bob_unreachable
+      ;;
+    *)
+      echo "fips roaming e2e failed: unsupported flap mode '$flap_mode'" >&2
+      exit 2
+      ;;
+  esac
 
   local alice_fallback bob_fallback
-  alice_fallback="$(wait_for_fallback_probe_peer node-a "$BOB_NPUB" "alice during $flap_name" "$FALLBACK_DEADLINE_SECS")"
-  bob_fallback="$(wait_for_fallback_probe_peer node-b "$ALICE_NPUB" "bob during $flap_name" "$FALLBACK_DEADLINE_SECS")"
+  alice_fallback="$(wait_for_fallback_probe_peer node-a "$BOB_NPUB" "$alice_direct_addr" "alice during $flap_name" "$FALLBACK_DEADLINE_SECS")"
+  bob_fallback="$(wait_for_fallback_probe_peer node-b "$ALICE_NPUB" "$bob_direct_addr" "bob during $flap_name" "$FALLBACK_DEADLINE_SECS")"
+  assert_payload_probe_success_since node-a "$alice_probe" "$churn_started" "alice continuous payload during $flap_name"
+  assert_payload_probe_success_since node-b "$bob_probe" "$churn_started" "bob continuous payload during $flap_name"
 
   assert_ping_tunnel node-a "$BOB_TUNNEL_IP" "alice-to-bob during $flap_name fallback" "/tmp/${flap_name}-alice-to-bob-fallback-ping.log"
   assert_ping_tunnel node-b "$ALICE_TUNNEL_IP" "bob-to-alice during $flap_name fallback" "/tmp/${flap_name}-bob-to-alice-fallback-ping.log"
   sleep "$FALLBACK_HOLD_SECS"
 
-  alice_fallback="$(wait_for_fallback_probe_peer node-a "$BOB_NPUB" "alice after $flap_name hold" "$FALLBACK_DEADLINE_SECS")"
-  bob_fallback="$(wait_for_fallback_probe_peer node-b "$ALICE_NPUB" "bob after $flap_name hold" "$FALLBACK_DEADLINE_SECS")"
+  alice_fallback="$(wait_for_fallback_probe_peer node-a "$BOB_NPUB" "$alice_direct_addr" "alice after $flap_name hold" "$FALLBACK_DEADLINE_SECS")"
+  bob_fallback="$(wait_for_fallback_probe_peer node-b "$ALICE_NPUB" "$bob_direct_addr" "bob after $flap_name hold" "$FALLBACK_DEADLINE_SECS")"
 
   echo "--- $flap_name: restore LAN/direct path, expect quick upgrade away from fallback ---"
-  unblock_direct_alice_bob_udp
+  local restore_started
+  restore_started="$(date +%s)"
+  case "$flap_mode" in
+    drop)
+      unblock_direct_alice_bob_udp
+      ;;
+    route-unreachable)
+      restore_direct_alice_bob_route
+      ;;
+  esac
 
   local alice_direct bob_direct
-  alice_direct="$(wait_for_direct_peer node-a "$BOB_NPUB" "10.203.0.11:51820" "alice after $flap_name restore" "$DIRECT_RECOVERY_DEADLINE_SECS")"
-  bob_direct="$(wait_for_direct_peer node-b "$ALICE_NPUB" "10.203.0.10:51820" "bob after $flap_name restore" "$DIRECT_RECOVERY_DEADLINE_SECS")"
+  alice_direct="$(wait_for_direct_peer node-a "$BOB_NPUB" "$alice_direct_addr" "alice after $flap_name restore" "$DIRECT_RECOVERY_DEADLINE_SECS")"
+  bob_direct="$(wait_for_direct_peer node-b "$ALICE_NPUB" "$bob_direct_addr" "bob after $flap_name restore" "$DIRECT_RECOVERY_DEADLINE_SECS")"
+  assert_payload_probe_success_since node-a "$alice_probe" "$restore_started" "alice continuous payload after $flap_name restore"
+  assert_payload_probe_success_since node-b "$bob_probe" "$restore_started" "bob continuous payload after $flap_name restore"
+  local alice_probe_log bob_probe_log
+  alice_probe_log="$(stop_payload_probe node-a "$alice_probe")"
+  bob_probe_log="$(stop_payload_probe node-b "$bob_probe")"
 
   assert_ping_tunnel node-a "$BOB_TUNNEL_IP" "alice-to-bob after $flap_name direct restore" "/tmp/${flap_name}-alice-to-bob-direct-ping.log"
   assert_ping_tunnel node-b "$ALICE_TUNNEL_IP" "bob-to-alice after $flap_name direct restore" "/tmp/${flap_name}-bob-to-alice-direct-ping.log"
@@ -381,6 +504,10 @@ run_roam_flap() {
   echo "$alice_direct"
   echo "--- $flap_name restored direct status: bob ---"
   echo "$bob_direct"
+  echo "--- $flap_name continuous payload probe: alice ---"
+  echo "$alice_probe_log"
+  echo "--- $flap_name continuous payload probe: bob ---"
+  echo "$bob_probe_log"
 }
 
 cleanup
@@ -484,6 +611,7 @@ run_udp_roundtrip node-a node-b "$BOB_TUNNEL_IP" "alice-to-bob-roaming-initial" 
 
 run_roam_flap "mobile-flap-1"
 run_roam_flap "mobile-flap-2"
+run_roam_flap "route-unreachable-flap" "route-unreachable"
 
 echo "--- Initial direct status: alice ---"
 echo "$ALICE_DIRECT"
@@ -498,4 +626,4 @@ cat /tmp/initial-bob-to-alice-ping.log
 echo "--- Initial UDP payload ---"
 "${COMPOSE[@]}" exec -T node-b sh -lc 'cat /tmp/bob-roaming-initial-udp.out'
 
-echo "fips roaming docker e2e passed: direct LAN path established, two mobile/WiFi-style direct drops used FIPS fallback while direct probing stayed pending, and each restore upgraded back to direct within ${DIRECT_RECOVERY_DEADLINE_SECS}s"
+echo "fips roaming docker e2e passed: direct LAN path established, mobile/WiFi-style direct drops and a route-unreachable flap used FIPS fallback while direct probing stayed pending, continuous payload recovered during churn, and each restore upgraded back to direct within ${DIRECT_RECOVERY_DEADLINE_SECS}s"

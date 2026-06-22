@@ -168,6 +168,7 @@ run_local_fips_regression_tests() {
     cargo test -p fips-core traversal_path_liveness_keeps_mobile_safe_floor -- --nocapture
     cargo test -p fips-core poll_nostr_discovery_configured_only_drops_nonconfigured_handoff -- --nocapture
     cargo test -p fips-core fresh_control_with_unreturned_endpoint_data_blocks_direct_without_known_fallback -- --nocapture
+    cargo test -p fips-core outbound_fmp_send_does_not_refresh_direct_path_liveness -- --nocapture
   )
 }
 
