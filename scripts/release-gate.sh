@@ -15,12 +15,24 @@ MACOS_GUI_SMOKE_TIMEOUT_SECS="${NVPN_RELEASE_GATE_MACOS_GUI_SMOKE_TIMEOUT_SECS:-
 WINDOWS_GUI_SMOKE_TIMEOUT_SECS="${NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE_TIMEOUT_SECS:-1800}"
 
 release_cargo_config_args=()
+release_cargo_config_backup=""
+release_cargo_config_existed=0
+release_cargo_config_path="$ROOT_DIR/.cargo/config.toml"
 release_cargo_lock_args=(--locked)
 release_cargo_lock_backup=""
 release_cargo_wrapper_dir=""
 release_fips_path=""
 
 restore_release_cargo_lock() {
+  if [[ -n "$release_cargo_config_backup" ]]; then
+    if [[ "$release_cargo_config_existed" == "1" ]]; then
+      cp "$release_cargo_config_backup" "$release_cargo_config_path"
+    else
+      rm -f "$release_cargo_config_path"
+    fi
+    rm -f "$release_cargo_config_backup"
+    release_cargo_config_backup=""
+  fi
   if [[ -n "$release_cargo_lock_backup" ]]; then
     cp "$release_cargo_lock_backup" "$ROOT_DIR/Cargo.lock"
     rm -f "$release_cargo_lock_backup"
@@ -33,7 +45,7 @@ restore_release_cargo_lock() {
 }
 
 install_release_cargo_wrapper() {
-  if [[ ! ${#release_cargo_config_args[@]} -gt 0 || -n "$release_cargo_wrapper_dir" ]]; then
+  if ((${#release_cargo_config_args[@]} == 0)) || [[ -n "$release_cargo_wrapper_dir" ]]; then
     return
   fi
 
@@ -48,6 +60,36 @@ install_release_cargo_wrapper() {
   } >"$release_cargo_wrapper_dir/cargo"
   chmod +x "$release_cargo_wrapper_dir/cargo"
   export PATH="$release_cargo_wrapper_dir:$PATH"
+}
+
+toml_string() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
+install_release_cargo_config() {
+  if ((${#release_cargo_config_args[@]} == 0)) || [[ -n "$release_cargo_config_backup" ]]; then
+    return
+  fi
+
+  mkdir -p "$(dirname "$release_cargo_config_path")"
+  release_cargo_config_backup="$(mktemp "${TMPDIR:-/tmp}/nvpn-release-gate-cargo-config.XXXXXX")"
+  if [[ -f "$release_cargo_config_path" ]]; then
+    release_cargo_config_existed=1
+    cp "$release_cargo_config_path" "$release_cargo_config_backup"
+  else
+    release_cargo_config_existed=0
+    : >"$release_cargo_config_backup"
+  fi
+
+  cat >"$release_cargo_config_path" <<EOF
+[patch.crates-io]
+fips-core = { path = $(toml_string "$release_fips_path/crates/fips-core") }
+fips-endpoint = { path = $(toml_string "$release_fips_path/crates/fips-endpoint") }
+fips-identity = { path = $(toml_string "$release_fips_path/crates/fips-identity") }
+EOF
 }
 
 prepare_release_cargo_config() {
@@ -88,6 +130,7 @@ EOF
       exit 2
       ;;
   esac
+  install_release_cargo_config
   install_release_cargo_wrapper
 
   release_cargo_lock_backup="$(mktemp "${TMPDIR:-/tmp}/nvpn-release-gate-Cargo.lock.XXXXXX")"
