@@ -809,21 +809,12 @@ impl Default for NodeConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectedUdpConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fd_reserve: Option<usize>,
-}
-
-impl Default for ConnectedUdpConfig {
-    fn default() -> Self {
-        Self {
-            enabled: None,
-            fd_reserve: None,
-        }
-    }
 }
 
 impl ConnectedUdpConfig {
