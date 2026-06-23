@@ -90,6 +90,8 @@ fn network_roster_from_shared(shared: &SharedNetworkRoster) -> NetworkRoster {
         } else {
             unix_timestamp()
         },
+        dns_servers: Vec::new(),
+        dns_strict: false,
     }
 }
 
