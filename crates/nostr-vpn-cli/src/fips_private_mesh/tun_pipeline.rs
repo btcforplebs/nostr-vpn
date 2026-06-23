@@ -36,6 +36,37 @@ fn submit_tun_packet_batch_to_mesh_queue(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn submit_tun_packet_batch_to_mesh_queue_with_backpressure(
+    packet_tx: &TunPipelineQueueTx,
+    batch: TunPipelineBatch,
+    max_bulk_chunk_packets: usize,
+) -> TunQueueSubmit {
+    match tun_pipeline_split_batch_by_lane(batch) {
+        TunPipelineSubmitBatches::Empty => TunQueueSubmit::Enqueued,
+        TunPipelineSubmitBatches::Single { lane, batch } => match lane {
+            TunPipelineLane::Priority => submit_tun_packet_batch_to_lane(packet_tx, lane, batch),
+            TunPipelineLane::Bulk => {
+                submit_tun_bulk_batch_with_backpressure(
+                    packet_tx,
+                    batch,
+                    max_bulk_chunk_packets,
+                )
+                .await
+            }
+        },
+        TunPipelineSubmitBatches::Split { priority, bulk } => {
+            if matches!(
+                submit_tun_packet_batch_to_lane(packet_tx, TunPipelineLane::Priority, priority),
+                TunQueueSubmit::Closed
+            ) {
+                return TunQueueSubmit::Closed;
+            }
+            submit_tun_bulk_batch_with_backpressure(packet_tx, bulk, max_bulk_chunk_packets).await
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 enum TunPipelineSubmitBatches {
     Empty,
     Single {
@@ -86,29 +117,19 @@ fn submit_tun_packet_batch_to_lane(
     batch: TunPipelineBatch,
 ) -> TunQueueSubmit {
     match lane {
-        TunPipelineLane::Priority => submit_tun_priority_batch(packet_tx, batch),
+        TunPipelineLane::Priority => packet_tx
+            .priority
+            .send(batch)
+            .map(|_| TunQueueSubmit::Enqueued)
+            .unwrap_or(TunQueueSubmit::Closed),
         TunPipelineLane::Bulk => submit_tun_bulk_batch(packet_tx, batch),
     }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn submit_tun_priority_batch(
-    packet_tx: &TunPipelineQueueTx,
-    mut batch: TunPipelineBatch,
-) -> TunQueueSubmit {
-    while !batch.is_empty() {
-        let chunk = take_tun_pipeline_batch_prefix(&mut batch, FIPS_MESH_PRIORITY_SEND_BURST);
-        if packet_tx.priority.send(chunk).is_err() {
-            return TunQueueSubmit::Closed;
-        }
-    }
-    TunQueueSubmit::Enqueued
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn submit_tun_bulk_batch(
     packet_tx: &TunPipelineQueueTx,
-    mut batch: TunPipelineBatch,
+    batch: TunPipelineBatch,
 ) -> TunQueueSubmit {
     let packet_count = batch.len();
     if packet_tx.bulk.is_closed() {
@@ -118,48 +139,51 @@ fn submit_tun_bulk_batch(
         if packet_tx.bulk.is_closed() {
             return TunQueueSubmit::Closed;
         }
-        crate::pipeline_profile::increment_counter_by(
-            crate::pipeline_profile::Counter::TunToMeshBulkDropped,
-            packet_count as u64,
-        );
+        crate::pipeline_profile::record_tun_to_mesh_bulk_drop_packet_cap(packet_count);
         return TunQueueSubmit::DroppedBulk;
     }
 
-    while !batch.is_empty() {
-        let chunk = take_tun_pipeline_batch_prefix(&mut batch, FIPS_MESH_BULK_SEND_BURST);
-        let chunk_count = chunk.len();
-        match packet_tx.bulk.try_send(chunk) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_chunk)) => {
-                let dropped_count = chunk_count + batch.len();
-                release_tun_bulk_packet_slots(&packet_tx.bulk_queued_packets, dropped_count);
-                crate::pipeline_profile::increment_counter_by(
-                    crate::pipeline_profile::Counter::TunToMeshBulkDropped,
-                    dropped_count as u64,
-                );
-                return TunQueueSubmit::DroppedBulk;
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                release_tun_bulk_packet_slots(&packet_tx.bulk_queued_packets, chunk_count + batch.len());
-                return TunQueueSubmit::Closed;
-            }
+    match packet_tx.bulk.try_send(batch) {
+        Ok(()) => TunQueueSubmit::Enqueued,
+        Err(mpsc::error::TrySendError::Full(_batch)) => {
+            release_tun_bulk_packet_slots(&packet_tx.bulk_queued_packets, packet_count);
+            packet_tx.bulk_available.notify_waiters();
+            crate::pipeline_profile::record_tun_to_mesh_bulk_drop_channel_full(packet_count);
+            TunQueueSubmit::DroppedBulk
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            release_tun_bulk_packet_slots(&packet_tx.bulk_queued_packets, packet_count);
+            packet_tx.bulk_available.notify_waiters();
+            TunQueueSubmit::Closed
         }
     }
-    TunQueueSubmit::Enqueued
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn take_tun_pipeline_batch_prefix(
-    batch: &mut TunPipelineBatch,
-    limit: usize,
-) -> TunPipelineBatch {
-    debug_assert!(limit > 0);
-    if batch.len() <= limit {
-        return std::mem::take(batch);
+async fn submit_tun_bulk_batch_with_backpressure(
+    packet_tx: &TunPipelineQueueTx,
+    mut batch: TunPipelineBatch,
+    max_chunk_packets: usize,
+) -> TunQueueSubmit {
+    let max_chunk_packets = packet_tx.tun_read_backpressure_min_slots(max_chunk_packets);
+    while !batch.is_empty() {
+        let chunk_len = batch.len().min(max_chunk_packets);
+        if !packet_tx.wait_for_tun_read_bulk_slots(chunk_len).await {
+            return TunQueueSubmit::Closed;
+        }
+        let rest = if batch.len() > chunk_len {
+            batch.split_off(chunk_len)
+        } else {
+            Vec::new()
+        };
+        match submit_tun_bulk_batch(packet_tx, batch) {
+            TunQueueSubmit::Enqueued => {
+                batch = rest;
+            }
+            other => return other,
+        }
     }
-
-    let remaining = batch.split_off(limit);
-    std::mem::replace(batch, remaining)
+    TunQueueSubmit::Enqueued
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func showMainWindow() {
+        manager?.refresh()
         NSApp.unhide(nil)
         NSApp.activate()
         observeWindows()
@@ -95,9 +96,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func configureMainWindow(_ window: NSWindow) {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        window.isOpaque = true
+        window.backgroundColor = .windowBackgroundColor
         window.isMovableByWindowBackground = true
         window.styleMask.insert(.fullSizeContentView)
         window.toolbar?.isVisible = false
+        if Self.launchArgumentsContainScreenshotMode {
+            window.level = .floating
+            sizeWindowForScreenshot(window)
+        } else {
+            window.level = .normal
+        }
+    }
+
+    private func sizeWindowForScreenshot(_ window: NSWindow) {
+        let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
+        let width = min(CGFloat(1280), max(CGFloat(880), visibleFrame.width - 80))
+        let height = min(CGFloat(1040), max(CGFloat(620), visibleFrame.height - 80))
+        let originX = visibleFrame.minX + 40
+        let originY = max(visibleFrame.minY, visibleFrame.maxY - height - 40)
+        window.setFrame(NSRect(x: originX, y: originY, width: width, height: height), display: true)
     }
 
     private func installApplicationIcon() {
@@ -117,6 +135,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private static var launchArgumentsContainDeepLink: Bool {
         CommandLine.arguments.contains { $0.starts(with: "nvpn://") }
+    }
+
+    private static var launchArgumentsContainScreenshotMode: Bool {
+        CommandLine.arguments.contains { $0.starts(with: "--nvpn-screenshot-") }
     }
 }
 

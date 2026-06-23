@@ -18,8 +18,9 @@ struct FipsEndpointTransportConfig {
 /// recent-peers cache entries, `None` for operator-supplied static hints.
 /// fips's dialer uses this field as a recency tiebreaker inside the same
 /// priority tier.
-const FIPS_STATIC_PEER_ENDPOINT_PRIORITY: u8 = 10;
+const FIPS_PUBLIC_PEER_ENDPOINT_PRIORITY: u8 = 100;
 const FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY: u8 = 100;
+const FIPS_PRIVATE_STATIC_PEER_ENDPOINT_PRIORITY: u8 = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FipsPeerAddressHint {
@@ -38,11 +39,66 @@ pub(crate) struct FipsEndpointPeerTransportConfig {
 
 fn fips_peer_address_from_hint(hint: &FipsPeerAddressHint) -> PeerAddress {
     let (transport, addr) = split_peer_transport_addr(&hint.addr);
-    let mut peer_address = PeerAddress::with_priority(transport, addr, hint.priority);
+    let mut peer_address = PeerAddress::with_priority(
+        transport,
+        addr,
+        peer_address_hint_effective_priority(hint),
+    );
     if let Some(seen_at_ms) = hint.seen_at_ms {
         peer_address = peer_address.with_seen_at_ms(seen_at_ms);
     }
     peer_address
+}
+
+fn operator_static_endpoint_priority(addr: &str) -> u8 {
+    endpoint_hint_priority(addr, FIPS_PUBLIC_PEER_ENDPOINT_PRIORITY)
+}
+
+fn dynamic_endpoint_priority(addr: &str) -> u8 {
+    endpoint_hint_priority(addr, FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY)
+}
+
+fn peer_address_hint_effective_priority(hint: &FipsPeerAddressHint) -> u8 {
+    endpoint_hint_priority(&hint.addr, hint.priority)
+}
+
+fn endpoint_hint_priority(addr: &str, normal_priority: u8) -> u8 {
+    if endpoint_addr_is_private_or_local(addr) {
+        FIPS_PRIVATE_STATIC_PEER_ENDPOINT_PRIORITY
+    } else {
+        normal_priority
+    }
+}
+
+fn endpoint_addr_is_private_or_local(addr: &str) -> bool {
+    endpoint_addr_ip(addr).is_some_and(endpoint_ip_is_private_or_local)
+}
+
+fn endpoint_ip_is_private_or_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ipv4_is_cgnat_addr(ip)
+                || ip.is_link_local()
+                || ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+                || ipv4_is_benchmark_addr(ip)
+        }
+        IpAddr::V6(ip) => {
+            ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+        }
+    }
+}
+
+fn ipv4_is_benchmark_addr(addr: Ipv4Addr) -> bool {
+    let octets = addr.octets();
+    octets[0] == 198 && (18..=19).contains(&octets[1])
 }
 
 fn fips_endpoint_config(
@@ -149,7 +205,7 @@ fn fips_endpoint_config_with_open_discovery_limit(
     config.transports.udp = TransportInstances::Single(UdpConfig {
         bind_addr,
         advertise_on_nostr: Some(advertise_on_nostr),
-        public: Some(external_addr.is_some()),
+        public: Some(advertise_public_endpoint),
         external_addr,
         outbound_only: Some(transport.is_none()),
         accept_connections: Some(transport.is_some()),
@@ -243,15 +299,16 @@ fn fips_endpoint_peers_from_mesh(
             if trimmed.is_empty() {
                 continue;
             }
+            let priority = operator_static_endpoint_priority(trimmed);
             if let Some(existing) = peer.addresses.iter_mut().find(|hint| hint.addr == trimmed) {
                 existing.seen_at_ms = None;
-                existing.priority = existing.priority.min(FIPS_STATIC_PEER_ENDPOINT_PRIORITY);
+                existing.priority = existing.priority.min(priority);
                 continue;
             }
             peer.addresses.push(FipsPeerAddressHint {
                 addr: trimmed.to_string(),
                 seen_at_ms: None,
-                priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
+                priority,
             });
         }
     }
@@ -283,15 +340,16 @@ fn fips_endpoint_peers_from_mesh(
             // keep the configured LAN path preferred during retries.
             if let Some(existing) = peer.addresses.iter_mut().find(|hint| hint.addr == trimmed) {
                 if let Some(existing_seen_at_ms) = existing.seen_at_ms {
+                    let priority = dynamic_endpoint_priority(trimmed);
                     existing.seen_at_ms = Some(existing_seen_at_ms.max(seen_at_ms));
-                    existing.priority = existing.priority.min(FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY);
+                    existing.priority = existing.priority.min(priority);
                 }
                 continue;
             }
             peer.addresses.push(FipsPeerAddressHint {
                 addr: trimmed.to_string(),
                 seen_at_ms: Some(seen_at_ms),
-                priority: FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY,
+                priority: dynamic_endpoint_priority(trimmed),
             });
         }
     }
@@ -336,8 +394,11 @@ fn fips_udp_external_addr(transport: &FipsEndpointTransportConfig) -> Option<Str
     if endpoint.is_empty() {
         return None;
     }
-    endpoint.parse::<SocketAddr>().ok()?;
-    Some(endpoint.to_string())
+    let parsed = endpoint.parse::<SocketAddr>().ok()?;
+    if endpoint_ip_is_private_or_local(parsed.ip()) {
+        return None;
+    }
+    Some(parsed.to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -358,6 +419,11 @@ pub(crate) struct FipsPrivateTunnelConfig {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fips_host: Option<FipsHostTunnelConfig>,
     pub(crate) local_advertised_routes: Vec<String>,
+    pub(crate) paid_route_admissions: Vec<FipsPaidRouteAdmission>,
+    pub(crate) paid_exit: PaidExitConfig,
+    pub(crate) paid_route_store_path: PathBuf,
+    pub(crate) paid_route_wallet_data_dir: PathBuf,
+    pub(crate) paid_route_payment_relays: Vec<String>,
     pub(crate) wireguard_exit: WireGuardExitConfig,
     pub(crate) exit_node_leak_protection: bool,
     connected_udp: ConnectedUdpConfig,

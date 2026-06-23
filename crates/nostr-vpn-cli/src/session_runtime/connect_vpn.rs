@@ -11,7 +11,7 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
         eprintln!("connect: failed to repair saved macOS network state: {error}");
     }
     let (mut app, mut network_id) =
-        load_config_with_overrides(&config_path, args.network_id, args.participants)?;
+        load_config_with_overrides(&config_path, args.network_id, args.devices)?;
     #[cfg(target_os = "macos")]
     {
         let captive_portal = detect_captive_portal(network_probe_timeout(&app)).await;
@@ -57,18 +57,20 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
     #[cfg(feature = "embedded-fips")]
     crate::fips_private_mesh::purge_legacy_fips_endpoint_cache(&config_path);
     #[cfg(feature = "embedded-fips")]
-    let mut fips_tunnel_runtime = {
+    let (mut fips_tunnel_runtime, mut last_fips_endpoint_peer_signature) = {
         let config = fips_tunnel_config_from_app(
             &app,
+            &config_path,
             &network_id,
             iface.clone(),
             own_pubkey.as_deref(),
             None,
             &[],
         )?;
+        let endpoint_peer_signature = endpoint_peer_signature(&config.endpoint_peers);
         let runtime = crate::fips_private_mesh::FipsPrivateTunnelRuntime::start(config).await?;
         println!("connect: FIPS private mesh on {}", runtime.iface());
-        Some(runtime)
+        (Some(runtime), endpoint_peer_signature)
     };
     let magic_dns_runtime = ConnectMagicDnsRuntime::start(&app);
 
@@ -127,24 +129,50 @@ pub(crate) async fn connect_vpn(args: ConnectArgs) -> Result<()> {
                         &config_path,
                         &mut connect_status,
                     ) {
-                        Ok(true) => {
+                        Ok(drained) => {
+                            let roster_changed = drained.roster_changed;
                             network_id = app.effective_network_id();
                             expected_peers = expected_peer_count(&app);
-                            if let Err(error) = refresh_fips_tunnel_config(
-                                runtime,
-                                &app,
-                                &network_id,
-                                own_pubkey.as_deref(),
-                            )
-                            .await
-                            {
-                                eprintln!("connect: roster applied, but FIPS reload failed: {error}");
+                            if roster_changed {
+                                if let Err(error) = refresh_fips_tunnel_config(
+                                    runtime,
+                                    &app,
+                                    &config_path,
+                                    &network_id,
+                                    own_pubkey.as_deref(),
+                                )
+                                .await
+                                {
+                                    eprintln!("connect: roster applied, but FIPS reload failed: {error}");
+                                }
+                                if let Some(rt) = magic_dns_runtime.as_ref() {
+                                    rt.refresh_records(&app);
+                                }
                             }
-                            if let Some(rt) = magic_dns_runtime.as_ref() {
-                                rt.refresh_records(&app);
+                            if !drained.endpoint_hint_participants.is_empty()
+                                && let Err(error) =
+                                    refresh_fips_tunnel_runtime_peer_paths_in_place(
+                                        runtime,
+                                        FipsRestartContext {
+                                            app: &app,
+                                            config_path: &config_path,
+                                            network_id: &network_id,
+                                            fallback_iface: &iface,
+                                            own_pubkey: own_pubkey.as_deref(),
+                                            recent_peers: None,
+                                            last_endpoint_peer_signature:
+                                                &mut last_fips_endpoint_peer_signature,
+                                        },
+                                        &drained.endpoint_hint_participants,
+                                        "fresh endpoint capability",
+                                    )
+                                    .await
+                            {
+                                eprintln!(
+                                    "connect: FIPS endpoint hint refresh failed: {error}"
+                                );
                             }
                         }
-                        Ok(false) => {}
                         Err(error) => eprintln!("connect: FIPS event handling failed: {error}"),
                     }
                     if let Err(error) = runtime.refresh_peer_dependent_routes().await {

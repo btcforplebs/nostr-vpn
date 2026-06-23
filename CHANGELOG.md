@@ -2,6 +2,184 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+## 4.0.87 - 2026-06-22
+
+### Fixed
+
+- Refreshed stale embedded FIPS private-mesh direct paths using tunnel data
+  freshness when available, so fresh control traffic does not hide a dead
+  payload path and fresh payload data avoids unnecessary FIPS endpoint churn.
+
+## 4.0.86 - 2026-06-22
+
+### Fixed
+
+- Bumped to FIPS 0.3.77/0.3.52 for direct-path staleness based on
+  authenticated receive evidence, local route-failure payload recovery, and
+  refreshed endpoint adverts after route-unreachable sends.
+- Hardened the FIPS roaming Docker release gate so direct UDP drops and
+  route-unreachable flaps keep continuous payload flowing through fallback and
+  recover direct paths within a bounded window.
+
+## 4.0.85 - 2026-06-22
+
+### Fixed
+
+- Preserved daemon-sourced FIPS reachability fields in `nvpn status --json`, so
+  GUI/device lists no longer collapse active roster peers to offline.
+- Stopped forcing macOS connected UDP on by default; macOS now inherits FIPS'
+  default-off behavior unless explicitly enabled.
+- Refreshed embedded FIPS private-mesh paths in place after link changes instead
+  of restarting the FIPS endpoint, reducing churn during route or endpoint
+  refreshes.
+- Bumped to FIPS 0.3.76/0.3.51 for fresh endpoint peer liveness, preventing
+  stale receive counters from keeping dead mobile/NAT paths marked online, and
+  for stale worker-open completion classification during FSP session churn.
+
+## 4.0.83 - 2026-06-21
+
+### Changed
+
+- The workspace now depends on the published FIPS 0.3.75/0.3.50 crates,
+  carrying the direct-path re-probe and direct-payload freshness fixes used by
+  the latest private-mesh recovery testing.
+- FIPS/Nostr discovery now defaults to configured roster peers only; open
+  non-roster transit remains available as an explicit setting or env override.
+- FIPS public configured endpoints are treated as ordinary roster hints instead
+  of authoritative paths; public relay advertising remains opt-in.
+- macOS FIPS private-mesh pacing defaults are now expressed as a bounded bulk
+  admission policy derived from MTU and socket-buffer relationships instead of
+  standalone emergency constants. The effective queue and UDP buffer defaults
+  remain the 4.0.82 release values.
+- FIPS private-mesh sender fairness now yields from actual bulk queue pressure
+  instead of macOS-only fixed send-turn constants, matching the WireGuard-style
+  bounded queue/backpressure model more closely.
+- Release-gate local-FIPS coverage now checks that traversal/recent-endpoint
+  paths keep their mobile-safe liveness floor instead of falling back to the 5s
+  local-route-failure timeout.
+- Release-gate local-FIPS coverage now rejects configured-only Nostr traversal
+  regressions where non-roster handoffs are adopted before roster admission.
+- FIPS private-mesh maintenance now probes stale peers on the slower discovery
+  cadence and caps peer pings per heartbeat to avoid synchronized control bursts
+  from stale/offline roster members.
+
+### Fixed
+
+- Private-mesh transfers no longer stay pinned to stale fallback routes after
+  authenticated direct endpoint payload traffic has returned, reducing slow
+  reverse transfers after network changes.
+
+## 4.0.82 - 2026-06-20
+
+### Fixed
+
+- Windows default builds no longer crash at startup when hidden paid-route view
+  markup is loaded. Paid-route buy/sell/wallet UI remains hidden unless the
+  default-off paid-exit feature and runtime support are enabled.
+
+## 4.0.81 - 2026-06-20
+
+### Changed
+
+- The workspace now depends on the published FIPS 0.3.73/0.3.48 crates, carrying
+  the direct-path freshness, direct-probe routing, degraded static-direct route,
+  and endpoint-priority scheduling fixes used by the post-4.0.80 stabilization
+  runs.
+- Cashu paid-exit buy/sell internet work remains opt-in behind the default-off
+  `paid-exit` feature. Default builds keep Cashu out of the normal daemon
+  dependency graph and hide unsupported Buy Internet, Share Internet, and Wallet
+  UI instead of showing placeholder "not available" pages.
+- Retired stale dataplane benchmark knobs for FIPS source-affine/FSP worker-open
+  placement, FSP completion width, Linux bulk UDP pacing, and macOS ordered
+  sender experiments. Current FIPS defaults now own those shapes directly, and
+  Docker benchmark harnesses reject the old env names instead of silently
+  recording misleading evidence.
+
+### Fixed
+
+- Default FIPS private-mesh builds now keep the connected-UDP fast path opt-in
+  after live roster testing showed it could cause burst packet loss on otherwise
+  clean LAN paths. `node.connected_udp.enabled = true` and `FIPS_CONNECTED_UDP=1`
+  remain available for explicit A/B runs.
+- FIPS path refresh now targets stale and pending direct-probe paths without
+  churning fresh routes, and nvpn uses FIPS data-path freshness plus outbound
+  route status to avoid keeping degraded static/private hints on the hot path.
+- Release-gate coverage now includes the degraded static FIPS routing
+  regression so roster/static-route recovery stays protected.
+
+## 4.0.80 - 2026-06-19
+
+### Changed
+
+- The workspace now depends on the published FIPS 0.3.67/0.3.42 crates, which
+  carry the stale-path and raw-UDP pacing fixes plus a final receive-loop
+  scheduling reduction that bounds non-packet, fallback, and side-turn work
+  between dataplane receives under LAN load.
+- Release-gate local-FIPS runs and the fast FIPS safety suite now include the
+  overlay/update-peers regression filters that cover this stale-path class.
+- The optional host-pair loaded-latency release gate now clamps sub-second ping
+  intervals on non-root macOS and exposes an explicit
+  `NVPN_RELEASE_GATE_HOST_PAIR_LOADED_MAX_STALL_INTERVALS` threshold for live
+  Wi-Fi/LAN runs.
+
+### Fixed
+
+- Active direct-path refreshes can now reach FIPS path-candidate reclaim logic
+  even when the per-peer race budget is already full, so better configured
+  paths are not blocked behind lower-priority in-flight attempts.
+- macOS private-mesh LAN transfers no longer require launchd pacing overrides
+  to keep loaded-latency stable during sustained TCP traffic.
+
+## 4.0.79 - 2026-06-19
+
+### Changed
+
+- The workspace now depends on the published FIPS 0.3.64/0.3.39 crates, which
+  skip slow RX-loop maintenance while queued dataplane work is waiting and
+  shorten decrypt-worker bulk batches to bound priority stalls under LAN load.
+- Release-gate platform and desktop smoke checks now have bounded timeouts so
+  Docker perf evidence cannot be hidden behind a later hung smoke test.
+
+## 4.0.78 - 2026-06-19
+
+### Changed
+
+- The release gate can now run an optional host-pair loaded-latency check that
+  keeps ping running while TCP throughput probes run, catching tunnel stalls,
+  packet loss, and low-throughput iperf intervals in configured real-device
+  environments without committing local host details.
+- macOS FIPS private-mesh sending now sequences endpoint flows independently
+  on the ordered Darwin sender path, so one bulk TCP flow cannot block
+  latency-sensitive tunnel traffic to the same peer.
+- The workspace now depends on the published FIPS 0.3.63/0.3.38 crates that
+  contain the direct-path liveness and decrypt-worker priority-lane fixes.
+- Embedded FIPS endpoints now declare a silent direct path stale after 20s
+  instead of 30s, shortening real blackhole failover while keeping the
+  existing 15s traversal-path floor and 5s fast local-failure path.
+
+### Fixed
+
+- FIPS Nostr discovery GUI toggles now restart the embedded endpoint so live
+  relay subscriptions are closed immediately instead of waiting for a daemon
+  process restart.
+- Configured-only FIPS discovery no longer seeds built-in bootstrap or recent
+  non-roster transit peers, keeping low-power nodes out of public transit retry
+  churn while preserving roster/static hints.
+- Open FIPS discovery now caps bootstrap/transit seeds before applying the open
+  discovery admission budget, preventing large learned bootstrap lists from
+  exhausting fresh-discovery headroom and churning on ambient peers.
+- The release gate now honors `NVPN_FIPS_REPO_PATH` for its blocking Cargo
+  clippy/test steps, so local FIPS API changes are tested with the same patch
+  set used for daemon builds.
+- The Docker FIPS perf gate now fails on low-throughput iperf intervals instead
+  of only checking whole-run averages.
+- macOS app windows refresh daemon state when the app starts or is shown again,
+  preventing stale one-device roster views after daemon/config changes.
+- Active direct-path refreshes without concrete direct candidates now use a
+  cooldown instead of tight retry churn.
+
 ## 4.0.77 - 2026-06-15
 
 ### Changed

@@ -34,7 +34,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
         );
     }
     let network_override = args.network_id.clone();
-    let participants_override = args.participants.clone();
+    let participants_override = args.devices.clone();
     let (mut app, mut network_id) = load_config_with_overrides(
         &config_path,
         network_override.clone(),
@@ -119,6 +119,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
         if fips_private_runtime_active(&app, vpn_enabled, expected_peers) {
             let config = match fips_tunnel_config_from_app(
                 &app,
+                &config_path,
                 &network_id,
                 iface.clone(),
                 own_pubkey.as_deref(),
@@ -315,6 +316,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                             &mut fips_tunnel_runtime,
                             FipsRestartContext {
                                 app: &app,
+                                config_path: &config_path,
                                 network_id: &network_id,
                                 fallback_iface: &iface,
                                 own_pubkey: own_pubkey.as_deref(),
@@ -337,6 +339,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                             &mut fips_tunnel_runtime,
                             FipsRestartContext {
                                 app: &app,
+                                config_path: &config_path,
                                 network_id: &network_id,
                                 fallback_iface: &iface,
                                 own_pubkey: own_pubkey.as_deref(),
@@ -404,6 +407,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         &mut fips_tunnel_runtime,
                         FipsRestartContext {
                             app: &app,
+                            config_path: &config_path,
                             network_id: &network_id,
                             fallback_iface: &iface,
                             own_pubkey: own_pubkey.as_deref(),
@@ -423,6 +427,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         &mut fips_tunnel_runtime,
                         FipsRestartContext {
                             app: &app,
+                            config_path: &config_path,
                             network_id: &network_id,
                             fallback_iface: &iface,
                             own_pubkey: own_pubkey.as_deref(),
@@ -581,6 +586,9 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                     underlay_repaired,
                     resumed_after_sleep,
                 );
+                #[cfg(feature = "embedded-fips")]
+                let seed_recent_fips_peers =
+                    fips_link_event_should_seed_recent_peers(fips_refresh);
 
                 if network_changed || underlay_repaired || resumed_after_sleep || endpoint_changed {
                     let refresh_reason = if network_changed {
@@ -611,18 +619,23 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                     }
                     #[cfg(feature = "embedded-fips")]
                     let fips_result = match fips_refresh {
-                        FipsLinkEventRefresh::RestartEndpoint => {
+                        FipsLinkEventRefresh::RefreshPaths => {
                             if fips_tunnel_runtime.is_some()
                                 || fips_private_runtime_active(&app, vpn_enabled, expected_peers)
                             {
-                                restart_fips_tunnel_runtime_after_link_event(
+                                refresh_fips_tunnel_runtime_after_link_event(
                                     &mut fips_tunnel_runtime,
                                     FipsRestartContext {
                                         app: &app,
+                                        config_path: &config_path,
                                         network_id: &network_id,
                                         fallback_iface: &iface,
                                         own_pubkey: own_pubkey.as_deref(),
-                                        recent_peers: Some(&recent_peers),
+                                        // A link event means the old underlay or NAT mapping just
+                                        // changed. Keep the cache on disk, but make this runtime earn
+                                        // direct paths from fresh evidence on the current network.
+                                        recent_peers: seed_recent_fips_peers
+                                            .then_some(&recent_peers),
                                         last_endpoint_peer_signature:
                                             &mut last_fips_endpoint_peer_signature,
                                     },
@@ -697,33 +710,57 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         &config_path,
                         &mut vpn_status,
                     ) {
-                        Ok(true) => {
-                            let reload = build_daemon_reload_config(
-                                app.clone(),
-                                app.effective_network_id(),
-                            );
-                            app = reload.app;
-                            network_id = reload.network_id;
-                            expected_peers = reload.expected_peers;
-                            own_pubkey = reload.own_pubkey;
+                        Ok(drained) => {
+                            if drained.roster_changed {
+                                let reload = build_daemon_reload_config(
+                                    app.clone(),
+                                    app.effective_network_id(),
+                                );
+                                app = reload.app;
+                                network_id = reload.network_id;
+                                expected_peers = reload.expected_peers;
+                                own_pubkey = reload.own_pubkey;
 
-                            fips_join_request_sends.clear();
-                            if let Err(error) = refresh_fips_tunnel_config(
-                                runtime,
-                                &app,
-                                &network_id,
-                                own_pubkey.as_deref(),
-                            )
-                            .await
+                                fips_join_request_sends.clear();
+                                if let Err(error) = refresh_fips_tunnel_config(
+                                    runtime,
+                                    &app,
+                                    &config_path,
+                                    &network_id,
+                                    own_pubkey.as_deref(),
+                                )
+                                .await
+                                {
+                                    vpn_status =
+                                        format!("Roster applied, but FIPS reload failed ({error})");
+                                }
+                                if let Some(rt) = magic_dns_runtime.as_ref() {
+                                    rt.refresh_records(&app);
+                                }
+                            }
+                            if !drained.endpoint_hint_participants.is_empty()
+                                && let Err(error) =
+                                    refresh_fips_tunnel_runtime_peer_paths_in_place(
+                                        runtime,
+                                        FipsRestartContext {
+                                            app: &app,
+                                            config_path: &config_path,
+                                            network_id: &network_id,
+                                            fallback_iface: &iface,
+                                            own_pubkey: own_pubkey.as_deref(),
+                                            recent_peers: Some(&recent_peers),
+                                            last_endpoint_peer_signature:
+                                                &mut last_fips_endpoint_peer_signature,
+                                        },
+                                        &drained.endpoint_hint_participants,
+                                        "fresh endpoint capability",
+                                    )
+                                    .await
                             {
                                 vpn_status =
-                                    format!("Roster applied, but FIPS reload failed ({error})");
-                            }
-                            if let Some(rt) = magic_dns_runtime.as_ref() {
-                                rt.refresh_records(&app);
+                                    format!("FIPS endpoint hint refresh failed ({error})");
                             }
                         }
-                        Ok(false) => {}
                         Err(error) => {
                             vpn_status = format!("FIPS event handling failed ({error})");
                         }
@@ -884,12 +921,15 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                     #[cfg(feature = "embedded-fips")]
                     if let Err(error) = sync_fips_private_runtime(
                         &mut fips_tunnel_runtime,
-                        &app,
-                        &network_id,
-                        &iface,
-                        own_pubkey.as_deref(),
-                        vpn_enabled,
-                        expected_peers,
+                        SyncFipsPrivateRuntimeContext {
+                            app: &app,
+                            config_path: &config_path,
+                            network_id: &network_id,
+                            iface: &iface,
+                            own_pubkey: own_pubkey.as_deref(),
+                            vpn_enabled,
+                            expected_peers,
+                        },
                     )
                     .await
                     {
@@ -917,8 +957,9 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                             );
                         }
                     }
-                    match persist_daemon_runtime_state(
+                    if persist_daemon_runtime_and_cleanup_state(
                         &state_file,
+                        &config_path,
                         &app,
                         vpn_enabled,
                         expected_peers,
@@ -930,15 +971,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                         &network_snapshot.summary(network_changed_at, captive_portal),
                         &port_mapping_runtime.status(),
                     ) {
-                        Ok(()) => last_state_persisted_at = Instant::now(),
-                        Err(error) => {
-                            eprintln!("daemon: failed to persist runtime state: {error}");
-                        }
-                    }
-                    if let Err(error) =
-                        persist_daemon_network_cleanup_state(&config_path, &tunnel_runtime)
-                    {
-                        eprintln!("daemon: failed to persist network cleanup state: {error}");
+                        last_state_persisted_at = Instant::now();
                     }
                 }
                 if let Some((executable, launched_fingerprint)) =
@@ -964,35 +997,23 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                 {
                     vpn_status = "VPN on".to_string();
                 }
-                if last_state_persisted_at.elapsed() >= daemon_state_persist_interval {
-                    let fips_peer_statuses = current_fips_peer_statuses!(fips_tunnel_runtime);
-                    let fips_relay_statuses =
-                        current_fips_relay_statuses(&fips_tunnel_runtime).await;
-                    let fips_advertised_routes =
-                        current_fips_advertised_routes!(fips_tunnel_runtime, &app);
-                    match persist_daemon_runtime_state(
+                if last_state_persisted_at.elapsed() >= daemon_state_persist_interval
+                    && persist_daemon_runtime_and_cleanup_state(
                         &state_file,
+                        &config_path,
                         &app,
                         vpn_enabled,
                         expected_peers,
                         &tunnel_runtime,
-                        &fips_peer_statuses,
-                        &fips_relay_statuses,
-                        &fips_advertised_routes,
+                        &current_fips_peer_statuses!(fips_tunnel_runtime),
+                        &current_fips_relay_statuses(&fips_tunnel_runtime).await,
+                        &current_fips_advertised_routes!(fips_tunnel_runtime, &app),
                         &vpn_status,
                         &network_snapshot.summary(network_changed_at, captive_portal),
                         &port_mapping_runtime.status(),
-                    ) {
-                        Ok(()) => last_state_persisted_at = Instant::now(),
-                        Err(error) => {
-                            eprintln!("daemon: failed to persist runtime state: {error}");
-                        }
-                    }
-                    if let Err(error) =
-                        persist_daemon_network_cleanup_state(&config_path, &tunnel_runtime)
-                    {
-                        eprintln!("daemon: failed to persist network cleanup state: {error}");
-                    }
+                    )
+                {
+                    last_state_persisted_at = Instant::now();
                 }
             }
         }
@@ -1009,29 +1030,11 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
     if let Err(error) = persist_daemon_network_cleanup_state(&config_path, &tunnel_runtime) {
         eprintln!("daemon: failed to clear network cleanup state: {error}");
     }
-
-    let final_state = DaemonRuntimeState {
-        updated_at: unix_timestamp(),
-        binary_version: PRODUCT_VERSION.to_string(),
-        local_endpoint: String::new(),
-        advertised_endpoint: String::new(),
-        listen_port: 0,
-        vpn_enabled: false,
-        vpn_active: false,
-        vpn_status: "Disconnected".to_string(),
-        expected_peer_count: expected_peers,
-        connected_peer_count: 0,
-        fips_direct_roster_peer_count: 0,
-        fips_other_peer_count: 0,
-        mesh_ready: false,
-        health: Vec::new(),
-        network: network_snapshot.summary(network_changed_at, captive_portal),
-        port_mapping: PortMappingStatus::default(),
-        relays: Vec::new(),
-        peers: Vec::new(),
-    };
+    let final_state = disconnected_daemon_runtime_state(
+        expected_peers,
+        &network_snapshot.summary(network_changed_at, captive_portal),
+    );
     let _ = write_daemon_state(&state_file, &final_state);
     remove_current_daemon_pid_record(&pid_file);
-
     Ok(())
 }

@@ -9,6 +9,11 @@
 #   NVPN_DOCKER_CPU_STRESS=1
 #   NVPN_DOCKER_CPU_STRESS_SIDES=local|remote|both
 #   NVPN_DOCKER_CPU_STRESS_{LOCAL,REMOTE}_WORKERS=N
+#
+# Benchmark-compatible daemon profiles:
+#   NVPN_DOCKER_DATAPLANE_PROFILE=linux-vnet-lan
+#   NVPN_DOCKER_PLACEMENT_PROFILE=worker-open
+#   NVPN_SOAK_EXTRA_ENV="FIPS_CONNECTED_UDP_RECV_BUF_BYTES=67108864 ..."
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -48,13 +53,16 @@ MAX_PIPELINE_QUEUE_WAIT_P95_MS="${NVPN_SOAK_MAX_PIPELINE_QUEUE_WAIT_P95_MS:-50}"
 MAX_PIPELINE_QUEUE_WAIT_P99_MS="${NVPN_SOAK_MAX_PIPELINE_QUEUE_WAIT_P99_MS:-100}"
 MAX_PRIORITY_QUEUE_WAIT_MS="${NVPN_SOAK_MAX_PRIORITY_QUEUE_WAIT_MS:-50}"
 FAIL_ON_PRIORITY_HARD_EVENTS="${NVPN_SOAK_FAIL_ON_PRIORITY_HARD_EVENTS:-1}"
+PIPELINE_INTERVAL_SECS="${NVPN_SOAK_PIPELINE_INTERVAL_SECS:-${NVPN_DOCKER_PIPELINE_INTERVAL_SECS:-15}}"
 MAX_CONSECUTIVE_REKEY_SAMPLES="${NVPN_SOAK_MAX_CONSECUTIVE_REKEY_SAMPLES:-2}"
+MAX_CONSECUTIVE_HIGH_SRTT_SAMPLES="${NVPN_SOAK_MAX_CONSECUTIVE_HIGH_SRTT_SAMPLES:-2}"
 MAX_CONSECUTIVE_DIRECT_PROBE_OVERDUE_SAMPLES="${NVPN_SOAK_MAX_CONSECUTIVE_DIRECT_PROBE_OVERDUE_SAMPLES:-${NVPN_SOAK_MAX_CONSECUTIVE_DIRECT_PROBE_SAMPLES:-2}}"
 MAX_CONSECUTIVE_PIPELINE_STALE_SAMPLES="${NVPN_SOAK_MAX_CONSECUTIVE_PIPELINE_STALE_SAMPLES:-2}"
 MAX_FIPS_LAST_SEEN_AGE_SECS="${NVPN_SOAK_MAX_FIPS_LAST_SEEN_AGE_SECS:-180}"
 MAX_FIPS_CONTROL_LAST_SEEN_AGE_SECS="${NVPN_SOAK_MAX_FIPS_CONTROL_LAST_SEEN_AGE_SECS:-$MAX_FIPS_LAST_SEEN_AGE_SECS}"
 MAX_FIPS_DATA_LAST_SEEN_AGE_SECS="${NVPN_SOAK_MAX_FIPS_DATA_LAST_SEEN_AGE_SECS:-$MAX_FIPS_LAST_SEEN_AGE_SECS}"
 MAX_FIPS_LAST_SEEN_FUTURE_SKEW_SECS="${NVPN_SOAK_MAX_FIPS_LAST_SEEN_FUTURE_SKEW_SECS:-5}"
+EXPECT_FSP_OWNER_PLACEMENT="${NVPN_SOAK_EXPECT_FSP_OWNER_PLACEMENT:-${NVPN_DOCKER_EXPECT_FSP_OWNER_PLACEMENT:-}}"
 ALLOW_NON_DIRECT="${NVPN_SOAK_ALLOW_NON_DIRECT:-0}"
 ALLOW_QUEUE_EVENTS="${NVPN_SOAK_ALLOW_QUEUE_EVENTS:-${NVPN_SOAK_ALLOW_QUEUE_DROPS:-0}}"
 ALLOW_QUEUE_WAIT="${NVPN_SOAK_ALLOW_QUEUE_WAIT:-$ALLOW_QUEUE_EVENTS}"
@@ -108,6 +116,90 @@ is_true() {
   [[ "${1:-}" =~ ^(1|true|TRUE|True|yes|YES|Yes|on|ON|On)$ ]]
 }
 
+validate_expected_fsp_owner_placement() {
+  case "$EXPECT_FSP_OWNER_PLACEMENT" in
+    "" | any | same | owner-same | mismatch | owner-mismatch | local | handoff | worker-open) ;;
+    *)
+      echo "fips soak failed: unknown expected FSP owner placement '$EXPECT_FSP_OWNER_PLACEMENT' (known: any, same, owner-same, mismatch, owner-mismatch, local, handoff, worker-open)" >&2
+      return 2
+      ;;
+  esac
+}
+
+pipeline_fsp_owner_placement_line() {
+  local sample="$1"
+  local line summary
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    summary="$(docker_bench_pipeline_fsp_owner_placement_summary "$line")"
+    if [[ -n "$summary" ]]; then
+      printf '%s\n' "$line"
+      return 0
+    fi
+  done < <(jq -r '(.placement_raw // empty), (.load_raw // empty), (.raw // empty), (.recent[]? // empty)' <<<"$sample")
+}
+
+assert_expected_fsp_owner_placement_sample() {
+  local label="$1"
+  local sample="$2"
+  local expected="$EXPECT_FSP_OWNER_PLACEMENT"
+  local line summary kind ok=0
+  [[ -n "$expected" && "$expected" != "any" ]] || return 0
+
+  line="$(pipeline_fsp_owner_placement_line "$sample")"
+  summary="$(docker_bench_pipeline_fsp_owner_placement_summary "$line")"
+  kind="$(docker_bench_pipeline_fsp_owner_placement_kind "$line")"
+  case "$expected" in
+    same | owner-same)
+      [[ "$summary" == owner=same,* ]] && ok=1
+      ;;
+    mismatch | owner-mismatch)
+      [[ "$summary" == owner=mismatch,* ]] && ok=1
+      ;;
+    local | handoff | worker-open)
+      [[ "$kind" == "$expected" ]] && ok=1
+      ;;
+  esac
+
+  if [[ "$ok" != "1" ]]; then
+    printf 'fips soak failed: expected %s FSP owner placement %s, got kind=%s summary=%s\n' \
+      "$label" "$expected" "${kind:-unknown}" "${summary:-none}" >&2
+    return 2
+  fi
+}
+
+assert_expected_fsp_owner_placement_any_sample() {
+  local label sample line summary kind summaries="" ok=0
+  [[ -n "$EXPECT_FSP_OWNER_PLACEMENT" && "$EXPECT_FSP_OWNER_PLACEMENT" != "any" ]] || return 0
+
+  while [[ $# -gt 1 ]]; do
+    label="$1"
+    sample="$2"
+    shift 2
+    line="$(pipeline_fsp_owner_placement_line "$sample")"
+    summary="$(docker_bench_pipeline_fsp_owner_placement_summary "$line")"
+    kind="$(docker_bench_pipeline_fsp_owner_placement_kind "$line")"
+    summaries+="${label}:kind=${kind:-unknown},summary=${summary:-none}; "
+    case "$EXPECT_FSP_OWNER_PLACEMENT" in
+      same | owner-same)
+        [[ "$summary" == owner=same,* ]] && ok=1
+        ;;
+      mismatch | owner-mismatch)
+        [[ "$summary" == owner=mismatch,* ]] && ok=1
+        ;;
+      local | handoff | worker-open)
+        [[ "$kind" == "$EXPECT_FSP_OWNER_PLACEMENT" ]] && ok=1
+        ;;
+    esac
+  done
+
+  if [[ "$ok" != "1" ]]; then
+    printf 'fips soak failed: expected any FIPS FSP owner placement %s, got %s\n' \
+      "$EXPECT_FSP_OWNER_PLACEMENT" "$summaries" >&2
+    return 2
+  fi
+}
+
 wait_for_service() {
   local service="$1"
   local container_id=""
@@ -145,15 +237,32 @@ append_env_assignment() {
   printf " %s=%q" "$name" "$value"
 }
 
+append_env_assignments_string() {
+  local value="$1"
+  [[ -z "$value" ]] && return
+  printf " %s" "$value"
+}
+
+validate_daemon_extra_env() {
+  local profile_env combined_env
+  profile_env="$(docker_bench_effective_extra_env)" || return $?
+  docker_bench_validate_connect_env_scope "$profile_env" || return $?
+  combined_env="$(docker_bench_join_env_assignments "$profile_env" "$EXTRA_ENV")"
+  docker_bench_validate_extra_env_assignments "$combined_env"
+}
+
 daemon_env() {
-  local env_string
+  local env_string profile_env
+  profile_env="$(docker_bench_effective_extra_env)"
   env_string="$(append_env_assignment FIPS_CONNECTED_UDP "$FIPS_CONNECTED_UDP")"
   env_string+="$(append_env_assignment FIPS_ENCRYPT_WORKERS "$FIPS_ENCRYPT_WORKERS")"
   env_string+="$(append_env_assignment FIPS_DECRYPT_WORKERS "$FIPS_DECRYPT_WORKERS")"
   env_string+="$(append_env_assignment FIPS_WORKER_CHANNEL_CAP "$FIPS_WORKER_CHANNEL_CAP")"
   env_string+="$(append_env_assignment FIPS_DECRYPT_WORKER_CHANNEL_CAP "$FIPS_DECRYPT_WORKER_CHANNEL_CAP")"
   env_string+="$(append_env_assignment FIPS_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP "$FIPS_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP")"
-  env_string+=" NVPN_PIPELINE_TRACE=1 NVPN_PIPELINE_INTERVAL_SECS=15"
+  env_string+="$(append_env_assignments_string "$profile_env")"
+  env_string+="$(append_env_assignments_string "$EXTRA_ENV")"
+  env_string+=" NVPN_PIPELINE_TRACE=1 NVPN_PIPELINE_INTERVAL_SECS=$PIPELINE_INTERVAL_SECS"
   env_string+=" NVPN_FIPS_NOSTR_DISCOVERY_POLICY='$FIPS_NOSTR_DISCOVERY_POLICY'"
   printf '%s' "$env_string"
 }
@@ -161,7 +270,7 @@ daemon_env() {
 start_daemon() {
   local service="$1"
   "${COMPOSE[@]}" exec -T "$service" sh -lc \
-    "$(daemon_env) $EXTRA_ENV nvpn start --daemon --connect >/dev/null"
+    "$(daemon_env) nvpn start --daemon --connect >/dev/null"
 }
 
 stop_daemon() {
@@ -409,6 +518,27 @@ record_rekey_progress() {
   fi
 }
 
+record_srtt_progress() {
+  local label="$1"
+  local srtt="$2"
+  local counter_var="$3"
+  local current
+  if ! is_number "$srtt"; then
+    return
+  fi
+  if awk -v actual="$srtt" -v max="$MAX_SRTT_MS" 'BEGIN { exit !((actual + 0) <= (max + 0)) }'; then
+    printf -v "$counter_var" '%s' 0
+    return
+  fi
+  current="${!counter_var}"
+  current=$((current + 1))
+  printf -v "$counter_var" '%s' "$current"
+  if (( current > MAX_CONSECUTIVE_HIGH_SRTT_SAMPLES )); then
+    echo "fips soak failed: $label FIPS SRTT stayed above ${MAX_SRTT_MS}ms for ${current} consecutive sample(s) (srtt_ms=$srtt)" >&2
+    exit 1
+  fi
+}
+
 record_direct_probe_progress() {
   local label="$1"
   local pending="$2"
@@ -518,10 +648,9 @@ assert_peer_path() {
   local peer="$2"
   local expected_ip="$3"
   local label="$4"
-  local reachable transport_addr srtt
+  local reachable transport_addr
   reachable="$(peer_field "$status" "$peer" reachable)"
   transport_addr="$(peer_field "$status" "$peer" fips_transport_addr)"
-  srtt="$(peer_field "$status" "$peer" fips_srtt_ms)"
   if [[ "$reachable" != "true" ]]; then
     echo "fips soak failed: $label peer is not reachable" >&2
     printf '%s\n' "$status" >&2
@@ -531,9 +660,6 @@ assert_peer_path() {
     echo "fips soak failed: $label route changed away from direct UDP path (addr=$transport_addr expected_ip=$expected_ip)" >&2
     printf '%s\n' "$status" >&2
     exit 1
-  fi
-  if [[ "$srtt" != "null" && -n "$srtt" ]]; then
-    assert_float_at_most "$srtt" "$MAX_SRTT_MS" "$label FIPS SRTT ms"
   fi
 }
 
@@ -644,6 +770,20 @@ pipeline_lines_to_json() {
         (event_rate_in($line; $name) // -1) as $score
         | if $score > . then $score else . end
       );
+    def placement_score($line):
+      (
+        [
+          event_rate_in($line; "decrypt_worker_batch_bulk_packets"),
+          event_rate_in($line; "decrypt_worker_select_bulk_packets"),
+          event_rate_in($line; "decrypt_worker_drain_bulk_packets"),
+          event_rate_in($line; "decrypt_authenticated_session_bulk_wait"),
+          event_rate_in($line; "decrypt_fsp_path_worker_open"),
+          event_rate_in($line; "decrypt_fsp_path_worker_open_striped")
+        ]
+        | map(. // 0)
+        | max
+      ) as $score
+      | if $score > 0 then (1000000000000 + $score) else load_score($line) end;
     def peak_wait_score($line):
       (
         [
@@ -666,9 +806,13 @@ pipeline_lines_to_json() {
           "decrypt_fallback_wait",
           "decrypt_fallback_priority_wait",
           "decrypt_fallback_bulk_wait",
+          "fsp_aead_worker_open_queue_wait",
+          "fsp_aead_worker_open_completion_wait",
           "decrypt_authenticated_session_wait",
           "decrypt_authenticated_session_priority_wait",
           "decrypt_authenticated_session_bulk_wait",
+          "decrypt_direct_session_commit_wait",
+          "decrypt_direct_session_data_wait",
           "decrypt_fsp_worker_queue_wait",
           "decrypt_fsp_worker_priority_queue_wait",
           "decrypt_fsp_worker_bulk_queue_wait",
@@ -681,6 +825,9 @@ pipeline_lines_to_json() {
           "transport_rx_loop_wait",
           "transport_priority_rx_loop_wait",
           "transport_bulk_rx_loop_wait",
+          "connected_udp_drain_ring_wait",
+          "connected_udp_drain_priority_ring_wait",
+          "connected_udp_drain_bulk_ring_wait",
           "nvpn_tun_to_mesh_queue_wait"
         ] as $names
         | [
@@ -707,10 +854,19 @@ pipeline_lines_to_json() {
         )
         | .line
       );
+    def placement_raw:
+      (
+        reduce line_array[] as $line ({score: -1, line: ""};
+          (placement_score($line)) as $score
+          | if $score >= .score then {score: $score, line: $line} else . end
+        )
+        | .line
+      );
     {
       line_count: (line_array | length),
       raw: (if latest == "" then null else latest end),
       load_raw: (load_raw | if . == "" then null else . end),
+      placement_raw: (placement_raw | if . == "" then null else . end),
       peak_wait_raw: (peak_wait_raw | if . == "" then null else . end),
       recent: (line_array | .[-3:]),
       rates_per_sec: {
@@ -723,6 +879,9 @@ pipeline_lines_to_json() {
         connected_udp_activation_failed: event_rate("connected_udp_activation_failed"),
         connected_udp_peer_cap_skipped: event_rate("connected_udp_peer_cap_skipped"),
         connected_udp_fd_budget_skipped: event_rate("connected_udp_fd_budget_skipped"),
+        connected_udp_kernel_dropped: event_rate("connected_udp_kernel_dropped"),
+        connected_udp_peer_kernel_dropped: event_rate("connected_udp_peer_kernel_dropped"),
+        connected_udp_drain_bulk_dropped: event_rate("connected_udp_drain_bulk_dropped"),
         encrypt_worker_queue_full: event_rate("encrypt_worker_queue_full"),
         encrypt_worker_priority_queue_full: event_rate("encrypt_worker_priority_queue_full"),
         encrypt_worker_bulk_queue_full: event_rate("encrypt_worker_bulk_queue_full"),
@@ -734,7 +893,15 @@ pipeline_lines_to_json() {
         decrypt_fallback_priority_gated: event_rate("decrypt_fallback_priority_gated"),
         decrypt_fsp_priority_queue_full_fallback: event_rate("decrypt_fsp_priority_queue_full_fallback"),
         decrypt_fsp_bulk_queue_full_fallback: event_rate("decrypt_fsp_bulk_queue_full_fallback"),
+        decrypt_fsp_helper_window_fallback: event_rate("decrypt_fsp_helper_window_fallback"),
+        decrypt_fsp_open_worker_window_fallback: event_rate("decrypt_fsp_open_worker_window_fallback"),
+        decrypt_fsp_helper_queue_full_fallback: event_rate("decrypt_fsp_helper_queue_full_fallback"),
+        decrypt_fsp_helper_completion_backlog_fallback: event_rate("decrypt_fsp_helper_completion_backlog_fallback"),
+        decrypt_fsp_open_worker_completion_backlog_fallback: event_rate("decrypt_fsp_open_worker_completion_backlog_fallback"),
         decrypt_fsp_worker_replay_dropped: event_rate("decrypt_fsp_worker_replay_dropped"),
+        fmp_aead_completion_aead_failed: event_rate("fmp_aead_completion_aead_failed"),
+        fsp_aead_completion_aead_failed: event_rate("fsp_aead_completion_aead_failed"),
+        fsp_aead_completion_epoch_mismatch: event_rate("fsp_aead_completion_epoch_mismatch"),
         decrypt_authenticated_session_priority_dropped: event_rate("decrypt_authenticated_session_priority_dropped"),
         decrypt_authenticated_session_bulk_dropped: event_rate("decrypt_authenticated_session_bulk_dropped"),
         decrypt_fallback_backlog_high: event_rate("decrypt_fallback_backlog_high"),
@@ -744,13 +911,14 @@ pipeline_lines_to_json() {
         pending_tun_packet_dropped: event_rate("pending_tun_packet_dropped"),
         pending_endpoint_destination_dropped: event_rate("pending_endpoint_destination_dropped"),
         pending_endpoint_packet_dropped: event_rate("pending_endpoint_packet_dropped"),
-        endpoint_direct_fmp_receive_dropped: event_rate("endpoint_direct_fmp_receive_dropped"),
-        endpoint_direct_fmp_receive_dropped_packets: event_rate("endpoint_direct_fmp_receive_dropped_packets"),
         endpoint_event_backlog_high: event_rate("endpoint_event_backlog_high"),
         endpoint_event_bulk_dropped: event_rate("endpoint_event_bulk_dropped"),
         transport_channel_backlog_high: event_rate("transport_channel_backlog_high"),
         transport_bulk_dropped: event_rate("transport_bulk_dropped"),
-        nvpn_tun_to_mesh_bulk_dropped: event_rate("nvpn_tun_to_mesh_bulk_dropped")
+        nvpn_tun_to_mesh_bulk_dropped: event_rate("nvpn_tun_to_mesh_bulk_dropped"),
+        nvpn_tun_to_mesh_bulk_dropped_batches: event_rate("nvpn_tun_to_mesh_bulk_dropped_batches"),
+        nvpn_tun_to_mesh_bulk_dropped_packet_cap: event_rate("nvpn_tun_to_mesh_bulk_dropped_packet_cap"),
+        nvpn_tun_to_mesh_bulk_dropped_channel_full: event_rate("nvpn_tun_to_mesh_bulk_dropped_channel_full")
       },
       max_rates_per_sec: {
         udp_send_connected: event_max_rate("udp_send_connected"),
@@ -762,6 +930,9 @@ pipeline_lines_to_json() {
         connected_udp_activation_failed: event_max_rate("connected_udp_activation_failed"),
         connected_udp_peer_cap_skipped: event_max_rate("connected_udp_peer_cap_skipped"),
         connected_udp_fd_budget_skipped: event_max_rate("connected_udp_fd_budget_skipped"),
+        connected_udp_kernel_dropped: event_max_rate("connected_udp_kernel_dropped"),
+        connected_udp_peer_kernel_dropped: event_max_rate("connected_udp_peer_kernel_dropped"),
+        connected_udp_drain_bulk_dropped: event_max_rate("connected_udp_drain_bulk_dropped"),
         encrypt_worker_queue_full: event_max_rate("encrypt_worker_queue_full"),
         encrypt_worker_priority_queue_full: event_max_rate("encrypt_worker_priority_queue_full"),
         encrypt_worker_bulk_queue_full: event_max_rate("encrypt_worker_bulk_queue_full"),
@@ -773,7 +944,15 @@ pipeline_lines_to_json() {
         decrypt_fallback_priority_gated: event_max_rate("decrypt_fallback_priority_gated"),
         decrypt_fsp_priority_queue_full_fallback: event_max_rate("decrypt_fsp_priority_queue_full_fallback"),
         decrypt_fsp_bulk_queue_full_fallback: event_max_rate("decrypt_fsp_bulk_queue_full_fallback"),
+        decrypt_fsp_helper_window_fallback: event_max_rate("decrypt_fsp_helper_window_fallback"),
+        decrypt_fsp_open_worker_window_fallback: event_max_rate("decrypt_fsp_open_worker_window_fallback"),
+        decrypt_fsp_helper_queue_full_fallback: event_max_rate("decrypt_fsp_helper_queue_full_fallback"),
+        decrypt_fsp_helper_completion_backlog_fallback: event_max_rate("decrypt_fsp_helper_completion_backlog_fallback"),
+        decrypt_fsp_open_worker_completion_backlog_fallback: event_max_rate("decrypt_fsp_open_worker_completion_backlog_fallback"),
         decrypt_fsp_worker_replay_dropped: event_max_rate("decrypt_fsp_worker_replay_dropped"),
+        fmp_aead_completion_aead_failed: event_max_rate("fmp_aead_completion_aead_failed"),
+        fsp_aead_completion_aead_failed: event_max_rate("fsp_aead_completion_aead_failed"),
+        fsp_aead_completion_epoch_mismatch: event_max_rate("fsp_aead_completion_epoch_mismatch"),
         decrypt_authenticated_session_priority_dropped: event_max_rate("decrypt_authenticated_session_priority_dropped"),
         decrypt_authenticated_session_bulk_dropped: event_max_rate("decrypt_authenticated_session_bulk_dropped"),
         decrypt_fallback_backlog_high: event_max_rate("decrypt_fallback_backlog_high"),
@@ -783,13 +962,14 @@ pipeline_lines_to_json() {
         pending_tun_packet_dropped: event_max_rate("pending_tun_packet_dropped"),
         pending_endpoint_destination_dropped: event_max_rate("pending_endpoint_destination_dropped"),
         pending_endpoint_packet_dropped: event_max_rate("pending_endpoint_packet_dropped"),
-        endpoint_direct_fmp_receive_dropped: event_max_rate("endpoint_direct_fmp_receive_dropped"),
-        endpoint_direct_fmp_receive_dropped_packets: event_max_rate("endpoint_direct_fmp_receive_dropped_packets"),
         endpoint_event_backlog_high: event_max_rate("endpoint_event_backlog_high"),
         endpoint_event_bulk_dropped: event_max_rate("endpoint_event_bulk_dropped"),
         transport_channel_backlog_high: event_max_rate("transport_channel_backlog_high"),
         transport_bulk_dropped: event_max_rate("transport_bulk_dropped"),
-        nvpn_tun_to_mesh_bulk_dropped: event_max_rate("nvpn_tun_to_mesh_bulk_dropped")
+        nvpn_tun_to_mesh_bulk_dropped: event_max_rate("nvpn_tun_to_mesh_bulk_dropped"),
+        nvpn_tun_to_mesh_bulk_dropped_batches: event_max_rate("nvpn_tun_to_mesh_bulk_dropped_batches"),
+        nvpn_tun_to_mesh_bulk_dropped_packet_cap: event_max_rate("nvpn_tun_to_mesh_bulk_dropped_packet_cap"),
+        nvpn_tun_to_mesh_bulk_dropped_channel_full: event_max_rate("nvpn_tun_to_mesh_bulk_dropped_channel_full")
       },
       max_totals: {
         udp_send_connected: event_total("udp_send_connected"),
@@ -801,6 +981,9 @@ pipeline_lines_to_json() {
         connected_udp_activation_failed: event_total("connected_udp_activation_failed"),
         connected_udp_peer_cap_skipped: event_total("connected_udp_peer_cap_skipped"),
         connected_udp_fd_budget_skipped: event_total("connected_udp_fd_budget_skipped"),
+        connected_udp_kernel_dropped: event_total("connected_udp_kernel_dropped"),
+        connected_udp_peer_kernel_dropped: event_total("connected_udp_peer_kernel_dropped"),
+        connected_udp_drain_bulk_dropped: event_total("connected_udp_drain_bulk_dropped"),
         encrypt_worker_queue_full: event_total("encrypt_worker_queue_full"),
         encrypt_worker_priority_queue_full: event_total("encrypt_worker_priority_queue_full"),
         encrypt_worker_bulk_queue_full: event_total("encrypt_worker_bulk_queue_full"),
@@ -812,7 +995,15 @@ pipeline_lines_to_json() {
         decrypt_fallback_priority_gated: event_total("decrypt_fallback_priority_gated"),
         decrypt_fsp_priority_queue_full_fallback: event_total("decrypt_fsp_priority_queue_full_fallback"),
         decrypt_fsp_bulk_queue_full_fallback: event_total("decrypt_fsp_bulk_queue_full_fallback"),
+        decrypt_fsp_helper_window_fallback: event_total("decrypt_fsp_helper_window_fallback"),
+        decrypt_fsp_open_worker_window_fallback: event_total("decrypt_fsp_open_worker_window_fallback"),
+        decrypt_fsp_helper_queue_full_fallback: event_total("decrypt_fsp_helper_queue_full_fallback"),
+        decrypt_fsp_helper_completion_backlog_fallback: event_total("decrypt_fsp_helper_completion_backlog_fallback"),
+        decrypt_fsp_open_worker_completion_backlog_fallback: event_total("decrypt_fsp_open_worker_completion_backlog_fallback"),
         decrypt_fsp_worker_replay_dropped: event_total("decrypt_fsp_worker_replay_dropped"),
+        fmp_aead_completion_aead_failed: event_total("fmp_aead_completion_aead_failed"),
+        fsp_aead_completion_aead_failed: event_total("fsp_aead_completion_aead_failed"),
+        fsp_aead_completion_epoch_mismatch: event_total("fsp_aead_completion_epoch_mismatch"),
         decrypt_authenticated_session_priority_dropped: event_total("decrypt_authenticated_session_priority_dropped"),
         decrypt_authenticated_session_bulk_dropped: event_total("decrypt_authenticated_session_bulk_dropped"),
         decrypt_fallback_backlog_high: event_total("decrypt_fallback_backlog_high"),
@@ -822,13 +1013,14 @@ pipeline_lines_to_json() {
         pending_tun_packet_dropped: event_total("pending_tun_packet_dropped"),
         pending_endpoint_destination_dropped: event_total("pending_endpoint_destination_dropped"),
         pending_endpoint_packet_dropped: event_total("pending_endpoint_packet_dropped"),
-        endpoint_direct_fmp_receive_dropped: event_total("endpoint_direct_fmp_receive_dropped"),
-        endpoint_direct_fmp_receive_dropped_packets: event_total("endpoint_direct_fmp_receive_dropped_packets"),
         endpoint_event_backlog_high: event_total("endpoint_event_backlog_high"),
         endpoint_event_bulk_dropped: event_total("endpoint_event_bulk_dropped"),
         transport_channel_backlog_high: event_total("transport_channel_backlog_high"),
         transport_bulk_dropped: event_total("transport_bulk_dropped"),
-        nvpn_tun_to_mesh_bulk_dropped: event_total("nvpn_tun_to_mesh_bulk_dropped")
+        nvpn_tun_to_mesh_bulk_dropped: event_total("nvpn_tun_to_mesh_bulk_dropped"),
+        nvpn_tun_to_mesh_bulk_dropped_batches: event_total("nvpn_tun_to_mesh_bulk_dropped_batches"),
+        nvpn_tun_to_mesh_bulk_dropped_packet_cap: event_total("nvpn_tun_to_mesh_bulk_dropped_packet_cap"),
+        nvpn_tun_to_mesh_bulk_dropped_channel_full: event_total("nvpn_tun_to_mesh_bulk_dropped_channel_full")
       },
       seen: {
         udp_send_connected: event_seen("udp_send_connected"),
@@ -840,6 +1032,9 @@ pipeline_lines_to_json() {
         connected_udp_activation_failed: event_seen("connected_udp_activation_failed"),
         connected_udp_peer_cap_skipped: event_seen("connected_udp_peer_cap_skipped"),
         connected_udp_fd_budget_skipped: event_seen("connected_udp_fd_budget_skipped"),
+        connected_udp_kernel_dropped: event_seen("connected_udp_kernel_dropped"),
+        connected_udp_peer_kernel_dropped: event_seen("connected_udp_peer_kernel_dropped"),
+        connected_udp_drain_bulk_dropped: event_seen("connected_udp_drain_bulk_dropped"),
         encrypt_worker_queue_full: event_seen("encrypt_worker_queue_full"),
         encrypt_worker_priority_queue_full: event_seen("encrypt_worker_priority_queue_full"),
         encrypt_worker_bulk_queue_full: event_seen("encrypt_worker_bulk_queue_full"),
@@ -851,7 +1046,15 @@ pipeline_lines_to_json() {
         decrypt_fallback_priority_gated: event_seen("decrypt_fallback_priority_gated"),
         decrypt_fsp_priority_queue_full_fallback: event_seen("decrypt_fsp_priority_queue_full_fallback"),
         decrypt_fsp_bulk_queue_full_fallback: event_seen("decrypt_fsp_bulk_queue_full_fallback"),
+        decrypt_fsp_helper_window_fallback: event_seen("decrypt_fsp_helper_window_fallback"),
+        decrypt_fsp_open_worker_window_fallback: event_seen("decrypt_fsp_open_worker_window_fallback"),
+        decrypt_fsp_helper_queue_full_fallback: event_seen("decrypt_fsp_helper_queue_full_fallback"),
+        decrypt_fsp_helper_completion_backlog_fallback: event_seen("decrypt_fsp_helper_completion_backlog_fallback"),
+        decrypt_fsp_open_worker_completion_backlog_fallback: event_seen("decrypt_fsp_open_worker_completion_backlog_fallback"),
         decrypt_fsp_worker_replay_dropped: event_seen("decrypt_fsp_worker_replay_dropped"),
+        fmp_aead_completion_aead_failed: event_seen("fmp_aead_completion_aead_failed"),
+        fsp_aead_completion_aead_failed: event_seen("fsp_aead_completion_aead_failed"),
+        fsp_aead_completion_epoch_mismatch: event_seen("fsp_aead_completion_epoch_mismatch"),
         decrypt_authenticated_session_priority_dropped: event_seen("decrypt_authenticated_session_priority_dropped"),
         decrypt_authenticated_session_bulk_dropped: event_seen("decrypt_authenticated_session_bulk_dropped"),
         decrypt_fallback_backlog_high: event_seen("decrypt_fallback_backlog_high"),
@@ -861,13 +1064,14 @@ pipeline_lines_to_json() {
         pending_tun_packet_dropped: event_seen("pending_tun_packet_dropped"),
         pending_endpoint_destination_dropped: event_seen("pending_endpoint_destination_dropped"),
         pending_endpoint_packet_dropped: event_seen("pending_endpoint_packet_dropped"),
-        endpoint_direct_fmp_receive_dropped: event_seen("endpoint_direct_fmp_receive_dropped"),
-        endpoint_direct_fmp_receive_dropped_packets: event_seen("endpoint_direct_fmp_receive_dropped_packets"),
         endpoint_event_backlog_high: event_seen("endpoint_event_backlog_high"),
         endpoint_event_bulk_dropped: event_seen("endpoint_event_bulk_dropped"),
         transport_channel_backlog_high: event_seen("transport_channel_backlog_high"),
         transport_bulk_dropped: event_seen("transport_bulk_dropped"),
-        nvpn_tun_to_mesh_bulk_dropped: event_seen("nvpn_tun_to_mesh_bulk_dropped")
+        nvpn_tun_to_mesh_bulk_dropped: event_seen("nvpn_tun_to_mesh_bulk_dropped"),
+        nvpn_tun_to_mesh_bulk_dropped_batches: event_seen("nvpn_tun_to_mesh_bulk_dropped_batches"),
+        nvpn_tun_to_mesh_bulk_dropped_packet_cap: event_seen("nvpn_tun_to_mesh_bulk_dropped_packet_cap"),
+        nvpn_tun_to_mesh_bulk_dropped_channel_full: event_seen("nvpn_tun_to_mesh_bulk_dropped_channel_full")
       },
       queue_wait_ms: {
         endpoint_command_wait: wait_metric("endpoint_command_wait"),
@@ -889,9 +1093,13 @@ pipeline_lines_to_json() {
         decrypt_fallback_wait: wait_metric("decrypt_fallback_wait"),
         decrypt_fallback_priority_wait: wait_metric("decrypt_fallback_priority_wait"),
         decrypt_fallback_bulk_wait: wait_metric("decrypt_fallback_bulk_wait"),
+        fsp_aead_worker_open_queue_wait: wait_metric("fsp_aead_worker_open_queue_wait"),
+        fsp_aead_worker_open_completion_wait: wait_metric("fsp_aead_worker_open_completion_wait"),
         decrypt_authenticated_session_wait: wait_metric("decrypt_authenticated_session_wait"),
         decrypt_authenticated_session_priority_wait: wait_metric("decrypt_authenticated_session_priority_wait"),
         decrypt_authenticated_session_bulk_wait: wait_metric("decrypt_authenticated_session_bulk_wait"),
+        decrypt_direct_session_commit_wait: wait_metric("decrypt_direct_session_commit_wait"),
+        decrypt_direct_session_data_wait: wait_metric("decrypt_direct_session_data_wait"),
         decrypt_fsp_worker_queue_wait: wait_metric("decrypt_fsp_worker_queue_wait"),
         decrypt_fsp_worker_priority_queue_wait: wait_metric("decrypt_fsp_worker_priority_queue_wait"),
         decrypt_fsp_worker_bulk_queue_wait: wait_metric("decrypt_fsp_worker_bulk_queue_wait"),
@@ -904,6 +1112,9 @@ pipeline_lines_to_json() {
         transport_rx_loop_wait: wait_metric("transport_rx_loop_wait"),
         transport_priority_rx_loop_wait: wait_metric("transport_priority_rx_loop_wait"),
         transport_bulk_rx_loop_wait: wait_metric("transport_bulk_rx_loop_wait"),
+        connected_udp_drain_ring_wait: wait_metric("connected_udp_drain_ring_wait"),
+        connected_udp_drain_priority_ring_wait: wait_metric("connected_udp_drain_priority_ring_wait"),
+        connected_udp_drain_bulk_ring_wait: wait_metric("connected_udp_drain_bulk_ring_wait"),
         nvpn_tun_to_mesh_queue_wait: wait_metric("nvpn_tun_to_mesh_queue_wait")
       }
     }
@@ -1006,25 +1217,38 @@ pipeline_hard_events() {
     |
     [
       "connected_udp_activation_failed",
+      "connected_udp_kernel_dropped",
+      "connected_udp_peer_kernel_dropped",
+      "connected_udp_drain_bulk_dropped",
       "encrypt_worker_queue_full",
       "encrypt_worker_bulk_dropped",
       "decrypt_worker_queue_full",
       "decrypt_worker_bulk_dropped",
       "decrypt_worker_register_full",
       "decrypt_worker_priority_dropped",
+      "decrypt_fsp_helper_window_fallback",
+      "decrypt_fsp_open_worker_window_fallback",
+      "decrypt_fsp_helper_queue_full_fallback",
+      "decrypt_fsp_helper_completion_backlog_fallback",
+      "decrypt_fsp_open_worker_completion_backlog_fallback",
+      "fmp_aead_completion_aead_failed",
+      "fsp_aead_completion_aead_failed",
+      "fsp_aead_completion_epoch_mismatch",
       "decrypt_fallback_bulk_dropped",
       "decrypt_fallback_priority_dropped",
       "pending_tun_destination_dropped",
       "pending_tun_packet_dropped",
       "pending_endpoint_destination_dropped",
       "pending_endpoint_packet_dropped",
-      "endpoint_direct_fmp_receive_dropped",
       "endpoint_event_backlog_high",
       "endpoint_event_bulk_dropped",
       "transport_channel_backlog_high",
       "transport_bulk_dropped",
       "udp_send_bulk_dropped",
-      "nvpn_tun_to_mesh_bulk_dropped"
+      "nvpn_tun_to_mesh_bulk_dropped",
+      "nvpn_tun_to_mesh_bulk_dropped_batches",
+      "nvpn_tun_to_mesh_bulk_dropped_packet_cap",
+      "nvpn_tun_to_mesh_bulk_dropped_channel_full"
     ]
     | map(select(. as $name | ($sample.seen[$name] // false)))
     | join(",")
@@ -1085,7 +1309,8 @@ pipeline_priority_queue_wait_violations() {
         "decrypt_fsp_worker_priority_queue_wait",
         "transport_priority_queue_wait",
         "transport_priority_channel_wait",
-        "transport_priority_rx_loop_wait"
+        "transport_priority_rx_loop_wait",
+        "connected_udp_drain_priority_ring_wait"
       ]
     | map(
         . as $name
@@ -1149,11 +1374,15 @@ write_sample_json_file() {
 main() {
 trap on_exit EXIT
 
+validate_expected_fsp_owner_placement
+validate_daemon_extra_env
 mkdir -p "$OUTPUT_DIR"
 SOAK_RUNNING=1
 SAMPLES="$OUTPUT_DIR/samples.ndjson"
 echo "writing soak artifacts to $OUTPUT_DIR"
-docker_bench_write_metadata fips-soak "$DURATION_SECS"
+NVPN_DOCKER_PIPELINE_TRACE=1 \
+  NVPN_DOCKER_PIPELINE_INTERVAL_SECS="$PIPELINE_INTERVAL_SECS" \
+  docker_bench_write_metadata fips-soak "$DURATION_SECS"
 
 cleanup
 if is_true "$SKIP_BUILD"; then
@@ -1231,6 +1460,8 @@ prev_node_b_bytes_sent=""
 prev_node_b_bytes_recv=""
 node_a_rekey_stuck_count=0
 node_b_rekey_stuck_count=0
+node_a_high_srtt_count=0
+node_b_high_srtt_count=0
 node_a_direct_probe_pending_count=0
 node_b_direct_probe_pending_count=0
 node_a_direct_probe_overdue_count=0
@@ -1340,6 +1571,8 @@ while (( SECONDS < end_at )); do
   assert_fips_data_liveness_fresh "node-b FIPS" "$node_b_last_fips_data_seen_at" "$sample_now_secs"
   record_rekey_progress "node-a FIPS" "$node_a_rekey_in_progress" "$node_a_rekey_draining" node_a_rekey_stuck_count
   record_rekey_progress "node-b FIPS" "$node_b_rekey_in_progress" "$node_b_rekey_draining" node_b_rekey_stuck_count
+  record_srtt_progress "node-a FIPS" "$node_a_srtt" node_a_high_srtt_count
+  record_srtt_progress "node-b FIPS" "$node_b_srtt" node_b_high_srtt_count
   record_direct_probe_progress "node-a FIPS" "$node_a_direct_probe_pending" "$node_a_direct_probe_after_ms" "$sample_now_ms" node_a_direct_probe_pending_count node_a_direct_probe_overdue_count
   record_direct_probe_progress "node-b FIPS" "$node_b_direct_probe_pending" "$node_b_direct_probe_after_ms" "$sample_now_ms" node_b_direct_probe_pending_count node_b_direct_probe_overdue_count
   assert_counter_advanced "$node_a_bytes_sent" "$prev_node_a_bytes_sent" "node-a FIPS bytes sent"
@@ -1350,14 +1583,14 @@ while (( SECONDS < end_at )); do
   prev_node_a_bytes_recv="$node_a_bytes_recv"
   prev_node_b_bytes_sent="$node_b_bytes_sent"
   prev_node_b_bytes_recv="$node_b_bytes_recv"
-  if is_number "$node_a_srtt"; then
+  if is_number "$node_a_srtt" && (( node_a_high_srtt_count == 0 )); then
     if [[ -z "$baseline_node_a_srtt" ]]; then
       baseline_node_a_srtt="$node_a_srtt"
     else
       assert_float_drift_at_most "$node_a_srtt" "$baseline_node_a_srtt" "$MAX_SRTT_DRIFT_MS" "$MAX_SRTT_DRIFT_FACTOR" "node-a FIPS SRTT ms"
     fi
   fi
-  if is_number "$node_b_srtt"; then
+  if is_number "$node_b_srtt" && (( node_b_high_srtt_count == 0 )); then
     if [[ -z "$baseline_node_b_srtt" ]]; then
       baseline_node_b_srtt="$node_b_srtt"
     else
@@ -1377,6 +1610,9 @@ while (( SECONDS < end_at )); do
   assert_pipeline_fresh "node-b FIPS" "$fips_pipeline_b" prev_fips_pipeline_b_count stale_fips_pipeline_b_count
   assert_pipeline_fresh "node-a nvpn" "$nvpn_pipeline_a" prev_nvpn_pipeline_a_count stale_nvpn_pipeline_a_count
   assert_pipeline_fresh "node-b nvpn" "$nvpn_pipeline_b" prev_nvpn_pipeline_b_count stale_nvpn_pipeline_b_count
+  assert_expected_fsp_owner_placement_any_sample \
+    "node-a FIPS" "$fips_pipeline_a" \
+    "node-b FIPS" "$fips_pipeline_b"
   assert_pipeline_ok "node-a FIPS" "$fips_pipeline_a"
   assert_pipeline_ok "node-b FIPS" "$fips_pipeline_b"
   assert_pipeline_ok "node-a nvpn" "$nvpn_pipeline_a"

@@ -150,7 +150,7 @@ pub struct AppConfig {
     pub fips_host_tunnel_enabled: bool,
     #[serde(
         default = "default_connect_to_non_roster_fips_peers",
-        skip_serializing_if = "is_true"
+        skip_serializing_if = "is_false"
     )]
     pub connect_to_non_roster_fips_peers: bool,
     /// Find/advertise FIPS peers over Nostr relays. When false, the node still
@@ -185,6 +185,8 @@ pub struct AppConfig {
     pub mesh_tunnel_mtu: u16,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub exit_node: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exit_node_public_paid_exit: bool,
     #[serde(
         default = "default_exit_node_leak_protection",
         skip_serializing_if = "is_true"
@@ -196,6 +198,8 @@ pub struct AppConfig {
     pub magic_dns_suffix: String,
     #[serde(default, skip_serializing_if = "WireGuardExitConfig::is_default")]
     pub wireguard_exit: WireGuardExitConfig,
+    #[serde(default, skip_serializing_if = "PaidExitConfig::is_default")]
+    pub paid_exit: PaidExitConfig,
     #[serde(default = "default_peer_aliases")]
     pub peer_aliases: HashMap<String, String>,
     #[serde(default)]
@@ -654,8 +658,8 @@ pub struct NetworkConfig {
     pub network_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub invite_secret: String,
-    #[serde(default)]
-    pub participants: Vec<String>,
+    #[serde(default, alias = "participants")]
+    pub devices: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admins: Vec<String>,
     #[serde(
@@ -698,7 +702,7 @@ pub struct EnabledNetworkMesh {
     pub id: String,
     pub name: String,
     pub network_id: String,
-    pub participants: Vec<String>,
+    pub devices: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -706,7 +710,7 @@ pub struct SharedNetworkRoster {
     pub id: String,
     pub network_id: String,
     pub name: String,
-    pub participants: Vec<String>,
+    pub devices: Vec<String>,
     pub admins: Vec<String>,
     pub aliases: HashMap<String, String>,
     pub updated_at: u64,
@@ -722,7 +726,7 @@ impl Default for AppConfig {
                 enabled: default_network_enabled(),
                 network_id: default_network_id(),
                 invite_secret: default_invite_secret(),
-                participants: Vec::new(),
+                devices: Vec::new(),
                 admins: Vec::new(),
                 listen_for_join_requests: default_listen_for_join_requests(),
                 invite_inviter: String::new(),
@@ -747,10 +751,12 @@ impl Default for AppConfig {
             mesh_underlay_udp_mtu: 0,
             mesh_tunnel_mtu: 0,
             exit_node: String::new(),
+            exit_node_public_paid_exit: false,
             exit_node_leak_protection: default_exit_node_leak_protection(),
             close_to_tray_on_close: default_close_to_tray_on_close(),
             magic_dns_suffix: default_magic_dns_suffix(),
             wireguard_exit: WireGuardExitConfig::default(),
+            paid_exit: PaidExitConfig::default(),
             peer_aliases: default_peer_aliases(),
             nat: NatConfig::default(),
             nostr: NostrConfig::default(),

@@ -36,6 +36,7 @@
             rekey_in_progress: false,
             rekey_draining: false,
             current_k_bit: None,
+            last_outbound_route: None,
             direct_probe_pending: false,
             direct_probe_after_ms: None,
             direct_probe_retry_count: 0,
@@ -78,6 +79,7 @@
                 rekey_in_progress: true,
                 rekey_draining: true,
                 current_k_bit: Some(true),
+                last_outbound_route: None,
                 direct_probe_pending: true,
                 direct_probe_after_ms: Some(12_345),
                 direct_probe_retry_count: 3,
@@ -127,6 +129,98 @@
     }
 
     #[test]
+    fn stale_participant_refreshes_endpoint_path_when_direct_probe_is_pending() {
+        let keys = Keys::generate();
+        let npub = keys.public_key().to_bech32().expect("npub");
+        let mut peer = FipsEndpointPeer {
+            npub,
+            node_addr: NodeAddr::from_bytes([9; 16]),
+            connected: false,
+            transport_addr: Some("203.0.113.9:9000".to_string()),
+            transport_type: Some("udp".to_string()),
+            link_id: 42,
+            srtt_ms: Some(70),
+            srtt_age_ms: Some(120_000),
+            packets_sent: 100,
+            packets_recv: 20,
+            bytes_sent: 8192,
+            bytes_recv: 1024,
+            rekey_in_progress: false,
+            rekey_draining: false,
+            current_k_bit: None,
+            last_outbound_route: None,
+            direct_probe_pending: true,
+            direct_probe_after_ms: Some(12_345),
+            direct_probe_retry_count: 3,
+            direct_probe_auto_reconnect: true,
+            direct_probe_expires_at_ms: Some(67_890),
+            nostr_traversal_consecutive_failures: 0,
+            nostr_traversal_in_cooldown: false,
+            nostr_traversal_cooldown_until_ms: None,
+            nostr_traversal_last_observed_skew_ms: None,
+        };
+
+        assert!(
+            !super::endpoint_path_refresh_due(&peer, Some(120), 123),
+            "fresh participant traffic must not churn same-path direct probes"
+        );
+        assert!(super::endpoint_path_refresh_due(&peer, Some(80), 123));
+        assert!(!super::endpoint_path_refresh_due(&peer, None, 123));
+
+        peer.direct_probe_pending = false;
+        assert!(!super::endpoint_path_refresh_due(&peer, Some(120), 123));
+
+        peer.connected = true;
+        assert!(
+            !super::endpoint_path_refresh_due(&peer, Some(80), 123),
+            "connected endpoint links should not be refreshed from wrapper-level participant staleness alone"
+        );
+    }
+
+    #[test]
+    fn endpoint_path_refresh_prefers_data_freshness_over_control_freshness() {
+        let peer = FipsEndpointPeer {
+            npub: Keys::generate()
+                .public_key()
+                .to_bech32()
+                .expect("npub"),
+            node_addr: NodeAddr::from_bytes([7; 16]),
+            connected: true,
+            transport_addr: Some("203.0.113.7:9000".to_string()),
+            transport_type: Some("udp".to_string()),
+            link_id: 43,
+            srtt_ms: Some(50),
+            srtt_age_ms: Some(1_000),
+            packets_sent: 100,
+            packets_recv: 100,
+            bytes_sent: 8192,
+            bytes_recv: 8192,
+            rekey_in_progress: false,
+            rekey_draining: false,
+            current_k_bit: None,
+            last_outbound_route: None,
+            direct_probe_pending: true,
+            direct_probe_after_ms: Some(12_345),
+            direct_probe_retry_count: 3,
+            direct_probe_auto_reconnect: true,
+            direct_probe_expires_at_ms: Some(67_890),
+            nostr_traversal_consecutive_failures: 0,
+            nostr_traversal_in_cooldown: false,
+            nostr_traversal_cooldown_until_ms: None,
+            nostr_traversal_last_observed_skew_ms: None,
+        };
+
+        assert!(
+            super::endpoint_path_refresh_due(&peer, Some(80), 123),
+            "stale tunnel data should refresh direct probes even if control traffic stayed fresh"
+        );
+        assert!(
+            !super::endpoint_path_refresh_due(&peer, Some(120), 123),
+            "fresh tunnel data should not churn direct probes"
+        );
+    }
+
+    #[test]
     fn retry_only_endpoint_peer_status_keeps_probe_separate_from_link() {
         let status = mesh_status_from_endpoint_peer(
             "peer".to_string(),
@@ -146,6 +240,7 @@
                 rekey_in_progress: false,
                 rekey_draining: false,
                 current_k_bit: None,
+                last_outbound_route: None,
                 direct_probe_pending: true,
                 direct_probe_after_ms: Some(12_345),
                 direct_probe_retry_count: 2,
@@ -178,7 +273,7 @@
     fn fragmented_control_frames_reassemble_to_original_frame() {
         let roster = NetworkRoster {
             network_name: "Network 1".to_string(),
-            participants: (0..12).map(|value| format!("{value:064x}")).collect(),
+            devices: (0..12).map(|value| format!("{value:064x}")).collect(),
             admins: vec!["f".repeat(64)],
             aliases: (0..12)
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))
@@ -403,6 +498,9 @@
         assert!(!super::fips_peer_ping_due(None, Some(116), true, 120));
         assert!(super::fips_peer_ping_due(None, Some(115), true, 120));
 
+        assert!(!super::fips_peer_ping_due(Some(90), Some(91), true, 120));
+        assert!(super::fips_peer_ping_due(Some(90), Some(90), true, 120));
+
         assert!(!super::fips_peer_ping_due(None, Some(91), false, 120));
         assert!(super::fips_peer_ping_due(None, Some(90), false, 120));
     }
@@ -458,7 +556,7 @@
             network_id: "network".to_string(),
             roster: NetworkRoster {
                 network_name: "network".to_string(),
-                participants: Vec::new(),
+                devices: Vec::new(),
                 admins: Vec::new(),
                 aliases: HashMap::new(),
                 signed_at: 42,
@@ -597,6 +695,7 @@
         assert_peer_data_activity(&runtime, &participant_pubkey, expected_endpoint_data_bytes);
         runtime.shutdown().await.expect("shutdown");
     }
+
     #[tokio::test]
     async fn endpoint_data_runtime_sends_tun_pipeline_batch_without_repacking() {
         let keys = Keys::generate();
@@ -731,7 +830,7 @@
         runtime.shutdown().await.expect("shutdown");
     }
     #[tokio::test]
-    async fn endpoint_data_runtime_blocking_recv_batch_into_reuses_event_buffer_and_respects_limit()
+    async fn endpoint_data_runtime_blocking_recv_batch_into_reuses_buffers_and_respects_limit()
     {
         let keys = Keys::generate();
         let nsec = keys.secret_key().to_bech32().expect("nsec");
@@ -763,13 +862,17 @@
         let (runtime, event_capacity) =
             tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                 let stop = AtomicBool::new(false);
+                let mut messages = Vec::with_capacity(8);
                 let mut events = Vec::with_capacity(8);
+                let message_capacity = messages.capacity();
                 let event_capacity = events.capacity();
 
                 let received = runtime
-                    .recv_mesh_event_batch_blocking_into(&mut events, 2, &stop)?
+                    .recv_mesh_event_batch_blocking_into(&mut messages, &mut events, 2, &stop)?
                     .expect("batch should contain admitted packets");
                 assert_eq!(received, 2);
+                assert!(messages.is_empty());
+                assert_eq!(messages.capacity(), message_capacity);
                 assert_eq!(events.capacity(), event_capacity);
 
                 let packets: Vec<_> = events
@@ -782,9 +885,11 @@
                 assert_eq!(packets, vec![first, second]);
 
                 let received = runtime
-                    .recv_mesh_event_batch_blocking_into(&mut events, 8, &stop)?
+                    .recv_mesh_event_batch_blocking_into(&mut messages, &mut events, 8, &stop)?
                     .expect("batch should contain admitted packets");
                 assert_eq!(received, 1);
+                assert!(messages.is_empty());
+                assert_eq!(messages.capacity(), message_capacity);
                 assert_eq!(events.capacity(), event_capacity);
 
                 let packets: Vec<_> = events
@@ -802,6 +907,82 @@
             .expect("blocking receiver should join")
             .expect("blocking batch receive should succeed");
         assert_eq!(event_capacity, 8);
+
+        runtime.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn endpoint_data_runtime_blocking_recv_batch_for_each_respects_limit() {
+        let keys = Keys::generate();
+        let nsec = keys.secret_key().to_bech32().expect("nsec");
+        let participant_pubkey = keys.public_key().to_hex();
+        let source = Ipv4Addr::new(10, 44, 10, 1);
+        let destination = Ipv4Addr::new(10, 44, 22, 44);
+
+        let peer = FipsMeshPeerConfig::from_participant_pubkey(
+            &participant_pubkey,
+            vec![format!("{source}/32"), format!("{destination}/32")],
+        )
+        .expect("peer config");
+        let runtime = FipsPrivateMeshRuntime::bind(nsec, "test-network", vec![peer])
+            .await
+            .expect("runtime should bind");
+        let mut first = ipv4_packet(source, destination);
+        let mut second = ipv4_packet(source, destination);
+        let mut third = ipv4_packet(source, destination);
+        first[20] = 1;
+        second[20] = 2;
+        third[20] = 3;
+
+        let sent = runtime
+            .send_tunnel_packet_batch_owned(vec![first.clone(), second.clone(), third.clone()])
+            .await
+            .expect("send packet batch");
+        assert_eq!(sent, 3);
+
+        let runtime = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let stop = AtomicBool::new(false);
+            let mut events = Vec::with_capacity(8);
+
+            let received = runtime
+                .recv_mesh_event_batch_blocking_for_each(2, &stop, |event| {
+                    events.push(event);
+                    true
+                })?
+                .expect("batch should contain admitted packets");
+            assert_eq!(received, 2);
+
+            let packets: Vec<_> = events
+                .drain(..)
+                .map(|event| match event {
+                    FipsPrivateMeshEvent::Packet(packet) => packet,
+                    event => panic!("expected packet event, got {event:?}"),
+                })
+                .collect();
+            assert_eq!(packets, vec![first, second]);
+
+            let received = runtime
+                .recv_mesh_event_batch_blocking_for_each(8, &stop, |event| {
+                    events.push(event);
+                    true
+                })?
+                .expect("batch should contain admitted packets");
+            assert_eq!(received, 1);
+
+            let packets: Vec<_> = events
+                .drain(..)
+                .map(|event| match event {
+                    FipsPrivateMeshEvent::Packet(packet) => packet,
+                    event => panic!("expected packet event, got {event:?}"),
+                })
+                .collect();
+            assert_eq!(packets, vec![third]);
+
+            Ok(runtime)
+        })
+        .await
+        .expect("blocking receiver should join")
+        .expect("blocking callback receive should succeed");
 
         runtime.shutdown().await.expect("shutdown");
     }

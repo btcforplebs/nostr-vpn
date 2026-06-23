@@ -7,6 +7,10 @@ services:
       context: .
       dockerfile: Dockerfile.e2e
       args:
+        NVPN_E2E_BUILDER_IMAGE: ${NVPN_E2E_BUILDER_IMAGE:-rust:1.93-bookworm}
+        NVPN_E2E_RUNTIME_IMAGE: ${NVPN_E2E_RUNTIME_IMAGE:-debian:bookworm-slim}
+        NVPN_E2E_BUILDER_APT_INSTALL: ${NVPN_E2E_BUILDER_APT_INSTALL:-1}
+        NVPN_E2E_RUNTIME_APT_INSTALL: ${NVPN_E2E_RUNTIME_APT_INSTALL:-1}
         NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
         fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
@@ -22,6 +26,10 @@ services:
       context: .
       dockerfile: Dockerfile.e2e
       args:
+        NVPN_E2E_BUILDER_IMAGE: ${NVPN_E2E_BUILDER_IMAGE:-rust:1.93-bookworm}
+        NVPN_E2E_RUNTIME_IMAGE: ${NVPN_E2E_RUNTIME_IMAGE:-debian:bookworm-slim}
+        NVPN_E2E_BUILDER_APT_INSTALL: ${NVPN_E2E_BUILDER_APT_INSTALL:-1}
+        NVPN_E2E_RUNTIME_APT_INSTALL: ${NVPN_E2E_RUNTIME_APT_INSTALL:-1}
         NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
         fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
@@ -45,6 +53,10 @@ services:
       context: .
       dockerfile: Dockerfile.e2e
       args:
+        NVPN_E2E_BUILDER_IMAGE: ${NVPN_E2E_BUILDER_IMAGE:-rust:1.93-bookworm}
+        NVPN_E2E_RUNTIME_IMAGE: ${NVPN_E2E_RUNTIME_IMAGE:-debian:bookworm-slim}
+        NVPN_E2E_BUILDER_APT_INSTALL: ${NVPN_E2E_BUILDER_APT_INSTALL:-1}
+        NVPN_E2E_RUNTIME_APT_INSTALL: ${NVPN_E2E_RUNTIME_APT_INSTALL:-1}
         NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
         fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}
@@ -62,6 +74,10 @@ services:
       context: .
       dockerfile: Dockerfile.e2e
       args:
+        NVPN_E2E_BUILDER_IMAGE: ${NVPN_E2E_BUILDER_IMAGE:-rust:1.93-bookworm}
+        NVPN_E2E_RUNTIME_IMAGE: ${NVPN_E2E_RUNTIME_IMAGE:-debian:bookworm-slim}
+        NVPN_E2E_BUILDER_APT_INSTALL: ${NVPN_E2E_BUILDER_APT_INSTALL:-1}
+        NVPN_E2E_RUNTIME_APT_INSTALL: ${NVPN_E2E_RUNTIME_APT_INSTALL:-1}
         NVPN_PATCH_LOCAL_FIPS: ${NVPN_PATCH_LOCAL_FIPS:-0}
       additional_contexts:
         fips: ${NVPN_FIPS_REPO_PATH:-./docker/empty-fips-context}

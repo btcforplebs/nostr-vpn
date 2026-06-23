@@ -338,13 +338,40 @@ fn persist_shared_network_roster(
 }
 
 #[cfg(feature = "embedded-fips")]
+fn endpoint_hint_refresh_participant(
+    active_network_id: Option<&str>,
+    roster_participants: &HashSet<String>,
+    sender_pubkey: &str,
+    network_id: &str,
+    capabilities: &PeerCapabilities,
+) -> Option<String> {
+    let network_matches = active_network_id
+        .is_some_and(|active| active == normalize_runtime_network_id(network_id));
+    (network_matches
+        && roster_participants.contains(sender_pubkey)
+        && !capabilities.endpoint_hints.is_empty())
+    .then(|| sender_pubkey.to_string())
+}
+
+#[cfg(feature = "embedded-fips")]
+#[derive(Debug, Default)]
+struct DrainedFipsMeshEvents {
+    roster_changed: bool,
+    endpoint_hint_participants: Vec<String>,
+}
+
+#[cfg(feature = "embedded-fips")]
 fn drain_fips_mesh_events(
     runtime: &mut crate::fips_private_mesh::FipsPrivateTunnelRuntime,
     app: &mut AppConfig,
     config_path: &Path,
     vpn_status: &mut String,
-) -> Result<bool> {
-    let mut roster_changed = false;
+) -> Result<DrainedFipsMeshEvents> {
+    let mut drained = DrainedFipsMeshEvents::default();
+    let active_network_id = app
+        .active_network_opt()
+        .map(|network| normalize_runtime_network_id(&network.network_id));
+    let roster_participants = desired_fips_endpoint_hint_recipients(app);
     for event in runtime.drain_events() {
         match event {
             crate::fips_private_mesh::FipsPrivateMeshEvent::Packet(packet) => {
@@ -382,7 +409,7 @@ fn drain_fips_mesh_events(
                 signed_roster.as_deref(),
                 vpn_status,
             ) {
-                Ok(Some(_)) => roster_changed = true,
+                Ok(Some(_)) => drained.roster_changed = true,
                 Ok(None) => {}
                 Err(error) => {
                     eprintln!("daemon: ignoring invalid FIPS roster from {sender_pubkey}: {error}");
@@ -393,27 +420,39 @@ fn drain_fips_mesh_events(
                 network_id,
                 capabilities,
             } => {
-                let _ = (sender_pubkey, network_id, capabilities);
                 // The FIPS receive path records capabilities before queuing
-                // this event. The daemon heartbeat applies fresh endpoint
-                // hints with a signature guard, and the status tick reads
-                // advertised routes from the same cache, so a capability frame
-                // should not force a full FIPS config refresh by itself.
+                // this event. Apply fresh direct endpoint hints promptly so
+                // peers that roam between LAN/NAT paths do not stay on stale
+                // direct-probe state until the generic liveness repair fires.
+                if let Some(participant) = endpoint_hint_refresh_participant(
+                    active_network_id.as_deref(),
+                    &roster_participants,
+                    &sender_pubkey,
+                    &network_id,
+                    &capabilities,
+                )
+                {
+                    drained.endpoint_hint_participants.push(participant);
+                }
             }
         }
     }
-    Ok(roster_changed)
+    drained.endpoint_hint_participants.sort();
+    drained.endpoint_hint_participants.dedup();
+    Ok(drained)
 }
 
 #[cfg(feature = "embedded-fips")]
 async fn refresh_fips_tunnel_config(
     runtime: &mut crate::fips_private_mesh::FipsPrivateTunnelRuntime,
     app: &AppConfig,
+    config_path: &Path,
     network_id: &str,
     own_pubkey: Option<&str>,
 ) -> Result<()> {
     let config = fips_tunnel_config_from_app(
         app,
+        config_path,
         network_id,
         runtime.iface().to_string(),
         own_pubkey,
@@ -426,6 +465,7 @@ async fn refresh_fips_tunnel_config(
 #[cfg(feature = "embedded-fips")]
 fn fips_tunnel_config_from_app(
     app: &AppConfig,
+    config_path: &Path,
     network_id: &str,
     iface: impl Into<String>,
     own_pubkey: Option<&str>,
@@ -440,6 +480,16 @@ fn fips_tunnel_config_from_app(
         recent_peers,
         live_peer_endpoints,
     )?;
+    #[cfg(feature = "paid-exit")]
+    {
+        config.paid_exit = app.paid_exit.clone();
+        config.paid_route_store_path = paid_route_store_file_path(config_path);
+        config.paid_route_wallet_data_dir = paid_exit_wallet_data_dir(config_path);
+        config.paid_route_payment_relays = paid_exit_relay_urls(app, &[]);
+        config.paid_route_admissions = fips_paid_route_admissions_from_store(app, config_path)?;
+    }
+    #[cfg(not(feature = "paid-exit"))]
+    let _ = config_path;
     // Daemon no longer pre-discovers a public endpoint. fips-core's
     // build_overlay_advert performs its own STUN observation and advertises
     // <reflexive_ip>:<listen_port> directly; if that's wrong (e.g. symmetric
@@ -454,22 +504,51 @@ fn fips_tunnel_config_from_app(
     Ok(config)
 }
 
+#[cfg(all(feature = "embedded-fips", feature = "paid-exit"))]
+fn fips_paid_route_admissions_from_store(
+    app: &AppConfig,
+    config_path: &Path,
+) -> Result<Vec<FipsPaidRouteAdmission>> {
+    if !app.paid_exit.enabled {
+        return Ok(Vec::new());
+    }
+    let network_id = app.effective_network_id();
+    let store_path = paid_route_store_file_path(config_path);
+    let store = load_paid_route_store(&store_path)?;
+    Ok(store
+        .seller_admissions(&app.paid_exit, unix_timestamp())
+        .into_iter()
+        .map(|admission| {
+            crate::fips_private_mesh::fips_paid_route_admission_from_seller_admission(
+                &network_id,
+                admission,
+            )
+        })
+        .collect())
+}
+
+#[cfg(feature = "embedded-fips")]
+struct SyncFipsPrivateRuntimeContext<'a> {
+    app: &'a AppConfig,
+    config_path: &'a Path,
+    network_id: &'a str,
+    iface: &'a str,
+    own_pubkey: Option<&'a str>,
+    vpn_enabled: bool,
+    expected_peers: usize,
+}
+
 #[cfg(feature = "embedded-fips")]
 async fn sync_fips_private_runtime(
     runtime: &mut Option<crate::fips_private_mesh::FipsPrivateTunnelRuntime>,
-    app: &AppConfig,
-    network_id: &str,
-    iface: &str,
-    own_pubkey: Option<&str>,
-    vpn_enabled: bool,
-    expected_peers: usize,
+    context: SyncFipsPrivateRuntimeContext<'_>,
 ) -> Result<()> {
-    if !fips_private_runtime_active(app, vpn_enabled, expected_peers) {
+    if !fips_private_runtime_active(context.app, context.vpn_enabled, context.expected_peers) {
         if let Some(runtime) = runtime.take() {
             runtime.stop().await?;
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if !app.fips_host_tunnel_enabled {
+        if !context.app.fips_host_tunnel_enabled {
             crate::fips_host_tunnel::FipsHostTunnelRuntime::cleanup_disabled_artifacts();
         }
         return Ok(());
@@ -478,16 +557,17 @@ async fn sync_fips_private_runtime(
     let config_iface = runtime
         .as_ref()
         .map(|runtime| runtime.iface().to_string())
-        .unwrap_or_else(|| iface.to_string());
+        .unwrap_or_else(|| context.iface.to_string());
     let live_peer_endpoints = runtime
         .as_ref()
         .map(|runtime| runtime.peer_endpoint_hints())
         .unwrap_or_default();
     let config = fips_tunnel_config_from_app(
-        app,
-        network_id,
+        context.app,
+        context.config_path,
+        context.network_id,
         config_iface,
-        own_pubkey,
+        context.own_pubkey,
         None,
         &live_peer_endpoints,
     )?;
@@ -600,7 +680,15 @@ async fn broadcast_local_fips_capabilities(
     let advertised_routes = runtime_effective_advertised_routes(app);
     let local_ipv4_candidates =
         runtime_signal_ipv4_candidates(detect_runtime_primary_ipv4(), &app.node.tunnel_ip);
-    let endpoint_hints = local_fips_endpoint_hints(app, local_ipv4_candidates);
+    let local_advertised_endpoints = match runtime.local_advertised_endpoints().await {
+        Ok(endpoints) => endpoints,
+        Err(error) => {
+            eprintln!("fips: local advertised endpoint snapshot failed: {error}");
+            Vec::new()
+        }
+    };
+    let endpoint_hints =
+        local_fips_endpoint_hints(app, local_ipv4_candidates, &local_advertised_endpoints);
     let desired_hint_recipients = desired_fips_endpoint_hint_recipients(app);
     let signed_at = unix_timestamp();
     let mut sent = 0usize;
@@ -613,6 +701,7 @@ async fn broadcast_local_fips_capabilities(
             } else {
                 Vec::new()
             },
+            dataplane_features: local_fips_dataplane_features(),
             signed_at,
         };
         if runtime
@@ -631,6 +720,7 @@ async fn broadcast_local_fips_capabilities(
 fn local_fips_endpoint_hints(
     app: &AppConfig,
     local_ipv4_candidates: Vec<Ipv4Addr>,
+    local_advertised_endpoints: &[OverlayEndpointAdvert],
 ) -> Vec<PeerEndpointHint> {
     let mut endpoints = Vec::new();
 
@@ -650,9 +740,24 @@ fn local_fips_endpoint_hints(
         }
     }
 
+    for endpoint in local_advertised_endpoints {
+        if let Some(addr) = local_advertised_udp_endpoint_hint_addr(endpoint) {
+            endpoints.push(addr);
+        }
+    }
+
     endpoints.sort();
     endpoints.dedup();
     endpoints.into_iter().map(PeerEndpointHint::udp).collect()
+}
+
+#[cfg(feature = "embedded-fips")]
+fn local_advertised_udp_endpoint_hint_addr(endpoint: &OverlayEndpointAdvert) -> Option<String> {
+    if endpoint.transport != OverlayTransportKind::Udp {
+        return None;
+    }
+    let hint = PeerEndpointHint::udp(endpoint.addr.trim());
+    nostr_vpn_core::fips_control::peer_endpoint_hint_addr(&hint)
 }
 
 #[cfg(feature = "embedded-fips")]

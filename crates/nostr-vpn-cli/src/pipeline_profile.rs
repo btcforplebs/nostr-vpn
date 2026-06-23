@@ -5,8 +5,8 @@ use std::sync::atomic::{
 };
 use std::time::Instant;
 
-const N_STAGES: usize = 6;
-const N_COUNTERS: usize = 22;
+const N_STAGES: usize = 7;
+const N_COUNTERS: usize = 28;
 const HIST_BUCKETS: usize = 48;
 
 #[derive(Copy, Clone)]
@@ -18,6 +18,7 @@ pub(crate) enum Stage {
     MeshRoute = 3,
     MeshEndpointSend = 4,
     TunWrite = 5,
+    TunToMeshBackpressureWait = 6,
 }
 
 impl Stage {
@@ -29,6 +30,7 @@ impl Stage {
             Stage::MeshRoute => "nvpn_mesh_route",
             Stage::MeshEndpointSend => "nvpn_mesh_endpoint_send",
             Stage::TunWrite => "nvpn_tun_write",
+            Stage::TunToMeshBackpressureWait => "nvpn_tun_to_mesh_backpressure_wait",
         }
     }
 }
@@ -37,33 +39,44 @@ impl Stage {
 #[repr(usize)]
 pub(crate) enum Counter {
     TunToMeshBulkDropped = 0,
-    TunReadBatchFlush = 1,
-    TunReadBatchPackets = 2,
-    TunReadBatchFull = 3,
-    TunReadBatchSingle = 4,
-    TunReadPacketBytes = 5,
-    MeshRecvBatchFlush = 6,
-    MeshRecvBatchEvents = 7,
-    MeshRecvBatchPackets = 8,
-    MeshRecvPacketBytes = 9,
-    MeshRecvBatchFull = 10,
-    MeshRecvBatchSinglePacket = 11,
-    MeshSendBatchFlush = 12,
-    MeshSendBatchInputPackets = 13,
-    MeshSendBatchRoutedPackets = 14,
-    MeshSendBatchRuns = 15,
-    MeshSendBatchFull = 16,
-    TunWritePackets = 17,
-    TunWritePacketBytes = 18,
-    TunWriteWouldBlock = 19,
-    TunWriteFrames = 20,
-    TunWriteFrameBytes = 21,
+    TunToMeshBulkDroppedBatches = 1,
+    TunToMeshBulkDroppedPacketCap = 2,
+    TunToMeshBulkDroppedChannelFull = 3,
+    TunReadBatchFlush = 4,
+    TunReadBatchPackets = 5,
+    TunReadBatchFull = 6,
+    TunReadBatchSingle = 7,
+    TunReadPacketBytes = 8,
+    MeshRecvBatchFlush = 9,
+    MeshRecvBatchEvents = 10,
+    MeshRecvBatchPackets = 11,
+    MeshRecvPacketBytes = 12,
+    MeshRecvBatchFull = 13,
+    MeshRecvBatchSinglePacket = 14,
+    MeshSendBatchFlush = 15,
+    MeshSendBatchInputPackets = 16,
+    MeshSendBatchRoutedPackets = 17,
+    MeshSendBatchRuns = 18,
+    MeshSendBatchFull = 19,
+    TunWritePackets = 20,
+    TunWritePacketBytes = 21,
+    TunWriteWouldBlock = 22,
+    TunWriteFrames = 23,
+    TunWriteFrameBytes = 24,
+    TunReadVnetGsoFrames = 25,
+    TunReadVnetGsoSegments = 26,
+    TunReadVnetGsoSegmentBytes = 27,
 }
 
 impl Counter {
     fn name(self) -> &'static str {
         match self {
             Counter::TunToMeshBulkDropped => "nvpn_tun_to_mesh_bulk_dropped",
+            Counter::TunToMeshBulkDroppedBatches => "nvpn_tun_to_mesh_bulk_dropped_batches",
+            Counter::TunToMeshBulkDroppedPacketCap => "nvpn_tun_to_mesh_bulk_dropped_packet_cap",
+            Counter::TunToMeshBulkDroppedChannelFull => {
+                "nvpn_tun_to_mesh_bulk_dropped_channel_full"
+            }
             Counter::TunReadBatchFlush => "nvpn_tun_read_batch_flush",
             Counter::TunReadBatchPackets => "nvpn_tun_read_batch_packets",
             Counter::TunReadBatchFull => "nvpn_tun_read_batch_full",
@@ -85,6 +98,9 @@ impl Counter {
             Counter::TunWriteWouldBlock => "nvpn_tun_write_would_block",
             Counter::TunWriteFrames => "nvpn_tun_write_frames",
             Counter::TunWriteFrameBytes => "nvpn_tun_write_frame_bytes",
+            Counter::TunReadVnetGsoFrames => "nvpn_tun_read_vnet_gso_frames",
+            Counter::TunReadVnetGsoSegments => "nvpn_tun_read_vnet_gso_segments",
+            Counter::TunReadVnetGsoSegmentBytes => "nvpn_tun_read_vnet_gso_segment_bytes",
         }
     }
 }
@@ -92,27 +108,33 @@ impl Counter {
 fn counter_from_index(idx: usize) -> Counter {
     match idx {
         0 => Counter::TunToMeshBulkDropped,
-        1 => Counter::TunReadBatchFlush,
-        2 => Counter::TunReadBatchPackets,
-        3 => Counter::TunReadBatchFull,
-        4 => Counter::TunReadBatchSingle,
-        5 => Counter::TunReadPacketBytes,
-        6 => Counter::MeshRecvBatchFlush,
-        7 => Counter::MeshRecvBatchEvents,
-        8 => Counter::MeshRecvBatchPackets,
-        9 => Counter::MeshRecvPacketBytes,
-        10 => Counter::MeshRecvBatchFull,
-        11 => Counter::MeshRecvBatchSinglePacket,
-        12 => Counter::MeshSendBatchFlush,
-        13 => Counter::MeshSendBatchInputPackets,
-        14 => Counter::MeshSendBatchRoutedPackets,
-        15 => Counter::MeshSendBatchRuns,
-        16 => Counter::MeshSendBatchFull,
-        17 => Counter::TunWritePackets,
-        18 => Counter::TunWritePacketBytes,
-        19 => Counter::TunWriteWouldBlock,
-        20 => Counter::TunWriteFrames,
-        21 => Counter::TunWriteFrameBytes,
+        1 => Counter::TunToMeshBulkDroppedBatches,
+        2 => Counter::TunToMeshBulkDroppedPacketCap,
+        3 => Counter::TunToMeshBulkDroppedChannelFull,
+        4 => Counter::TunReadBatchFlush,
+        5 => Counter::TunReadBatchPackets,
+        6 => Counter::TunReadBatchFull,
+        7 => Counter::TunReadBatchSingle,
+        8 => Counter::TunReadPacketBytes,
+        9 => Counter::MeshRecvBatchFlush,
+        10 => Counter::MeshRecvBatchEvents,
+        11 => Counter::MeshRecvBatchPackets,
+        12 => Counter::MeshRecvPacketBytes,
+        13 => Counter::MeshRecvBatchFull,
+        14 => Counter::MeshRecvBatchSinglePacket,
+        15 => Counter::MeshSendBatchFlush,
+        16 => Counter::MeshSendBatchInputPackets,
+        17 => Counter::MeshSendBatchRoutedPackets,
+        18 => Counter::MeshSendBatchRuns,
+        19 => Counter::MeshSendBatchFull,
+        20 => Counter::TunWritePackets,
+        21 => Counter::TunWritePacketBytes,
+        22 => Counter::TunWriteWouldBlock,
+        23 => Counter::TunWriteFrames,
+        24 => Counter::TunWriteFrameBytes,
+        25 => Counter::TunReadVnetGsoFrames,
+        26 => Counter::TunReadVnetGsoSegments,
+        27 => Counter::TunReadVnetGsoSegmentBytes,
         _ => unreachable!(),
     }
 }
@@ -125,6 +147,7 @@ fn stage_from_index(idx: usize) -> Stage {
         3 => Stage::MeshRoute,
         4 => Stage::MeshEndpointSend,
         5 => Stage::TunWrite,
+        6 => Stage::TunToMeshBackpressureWait,
         _ => unreachable!(),
     }
 }
@@ -139,6 +162,9 @@ static COUNTERS: [AtomicU64; N_COUNTERS] = [const { AtomicU64::new(0) }; N_COUNT
 pub(crate) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
+        if cfg!(debug_assertions) || option_env!("NVPN_FORCE_PIPELINE_TRACE").is_some() {
+            return true;
+        }
         ["NVPN_PIPELINE_TRACE", "FIPS_PIPELINE_TRACE"]
             .into_iter()
             .any(|key| {
@@ -179,6 +205,23 @@ pub(crate) fn increment_counter_by(counter: Counter, amount: u64) {
     }
 }
 
+pub(crate) fn record_tun_to_mesh_bulk_drop_packet_cap(packets: usize) {
+    record_tun_to_mesh_bulk_drop(Counter::TunToMeshBulkDroppedPacketCap, packets);
+}
+
+pub(crate) fn record_tun_to_mesh_bulk_drop_channel_full(packets: usize) {
+    record_tun_to_mesh_bulk_drop(Counter::TunToMeshBulkDroppedChannelFull, packets);
+}
+
+fn record_tun_to_mesh_bulk_drop(cause: Counter, packets: usize) {
+    if packets == 0 || !enabled() {
+        return;
+    }
+    increment_counter_by(Counter::TunToMeshBulkDropped, packets as u64);
+    increment_counter_by(Counter::TunToMeshBulkDroppedBatches, 1);
+    increment_counter_by(cause, packets as u64);
+}
+
 pub(crate) fn record_tun_read_batch(packets: usize, bytes: usize, max_batch: usize) {
     if packets == 0 || !enabled() {
         return;
@@ -192,6 +235,16 @@ pub(crate) fn record_tun_read_batch(packets: usize, bytes: usize, max_batch: usi
     if packets == 1 {
         increment_counter_by(Counter::TunReadBatchSingle, 1);
     }
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn record_tun_read_vnet_gso_split(segments: usize, segment_bytes: usize) {
+    if segments == 0 || !enabled() {
+        return;
+    }
+    increment_counter_by(Counter::TunReadVnetGsoFrames, 1);
+    increment_counter_by(Counter::TunReadVnetGsoSegments, segments as u64);
+    increment_counter_by(Counter::TunReadVnetGsoSegmentBytes, segment_bytes as u64);
 }
 
 pub(crate) fn record_mesh_recv_batch(
@@ -417,8 +470,8 @@ fn fmt_ns(ns: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Counter, HIST_BUCKETS, Stage, bucket_upper_ns, counter_from_index, percentile_ns,
-        stage_from_index,
+        Counter, HIST_BUCKETS, N_COUNTERS, Stage, bucket_upper_ns, counter_from_index,
+        percentile_ns, stage_from_index,
     };
 
     #[test]
@@ -432,11 +485,32 @@ mod tests {
 
     #[test]
     fn mesh_send_pipeline_names_are_stable() {
+        assert_eq!(N_COUNTERS, 28);
+        assert_eq!(
+            Counter::TunToMeshBulkDroppedBatches.name(),
+            "nvpn_tun_to_mesh_bulk_dropped_batches"
+        );
+        assert_eq!(
+            Counter::TunToMeshBulkDroppedPacketCap.name(),
+            "nvpn_tun_to_mesh_bulk_dropped_packet_cap"
+        );
+        assert_eq!(
+            Counter::TunToMeshBulkDroppedChannelFull.name(),
+            "nvpn_tun_to_mesh_bulk_dropped_channel_full"
+        );
         assert_eq!(Stage::MeshRoute.name(), "nvpn_mesh_route");
         assert_eq!(Stage::MeshEndpointSend.name(), "nvpn_mesh_endpoint_send");
         assert_eq!(
             Counter::MeshSendBatchInputPackets.name(),
             "nvpn_mesh_send_batch_input_packets"
+        );
+        assert_eq!(
+            Counter::TunReadVnetGsoSegments.name(),
+            "nvpn_tun_read_vnet_gso_segments"
+        );
+        assert_eq!(
+            Stage::TunToMeshBackpressureWait.name(),
+            "nvpn_tun_to_mesh_backpressure_wait"
         );
         assert_eq!(
             Counter::MeshSendBatchRoutedPackets.name(),

@@ -32,7 +32,10 @@ use crate::lan_pairing::{LanPairingWorker, spawn_lan_pairing_worker};
 use crate::native_state::{
     NativeAppState, NativeHealthIssue, NativeInboundJoinRequestState, NativeLanPeerState,
     NativeNetworkState, NativeNetworkSummary, NativeOutboundJoinRequestState,
-    NativeParticipantState, NativePortMappingStatus, NativeProbeStatus, NativeRelayState,
+    NativePaidExitSellerState, NativePaidRouteMarketFilterState, NativePaidRouteMarketState,
+    NativePaidRoutePaymentActionState, NativePaidRouteWalletActionState,
+    NativePaidRouteWalletState, NativeParticipantState, NativePortMappingStatus, NativeProbeStatus,
+    NativeRelayState,
 };
 use crate::platform::current_runtime_capabilities;
 use crate::state::{
@@ -177,6 +180,9 @@ struct NativeAppRuntime {
     invite_broadcast_expires_at: Option<SystemTime>,
     nearby_discovery_expires_at: Option<SystemTime>,
     lan_peers: HashMap<String, LanPeerRecord>,
+    paid_route_market_filter: NativePaidRouteMarketFilterState,
+    paid_route_wallet_last_action: NativePaidRouteWalletActionState,
+    paid_route_payment_last_action: NativePaidRoutePaymentActionState,
     privileged_command_runner: Option<PrivilegedCommandRunnerHandle>,
 }
 

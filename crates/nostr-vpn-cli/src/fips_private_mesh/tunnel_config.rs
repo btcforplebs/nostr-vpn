@@ -1,3 +1,15 @@
+#[cfg(feature = "paid-exit")]
+pub(crate) fn fips_paid_route_admission_from_seller_admission(
+    network_id: &str,
+    admission: PaidRouteSellerAdmission,
+) -> FipsPaidRouteAdmission {
+    let mut admission = FipsPaidRouteAdmission::from(admission);
+    admission.allowed_ips = derive_mesh_tunnel_ip(network_id, &admission.participant_pubkey)
+        .map(|tunnel_ip| vec![format!("{}/32", strip_cidr(&tunnel_ip))])
+        .unwrap_or_default();
+    admission
+}
+
 impl FipsPrivateTunnelConfig {
     pub(crate) fn from_app(
         app: &AppConfig,
@@ -34,8 +46,27 @@ impl FipsPrivateTunnelConfig {
             }
         }
 
-        for participant in app
-            .active_network_signal_pubkeys_hex()
+        #[cfg(feature = "paid-exit")]
+        if let Some(public_paid_exit) = app.public_paid_exit_node_pubkey_hex()
+            && Some(public_paid_exit.as_str()) != own_pubkey
+        {
+            let exit_routes = crate::runtime_exit_node_default_routes();
+            route_targets.extend(exit_routes.iter().cloned());
+            route_by_participant
+                .entry(public_paid_exit)
+                .or_default()
+                .extend(exit_routes);
+        }
+
+        let mut route_participants = app.active_network_signal_pubkeys_hex();
+        #[cfg(feature = "paid-exit")]
+        if let Some(public_paid_exit) = app.public_paid_exit_node_pubkey_hex() {
+            route_participants.push(public_paid_exit);
+        }
+        route_participants.sort();
+        route_participants.dedup();
+
+        for participant in route_participants
             .into_iter()
             .filter(|participant| Some(participant.as_str()) != own_pubkey)
         {
@@ -63,6 +94,8 @@ impl FipsPrivateTunnelConfig {
             .filter(|participant| Some(participant.as_str()) != own_pubkey)
             .map(|participant| normalize_fips_endpoint_npub(&participant))
             .collect::<std::collections::HashSet<_>>();
+        let nostr_discovery_policy = fips_nostr_discovery_policy_from_app(app);
+        let allow_non_roster_transit = nostr_discovery_policy == NostrDiscoveryPolicy::Open;
         let tunnel_endpoint_hosts = fips_tunnel_endpoint_hosts(app, network_id);
         let local_private_subnets = local_private_ipv4_subnets();
         // In static-only mode, the configured endpoint is the user's only path.
@@ -78,15 +111,28 @@ impl FipsPrivateTunnelConfig {
         // same `discovery_fallback_transit` path as operator-configured static
         // peers, so they ferry frames when direct traversal fails but never
         // become roster route targets.
-        operator_static.extend(filter_static_tunnel_endpoints(
-            app.fips_bootstrap_peer_endpoints(),
-            &tunnel_endpoint_hosts,
-            &local_private_subnets,
-        ));
-        let static_non_roster_transit_seeds =
-            non_roster_endpoint_group_count(&operator_static, &desired_endpoint_hint_npubs);
-        let open_discovery_max_pending =
-            open_discovery_limit_after_transit_seeds(static_non_roster_transit_seeds);
+        if allow_non_roster_transit {
+            let bootstrap_transit = filter_static_tunnel_endpoints(
+                app.fips_bootstrap_peer_endpoints(),
+                &tunnel_endpoint_hosts,
+                &local_private_subnets,
+            );
+            operator_static.extend(cap_static_non_roster_transit_endpoints(
+                bootstrap_transit,
+                &desired_endpoint_hint_npubs,
+                FIPS_STATIC_NON_ROSTER_TRANSIT_MAX_SEEDS,
+            ));
+        }
+        let static_non_roster_transit_seeds = if allow_non_roster_transit {
+            non_roster_endpoint_group_count(&operator_static, &desired_endpoint_hint_npubs)
+        } else {
+            0
+        };
+        let open_discovery_max_pending = if allow_non_roster_transit {
+            open_discovery_limit_after_transit_seeds(static_non_roster_transit_seeds)
+        } else {
+            0
+        };
         let mut recent_peer_endpoints = recent_peers
             .map(|cache| cache.as_static_peer_endpoints_with_seen_at())
             .unwrap_or_default();
@@ -102,7 +148,11 @@ impl FipsPrivateTunnelConfig {
         recent_peer_endpoints = cap_recent_non_roster_transit_endpoints(
             recent_peer_endpoints,
             &desired_endpoint_hint_npubs,
-            FIPS_RECENT_NON_ROSTER_TRANSIT_MAX_SEEDS,
+            if allow_non_roster_transit {
+                FIPS_RECENT_NON_ROSTER_TRANSIT_MAX_SEEDS
+            } else {
+                0
+            },
         );
         // Live capability hints are accepted only for network signal peers because
         // they are claims carried by that peer. The disk cache above is
@@ -152,11 +202,16 @@ impl FipsPrivateTunnelConfig {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             fips_host,
             local_advertised_routes: crate::runtime_effective_advertised_routes(app),
+            paid_route_admissions: Vec::new(),
+            paid_exit: app.paid_exit.clone(),
+            paid_route_store_path: PathBuf::new(),
+            paid_route_wallet_data_dir: PathBuf::new(),
+            paid_route_payment_relays: Vec::new(),
             wireguard_exit: app.wireguard_exit.clone(),
             exit_node_leak_protection: app.exit_node_leak_protection,
             connected_udp: app.node.connected_udp.clone(),
             nostr_discovery_enabled: app.fips_nostr_discovery_enabled,
-            nostr_discovery_policy: fips_nostr_discovery_policy_from_app(app),
+            nostr_discovery_policy,
             open_discovery_max_pending,
             mesh_mtu: private_mesh_mtu_from_app(Some(app)),
             #[cfg(target_os = "linux")]
@@ -225,6 +280,28 @@ fn tag_authenticated_transport_addr(
         "tcp" => Some(format!("tcp:{host_port}")),
         _ => None,
     }
+}
+
+fn fips_tunnel_requires_endpoint_restart(
+    current: &FipsPrivateTunnelConfig,
+    next: &FipsPrivateTunnelConfig,
+) -> bool {
+    // `endpoint_peers` is deliberately not in this list. Its addresses are fed
+    // from recent-peer and live hint refreshes, so treating hint drift as a
+    // restart requirement creates endpoint flap loops. Peer roster changes
+    // still propagate through `apply_config` -> `mesh.replace_peers`.
+    current.identity_nsec != next.identity_nsec
+        || current.network_id != next.network_id
+        || current.listen_port != next.listen_port
+        || current.advertised_endpoint != next.advertised_endpoint
+        || current.advertise_public_endpoint != next.advertise_public_endpoint
+        || current.stun_servers != next.stun_servers
+        || current.nostr_relays != next.nostr_relays
+        || current.nostr_discovery_enabled != next.nostr_discovery_enabled
+        || current.share_local_candidates != next.share_local_candidates
+        || current.nostr_discovery_policy != next.nostr_discovery_policy
+        || current.open_discovery_max_pending != next.open_discovery_max_pending
+        || current.mesh_mtu.underlay_udp != next.mesh_mtu.underlay_udp
 }
 
 #[cfg(target_os = "linux")]

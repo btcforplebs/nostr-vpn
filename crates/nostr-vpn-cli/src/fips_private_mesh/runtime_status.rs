@@ -1,3 +1,16 @@
+fn endpoint_link_refreshable_after_stale_participant(peer_link: &FipsEndpointPeer) -> bool {
+    peer_link.direct_probe_pending
+}
+
+fn endpoint_path_refresh_due(
+    peer_link: &FipsEndpointPeer,
+    last_path_data_seen_at: Option<u64>,
+    now: u64,
+) -> bool {
+    endpoint_link_refreshable_after_stale_participant(peer_link)
+        && fips_peer_presence_stale(last_path_data_seen_at, now)
+}
+
 impl FipsPrivateMeshRuntime {
     pub(crate) fn peer_statuses(&self) -> Vec<MeshPeerStatus> {
         let now = unix_timestamp();
@@ -82,7 +95,7 @@ impl FipsPrivateMeshRuntime {
         statuses
     }
 
-    pub(crate) fn stale_participants_with_connected_links(&self, now: u64) -> Vec<String> {
+    pub(crate) fn stale_participants_needing_path_refresh(&self, now: u64) -> Vec<String> {
         let Some(presence) = self.presence.read().ok() else {
             return Vec::new();
         };
@@ -96,23 +109,24 @@ impl FipsPrivateMeshRuntime {
             .peer_pubkeys()
             .into_iter()
             .filter(|participant| {
-                let link_connected = link_status
-                    .get(participant)
-                    .is_some_and(|peer_link| peer_link.connected);
-                if !link_connected {
+                let Some(peer_link) = link_status.get(participant) else {
                     return false;
-                }
+                };
                 let participant_key = participant_pubkey_bytes(participant);
-                let last_seen_at = participant_key
+                let activity = participant_key
                     .as_ref()
                     .and_then(|participant| peer_activity.get(participant))
-                    .and_then(|activity| activity.snapshot().last_seen_at)
-                    .or_else(|| {
-                        presence
-                            .get(participant)
-                            .and_then(|presence| presence.last_seen_at)
-                    });
-                fips_peer_presence_stale(last_seen_at, now)
+                    .map(|activity| activity.snapshot());
+                let peer_presence = presence.get(participant);
+                let last_seen_at = activity
+                    .as_ref()
+                    .and_then(|activity| activity.last_seen_at)
+                    .or_else(|| peer_presence.and_then(|presence| presence.last_seen_at));
+                let last_data_seen_at = activity
+                    .as_ref()
+                    .and_then(|activity| activity.last_data_seen_at)
+                    .or_else(|| peer_presence.and_then(|presence| presence.last_data_seen_at));
+                endpoint_path_refresh_due(peer_link, last_data_seen_at.or(last_seen_at), now)
             })
             .collect::<Vec<_>>();
         participants.sort();
@@ -162,6 +176,13 @@ impl FipsPrivateMeshRuntime {
                     })
                     .collect()
             })
+    }
+
+    pub(crate) async fn local_advertised_endpoints(&self) -> Result<Vec<OverlayEndpointAdvert>> {
+        self.endpoint
+            .local_advertised_endpoints()
+            .await
+            .context("failed to snapshot FIPS local advertised endpoints")
     }
 
     pub(crate) async fn update_relays(&self, relays: &[String]) -> Result<()> {
@@ -249,9 +270,14 @@ impl FipsPrivateMeshRuntime {
         &self,
         peers: Vec<FipsMeshPeerConfig>,
         local_allowed_ips: Vec<String>,
+        paid_route_admissions: Vec<FipsPaidRouteAdmission>,
     ) -> Result<()> {
         let peer_identities = peer_identity_map(&peers);
-        let mesh = FipsMeshRuntime::with_local_routes(peers, local_allowed_ips);
+        let mesh = FipsMeshRuntime::with_local_routes_and_paid_route_admissions(
+            peers,
+            local_allowed_ips,
+            paid_route_admissions,
+        );
         let configured = mesh.peer_pubkeys();
         let previous_activity = self.peer_activity.load();
         let peer_activity = peer_activity_map(&configured, Some(&**previous_activity));
@@ -321,6 +347,38 @@ impl FipsPrivateMeshRuntime {
             .collect::<Vec<_>>();
         out.sort_by(|left, right| left.0.cmp(&right.0));
         out
+    }
+
+    fn peer_supports_dataplane_feature(&self, participant: &str, feature: &str) -> bool {
+        let normalized = match normalize_nostr_pubkey(participant) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let now = unix_timestamp();
+        let caps = match self.peer_capabilities.read() {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+        caps.get(&normalized)
+            .filter(|entry| {
+                fips_timestamp_within_grace(now, entry.received_at, FIPS_PEER_CAPS_GRACE_SECS)
+            })
+            .is_some_and(|entry| entry.capabilities.supports_dataplane_feature(feature))
+    }
+
+    fn peers_supporting_dataplane_feature(&self, feature: &str) -> HashSet<String> {
+        let now = unix_timestamp();
+        let caps = match self.peer_capabilities.read() {
+            Ok(guard) => guard,
+            Err(_) => return HashSet::new(),
+        };
+        caps.iter()
+            .filter(|(_, entry)| {
+                fips_timestamp_within_grace(now, entry.received_at, FIPS_PEER_CAPS_GRACE_SECS)
+                    && entry.capabilities.supports_dataplane_feature(feature)
+            })
+            .map(|(participant, _)| participant.clone())
+            .collect()
     }
 
     fn record_peer_capabilities(

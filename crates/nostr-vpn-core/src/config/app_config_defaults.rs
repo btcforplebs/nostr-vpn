@@ -22,6 +22,7 @@ impl AppConfig {
         self.fips_host_inbound_tcp_ports.sort_unstable();
         self.fips_host_inbound_tcp_ports.dedup();
         normalize_wireguard_exit_config(&mut self.wireguard_exit);
+        self.paid_exit.normalize();
         self.nostr.relays = normalize_relay_urls(std::mem::take(&mut self.nostr.relays));
         self.nostr.disabled_relays =
             normalize_relay_urls(std::mem::take(&mut self.nostr.disabled_relays));
@@ -64,6 +65,13 @@ impl AppConfig {
             && self.exit_node == own_pubkey
         {
             self.exit_node.clear();
+            self.exit_node_public_paid_exit = false;
+        }
+        if self.exit_node.is_empty()
+            || !self.connect_to_non_roster_fips_peers
+            || !self.fips_nostr_discovery_enabled
+        {
+            self.exit_node_public_paid_exit = false;
         }
 
         let mut used_ids = HashSet::new();
@@ -96,13 +104,13 @@ impl AppConfig {
             network.invite_inviter =
                 normalize_nostr_pubkey(&network.invite_inviter).unwrap_or_default();
 
-            network.participants = network
-                .participants
+            network.devices = network
+                .devices
                 .iter()
                 .filter_map(|participant| normalize_nostr_pubkey(participant).ok())
                 .collect();
-            network.participants.sort();
-            network.participants.dedup();
+            network.devices.sort();
+            network.devices.dedup();
             network.admins = normalize_network_admins(
                 std::mem::take(&mut network.admins),
                 own_pubkey_hex.as_deref(),
@@ -110,11 +118,11 @@ impl AppConfig {
             );
             network.outbound_join_request = normalize_outbound_join_request(
                 network.outbound_join_request.take(),
-                &network.participants,
+                &network.devices,
             );
             network.inbound_join_requests = normalize_inbound_join_requests(
                 std::mem::take(&mut network.inbound_join_requests),
-                &network.participants,
+                &network.devices,
             );
             network.shared_roster_signed_by =
                 normalize_nostr_pubkey(&network.shared_roster_signed_by).unwrap_or_default();
@@ -138,13 +146,13 @@ impl AppConfig {
         self.normalize_fips_peer_endpoints();
 
         for network in &mut self.networks {
-            network.participants = network
-                .participants
+            network.devices = network
+                .devices
                 .iter()
                 .filter_map(|participant| canonical_npub_key(participant))
                 .collect();
-            network.participants.sort();
-            network.participants.dedup();
+            network.devices.sort();
+            network.devices.dedup();
             network.admins = network
                 .admins
                 .iter()
@@ -179,46 +187,54 @@ impl AppConfig {
         let Some(network) = self.active_network_opt() else {
             return Vec::new();
         };
-        let mut participants = network.participants.clone();
-        participants.sort();
-        participants.dedup();
+        let mut devices = network.devices.clone();
+        devices.sort();
+        devices.dedup();
 
         vec![EnabledNetworkMesh {
             id: network.id.clone(),
             name: network.name.clone(),
             network_id: normalize_runtime_network_id(&network.network_id),
-            participants,
+            devices,
         }]
     }
 
-    pub fn participant_pubkeys_hex(&self) -> Vec<String> {
+    pub fn device_pubkeys_hex(&self) -> Vec<String> {
         let Some(network) = self.active_network_opt() else {
             return Vec::new();
         };
-        let mut participants = network
-            .participants
+        let mut devices = network
+            .devices
             .iter()
-            .filter_map(|participant| normalize_nostr_pubkey(participant).ok())
+            .filter_map(|device| normalize_nostr_pubkey(device).ok())
             .collect::<Vec<_>>();
-        participants.sort();
-        participants.dedup();
-        participants
+        devices.sort();
+        devices.dedup();
+        devices
     }
 
-    pub fn all_participant_pubkeys_hex(&self) -> Vec<String> {
-        let mut participants = self
+    pub fn participant_pubkeys_hex(&self) -> Vec<String> {
+        self.device_pubkeys_hex()
+    }
+
+    pub fn all_device_pubkeys_hex(&self) -> Vec<String> {
+        let mut devices = self
             .networks
             .iter()
             .flat_map(|network| {
                 network
-                    .participants
+                    .devices
                     .iter()
-                    .filter_map(|participant| normalize_nostr_pubkey(participant).ok())
+                    .filter_map(|device| normalize_nostr_pubkey(device).ok())
             })
             .collect::<Vec<_>>();
-        participants.sort();
-        participants.dedup();
-        participants
+        devices.sort();
+        devices.dedup();
+        devices
+    }
+
+    pub fn all_participant_pubkeys_hex(&self) -> Vec<String> {
+        self.all_device_pubkeys_hex()
     }
 
     fn all_network_member_pubkeys_hex(&self) -> Vec<String> {
@@ -227,7 +243,7 @@ impl AppConfig {
             .iter()
             .flat_map(|network| {
                 network
-                    .participants
+                    .devices
                     .iter()
                     .chain(network.admins.iter())
                     .cloned()
@@ -301,7 +317,7 @@ impl AppConfig {
             enabled,
             network_id: default_network_id(),
             invite_secret: default_invite_secret(),
-            participants: Vec::new(),
+            devices: Vec::new(),
             admins: Vec::new(),
             listen_for_join_requests: default_listen_for_join_requests(),
             invite_inviter: String::new(),

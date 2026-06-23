@@ -11,6 +11,10 @@ readme = "README.md"
 [features]
 default = ["embedded-fips"]
 embedded-fips = ["dep:fips-endpoint", "dep:fips-core"]
+paid-exit = [
+  "dep:cashu-service",
+  "nostr-vpn-core/paid-exit",
+]
 
 [dependencies]
 anyhow.workspace = true
@@ -30,11 +34,13 @@ toml.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
 nostr-sdk.workspace = true
+cashu-service = { workspace = true, optional = true, features = ["wallet"] }
 
 nostr-vpn-core = { workspace = true, features = ["updater"] }
 crab_nat = "0.7"
 igd-next = { version = "0.16", features = ["aio_tokio"] }
 netdev.workspace = true
+reqwest.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 boringtun = { workspace = true, features = ["device"] }
@@ -57,6 +63,13 @@ windows-sys = { version = "0.61", features = [
 name = "nvpn"
 path = "src/main.rs"
 
+[[test]]
+name = "paid_exit_cli"
+path = "tests/paid_exit_cli.rs"
+required-features = ["paid-exit"]
+
 [dev-dependencies]
+futures-util = "0.3"
 nostr-sdk.workspace = true
 rand.workspace = true
+tokio-tungstenite = "0.26.2"

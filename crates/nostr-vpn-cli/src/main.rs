@@ -35,6 +35,8 @@ mod windows_tunnel;
 #[cfg(target_os = "linux")]
 mod wireguard_exit;
 
+#[cfg(feature = "embedded-fips")]
+use fips_core::discovery::nostr::{OverlayEndpointAdvert, OverlayTransportKind};
 use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "windows")]
 use std::ffi::OsString;
@@ -42,7 +44,11 @@ use std::fs;
 use std::fs::OpenOptions;
 #[cfg(any(target_os = "macos", test))]
 use std::hash::{Hash, Hasher};
+#[cfg(feature = "paid-exit")]
+use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+#[cfg(feature = "paid-exit")]
+use std::net::{ToSocketAddrs, UdpSocket};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -57,7 +63,25 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
+#[cfg(feature = "paid-exit")]
+use cashu_service::{
+    CashuSpilmanPayment, CashuSpilmanPaymentSigner, CashuSpilmanReceiverCloseResult,
+    CashuWalletOverview, FileSpilmanPaymentReceiver, FileSpilmanPaymentReceiverConfig,
+    FileSpilmanPaymentSigner, StreamingRouteCashuTokenLease,
+    StreamingRouteOpenCashuSpilmanChannelFromWalletRequest, StreamingRoutePaymentEnvelope,
+    create_topup_quote, import_payment_proofs, load_or_create_cashu_spilman_receiver_key,
+    load_wallet_activity, load_wallet_overview, normalize_mint_url,
+    open_streaming_route_cashu_spilman_channel_from_wallet, receive_payment_token,
+    send_lightning_payment, send_payment_token,
+};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+#[cfg(feature = "paid-exit")]
+use nostr_sdk::{
+    Client,
+    prelude::{Event, Keys, RelayPoolNotification, ToBech32},
+};
+#[cfg(feature = "paid-exit")]
+use nostr_vpn_core::config::normalize_relay_urls;
 use nostr_vpn_core::config::{
     AppConfig, SharedNetworkRoster, derive_mesh_tunnel_ip, exit_node_default_routes,
     maybe_autoconfigure_node, normalize_advertised_route, normalize_fips_peer_endpoint_hint,
@@ -69,13 +93,48 @@ use nostr_vpn_core::diagnostics::{
     HealthIssue, HealthSeverity, NetworkSummary, PortMappingStatus, ProbeState,
 };
 use nostr_vpn_core::fips_control::{
-    NetworkRoster, PeerCapabilities, PeerEndpointHint, SignedRoster,
+    NetworkRoster, PeerCapabilities, PeerEndpointHint, SignedRoster, local_fips_dataplane_features,
 };
+#[cfg(all(feature = "embedded-fips", feature = "paid-exit"))]
+use nostr_vpn_core::fips_mesh::FipsPaidRouteAdmission;
 #[cfg(feature = "embedded-fips")]
 use nostr_vpn_core::join_requests::{FIPS_JOIN_REQUEST_RETRY_SECS, MeshJoinRequest};
 use nostr_vpn_core::magic_dns::{
     MagicDnsResolverConfig, MagicDnsServer, build_magic_dns_records, install_system_resolver,
     uninstall_system_resolver,
+};
+#[cfg(feature = "paid-exit")]
+use nostr_vpn_core::paid_route_probe::{
+    DEFAULT_PAID_ROUTE_BANDWIDTH_BYTES, DEFAULT_PAID_ROUTE_DOWNLOAD_URL,
+    DEFAULT_PAID_ROUTE_GEOIP_URL_TEMPLATE, DEFAULT_PAID_ROUTE_PUBLIC_IP_URL,
+    DEFAULT_PAID_ROUTE_UPLOAD_URL, PaidRouteProbeMeasurement, PaidRouteProbeSample,
+    build_paid_route_probe_measurement, paid_route_bandwidth_bps, paid_route_download_url,
+    paid_route_geoip_url, paid_route_stun_binding_request, paid_route_stun_host_port,
+    paid_route_stun_transaction_id, parse_paid_route_geoip_response,
+    parse_paid_route_public_ip_response, parse_paid_route_stun_binding_response,
+};
+#[cfg(feature = "paid-exit")]
+use nostr_vpn_core::paid_route_store::{
+    ApplyPaidRouteSellerPaymentRequest, AttachPaidRouteBuyerSpilmanChannelRequest,
+    BuildPaidRouteBuyerPaymentEnvelopeKind, BuildPaidRouteBuyerPaymentEnvelopeRequest,
+    BuildPaidRouteBuyerPaymentEnvelopeResult, BuildPaidRouteBuyerSignedPaymentEnvelopeRequest,
+    BuildPaidRouteBuyerTokenLeaseEnvelopeRequest, OpenPaidRouteBuyerSessionRequest,
+    OpenPaidRouteBuyerSessionResult, PaidRouteBuyerPaymentUpdateDue,
+    PaidRouteBuyerPaymentUpdatesDueRequest, PaidRouteChannelRecord, PaidRouteChannelRole,
+    PaidRouteLifecycleStatus, PaidRouteSellerCollectionState, PaidRouteSessionRecord,
+    PaidRouteStore, UpdatePaidRouteSessionProbeRequest, UpdatePaidRouteSessionProbeResult,
+    load_paid_route_store, paid_route_store_file_path, upsert_paid_route_offer,
+    write_paid_route_store,
+};
+#[cfg(all(test, feature = "paid-exit"))]
+use nostr_vpn_core::paid_routes::signed_paid_exit_offer_from_config;
+#[cfg(feature = "paid-exit")]
+use nostr_vpn_core::paid_routes::{
+    ExitNetworkClass, PaidExitConfig, PaidExitUpstream, PaidRouteMeter, PaidRouteOffer,
+    PaidRouteQualityMetrics, PaidRouteRoutingDecision, SignedPaidRouteOffer,
+    gift_wrap_paid_route_payment, paid_route_country_claim, paid_route_offer_filter,
+    paid_route_payment_filter, signed_paid_exit_offer_from_config_with_receiver,
+    unwrap_paid_route_payment,
 };
 #[cfg(target_os = "windows")]
 use nostr_vpn_core::platform_paths::{
@@ -104,8 +163,9 @@ pub(crate) use crate::config_bootstrap::default_cli_install_path;
 #[cfg(target_os = "windows")]
 pub(crate) use crate::config_bootstrap::windows_service_install_config_path;
 pub(crate) use crate::config_bootstrap::{
-    apply_config_file, apply_participants_override, default_config_path, default_tunnel_iface,
-    init_config, install_cli, load_or_default_config, print_version, uninstall_cli,
+    apply_config_file, apply_devices_override, apply_participants_override, default_config_path,
+    default_tunnel_iface, init_config, install_cli, load_or_default_config, print_version,
+    uninstall_cli,
 };
 pub(crate) use crate::daemon_runtime::*;
 use crate::diagnostics::{
@@ -154,6 +214,16 @@ const MAJOR_LINK_CHANGE_TIME_JUMP_SECS: u64 = 30;
 const WAITING_FOR_PARTICIPANTS_STATUS: &str = "Waiting for participants";
 const LISTENING_FOR_JOIN_REQUESTS_STATUS: &str = "Listening for join requests";
 const PRODUCT_VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(feature = "embedded-fips")]
+pub(crate) fn fips_core_build_version() -> String {
+    fips_core::version::short_version().to_string()
+}
+
+#[cfg(not(feature = "embedded-fips"))]
+pub(crate) fn fips_core_build_version() -> String {
+    "disabled".to_string()
+}
+
 #[cfg(target_os = "windows")]
 const MAGIC_DNS_PORT: u16 = 53;
 #[cfg(not(target_os = "windows"))]
@@ -180,6 +250,8 @@ include!("main/command_dispatch.rs");
 include!("main/wg_self_test.rs");
 include!("main/roster_sync.rs");
 include!("main/status_types.rs");
+#[cfg(feature = "paid-exit")]
+include!("main/paid_exit.rs");
 include!("main/runtime_helpers.rs");
 include!("main/daemon_commands.rs");
 include!("main/doctor_and_parsing.rs");

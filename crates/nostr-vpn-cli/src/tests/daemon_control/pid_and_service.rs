@@ -185,12 +185,12 @@ fn daemon_reload_config_uses_reloaded_network_id() {
     activate_first_network(&mut app);
     app.set_active_network_id("mesh-home")
         .expect("set initial network id");
-    app.networks[0].participants = vec!["11".repeat(32)];
+    app.networks[0].devices = vec!["11".repeat(32)];
     let initial_network_id = app.effective_network_id();
 
     app.set_active_network_id("mesh-work")
         .expect("set reloaded network id");
-    app.networks[0].participants = vec!["22".repeat(32)];
+    app.networks[0].devices = vec!["22".repeat(32)];
     let reloaded_network_id = app.effective_network_id();
     assert_ne!(initial_network_id, reloaded_network_id);
 

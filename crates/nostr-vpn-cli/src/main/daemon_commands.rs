@@ -37,7 +37,7 @@ async fn start_session(args: StartArgs) -> Result<()> {
     let (app, _network_id) = load_config_with_overrides(
         &config_path,
         args.network_id.clone(),
-        args.participants.clone(),
+        args.devices.clone(),
     )?;
     if args.connect {
         persist_desired_daemon_vpn_enabled(&config_path, true)?;
@@ -63,7 +63,7 @@ async fn start_session(args: StartArgs) -> Result<()> {
     let connect_args = ConnectArgs {
         config: Some(config_path.clone()),
         network_id: args.network_id,
-        participants: args.participants,
+        devices: args.devices,
         iface: args.iface,
         mesh_refresh_interval_secs: args.mesh_refresh_interval_secs,
     };

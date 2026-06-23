@@ -22,7 +22,7 @@ fn build_magic_dns_records_emits_alias_and_suffix_variants() {
     config.nostr.public_key = own_hex.clone();
     if let Some(network) = config.networks.first_mut() {
         network.enabled = true;
-        network.participants = vec![peer_hex.clone()];
+        network.devices = vec![peer_hex.clone()];
     }
     config.ensure_defaults();
     config
@@ -55,7 +55,7 @@ fn build_magic_dns_records_includes_self_name_and_suffixes_peer_collision() {
     config.node_name = "Home Server".to_string();
     if let Some(network) = config.networks.first_mut() {
         network.enabled = true;
-        network.participants = vec![peer_hex.clone()];
+        network.devices = vec![peer_hex.clone()];
         network.admins = vec![own_hex.clone()];
     }
     config.ensure_defaults();

@@ -558,8 +558,7 @@ fn ensure_first_owned_network_selected(config: &mut AppConfig) {
         return;
     };
     let network = &config.networks[0];
-    if !network.participants.is_empty() || !network.admins.iter().any(|admin| admin == &own_pubkey)
-    {
+    if !network.devices.is_empty() || !network.admins.iter().any(|admin| admin == &own_pubkey) {
         return;
     }
 
@@ -738,7 +737,7 @@ mod tests {
         let mut config = AppConfig::generated();
         config.ensure_defaults();
         let own_pubkey = config.own_nostr_pubkey_hex().expect("own pubkey");
-        config.networks[0].participants.push(own_pubkey);
+        config.networks[0].devices.push(own_pubkey);
         assert!(config.active_network_opt().is_none());
 
         prepare_config_for_save(&mut config);

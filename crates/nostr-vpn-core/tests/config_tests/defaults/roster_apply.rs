@@ -72,14 +72,20 @@ fn explicit_active_network_id_is_preserved() {
 }
 
 #[test]
-fn join_requests_enabled_is_true_when_any_network_listens() {
+fn join_requests_enabled_uses_enabled_networks() {
     let mut config = AppConfig::generated();
+    assert!(!config.join_requests_enabled());
+
     config.networks[0].listen_for_join_requests = false;
     let network_id = config.add_network("Other");
     config
         .set_network_join_requests_enabled(&network_id, true)
         .expect("enable join requests");
+    assert!(!config.join_requests_enabled());
 
+    config
+        .set_network_enabled(&network_id, true)
+        .expect("enable network");
     assert!(config.join_requests_enabled());
 }
 
@@ -108,7 +114,7 @@ fn apply_admin_signed_shared_roster_replaces_members_from_known_admin() {
     config.nostr.public_key = own_hex.clone();
     config.networks[0].network_id = "mesh-home".to_string();
     config.networks[0].admins = vec![current_admin_hex.clone()];
-    config.networks[0].participants = vec![current_admin_hex.clone()];
+    config.networks[0].devices = vec![current_admin_hex.clone()];
     config.ensure_defaults();
 
     let changed = config
@@ -131,7 +137,7 @@ fn apply_admin_signed_shared_roster_replaces_members_from_known_admin() {
     assert_eq!(config.networks[0].name, "Home");
     let mut expected_participants = vec![current_admin_hex.clone(), member_hex.clone()];
     expected_participants.sort();
-    assert_eq!(config.networks[0].participants, expected_participants);
+    assert_eq!(config.networks[0].devices, expected_participants);
     let mut expected_admins = vec![new_admin_hex, current_admin.public_key().to_hex()];
     expected_admins.sort();
     assert_eq!(config.networks[0].admins, expected_admins);
@@ -150,7 +156,7 @@ fn apply_admin_signed_shared_roster_clears_join_request_when_own_key_is_added() 
     config.nostr.public_key = own_hex.clone();
     config.networks[0].network_id = "mesh-home".to_string();
     config.networks[0].admins = vec![current_admin_hex.clone()];
-    config.networks[0].participants = Vec::new();
+    config.networks[0].devices = Vec::new();
     config.networks[0].outbound_join_request = Some(PendingOutboundJoinRequest {
         recipient: current_admin_hex.clone(),
         requested_at: 1_725_999_999,
@@ -187,7 +193,7 @@ fn apply_admin_signed_shared_roster_drops_network_when_own_key_is_evicted() {
     config.nostr.public_key = own_hex.clone();
     config.networks[0].network_id = "mesh-home".to_string();
     config.networks[0].admins = vec![current_admin_hex.clone()];
-    config.networks[0].participants = vec![own_hex.clone(), other_member_hex.clone()];
+    config.networks[0].devices = vec![own_hex.clone(), other_member_hex.clone()];
     config.ensure_defaults();
 
     let changed = config
@@ -226,7 +232,7 @@ fn apply_admin_signed_shared_roster_keeps_network_when_own_key_was_never_in_rost
     config.nostr.public_key = own_hex;
     config.networks[0].network_id = "mesh-home".to_string();
     config.networks[0].admins = vec![current_admin_hex.clone()];
-    config.networks[0].participants = vec![current_admin_hex.clone(), other_member_hex.clone()];
+    config.networks[0].devices = vec![current_admin_hex.clone(), other_member_hex.clone()];
     config.ensure_defaults();
 
     let changed = config
@@ -289,7 +295,7 @@ fn apply_verified_admin_signed_shared_roster_rejects_tampered_event() {
 
     let roster = NetworkRoster {
         network_name: "Home".to_string(),
-        participants: vec![member_hex],
+        devices: vec![member_hex],
         admins: vec![current_admin_hex],
         aliases: std::collections::HashMap::new(),
         signed_at: 1_726_000_000,
@@ -328,7 +334,7 @@ fn apply_verified_admin_signed_shared_roster_ignores_non_admin_author() {
 
     let roster = NetworkRoster {
         network_name: "Home".to_string(),
-        participants: vec![member_hex],
+        devices: vec![member_hex],
         admins: vec![known_admin_hex, outsider_hex],
         aliases: std::collections::HashMap::new(),
         signed_at: 1_726_000_000,
@@ -356,7 +362,7 @@ fn apply_admin_signed_shared_roster_clears_data_peers_when_own_key_is_removed() 
     config.nostr.public_key = own_hex.clone();
     config.networks[0].network_id = "mesh-home".to_string();
     config.networks[0].admins = vec![current_admin_hex.clone()];
-    config.networks[0].participants = vec![current_admin_hex.clone(), other_member_hex.clone()];
+    config.networks[0].devices = vec![current_admin_hex.clone(), other_member_hex.clone()];
     config.ensure_defaults();
 
     let changed = config
@@ -372,6 +378,6 @@ fn apply_admin_signed_shared_roster_clears_data_peers_when_own_key_is_removed() 
         .expect("apply removal roster");
 
     assert!(changed);
-    assert!(config.networks[0].participants.is_empty());
+    assert!(config.networks[0].devices.is_empty());
     assert_eq!(config.networks[0].admins, vec![current_admin_hex]);
 }

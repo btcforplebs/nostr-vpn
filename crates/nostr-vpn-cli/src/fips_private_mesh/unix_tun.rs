@@ -1,6 +1,5 @@
 #[cfg(any(target_os = "linux", test))]
 const LINUX_CAP_NET_ADMIN_BIT: u32 = 12;
-
 #[cfg(target_os = "linux")]
 fn ensure_linux_tun_permissions(iface: &str) -> Result<()> {
     if fs::metadata("/dev/net/tun").is_err() {
@@ -21,7 +20,6 @@ fn ensure_linux_tun_permissions(iface: &str) -> Result<()> {
 
     Ok(())
 }
-
 #[cfg(any(target_os = "linux", test))]
 fn linux_cap_eff_has_net_admin(status: &str) -> Option<bool> {
     let value = status
@@ -31,7 +29,6 @@ fn linux_cap_eff_has_net_admin(status: &str) -> Option<bool> {
     let caps = u64::from_str_radix(value, 16).ok()?;
     Some((caps & (1_u64 << LINUX_CAP_NET_ADMIN_BIT)) != 0)
 }
-
 #[cfg(any(target_os = "linux", test))]
 fn linux_tun_setup_error(iface: &str, reason: &str) -> String {
     format!(
@@ -54,10 +51,8 @@ enum SystemTun {
     Plain(TunSocket),
     Vnet(LinuxVnetTun),
 }
-
 #[cfg(target_os = "macos")]
 struct SystemTun(TunSocket);
-
 #[cfg(target_os = "linux")]
 impl SystemTun {
     fn new(iface: &str) -> Result<Self> {
@@ -171,8 +166,24 @@ fn read_plain_tun_packets_into(
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn push_tun_pipeline_packet(batch: &mut TunPipelineBatch, packet: &[u8]) {
-    let mut bytes = packet.to_vec();
+    push_tun_pipeline_packet_owned(batch, packet.to_vec());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn push_tun_pipeline_packet_owned(batch: &mut TunPipelineBatch, mut bytes: Vec<u8>) {
     nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut bytes);
+    push_tun_pipeline_packet_owned_finalized(batch, bytes);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn push_tun_pipeline_packet_owned_finalized(batch: &mut TunPipelineBatch, bytes: Vec<u8>) {
+    if fips_unix_packet_debug_enabled() {
+        eprintln!(
+            "fips: TUN -> mesh {} bytes {}",
+            bytes.len(),
+            describe_ip_packet(&bytes)
+        );
+    }
     batch.push(TunPipelinePacket::new(bytes));
 }
 
@@ -194,6 +205,13 @@ fn spawn_tun_read_task(
         let mut buf = vec![0_u8; tun.read_buffer_len()];
         let mut batch = Vec::with_capacity(FIPS_TUN_READ_BURST);
         loop {
+            if !packet_tx
+                .wait_for_tun_read_bulk_headroom(FIPS_TUN_READ_BURST)
+                .await
+            {
+                return;
+            }
+
             let mut guard = match tun_fd.readable().await {
                 Ok(guard) => guard,
                 Err(error) => {
@@ -258,7 +276,13 @@ fn spawn_tun_read_task(
                 );
                 let pending =
                     std::mem::replace(&mut batch, Vec::with_capacity(FIPS_TUN_READ_BURST));
-                match submit_tun_packet_batch_to_mesh_queue(&packet_tx, pending) {
+                match submit_tun_packet_batch_to_mesh_queue_with_backpressure(
+                    &packet_tx,
+                    pending,
+                    FIPS_TUN_READ_BURST,
+                )
+                .await
+                {
                     TunQueueSubmit::Enqueued | TunQueueSubmit::DroppedBulk => {}
                     TunQueueSubmit::Closed => return,
                 }
@@ -335,7 +359,10 @@ async fn stop_mesh_recv_worker(worker: FipsMeshRecvWorker, mesh: &FipsPrivateMes
         FipsMeshRecvWorker::Blocking { stop, thread } => {
             stop.store(true, Ordering::Release);
             mesh.wake_blocking_mesh_recv();
-            let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = thread.join();
+            })
+            .await;
         }
     }
 }
@@ -347,12 +374,13 @@ fn spawn_mesh_recv_task(
     event_tx: mpsc::Sender<FipsPrivateMeshEvent>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut messages = Vec::with_capacity(FIPS_MESH_RECV_BURST);
-        let mut events = Vec::with_capacity(FIPS_MESH_RECV_BURST);
-        let mut packet_batch = Vec::with_capacity(FIPS_MESH_RECV_BURST);
+        let recv_burst = fips_mesh_recv_burst();
+        let mut messages = Vec::with_capacity(recv_burst);
+        let mut events = Vec::with_capacity(recv_burst);
+        let mut packet_batch = TunWriteBatch::with_capacity(recv_burst);
         loop {
             match mesh
-                .recv_mesh_event_batch_into(&mut messages, &mut events, FIPS_MESH_RECV_BURST)
+                .recv_mesh_event_batch_into(&mut messages, &mut events, recv_burst)
                 .await
             {
                 Ok(Some(drained)) => {
@@ -361,7 +389,7 @@ fn spawn_mesh_recv_task(
                         drained,
                         packet_count,
                         packet_bytes,
-                        FIPS_MESH_RECV_BURST,
+                        recv_burst,
                     );
                     packet_batch.clear();
                     for event in events.drain(..) {
@@ -378,7 +406,7 @@ fn spawn_mesh_recv_task(
                     }
                     flush_mesh_packet_batch_to_tun(&tun_fd, &mut packet_batch).await;
 
-                    if drained == FIPS_MESH_RECV_BURST {
+                    if drained == recv_burst {
                         tokio::task::yield_now().await;
                     }
                 }
@@ -399,65 +427,79 @@ fn spawn_blocking_mesh_recv_worker(
     event_tx: mpsc::Sender<FipsPrivateMeshEvent>,
 ) -> FipsMeshRecvWorker {
     let stop = Arc::new(AtomicBool::new(false));
+    let tun_fd = *tun_fd.get_ref();
     let thread_stop = Arc::clone(&stop);
-    let thread = std::thread::spawn(move || {
-        let tun_fd = *tun_fd.get_ref();
-        let mut packet_batch = Vec::with_capacity(FIPS_MESH_RECV_BURST);
-        while !thread_stop.load(Ordering::Acquire) {
-            let mut packet_count = 0usize;
-            let mut packet_bytes = 0usize;
-            packet_batch.clear();
-            match mesh.recv_mesh_event_batch_blocking_for_each(
-                FIPS_MESH_RECV_BURST,
-                &thread_stop,
-                |event| {
-                    if let FipsPrivateMeshEvent::Packet(packet) = &event {
-                        packet_count += 1;
-                        packet_bytes = packet_bytes.saturating_add(packet.len());
-                    }
-                    !thread_stop.load(Ordering::Acquire)
-                        && forward_mesh_event_to_tun_blocking_batched(
-                            event,
+    let thread = std::thread::Builder::new()
+        .name("nvpn-fips-mesh-recv".to_string())
+        .spawn(move || {
+            let recv_burst = fips_mesh_recv_burst();
+            let mut packet_batch = TunWriteBatch::with_capacity(recv_burst);
+            while !thread_stop.load(Ordering::Acquire) {
+                packet_batch.clear();
+                let mut packet_count = 0usize;
+                let mut packet_bytes = 0usize;
+                let mut keep_running = true;
+                let received =
+                    mesh.recv_mesh_event_batch_blocking_for_each(recv_burst, &thread_stop, |event| {
+                        match event {
+                            FipsPrivateMeshEvent::Packet(packet) => {
+                                packet_count = packet_count.saturating_add(1);
+                                packet_bytes = packet_bytes.saturating_add(packet.len());
+                                push_mesh_packet_for_tun(packet, &mut packet_batch);
+                                true
+                            }
+                            event => {
+                                flush_mesh_packet_batch_to_tun_blocking(
+                                    tun_fd,
+                                    &mut packet_batch,
+                                    &thread_stop,
+                                );
+                                keep_running = event_tx.blocking_send(event).is_ok();
+                                keep_running
+                            }
+                        }
+                    });
+                match received {
+                    Ok(Some(drained)) => {
+                        crate::pipeline_profile::record_mesh_recv_batch(
+                            drained,
+                            packet_count,
+                            packet_bytes,
+                            recv_burst,
+                        );
+                        flush_mesh_packet_batch_to_tun_blocking(
                             tun_fd,
-                            &event_tx,
-                            &thread_stop,
                             &mut packet_batch,
-                        )
-                },
-            ) {
-                Ok(Some(drained)) => {
-                    crate::pipeline_profile::record_mesh_recv_batch(
-                        drained,
-                        packet_count,
-                        packet_bytes,
-                        FIPS_MESH_RECV_BURST,
-                    );
-                    flush_mesh_packet_batch_to_tun_blocking(
-                        tun_fd,
-                        &mut packet_batch,
-                        &thread_stop,
-                    );
-                }
-                Ok(None) => {
-                    flush_mesh_packet_batch_to_tun_blocking(
-                        tun_fd,
-                        &mut packet_batch,
-                        &thread_stop,
-                    );
-                    break;
-                }
-                Err(error) => {
-                    flush_mesh_packet_batch_to_tun_blocking(
-                        tun_fd,
-                        &mut packet_batch,
-                        &thread_stop,
-                    );
-                    eprintln!("fips: failed to receive tunnel packet: {error}");
-                    std::thread::sleep(Duration::from_millis(100));
+                            &thread_stop,
+                        );
+                        if !keep_running {
+                            break;
+                        }
+                        if drained == recv_burst {
+                            std::thread::yield_now();
+                        }
+                    }
+                    Ok(None) => {
+                        flush_mesh_packet_batch_to_tun_blocking(
+                            tun_fd,
+                            &mut packet_batch,
+                            &thread_stop,
+                        );
+                        break;
+                    }
+                    Err(error) => {
+                        flush_mesh_packet_batch_to_tun_blocking(
+                            tun_fd,
+                            &mut packet_batch,
+                            &thread_stop,
+                        );
+                        eprintln!("fips: failed to receive tunnel packet: {error}");
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
                 }
             }
-        }
-    });
+        })
+        .expect("failed to spawn FIPS mesh receive worker");
     FipsMeshRecvWorker::Blocking { stop, thread }
 }
 
@@ -479,7 +521,7 @@ async fn forward_mesh_event_to_tun_batched(
     event: FipsPrivateMeshEvent,
     tun_fd: &AsyncFd<BorrowedTunFd>,
     event_tx: &mpsc::Sender<FipsPrivateMeshEvent>,
-    packet_batch: &mut Vec<Vec<u8>>,
+    packet_batch: &mut TunWriteBatch,
 ) -> bool {
     match event {
         FipsPrivateMeshEvent::Packet(packet) => {
@@ -502,15 +544,22 @@ async fn cooperate_after_mesh_recv_packet() {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn push_mesh_packet_for_tun(mut packet: Vec<u8>, packet_batch: &mut Vec<Vec<u8>>) {
+fn push_mesh_packet_for_tun(mut packet: Vec<u8>, packet_batch: &mut TunWriteBatch) {
     nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut packet);
+    if fips_unix_packet_debug_enabled() {
+        eprintln!(
+            "fips: mesh -> TUN {} bytes {}",
+            packet.len(),
+            describe_ip_packet(&packet)
+        );
+    }
     packet_batch.push(packet);
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn flush_mesh_packet_batch_to_tun(
     tun_fd: &AsyncFd<BorrowedTunFd>,
-    packet_batch: &mut Vec<Vec<u8>>,
+    packet_batch: &mut TunWriteBatch,
 ) {
     if packet_batch.is_empty() {
         return;
@@ -518,15 +567,21 @@ async fn flush_mesh_packet_batch_to_tun(
 
     #[cfg(target_os = "linux")]
     if tun_fd.get_ref().vnet_hdr {
-        let packet_count = packet_batch.len();
-        write_linux_vnet_packet_batch_to_tun(tun_fd, packet_batch).await;
+        let packet_count = packet_batch.priority.len() + packet_batch.bulk.len();
+        write_linux_vnet_packet_batch_to_tun(tun_fd, &mut packet_batch.priority).await;
+        write_linux_vnet_packet_batch_to_tun(tun_fd, &mut packet_batch.bulk).await;
         for _ in 0..packet_count {
             cooperate_after_mesh_recv_packet().await;
         }
         return;
     }
 
-    for packet in packet_batch.drain(..) {
+    for packet in packet_batch.priority.drain(..) {
+        write_packet_to_tun(tun_fd, &packet).await;
+        cooperate_after_mesh_recv_packet().await;
+    }
+
+    for packet in packet_batch.bulk.drain(..) {
         // Hot path. Write to TUN inline and DON'T forward Packet events
         // upstream: the control-loop consumer discards packet events. The
         // raw fd write below still waits on utun writability instead of
@@ -542,7 +597,7 @@ fn forward_mesh_event_to_tun_blocking_batched(
     tun_fd: BorrowedTunFd,
     event_tx: &mpsc::Sender<FipsPrivateMeshEvent>,
     stop: &AtomicBool,
-    packet_batch: &mut Vec<Vec<u8>>,
+    packet_batch: &mut TunWriteBatch,
 ) -> bool {
     match event {
         FipsPrivateMeshEvent::Packet(packet) => {
@@ -559,7 +614,7 @@ fn forward_mesh_event_to_tun_blocking_batched(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn flush_mesh_packet_batch_to_tun_blocking(
     tun_fd: BorrowedTunFd,
-    packet_batch: &mut Vec<Vec<u8>>,
+    packet_batch: &mut TunWriteBatch,
     stop: &AtomicBool,
 ) {
     if packet_batch.is_empty() {
@@ -568,11 +623,16 @@ fn flush_mesh_packet_batch_to_tun_blocking(
 
     #[cfg(target_os = "linux")]
     if tun_fd.vnet_hdr {
-        write_linux_vnet_packet_batch_to_tun_blocking(tun_fd, packet_batch, stop);
+        write_linux_vnet_packet_batch_to_tun_blocking(tun_fd, &mut packet_batch.priority, stop);
+        write_linux_vnet_packet_batch_to_tun_blocking(tun_fd, &mut packet_batch.bulk, stop);
         return;
     }
 
-    for packet in packet_batch.drain(..) {
+    for packet in packet_batch.priority.drain(..) {
+        write_packet_to_tun_blocking(tun_fd, &packet, stop);
+    }
+
+    for packet in packet_batch.bulk.drain(..) {
         write_packet_to_tun_blocking(tun_fd, &packet, stop);
     }
 }
@@ -872,6 +932,51 @@ fn temporary_tun_read_error(error: &io::Error) -> bool {
         error.kind(),
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
     )
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn fips_unix_packet_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("NVPN_FIPS_PACKET_DEBUG")
+            .ok()
+            .is_some_and(|value| fips_packet_debug_value_enabled(&value))
+    })
+}
+
+fn fips_packet_debug_value_enabled(value: &str) -> bool {
+    let value = value.trim();
+    !(value.is_empty()
+        || value == "0"
+        || value.eq_ignore_ascii_case("false")
+        || value.eq_ignore_ascii_case("no")
+        || value.eq_ignore_ascii_case("off"))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn describe_ip_packet(packet: &[u8]) -> String {
+    match packet.first().map(|byte| byte >> 4) {
+        Some(4) if packet.len() >= 20 => {
+            let src = std::net::Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+            let dst = std::net::Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+            format!("IPv4 proto={} {src}->{dst}", packet[9])
+        }
+        Some(6) if packet.len() >= 40 => {
+            let src = std::net::Ipv6Addr::from([
+                packet[8], packet[9], packet[10], packet[11], packet[12], packet[13], packet[14],
+                packet[15], packet[16], packet[17], packet[18], packet[19], packet[20],
+                packet[21], packet[22], packet[23],
+            ]);
+            let dst = std::net::Ipv6Addr::from([
+                packet[24], packet[25], packet[26], packet[27], packet[28], packet[29],
+                packet[30], packet[31], packet[32], packet[33], packet[34], packet[35],
+                packet[36], packet[37], packet[38], packet[39],
+            ]);
+            format!("IPv6 next_header={} {src}->{dst}", packet[6])
+        }
+        Some(version) => format!("IP version {version} short packet"),
+        None => "empty packet".to_string(),
+    }
 }
 
 #[cfg(target_os = "windows")]

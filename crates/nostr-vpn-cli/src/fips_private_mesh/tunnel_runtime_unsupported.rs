@@ -17,11 +17,15 @@ impl FipsPrivateTunnelRuntime {
         Vec::new()
     }
 
-    pub(crate) fn stale_participants_with_connected_links(&self, _now: u64) -> Vec<String> {
+    pub(crate) fn stale_participants_needing_path_refresh(&self, _now: u64) -> Vec<String> {
         Vec::new()
     }
 
     pub(crate) async fn relay_statuses(&self) -> Result<Vec<FipsRelayStatus>> {
+        Ok(Vec::new())
+    }
+
+    pub(crate) async fn local_advertised_endpoints(&self) -> Result<Vec<OverlayEndpointAdvert>> {
         Ok(Vec::new())
     }
 
@@ -42,6 +46,13 @@ impl FipsPrivateTunnelRuntime {
         _endpoint_peers: &[FipsEndpointPeerTransportConfig],
     ) -> Result<fips_endpoint::UpdatePeersOutcome> {
         Ok(fips_endpoint::UpdatePeersOutcome::default())
+    }
+
+    pub(crate) async fn refresh_peer_paths(
+        &self,
+        _endpoint_peers: &[FipsEndpointPeerTransportConfig],
+    ) -> Result<usize> {
+        Ok(0)
     }
 
     pub(crate) async fn update_relays(&self, _relays: &[String]) -> Result<()> {

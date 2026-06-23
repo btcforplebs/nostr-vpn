@@ -41,6 +41,7 @@ fn fips_peer_configs_from_mesh(
     peers: &[FipsMeshPeerConfig],
     peer_hints: &HashMap<String, Vec<FipsPeerAddressHint>>,
     bootstrap_peers: &HashMap<String, Vec<FipsPeerAddressHint>>,
+    include_non_roster_transit: bool,
 ) -> Vec<FipsPeerConfig> {
     let mut configs = Vec::new();
     let mut included = std::collections::HashSet::new();
@@ -53,6 +54,10 @@ fn fips_peer_configs_from_mesh(
             !peer.advertises_default_route(),
             FIPS_ROSTER_AUTO_RECONNECT,
         ));
+    }
+
+    if !include_non_roster_transit {
+        return configs;
     }
 
     for (participant, hints) in peer_hints {
@@ -105,7 +110,11 @@ fn fips_peer_config_from_hint(
         .flatten()
         .map(|hint| {
             let (transport, addr) = split_peer_transport_addr(&hint.addr);
-            let mut addr = PeerAddress::with_priority(transport, addr, hint.priority);
+            let mut addr = PeerAddress::with_priority(
+                transport,
+                addr,
+                mobile_fips_peer_address_hint_effective_priority(hint),
+            );
             if let Some(seen_at_ms) = hint.seen_at_ms {
                 addr = addr.with_seen_at_ms(seen_at_ms);
             }
@@ -156,14 +165,20 @@ fn fips_address_hints(
                     // tcp: bootstrap addresses survive into the peer config.
                     let (transport, rest) = split_peer_transport_addr(endpoint.trim());
                     let hint = PeerEndpointHint::udp(rest);
-                    peer_endpoint_hint_addr(&hint).map(|addr| FipsPeerAddressHint {
-                        addr: if transport == "udp" {
+                    peer_endpoint_hint_addr(&hint).map(|addr| {
+                        let addr = if transport == "udp" {
                             addr
                         } else {
                             format!("{transport}:{addr}")
-                        },
-                        seen_at_ms: None,
-                        priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
+                        };
+                        FipsPeerAddressHint {
+                            priority: mobile_fips_endpoint_hint_priority(
+                                &addr,
+                                FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
+                            ),
+                            addr,
+                            seen_at_ms: None,
+                        }
                     })
                 })
                 .collect::<Vec<_>>();
@@ -209,6 +224,9 @@ fn fips_endpoint_config(scope: &str, mobile: &MobileTunnelConfig) -> FipsConfig 
     config.node.limits.max_links = MOBILE_MAX_FIPS_LINKS;
     let join_request_pending = !mobile.pending_join_request_recipient.trim().is_empty()
         && mobile.pending_join_requested_at != 0;
+    let include_non_roster_transit = mobile.connect_to_non_roster_fips_peers
+        || mobile.join_requests_enabled
+        || join_request_pending;
     let nostr_enabled = mobile.nostr_discovery_enabled
         && (mobile.join_requests_enabled
             || join_request_pending
@@ -220,10 +238,7 @@ fn fips_endpoint_config(scope: &str, mobile: &MobileTunnelConfig) -> FipsConfig 
     // not placed in that public advert; when enabled, they are carried inside
     // encrypted traversal signaling/control frames.
     config.node.discovery.nostr.advertise = nostr_enabled;
-    config.node.discovery.nostr.policy = if mobile.connect_to_non_roster_fips_peers
-        || mobile.join_requests_enabled
-        || join_request_pending
-    {
+    config.node.discovery.nostr.policy = if include_non_roster_transit {
         NostrDiscoveryPolicy::Open
     } else {
         NostrDiscoveryPolicy::ConfiguredOnly
@@ -270,8 +285,12 @@ fn fips_endpoint_config(scope: &str, mobile: &MobileTunnelConfig) -> FipsConfig 
         public: Some(false),
         ..UdpConfig::default()
     });
-    config.peers =
-        fips_peer_configs_from_mesh(&mobile.peers, &mobile.peer_hints, &mobile.bootstrap_peers);
+    config.peers = fips_peer_configs_from_mesh(
+        &mobile.peers,
+        &mobile.peer_hints,
+        &mobile.bootstrap_peers,
+        include_non_roster_transit,
+    );
     // Outbound TCP transport so peers reachable only over tcp:443 (UDP-blocked
     // networks) can still be dialed. bind_addr=None keeps it outbound-only.
     let needs_tcp = config.peers.iter().any(|peer| {
@@ -425,6 +444,54 @@ fn endpoint_hint_ip_is_unusable(ip: IpAddr) -> bool {
                 || ip.is_multicast()
         }
     }
+}
+
+fn mobile_fips_peer_address_hint_effective_priority(hint: &FipsPeerAddressHint) -> u8 {
+    mobile_fips_endpoint_hint_priority(&hint.addr, hint.priority)
+}
+
+fn mobile_fips_endpoint_hint_priority(addr: &str, normal_priority: u8) -> u8 {
+    if endpoint_addr_is_private_or_local(addr) {
+        FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY
+    } else {
+        normal_priority
+    }
+}
+
+fn endpoint_addr_is_private_or_local(endpoint: &str) -> bool {
+    endpoint_addr_ip(endpoint).is_some_and(endpoint_ip_is_private_or_local)
+}
+
+fn endpoint_ip_is_private_or_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ipv4_is_cgnat_addr(ip)
+                || ip.is_link_local()
+                || ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+                || ipv4_is_benchmark_addr(ip)
+        }
+        IpAddr::V6(ip) => {
+            ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+        }
+    }
+}
+
+fn ipv4_is_cgnat_addr(addr: Ipv4Addr) -> bool {
+    let octets = addr.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+fn ipv4_is_benchmark_addr(addr: Ipv4Addr) -> bool {
+    let octets = addr.octets();
+    octets[0] == 198 && (18..=19).contains(&octets[1])
 }
 
 fn endpoint_uses_tunnel_ip(endpoint: &str, tunnel_ip: &str) -> bool {

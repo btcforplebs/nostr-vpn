@@ -3,19 +3,19 @@ impl AppConfig {
         let network = self
             .network_by_id(network_id)
             .ok_or_else(|| anyhow::anyhow!("network not found"))?;
-        let mut participants = network.participants.clone();
+        let mut devices = network.devices.clone();
         if let Ok(own_pubkey) = self.own_nostr_pubkey_hex() {
-            participants.push(own_pubkey);
+            devices.push(own_pubkey);
         }
-        participants.sort();
-        participants.dedup();
+        devices.sort();
+        devices.dedup();
 
         let mut admins = network.admins.clone();
         admins.sort();
         admins.dedup();
 
         let own_pubkey = self.own_nostr_pubkey_hex().ok();
-        let mut alias_keys = participants.clone();
+        let mut alias_keys = devices.clone();
         alias_keys.extend(admins.iter().cloned());
         alias_keys.sort();
         alias_keys.dedup();
@@ -35,7 +35,7 @@ impl AppConfig {
             id: network.id.clone(),
             network_id: normalize_runtime_network_id(&network.network_id),
             name: network.name.clone(),
-            participants,
+            devices,
             admins,
             aliases,
             updated_at: network.shared_roster_updated_at,
@@ -48,7 +48,7 @@ impl AppConfig {
         &mut self,
         network_id: &str,
         network_name: &str,
-        participants: Vec<String>,
+        devices: Vec<String>,
         admins: Vec<String>,
         aliases: HashMap<String, String>,
         signed_at: u64,
@@ -89,7 +89,7 @@ impl AppConfig {
         }
 
         let own_in_shared_roster = own_pubkey.as_deref().is_none_or(|own_pubkey| {
-            participants
+            devices
                 .iter()
                 .chain(admins.iter())
                 .filter_map(|member| normalize_nostr_pubkey(member).ok())
@@ -98,7 +98,7 @@ impl AppConfig {
         let own_in_previous_roster = own_pubkey.as_deref().is_some_and(|own_pubkey| {
             let network = &self.networks[network_index];
             network
-                .participants
+                .devices
                 .iter()
                 .chain(network.admins.iter())
                 .filter_map(|member| normalize_nostr_pubkey(member).ok())
@@ -113,8 +113,8 @@ impl AppConfig {
         }
 
         let own_join_completed = own_pubkey.is_some() && own_in_shared_roster;
-        let participants = if own_in_shared_roster {
-            normalize_shared_roster_participants(participants, own_pubkey.as_deref())?
+        let devices = if own_in_shared_roster {
+            normalize_shared_roster_devices(devices, own_pubkey.as_deref())?
         } else {
             Vec::new()
         };
@@ -127,7 +127,7 @@ impl AppConfig {
             ));
         }
 
-        network.participants = participants;
+        network.devices = devices;
         network.admins = admins;
         if !network_name.trim().is_empty() {
             network.name = network_name.trim().to_string();
@@ -146,15 +146,15 @@ impl AppConfig {
         } else {
             normalize_outbound_join_request(
                 network.outbound_join_request.take(),
-                &network.participants,
+                &network.devices,
             )
         };
         network.inbound_join_requests = normalize_inbound_join_requests(
             std::mem::take(&mut network.inbound_join_requests),
-            &network.participants,
+            &network.devices,
         );
 
-        let mut allowed_members = network.participants.clone();
+        let mut allowed_members = network.devices.clone();
         allowed_members.extend(network.admins.iter().cloned());
         if own_in_shared_roster && let Some(own_pubkey) = &own_pubkey {
             allowed_members.push(own_pubkey.clone());
@@ -193,7 +193,7 @@ impl AppConfig {
         self.apply_admin_signed_shared_roster(
             &network_id,
             &roster.network_name,
-            roster.participants,
+            roster.devices,
             roster.admins,
             roster.aliases,
             roster.signed_at,

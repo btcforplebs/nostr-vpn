@@ -25,6 +25,10 @@ struct RootView: View {
         }
     }
 
+    private var paidRouteMarketAvailable: Bool {
+        model.state.paidRouteMarket.supported
+    }
+
     var body: some View {
         Group {
             if model.state.networks.isEmpty {
@@ -49,12 +53,30 @@ struct RootView: View {
                     .badge(incomingJoinRequestCount > 0 ? Text("") : nil)
 
                     NavigationStack {
-                        ExitNodesPage(model: model, network: shownNetwork)
-                            .navigationTitle("Exit Nodes")
+                        InternetPage(model: model, network: shownNetwork)
+                            .navigationTitle("Internet")
                             .toolbar { networkSwitcherToolbar }
                     }
-                    .tabItem { Label("Exit Nodes", systemImage: "arrow.triangle.branch") }
-                    .tag(AppTab.exitNodes)
+                    .tabItem { Label("Internet", systemImage: "network") }
+                    .tag(AppTab.internet)
+
+                    if paidRouteMarketAvailable {
+                        NavigationStack {
+                            PublicExitsPage(model: model)
+                                .navigationTitle("Buy Internet")
+                                .toolbar { networkSwitcherToolbar }
+                        }
+                        .tabItem { Label("Buy Internet", systemImage: "cart.fill") }
+                        .tag(AppTab.publicExits)
+
+                        NavigationStack {
+                            PaidRouteWalletPage(model: model)
+                                .navigationTitle("Wallet")
+                                .toolbar { networkSwitcherToolbar }
+                        }
+                        .tabItem { Label("Wallet", systemImage: "creditcard.fill") }
+                        .tag(AppTab.wallet)
+                    }
 
                     NavigationStack {
                         SettingsPage(model: model)
@@ -101,6 +123,7 @@ struct RootView: View {
             if model.vpnDisclosurePromptVisible && !vpnDisclosureAccepted {
                 presentVpnDisclosure(startVpnAfterAccept: true)
             }
+            normalizeSelectedTab()
         }
         .onChange(of: model.vpnDisclosurePromptVisible) { _, visible in
             if visible && !vpnDisclosureAccepted {
@@ -112,6 +135,7 @@ struct RootView: View {
                !model.state.networks.contains(where: { $0.id == shownNetworkId }) {
                 self.shownNetworkId = nil
             }
+            normalizeSelectedTab()
         }
     }
 
@@ -141,10 +165,20 @@ struct RootView: View {
         vpnDisclosurePresented = true
     }
 
+    private func normalizeSelectedTab() {
+        if !paidRouteMarketAvailable && (selectedTab == .publicExits || selectedTab == .wallet) {
+            selectedTab = .devices
+        }
+    }
+
     private static func initialTab() -> AppTab {
         switch AppModel.screenshotTabArgument()?.lowercased() {
-        case "exit", "exit-node", "exit-nodes", "routes", "routing":
-            return .exitNodes
+        case "internet", "exit", "exit-node", "exit-nodes", "routes", "routing":
+            return .internet
+        case "public-exits", "paid-exits", "paid-market", "market":
+            return .publicExits
+        case "wallet", "paid-wallet":
+            return .wallet
         case "settings", "diagnostics":
             return .settings
         default:
@@ -155,7 +189,9 @@ struct RootView: View {
 
 private enum AppTab: Hashable {
     case devices
-    case exitNodes
+    case internet
+    case publicExits
+    case wallet
     case settings
 }
 
@@ -418,8 +454,8 @@ private struct VpnDisclosureSheet: View {
                     .font(.title2.weight(.semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("Nostr VPN is a private VPN and generic WireGuard exit-node utility. It is not a public VPN, anonymity, stealth, or consumer proxy service.")
-                Text("The app uses VPN data only to operate networks you configure: device identity, peer lists, routes, exit-node settings, endpoints, invite/join metadata, traffic counters, and connection health.")
-                Text("Packet traffic is encrypted. User-selected peers, relays, bridge paths, and exit nodes receive only the data needed to provide the connection you asked them to provide.")
+                Text("The app uses VPN data only to operate networks you configure: device identity, peer lists, internet-sharing settings, endpoints, invite/join metadata, traffic counters, and connection health.")
+                Text("Packet traffic is encrypted. User-selected peers, relays, bridge paths, and internet providers receive only the data needed to provide the connection you asked them to provide.")
                 Text("The developer does not sell VPN data, use it for ads or tracking, or disclose it to third parties.")
                 Spacer()
             }
@@ -790,7 +826,7 @@ private struct InviteToMyNetworkCard: View {
     }
 }
 
-private struct ExitNodesPage: View {
+private struct InternetPage: View {
     @ObservedObject var model: AppModel
     let network: NetworkState?
 
@@ -819,26 +855,26 @@ private struct ExitNodesPage: View {
     // The daemon clears the *other* side automatically when there
     // would otherwise be both a peer exit AND WG upstream enabled
     // (see `settings_patch_enforces_exit_node_mutual_exclusion` in
-    // ffi.rs). "Direct" needs to clear both explicitly though, since
-    // there's no conflict in that case for the daemon to resolve.
+    // ffi.rs). Using this device's normal internet needs to clear both
+    // explicitly since there's no conflict in that case for the daemon to resolve.
     private func selectDirect() {
         model.dispatch(
             NativeActions.updateSettings(["exitNode": "", "wireguardExitEnabled": false]),
-            status: "Saving route"
+            status: "Saving internet"
         )
     }
 
     private func selectWireGuard() {
         model.dispatch(
             NativeActions.updateSettings(["wireguardExitEnabled": true]),
-            status: "Saving route"
+            status: "Saving internet"
         )
     }
 
     private func selectPeer(_ npub: String) {
         model.dispatch(
             NativeActions.updateSettings(["exitNode": npub]),
-            status: "Saving route"
+            status: "Saving internet"
         )
     }
 
@@ -846,11 +882,11 @@ private struct ExitNodesPage: View {
         ScrollView {
             LazyVStack(spacing: 14) {
                 AppCard {
-                    Text("Exit Node")
+                    Text("Internet")
                         .font(.headline)
                     ExitNodeRow(
-                        title: "Direct",
-                        subtitle: "No exit node — your own internet",
+                        title: "This device",
+                        subtitle: "Use this device's normal internet",
                         selected: directSelected,
                         enabled: true,
                         action: selectDirect
@@ -863,7 +899,7 @@ private struct ExitNodesPage: View {
                         action: selectWireGuard
                     )
                     if exitParticipants.isEmpty {
-                        Text("No exit nodes offered")
+                        Text("No trusted devices sharing internet")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -882,31 +918,643 @@ private struct ExitNodesPage: View {
                 }
 
                 AppCard {
-                    Toggle("Offer exit node", isOn: Binding(
+                    Toggle("Share internet with this network", isOn: Binding(
                         get: { model.state.advertiseExitNode },
                         set: { value in
                             model.dispatch(
                                 NativeActions.updateSettings(["advertiseExitNode": value]),
-                                status: "Saving route"
+                                status: "Saving internet"
                             )
                         }
                     ))
-                    Toggle("Block internet if exit node disconnects", isOn: Binding(
+                    Toggle("Block internet if selected source disconnects", isOn: Binding(
                         get: { model.state.exitNodeLeakProtection },
                         set: { value in
                             model.dispatch(
                                 NativeActions.updateSettings(["exitNodeLeakProtection": value]),
-                                status: "Saving route"
+                                status: "Saving internet"
                             )
                         }
                     ))
                 }
+                PaidExitSellerStatusCard(state: model.state)
                 WireGuardSettingsCard(model: model)
             }
             .padding()
         }
         .safeAreaPadding(.bottom, 92)
         .background(AppColors.background)
+    }
+}
+
+private struct PublicExitsPage: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 14) {
+                PaidRouteMarketCard(model: model, mode: .market)
+            }
+            .padding()
+        }
+        .safeAreaPadding(.bottom, 92)
+        .background(AppColors.background)
+    }
+}
+
+private struct PaidRouteWalletPage: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 14) {
+                PaidRouteMarketCard(model: model, mode: .wallet)
+            }
+            .padding()
+        }
+        .safeAreaPadding(.bottom, 92)
+        .background(AppColors.background)
+    }
+}
+
+private enum PaidRouteCardMode {
+    case market
+    case wallet
+}
+
+private struct PaidRouteMarketCard: View {
+    @ObservedObject var model: AppModel
+    let mode: PaidRouteCardMode
+    @State private var mintUrl = ""
+    @State private var token = ""
+    @State private var topUpAmount = ""
+    @State private var sendAmount = ""
+    @State private var withdrawInvoice = ""
+    @State private var filterCountry = ""
+    @State private var filterNetworkClass = ""
+    @State private var filterRequireIpv4 = false
+    @State private var filterRequireIpv6 = false
+    @State private var filterSort = "quality"
+
+    private var market: PaidRouteMarketState {
+        model.state.paidRouteMarket
+    }
+
+    var body: some View {
+        AppCard {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(mode == .wallet ? "Cashu Wallet" : "Buy Internet")
+                        .font(.headline)
+                    Text("Wallet \(fallbackText(market.wallet.totalBalanceText, formatPaidRouteMsat(market.wallet.totalBalanceMsat)))")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if mode == .market {
+                    Button {
+                        model.dispatch(
+                            NativeActions.discoverPaidRouteOffers(),
+                            status: "Finding sellers"
+                        )
+                    } label: {
+                        Label("Find", systemImage: "magnifyingglass")
+                    }
+                    .disabled(model.actionInFlight || !market.supported)
+                }
+            }
+            if mode == .market && !market.statusText.isEmpty {
+                Text(market.statusText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if !market.supported {
+                Text(mode == .wallet ? "Cashu wallet is not supported on this platform" : "Buying internet is not supported on this platform")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                switch mode {
+                case .market:
+                    marketFilterControls
+                    paymentActionResult(market.lastPaymentAction)
+                    Divider()
+                    offerList
+                    Divider()
+                    sessionList
+                case .wallet:
+                    walletControls
+                    walletMintList
+                    walletActionResult(market.wallet.lastAction)
+                }
+            }
+        }
+        .onAppear {
+            if mintUrl.isEmpty {
+                mintUrl = market.wallet.defaultMint
+            }
+            filterCountry = market.filter.countryCode
+            filterNetworkClass = market.filter.networkClass
+            filterRequireIpv4 = market.filter.requireIpv4
+            filterRequireIpv6 = market.filter.requireIpv6
+            filterSort = market.filter.sort.isEmpty ? "quality" : market.filter.sort
+        }
+    }
+
+    private var marketFilterControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                TextField("Country", text: $filterCountry)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                TextField("Class", text: $filterNetworkClass)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+            HStack {
+                Button("Quality") {
+                    setMarketFilterSort("quality")
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.actionInFlight || filterSort == "quality")
+                Button("Price") {
+                    setMarketFilterSort("price")
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.actionInFlight || filterSort == "price")
+                Button("Newest") {
+                    setMarketFilterSort("newest")
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.actionInFlight || filterSort == "newest")
+            }
+            HStack {
+                Toggle("IPv4", isOn: $filterRequireIpv4)
+                    .toggleStyle(.button)
+                Toggle("IPv6", isOn: $filterRequireIpv6)
+                    .toggleStyle(.button)
+                Spacer()
+                Button("Clear") {
+                    filterCountry = ""
+                    filterNetworkClass = ""
+                    filterRequireIpv4 = false
+                    filterRequireIpv6 = false
+                    filterSort = "quality"
+                    applyMarketFilter()
+                }
+                .disabled(model.actionInFlight || market.offers.isEmpty)
+                Button("Apply") {
+                    applyMarketFilter()
+                }
+                .disabled(model.actionInFlight || market.offers.isEmpty)
+            }
+        }
+    }
+
+    private func setMarketFilterSort(_ sort: String) {
+        filterSort = sort
+        applyMarketFilter(sort: sort)
+    }
+
+    private func applyMarketFilter(sort: String? = nil) {
+        model.dispatch(
+            NativeActions.setPaidRouteMarketFilter(
+                countryCode: filterCountry.trimmingCharacters(in: .whitespacesAndNewlines),
+                networkClass: filterNetworkClass.trimmingCharacters(in: .whitespacesAndNewlines),
+                requireIpv4: filterRequireIpv4,
+                requireIpv6: filterRequireIpv6,
+                sort: sort ?? filterSort
+            ),
+            status: "Filtering sellers"
+        )
+    }
+
+    private var walletControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                TextField("Mint URL", text: $mintUrl)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Add") {
+                    model.dispatch(
+                        NativeActions.addPaidRouteWalletMint(
+                            url: mintUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+                            label: nil
+                        ),
+                        status: "Saving wallet"
+                    )
+                }
+                .disabled(model.actionInFlight || mintUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            HStack {
+                TextField("Top-up sats", text: $topUpAmount)
+                    .keyboardType(.numberPad)
+                Button("Top Up") {
+                    guard let amount = parsePositivePaidRouteAmount(topUpAmount) else { return }
+                    model.dispatch(
+                        NativeActions.topUpPaidRouteWallet(mintUrl: optionalPaidRouteMintUrl(mintUrl), amountSat: amount),
+                        status: "Creating invoice"
+                    )
+                }
+                .disabled(model.actionInFlight || parsePositivePaidRouteAmount(topUpAmount) == nil)
+            }
+            HStack {
+                TextField("Send sats", text: $sendAmount)
+                    .keyboardType(.numberPad)
+                Button("Export") {
+                    guard let amount = parsePositivePaidRouteAmount(sendAmount) else { return }
+                    model.dispatch(
+                        NativeActions.sendPaidRouteWalletToken(mintUrl: optionalPaidRouteMintUrl(mintUrl), amountSat: amount),
+                        status: "Creating token"
+                    )
+                }
+                .disabled(model.actionInFlight || parsePositivePaidRouteAmount(sendAmount) == nil)
+            }
+            HStack {
+                TextField("Cashu token", text: $token)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Import") {
+                    let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                    model.dispatch(
+                        NativeActions.receivePaidRouteWalletToken(token: trimmed),
+                        status: "Receiving token"
+                    )
+                    token = ""
+                }
+                .disabled(model.actionInFlight || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            HStack {
+                TextField("Lightning invoice", text: $withdrawInvoice)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Withdraw") {
+                    let trimmed = withdrawInvoice.trimmingCharacters(in: .whitespacesAndNewlines)
+                    model.dispatch(
+                        NativeActions.withdrawPaidRouteWalletLightning(mintUrl: optionalPaidRouteMintUrl(mintUrl), invoice: trimmed),
+                        status: "Paying invoice"
+                    )
+                    withdrawInvoice = ""
+                }
+                .disabled(model.actionInFlight || withdrawInvoice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            HStack {
+                Button("Refresh Wallet") {
+                    model.dispatch(
+                        NativeActions.refreshPaidRouteWallet(),
+                        status: "Refreshing wallet"
+                    )
+                }
+            }
+        }
+    }
+
+    private var walletMintList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Mints")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            if market.wallet.mints.isEmpty {
+                Text("No wallet mints")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(market.wallet.mints) { mint in
+                    HStack(alignment: .center) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(mint.label.isEmpty ? mint.url : mint.label)
+                                .fontWeight(.semibold)
+                                .lineLimit(1)
+                            Text(fallbackText(mint.balanceText, formatPaidRouteMsat(mint.balanceMsat)))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if mint.url == market.wallet.defaultMint {
+                            Pill("Default", tint: AppColors.accent)
+                        } else {
+                            Button("Default") {
+                                model.dispatch(
+                                    NativeActions.setPaidRouteDefaultMint(url: mint.url),
+                                    status: "Saving wallet"
+                                )
+                            }
+                            .disabled(model.actionInFlight)
+                        }
+                        Button(role: .destructive) {
+                            model.dispatch(
+                                NativeActions.removePaidRouteWalletMint(url: mint.url),
+                                status: "Saving wallet"
+                            )
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .disabled(model.actionInFlight)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func walletActionResult(_ action: PaidRouteWalletActionState) -> some View {
+        if !action.kind.isEmpty || !action.statusText.isEmpty {
+            Text(action.statusText.isEmpty ? paidRouteWalletActionTitle(action.kind) : action.statusText)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            if !action.paymentRequest.isEmpty {
+                Text("Lightning invoice ready")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if !action.token.isEmpty {
+                Text("Cashu token ready")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if !action.preimage.isEmpty {
+                Text("Lightning preimage ready")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func paymentActionResult(_ action: PaidRoutePaymentActionState) -> some View {
+        if !action.kind.isEmpty || !action.statusText.isEmpty || !action.envelopeJson.isEmpty {
+            HStack {
+                Text(action.statusText.isEmpty ? paidRoutePaymentActionTitle(action.kind) : action.statusText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if !action.envelopeJson.isEmpty {
+                    Button("Send payment") {
+                        model.dispatch(
+                            NativeActions.sendPaidRoutePaymentEnvelope(envelopeJson: action.envelopeJson),
+                            status: "Sending payment"
+                        )
+                    }
+                    .disabled(model.actionInFlight)
+                }
+            }
+        }
+    }
+
+    private var offerList: some View {
+        let visibleOffers = (market.hiddenOfferCount > 0 || !market.visibleOffers.isEmpty)
+            ? market.visibleOffers
+            : market.offers
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Offers")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            if market.offers.isEmpty {
+                Text("No internet sellers found")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else if visibleOffers.isEmpty {
+                Text("No matching sellers")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                if market.hiddenOfferCount > 0 {
+                    Text("\(market.hiddenOfferCount) hidden by filters")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(visibleOffers.prefix(6)) { offer in
+                    PaidRouteOfferRow(model: model, offer: offer)
+                }
+            }
+        }
+    }
+
+    private var sessionList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Your Paid Internet")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            if market.sessions.isEmpty {
+                Text("No seller selected")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(market.sessions) { session in
+                    PaidRouteSessionRow(
+                        model: model,
+                        session: session,
+                        envelopeJson: market.lastPaymentAction.envelopeJson
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct PaidRouteOfferRow: View {
+    @ObservedObject var model: AppModel
+    let offer: PaidRouteOfferState
+
+    var body: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(paidRouteOfferTitle(offer))
+                    .fontWeight(.semibold)
+                Text(offer.statusText.isEmpty ? offer.sellerNpub : offer.statusText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                let metricText = paidRouteMetricText(
+                    fallbackText(
+                        offer.qualityText,
+                        paidRouteQualityText(offer.latencyMs, offer.jitterMs, offer.packetLossPpm)
+                    ),
+                    offer.bandwidthText
+                )
+                if !metricText.isEmpty {
+                    Text(metricText)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer()
+            Button("Connect") {
+                model.dispatch(
+                    NativeActions.buyPaidRouteOffer(offerKey: offer.key),
+                    status: "Connecting"
+                )
+            }
+            .disabled(model.actionInFlight || offer.key.isEmpty)
+        }
+    }
+}
+
+private struct PaidRouteSessionRow: View {
+    @ObservedObject var model: AppModel
+    let session: PaidRouteSessionState
+    let envelopeJson: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(paidRouteBuyerSessionTitle(session))
+                        .fontWeight(.semibold)
+                    Text(paidRouteSessionDetail(session))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if !session.locationText.isEmpty {
+                        Text(session.locationText)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else if !session.realizedExitIp.isEmpty {
+                        Text("\(session.realizedExitIp) · \(paidRouteCountryClaimText(session))")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    let metricText = paidRouteMetricText(
+                        fallbackText(
+                            session.qualityText,
+                            paidRouteQualityText(session.latencyMs, session.jitterMs, session.packetLossPpm)
+                        ),
+                        session.bandwidthText
+                    )
+                    if !metricText.isEmpty {
+                        Text(metricText)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    if !session.settlementText.isEmpty {
+                        Text(session.settlementText)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(fallbackText(session.paidText, "\(formatPaidRouteMsat(session.paidMsat)) paid"))
+                        .font(.footnote)
+                    if session.unpaidMsat > 0 {
+                        Text(fallbackText(session.unpaidText, "\(formatPaidRouteMsat(session.unpaidMsat)) behind"))
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+            HStack {
+                Button("Connect") {
+                    model.dispatch(
+                        NativeActions.selectPaidRouteSession(sessionId: session.sessionId, connect: true),
+                        status: "Connecting"
+                    )
+                }
+                Button("Probe") {
+                    model.dispatch(
+                        NativeActions.probePaidRouteSession(sessionId: session.sessionId),
+                        status: "Checking connection"
+                    )
+                }
+            }
+            HStack {
+                if paidRouteSessionCanOpenChannel(session) {
+                    Button("Fund") {
+                        model.dispatch(
+                            NativeActions.openPaidRouteChannelFromWallet(sessionId: session.sessionId),
+                            status: "Funding seller"
+                        )
+                    }
+                }
+                if paidRouteSessionCanSignPayment(session) {
+                    Button("Pay") {
+                        model.dispatch(
+                            NativeActions.signPaidRoutePaymentEnvelopeFromWallet(sessionId: session.sessionId),
+                            status: "Paying seller"
+                        )
+                    }
+                }
+                if paidRouteSessionCanCloseChannel(session) {
+                    Button("Settle") {
+                        model.dispatch(
+                            NativeActions.closePaidRouteChannelFromWallet(sessionId: session.sessionId),
+                            status: "Settling channel"
+                        )
+                    }
+                }
+                if !envelopeJson.isEmpty {
+                    Button("Send") {
+                        model.dispatch(
+                            NativeActions.sendPaidRoutePaymentEnvelope(envelopeJson: envelopeJson),
+                            status: "Sending payment"
+                        )
+                    }
+                }
+            }
+            .disabled(model.actionInFlight)
+        }
+    }
+}
+
+private struct PaidExitSellerStatusCard: View {
+    let state: AppState
+
+    var body: some View {
+        let seller = state.paidExitSeller
+        AppCard {
+            Text("Share My Internet")
+                .font(.headline)
+            Text(
+                paidExitSellerStatusText(seller)
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            if seller.supported {
+                Text(paidExitSellerInternetText(seller))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if !seller.publicIpText.isEmpty {
+                    Text("Public IP \(seller.publicIpText)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Spendable wallet \(fallbackText(state.paidRouteMarket.wallet.totalBalanceText, formatPaidRouteMsat(state.paidRouteMarket.wallet.totalBalanceMsat)))")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text("\(fallbackText(seller.channelCreditTitleText, "Pending buyer credit")) \(fallbackText(seller.channelCreditText, formatPaidRouteMsat(seller.channelCreditMsat)))")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                let creditHelp = fallbackText(seller.channelCreditHelpText, seller.channelCreditMsat > 0 ? "Collect to move it into wallet" : "")
+                if !creditHelp.isEmpty {
+                    Text(creditHelp)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                let paymentStatus = paidRoutePaymentStatusText(state.paidRouteMarket.lastPaymentAction)
+                if !paymentStatus.isEmpty {
+                    Text("Payments \(paymentStatus)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Text("\(seller.countryCode.isEmpty ? "Country unset" : seller.countryCode) · \(paidRouteNetworkClassTitle(seller.networkClass)) · \(fallbackText(seller.priceText, paidRoutePriceText(priceMsat: seller.priceMsat, perUnits: seller.perUnits, meter: seller.meter, perUnitsText: seller.perUnitsText)))")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text("Free test \(fallbackText(seller.freeProbeText, paidRouteTrafficUnitText(seller.freeProbeUnits, meter: seller.meter))) · Grace \(fallbackText(seller.graceText, paidRouteTrafficUnitText(seller.graceUnits, meter: seller.meter)))")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if !seller.settlementText.isEmpty {
+                    Text(seller.settlementText)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if !seller.sessions.isEmpty {
+                    Text("\(seller.sessions.count) active customer\(seller.sessions.count == 1 ? "" : "s")")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }
 
@@ -2120,6 +2768,279 @@ private enum AppColors {
     static let create = Color.green
     static let join = Color.blue
     static let ok = Color.green
+}
+
+private func paidRouteOfferTitle(_ offer: PaidRouteOfferState) -> String {
+    let location = offer.countryCode.isEmpty ? "Unknown country" : offer.countryCode.uppercased()
+    let network = paidRouteNetworkClassTitle(offer.networkClass)
+    let price = offer.priceText.isEmpty
+        ? paidRoutePriceText(priceMsat: offer.priceMsat, perUnits: offer.perUnits, meter: offer.meter, perUnitsText: offer.perUnitsText)
+        : offer.priceText
+    return "\(location) · \(network) · \(price)"
+}
+
+private func paidRouteSessionDetail(_ session: PaidRouteSessionState) -> String {
+    if !session.detailText.isEmpty {
+        return session.detailText
+    }
+    let access = paidRouteAccessTitle(
+        session.accessState,
+        fallback: session.lifecycleStatus.isEmpty ? "session" : session.lifecycleStatus
+    )
+    let units: String
+    if session.bytes > 0 {
+        units = "\(formatBytes(session.bytes)) used"
+    } else if session.packets > 0 {
+        units = "\(session.packets) packets"
+    } else {
+        units = "\(session.deliveredUnits) units"
+    }
+    return "\(access), \(units), \(formatPaidRouteMsat(session.amountDueMsat)) due"
+}
+
+private func paidRouteBuyerSessionTitle(_ session: PaidRouteSessionState) -> String {
+    if !session.titleText.isEmpty {
+        return session.titleText
+    }
+    if session.allowRouting {
+        return "Ready"
+    }
+    if session.unpaidMsat > 0 {
+        return "Payment needed"
+    }
+    if !session.paymentChannelReady {
+        return "Needs funds"
+    }
+    return paidRoutePlainStatus(
+        session.statusText.isEmpty ? session.lifecycleStatus : session.statusText,
+        fallback: "Session"
+    )
+}
+
+private func paidRouteAccessTitle(_ value: String, fallback: String) -> String {
+    switch value {
+    case "paid": return "Paid"
+    case "free_probe": return "Free test"
+    case "grace": return "Grace"
+    case "suspended": return "Paused"
+    default:
+        return paidRoutePlainStatus(value, fallback: fallback)
+    }
+}
+
+private func paidRoutePlainStatus(_ value: String, fallback: String) -> String {
+    let raw = value.isEmpty ? fallback : value
+    switch raw {
+    case "opening": return "Opening"
+    case "probing": return "Checking quality"
+    case "active": return "Active"
+    case "paused": return "Paused"
+    case "closed": return "Closed"
+    case "session": return "Session"
+    default:
+        return raw.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+private func paidRoutePaymentActionTitle(_ kind: String) -> String {
+    switch kind {
+    case "send": return "Payment sent"
+    case "receive": return "Payment received"
+    case "apply": return "Payment applied"
+    case "create": return "Payment ready"
+    case "open_channel": return "Exit funded"
+    case "sign": return "Payment ready"
+    case "close": return "Channel settled"
+    case "stream": return "Payments sent"
+    case "probe": return "Quality checked"
+    default:
+        return kind.isEmpty ? "Payment" : kind.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+private func paidRoutePaymentStatusText(_ action: PaidRoutePaymentActionState) -> String {
+    if action.kind.isEmpty && action.statusText.isEmpty {
+        return ""
+    }
+    return action.statusText.isEmpty ? paidRoutePaymentActionTitle(action.kind) : action.statusText
+}
+
+private func paidRouteWalletActionTitle(_ kind: String) -> String {
+    switch kind {
+    case "topup": return "Invoice ready"
+    case "receive": return "Token imported"
+    case "send": return "Token ready"
+    case "withdraw": return "Invoice paid"
+    case "refresh": return "Wallet refreshed"
+    case "open_channel": return "Exit funded"
+    default:
+        return kind.isEmpty ? "Wallet updated" : kind.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+private func paidRouteNetworkClassTitle(_ value: String) -> String {
+    switch value {
+    case "datacenter": return "Datacenter"
+    case "residential": return "Residential"
+    case "mobile": return "Mobile"
+    case "satellite": return "Satellite"
+    case "community_mesh": return "Community mesh"
+    case "unknown", "": return "Unknown"
+    default:
+        return value.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+private func paidRouteCountryClaimText(_ session: PaidRouteSessionState) -> String {
+    switch session.countryClaimStatus {
+    case "match":
+        let observed = session.observedCountryCode.isEmpty ? session.claimedCountryCode : session.observedCountryCode
+        return "\(observed) matches claim"
+    case "mismatch":
+        let observed = session.observedCountryCode.isEmpty ? "Observed country" : session.observedCountryCode
+        return "\(observed) differs from \(session.claimedCountryCode)"
+    default:
+        if !session.observedCountryCode.isEmpty {
+            return session.observedCountryCode
+        }
+        return session.claimedCountryCode.isEmpty ? "country unknown" : session.claimedCountryCode
+    }
+}
+
+private func paidRouteQualityText(_ latencyMs: UInt32, _ jitterMs: UInt32, _ packetLossPpm: UInt32) -> String {
+    if latencyMs == 0, jitterMs == 0, packetLossPpm == 0 {
+        return "Quality unmeasured"
+    }
+    let loss = Double(packetLossPpm) / 10_000.0
+    return String(format: "%u ms · %u ms jitter · %.2f%% loss", latencyMs, jitterMs, loss)
+}
+
+private func paidRouteMetricText(_ qualityText: String, _ bandwidthText: String) -> String {
+    [qualityText, bandwidthText]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty && $0 != "Quality unmeasured" }
+        .joined(separator: " · ")
+}
+
+private func paidExitSellerStatusText(_ seller: PaidExitSellerState) -> String {
+    if seller.statusText.isEmpty {
+        return seller.supported
+            ? "People can pay to use my internet"
+            : "This platform cannot sell public internet access"
+    }
+    return seller.statusText
+        .replacingOccurrences(of: "Paid exit selling", with: "Selling internet")
+        .replacingOccurrences(of: "paid exit selling", with: "selling internet")
+}
+
+private func paidExitSellerInternetText(_ seller: PaidExitSellerState) -> String {
+    if !seller.internetText.isEmpty {
+        return seller.internetText
+    }
+    switch seller.upstream {
+    case "wireguard_exit", "wireguard", "wg", "upstream_vpn", "vpn":
+        return "My internet through WireGuard"
+    default:
+        return "My internet"
+    }
+}
+
+private func paidRouteSessionCanOpenChannel(_ session: PaidRouteSessionState) -> Bool {
+    !session.sessionId.isEmpty && !session.paymentChannelReady
+}
+
+private func paidRouteSessionCanSignPayment(_ session: PaidRouteSessionState) -> Bool {
+    !session.sessionId.isEmpty && session.paymentChannelReady && session.unpaidMsat > 0
+}
+
+private func paidRouteSessionCanCloseChannel(_ session: PaidRouteSessionState) -> Bool {
+    !session.sessionId.isEmpty
+        && session.paymentChannelReady
+        && ["closed", "expired"].contains(session.lifecycleStatus) == false
+}
+
+private func parsePositivePaidRouteAmount(_ value: String) -> UInt64? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let amount = UInt64(trimmed), amount > 0 else { return nil }
+    return amount
+}
+
+private func optionalPaidRouteMintUrl(_ value: String) -> String? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private func formatPaidRouteMsat(_ msat: UInt64) -> String {
+    if msat == 0 {
+        return "0 sat"
+    }
+    let whole = msat / 1_000
+    let remainder = msat % 1_000
+    if remainder == 0 {
+        return "\(whole) sat"
+    }
+    return String(format: "%llu.%03llu sat", whole, remainder)
+}
+
+private func fallbackText(_ value: String, _ fallback: String) -> String {
+    value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : value
+}
+
+private func formatBytes(_ bytes: UInt64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"]
+    var value = Double(bytes)
+    var index = 0
+    while value >= 1_024, index < units.count - 1 {
+        value /= 1_024
+        index += 1
+    }
+    if index == 0 {
+        return "\(bytes) B"
+    }
+    if value.rounded() == value {
+        return String(format: "%.0f %@", value, units[index])
+    }
+    return String(format: "%.1f %@", value, units[index])
+}
+
+private func paidRoutePriceText(priceMsat: UInt64, perUnits: UInt64, meter: String, perUnitsText: String = "") -> String {
+    "\(formatPaidRouteMsat(priceMsat)) / \(fallbackText(perUnitsText, paidRouteMeterUnitText(perUnits, meter: meter)))"
+}
+
+private func paidRouteMeterUnitText(_ units: UInt64, meter: String) -> String {
+    switch meter {
+    case "bytes":
+        return formatDecimalBytes(units)
+    case "milliseconds", "millisecond", "ms":
+        return "\(units) ms"
+    case "packets", "packet":
+        return units == 1 ? "1 packet" : "\(units) packets"
+    case "":
+        return "\(units) units"
+    default:
+        return "\(units) \(meter)"
+    }
+}
+
+private func paidRouteTrafficUnitText(_ units: UInt64, meter: String) -> String {
+    meter == "bytes" ? formatBytes(units) : paidRouteMeterUnitText(units, meter: meter)
+}
+
+private func formatDecimalBytes(_ bytes: UInt64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"]
+    var value = Double(bytes)
+    var index = 0
+    while value >= 1_000, index < units.count - 1 {
+        value /= 1_000
+        index += 1
+    }
+    if index == 0 {
+        return "\(bytes) B"
+    }
+    if value.rounded() == value {
+        return String(format: "%.0f %@", value, units[index])
+    }
+    return String(format: "%.1f %@", value, units[index])
 }
 
 private func cleanIp(_ value: String) -> String {

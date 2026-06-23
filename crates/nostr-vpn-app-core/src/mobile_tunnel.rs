@@ -33,7 +33,7 @@ use nostr_vpn_core::fips_control::NetworkRoster;
 use nostr_vpn_core::fips_control::{
     FipsControlFragmentBuffer, FipsControlFrame, PeerCapabilities, PeerEndpointHint, SignedRoster,
     decode_fips_control_frame, encode_fips_control_frame, encode_fips_control_messages,
-    peer_endpoint_hint_addr,
+    local_fips_dataplane_features, peer_endpoint_hint_addr,
 };
 use nostr_vpn_core::fips_mesh::{FipsMeshPeerConfig, FipsMeshRuntime};
 use nostr_vpn_core::join_requests::{FIPS_JOIN_REQUEST_RETRY_SECS, MeshJoinRequest};

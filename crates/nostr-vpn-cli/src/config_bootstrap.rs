@@ -13,10 +13,14 @@ pub(crate) fn uninstall_cli(args: UninstallCliArgs) -> Result<()> {
 pub(crate) fn print_version(args: VersionArgs) -> Result<()> {
     let info = VersionInfoView {
         version: PRODUCT_VERSION.to_string(),
+        fips_core_version: fips_core_build_version(),
     };
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&info)?);
+    } else if args.verbose {
+        println!("{}", info.version);
+        println!("fips_core_version: {}", info.fips_core_version);
     } else {
         println!("{}", info.version);
     }
@@ -145,7 +149,7 @@ fn uninstall_cli_path(destination: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn init_config(path: &Path, force: bool, participants: Vec<String>) -> Result<()> {
+pub(crate) fn init_config(path: &Path, force: bool, devices: Vec<String>) -> Result<()> {
     if path.exists() && !force {
         return Err(anyhow!(
             "config already exists at {} (pass --force to overwrite)",
@@ -154,7 +158,7 @@ pub(crate) fn init_config(path: &Path, force: bool, participants: Vec<String>) -
     }
 
     let mut config = AppConfig::generated();
-    apply_participants_override(&mut config, participants)?;
+    apply_devices_override(&mut config, devices)?;
     maybe_autoconfigure_node(&mut config);
     config.save(path)?;
 
@@ -305,17 +309,14 @@ pub(crate) fn load_or_default_config(path: &Path) -> Result<AppConfig> {
     Ok(config)
 }
 
-pub(crate) fn apply_participants_override(
-    config: &mut AppConfig,
-    participants: Vec<String>,
-) -> Result<()> {
-    if participants.is_empty() {
+pub(crate) fn apply_devices_override(config: &mut AppConfig, devices: Vec<String>) -> Result<()> {
+    if devices.is_empty() {
         return Ok(());
     }
 
-    let mut normalized = participants
+    let mut normalized = devices
         .iter()
-        .map(|participant| normalize_nostr_pubkey(participant))
+        .map(|device| normalize_nostr_pubkey(device))
         .collect::<Result<Vec<_>>>()?;
 
     normalized.sort();
@@ -330,16 +331,22 @@ pub(crate) fn apply_participants_override(
             .unwrap_or_else(|| config.add_network(""));
         config.set_network_enabled(&network_id, true)?;
     }
-    config.active_network_mut().participants = normalized.clone();
+    config.active_network_mut().devices = normalized.clone();
     if let Some(exit_node) = pending_exit_node
-        && normalized
-            .iter()
-            .any(|participant| participant == &exit_node)
+        && normalized.iter().any(|device| device == &exit_node)
     {
+        config.exit_node_public_paid_exit = false;
         config.exit_node = exit_node;
     }
     let _ = config.note_active_network_roster_local_change();
     config.ensure_defaults();
 
     Ok(())
+}
+
+pub(crate) fn apply_participants_override(
+    config: &mut AppConfig,
+    participants: Vec<String>,
+) -> Result<()> {
+    apply_devices_override(config, participants)
 }

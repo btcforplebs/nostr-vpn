@@ -12,7 +12,7 @@ fn fips_runtime_state_counts_direct_roster_and_other_peers() {
     let roster_peer = Keys::generate().public_key().to_hex();
     let routed_roster_peer = Keys::generate().public_key().to_hex();
     let other_peer = Keys::generate().public_key().to_hex();
-    config.networks[0].participants = vec![roster_peer.clone(), routed_roster_peer.clone()];
+    config.networks[0].devices = vec![roster_peer.clone(), routed_roster_peer.clone()];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
 
     let state = crate::build_daemon_runtime_state(
@@ -37,6 +37,7 @@ fn fips_runtime_state_counts_direct_roster_and_other_peers() {
                 rekey_in_progress: true,
                 rekey_draining: true,
                 current_k_bit: Some(true),
+                last_outbound_route: Some("fallback-route".to_string()),
                 direct_probe_pending: false,
                 direct_probe_after_ms: None,
                 direct_probe_retry_count: 0,
@@ -68,6 +69,7 @@ fn fips_runtime_state_counts_direct_roster_and_other_peers() {
                 rekey_in_progress: false,
                 rekey_draining: false,
                 current_k_bit: None,
+                last_outbound_route: None,
                 direct_probe_pending: false,
                 direct_probe_after_ms: None,
                 direct_probe_retry_count: 0,
@@ -99,6 +101,7 @@ fn fips_runtime_state_counts_direct_roster_and_other_peers() {
                 rekey_in_progress: false,
                 rekey_draining: false,
                 current_k_bit: None,
+                last_outbound_route: None,
                 direct_probe_pending: false,
                 direct_probe_after_ms: None,
                 direct_probe_retry_count: 0,
@@ -134,6 +137,7 @@ fn fips_runtime_state_counts_direct_roster_and_other_peers() {
     assert!(rekey_peer.fips_rekey_in_progress);
     assert!(rekey_peer.fips_rekey_draining);
     assert_eq!(rekey_peer.fips_current_k_bit, Some(true));
+    assert_eq!(rekey_peer.fips_last_outbound_route, "fallback-route");
     assert_eq!(rekey_peer.fips_nostr_traversal_failures, 4);
     assert!(rekey_peer.fips_nostr_traversal_in_cooldown);
     assert_eq!(
@@ -153,7 +157,7 @@ fn daemon_runtime_state_marks_peers_unreachable_when_vpn_is_off() {
     let mut config = AppConfig::generated();
     activate_first_network(&mut config);
     let peer_pubkey = Keys::generate().public_key().to_hex();
-    config.networks[0].participants = vec![peer_pubkey.clone()];
+    config.networks[0].devices = vec![peer_pubkey.clone()];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
     let peer_status = MeshPeerStatus {
         pubkey: peer_pubkey,
@@ -170,6 +174,7 @@ fn daemon_runtime_state_marks_peers_unreachable_when_vpn_is_off() {
         rekey_in_progress: false,
         rekey_draining: false,
         current_k_bit: None,
+        last_outbound_route: None,
         direct_probe_pending: false,
         direct_probe_after_ms: None,
         direct_probe_retry_count: 0,
@@ -385,4 +390,9 @@ fn macos_ifconfig_has_ipv4_matches_exact_interface_address() {
         output,
         Ipv4Addr::new(10, 44, 10, 24)
     ));
+}
+
+#[test]
+fn macos_tunnel_ipv4_netmask_uses_host_route() {
+    assert_eq!(crate::macos_tunnel_ipv4_netmask(), "255.255.255.255");
 }

@@ -169,7 +169,7 @@ mod tests {
         let member = Keys::generate().public_key().to_hex();
         let roster = NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![member],
+            devices: vec![member],
             admins: vec![admin.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at,

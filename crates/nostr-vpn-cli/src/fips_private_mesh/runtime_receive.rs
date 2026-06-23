@@ -58,15 +58,35 @@ impl FipsPrivateMeshRuntime {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn recv_mesh_event_batch_blocking_into(
         &self,
+        messages: &mut Vec<FipsEndpointMessage>,
         events: &mut Vec<FipsPrivateMeshEvent>,
         limit: usize,
         stop: &AtomicBool,
     ) -> Result<Option<usize>> {
+        let limit = limit.clamp(1, FIPS_MESH_EVENT_DRAIN_LIMIT);
         events.clear();
-        self.recv_mesh_event_batch_blocking_for_each(limit, stop, |event| {
-            events.push(event);
-            true
-        })
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return Ok(None);
+            }
+
+            let Some(_) = self.endpoint.blocking_recv_batch_into(messages, limit) else {
+                return Ok(None);
+            };
+            let now = Some(unix_timestamp());
+            events.reserve(messages.len());
+            for message in messages.drain(..) {
+                if stop.load(Ordering::Acquire) {
+                    return Ok(None);
+                }
+                if let Some(event) = self.endpoint_message_to_mesh_event_blocking(message, now)? {
+                    events.push(event);
+                }
+            }
+            if !events.is_empty() {
+                return Ok(Some(events.len()));
+            }
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -83,46 +103,43 @@ impl FipsPrivateMeshRuntime {
             }
 
             let now = Some(unix_timestamp());
-            let mut events_drained = 0;
-            let mut handler_stopped = false;
-            let mut receive_error = None;
-            let Some(_) = self
-                .endpoint
-                .blocking_recv_batch_for_each(limit, |message| {
-                    if stop.load(Ordering::Acquire) {
-                        handler_stopped = true;
+            let mut emitted = 0usize;
+            let mut pending_error: Option<anyhow::Error> = None;
+            let received = self.endpoint.blocking_recv_batch_for_each(limit, |message| {
+                if stop.load(Ordering::Acquire) {
+                    return false;
+                }
+                let outcome = match self.endpoint_message_to_mesh_event_outcome(message, now) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        pending_error = Some(error);
                         return false;
                     }
+                };
+                if let Some(reply) = outcome.reply
+                    && let Err(error) = self.endpoint.blocking_send_to_peer(reply.peer, reply.data)
+                {
+                    pending_error = Some(error.into());
+                    return false;
+                }
+                if let Some(event) = outcome.event {
+                    emitted = emitted.saturating_add(1);
+                    return handle_event(event);
+                }
+                true
+            });
 
-                    match self.endpoint_message_to_mesh_event_blocking(message, now) {
-                        Ok(Some(event)) => {
-                            events_drained += 1;
-                            if handle_event(event) {
-                                true
-                            } else {
-                                handler_stopped = true;
-                                false
-                            }
-                        }
-                        Ok(None) => true,
-                        Err(error) => {
-                            receive_error = Some(error);
-                            false
-                        }
-                    }
-                })
-            else {
-                return Ok(None);
-            };
-
-            if let Some(error) = receive_error {
+            if let Some(error) = pending_error {
                 return Err(error);
             }
-            if handler_stopped || stop.load(Ordering::Acquire) {
+            if stop.load(Ordering::Acquire) {
                 return Ok(None);
             }
-            if events_drained > 0 {
-                return Ok(Some(events_drained));
+            if received.is_none() {
+                return Ok(None);
+            }
+            if emitted > 0 {
+                return Ok(Some(emitted));
             }
         }
     }

@@ -78,7 +78,7 @@ impl NativeAppRuntime {
             .collect::<Vec<_>>();
         admins.sort();
         admins.dedup();
-        let mut participant_keys = network.participants.clone();
+        let mut participant_keys = network.devices.clone();
         participant_keys.extend(network.admins.iter().cloned());
         participant_keys.sort();
         participant_keys.dedup();
@@ -261,7 +261,7 @@ impl NativeAppRuntime {
             return false;
         }
         !network
-            .participants
+            .devices
             .iter()
             .chain(network.admins.iter())
             .any(|member| member == own_pubkey_hex)

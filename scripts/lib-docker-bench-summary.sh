@@ -3,14 +3,19 @@
 
 docker_bench_init_summary() {
   mkdir -p "$RAW_DIR"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     backend threads duration_secs \
     tcp_single_mbps tcp_single_retrans \
     tcp_4_mbps tcp_4_retrans \
     tcp_8_mbps tcp_8_retrans \
     udp_200_mbps udp_200_loss_pct \
     udp_1000_mbps udp_1000_loss_pct \
-    ping_loss_pct ping_avg_ms raw_dir >"$SUMMARY_TSV"
+    ping_loss_pct ping_avg_ms raw_dir \
+    cpu_stress_enabled cpu_stress_sides \
+    cpu_stress_local_workers cpu_stress_remote_workers \
+    iperf_socket_buffer udp1000_parallel \
+    udp1000_bandwidth udp1000_per_stream_bandwidth \
+    dataplane_profile placement_profile >"$SUMMARY_TSV"
 }
 
 docker_bench_tsv_field() {
@@ -25,6 +30,57 @@ docker_bench_bool_enabled() {
     1 | true | TRUE | yes | YES | on | ON) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+docker_bench_local_fips_patch_enabled() {
+  if [[ -n "${NVPN_PATCH_LOCAL_FIPS+x}" ]]; then
+    docker_bench_bool_enabled "$NVPN_PATCH_LOCAL_FIPS"
+    return
+  fi
+
+  [[ -n "${NVPN_FIPS_REPO_PATH:-}" ]]
+}
+
+docker_bench_apply_local_fips_patch_default() {
+  if [[ -z "${NVPN_PATCH_LOCAL_FIPS+x}" && -n "${NVPN_FIPS_REPO_PATH:-}" ]]; then
+    export NVPN_PATCH_LOCAL_FIPS=1
+  fi
+}
+
+docker_bench_parse_rate_bps() {
+  local raw="$1"
+  local number suffix
+  [[ "$raw" =~ ^([0-9]+)([KMG])?$ ]] || return 1
+  number="${BASH_REMATCH[1]}"
+  suffix="${BASH_REMATCH[2]:-}"
+  case "$suffix" in
+    K) printf '%s\n' "$((number * 1000))" ;;
+    M) printf '%s\n' "$((number * 1000 * 1000))" ;;
+    G) printf '%s\n' "$((number * 1000 * 1000 * 1000))" ;;
+    *) printf '%s\n' "$number" ;;
+  esac
+}
+
+docker_bench_udp1000_parallel_streams() {
+  local streams="${NVPN_DOCKER_UDP1000_PARALLEL:-}"
+  if [[ -z "$streams" ]]; then
+    printf '1\n'
+  else
+    printf '%s\n' "$streams"
+  fi
+}
+
+docker_bench_udp1000_per_stream_bandwidth() {
+  local total="${NVPN_DOCKER_UDP1000_BANDWIDTH:-1G}"
+  local streams total_bps per_stream_bps
+  streams="$(docker_bench_udp1000_parallel_streams)"
+  total_bps="$(docker_bench_parse_rate_bps "$total")" || return 1
+  if (( streams <= 1 )); then
+    printf '%s\n' "$total"
+    return 0
+  fi
+  per_stream_bps=$(((total_bps + streams - 1) / streams))
+  printf '%s\n' "$per_stream_bps"
 }
 
 docker_bench_env_bool_assignment_enabled() {
@@ -43,10 +99,182 @@ docker_bench_env_bool_assignment_enabled() {
   return 1
 }
 
+docker_bench_env_assignment_present() {
+  local name="$1"
+  local token
+  for token in ${2:-}; do
+    case "$token" in
+      "$name"=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+docker_bench_dataplane_profile_env() {
+  local profile="${NVPN_DOCKER_DATAPLANE_PROFILE:-}"
+  case "$profile" in
+    "" | plain | default)
+      return 0
+      ;;
+    linux-vnet)
+      printf '%s\n' "NVPN_FIPS_LINUX_TUN_VNET=1"
+      ;;
+    linux-vnet-lan)
+      printf '%s\n' "NVPN_FIPS_LINUX_TUN_VNET=1 NVPN_MESH_UNDERLAY_UDP_MTU=1472"
+      ;;
+    *)
+      printf 'perf: unknown NVPN_DOCKER_DATAPLANE_PROFILE=%s (known: plain, linux-vnet, linux-vnet-lan)\n' \
+        "$profile" >&2
+      return 2
+      ;;
+  esac
+}
+
+docker_bench_placement_profile_env() {
+  local profile="${NVPN_DOCKER_PLACEMENT_PROFILE:-}"
+  case "$profile" in
+    "" | plain | default)
+      return 0
+      ;;
+    worker-open)
+      return 0
+      ;;
+    *)
+      printf 'perf: unknown NVPN_DOCKER_PLACEMENT_PROFILE=%s (known: plain, worker-open)\n' \
+        "$profile" >&2
+      return 2
+      ;;
+  esac
+}
+
+docker_bench_join_env_assignments() {
+  local left="${1:-}"
+  local right="${2:-}"
+  if [[ -n "$left" && -n "$right" ]]; then
+    printf '%s %s\n' "$left" "$right"
+  elif [[ -n "$left" ]]; then
+    printf '%s\n' "$left"
+  else
+    printf '%s\n' "$right"
+  fi
+}
+
+docker_bench_effective_extra_env() {
+  local profile_env placement_env
+  profile_env="$(docker_bench_dataplane_profile_env)" || return $?
+  placement_env="$(docker_bench_placement_profile_env)" || return $?
+  docker_bench_join_env_assignments \
+    "$(docker_bench_join_env_assignments "$profile_env" "$placement_env")" \
+    "${NVPN_DOCKER_EXTRA_ENV:-}"
+}
+
+docker_bench_validate_connect_env_scope() {
+  local effective_env="$1"
+  local name value failed=0
+  for name in \
+    FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER \
+    FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER \
+    FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER; do
+    value="${!name:-}"
+    [[ -n "$value" ]] || continue
+    printf 'perf: %s\n' "$(docker_bench_extra_env_stale_assignment_message "$name")" >&2
+    failed=1
+  done
+  for name in \
+    NVPN_FIPS_LINUX_TUN_VNET \
+    NVPN_FIPS_LINUX_TUN_TX_QUEUE_LEN \
+    NVPN_MESH_UNDERLAY_UDP_MTU \
+    NVPN_MESH_MTU_PROFILE \
+    FIPS_DECRYPT_FSP_OPEN_POOL; do
+    value="${!name:-}"
+    [[ -n "$value" ]] || continue
+    if ! docker_bench_env_assignment_present "$name" "$effective_env"; then
+      printf 'perf: %s=%s is set outside the daemon connect env; use NVPN_DOCKER_EXTRA_ENV or NVPN_DOCKER_DATAPLANE_PROFILE so nvpn connect sees it\n' \
+        "$name" "$value" >&2
+      failed=1
+    fi
+  done
+  [[ "$failed" == "0" ]]
+}
+
 docker_bench_direct_fmp_forced_enabled() {
+  local effective_env
+  effective_env="$(docker_bench_effective_extra_env)" || return $?
   docker_bench_env_bool_assignment_enabled \
     FIPS_DIRECT_ENDPOINT_FMP_ONLY \
-    "${NVPN_DOCKER_EXTRA_ENV:-}"
+    "$effective_env"
+}
+
+docker_bench_extra_env_stale_assignment_message() {
+  local name="$1"
+  case "$name" in
+    FIPS_FMP_AEAD_HELPERS|FIPS_DECRYPT_FMP_AEAD_HELPERS)
+      printf '%s\n' \
+        "$name is retired; FMP decrypt stays on the source-affine owner path"
+      ;;
+    FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER is retired; FMP decrypt always uses the canonical source-affine owner path"
+      ;;
+    FIPS_FSP_AEAD_HELPERS)
+      printf '%s\n' \
+        "FIPS_FSP_AEAD_HELPERS is not read by current FIPS; the FSP helper lane is retired, use worker-open placement"
+      ;;
+    FIPS_FSP_AEAD_HELPER_COMPLETIONS)
+      printf '%s\n' \
+        "FIPS_FSP_AEAD_HELPER_COMPLETIONS is not read by current FIPS; remove it"
+      ;;
+    FIPS_DECRYPT_FSP_ORDERED_AEAD_HELPERS)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FSP_ORDERED_AEAD_HELPERS is retired; use worker-open placement instead of the FSP helper lane"
+      ;;
+    FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER is retired; same-owner bulk worker-open is the default when multiple decrypt workers are available"
+      ;;
+    FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER is retired; remote FSP worker-open bench placement is no longer a production dataplane knob"
+      ;;
+    FIPS_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG is retired; worker-open pressure is bounded by the ordered receive window and worker queues"
+      ;;
+    FIPS_DECRYPT_FSP_AEAD_COMPLETION_BATCH_MAX)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FSP_AEAD_COMPLETION_BATCH_MAX is retired; FSP completion batching uses the accepted fixed worker-open width"
+      ;;
+    FIPS_LINUX_BULK_UDP_PACE_MBPS|FIPS_LINUX_BULK_UDP_PACE_BURST_BYTES|FIPS_LINUX_BULK_UDP_PACE_SPIN_NS)
+      printf '%s\n' \
+        "$name is retired; Linux bulk UDP sends use the accepted unpaced deferred/WG-batch sender shape"
+      ;;
+    FIPS_MACOS_ORDERED_SENDER|FIPS_MACOS_WORKER_STRIDE|FIPS_MACOS_SEND_FLOW_IDLE_MS)
+      printf '%s\n' \
+        "$name is retired; macOS uses the accepted hash-by-send-target worker sender"
+      ;;
+    FIPS_DECRYPT_FMP_PREOWNER_AEAD_HELPERS)
+      printf '%s\n' \
+        "FIPS_DECRYPT_FMP_PREOWNER_AEAD_HELPERS was removed; FMP uses the canonical source-affine owner path"
+      ;;
+  esac
+}
+
+docker_bench_validate_extra_env_assignments() {
+  local env_string="${1:-}"
+  local token name message failed=0
+  for token in $env_string; do
+    case "$token" in
+      *=*)
+        name="${token%%=*}"
+        message="$(docker_bench_extra_env_stale_assignment_message "$name")"
+        if [[ -n "$message" ]]; then
+          printf 'perf: stale benchmark extra-env assignment: %s\n' "$message" >&2
+          failed=1
+        fi
+        ;;
+    esac
+  done
+  [[ "$failed" == "0" ]]
 }
 
 docker_bench_cpu_stress_enabled() {
@@ -177,13 +405,80 @@ docker_bench_write_metadata() {
   local pipeline_trace_interval_secs=""
   local iperf_interval_secs="${NVPN_DOCKER_IPERF_INTERVAL_SECS:-0}"
   local iperf_timeout_secs="${NVPN_DOCKER_IPERF_TIMEOUT_SECS:-}"
+  local iperf_udp1000_per_stream_bandwidth
+  local dataplane_profile="${NVPN_DOCKER_DATAPLANE_PROFILE:-}"
+  local placement_profile="${NVPN_DOCKER_PLACEMENT_PROFILE:-}"
+  local extra_connect_env=""
   local require_no_direct_fmp=0
+  local require_no_fsp_aead_helpers=0
+  local require_no_pipeline_hard_events=0
+  local allowed_pipeline_hard_events="${NVPN_DOCKER_ALLOW_PIPELINE_HARD_EVENTS:-}"
   local direct_fmp_forced=0
   local patch_local_fips_enabled=0
   local nvpn_git_head=""
   local nvpn_git_dirty=""
   local fips_git_head=""
   local fips_git_dirty=""
+  local expected_fsp_owner_placement="${NVPN_DOCKER_EXPECT_FSP_OWNER_PLACEMENT:-}"
+  local expected_fsp_owner_placement_exclusive="${NVPN_DOCKER_EXPECT_FSP_OWNER_PLACEMENT_EXCLUSIVE:-}"
+  local max_fsp_owner_placement_other_path_rate="${NVPN_DOCKER_MAX_FSP_OWNER_PLACEMENT_OTHER_PATH_RATE:-}"
+  local placement_preflight="${NVPN_DOCKER_PLACEMENT_PREFLIGHT:-}"
+  local placement_preflight_mode="${NVPN_DOCKER_PLACEMENT_PREFLIGHT_MODE:-tcp}"
+  local placement_preflight_duration="${NVPN_DOCKER_PLACEMENT_PREFLIGHT_DURATION:-3}"
+  local placement_preflight_streams="${NVPN_DOCKER_PLACEMENT_PREFLIGHT_STREAMS:-4}"
+  local soak_max_ping_loss_pct=""
+  local soak_max_ping_avg_ms=""
+  local soak_max_ping_p95_ms=""
+  local soak_max_ping_p99_ms=""
+  local soak_max_ping_max_ms=""
+  local soak_max_ping_avg_drift_ms=""
+  local soak_max_ping_avg_drift_factor=""
+  local soak_max_ping_p95_drift_ms=""
+  local soak_max_ping_p95_drift_factor=""
+  local soak_max_ping_p99_drift_ms=""
+  local soak_max_ping_p99_drift_factor=""
+  local soak_max_srtt_ms=""
+  local soak_max_srtt_drift_ms=""
+  local soak_max_srtt_drift_factor=""
+  local soak_max_consecutive_high_srtt_samples=""
+  local soak_max_fips_last_seen_age_secs=""
+  local soak_max_fips_control_last_seen_age_secs=""
+  local soak_max_fips_data_last_seen_age_secs=""
+  local soak_max_fips_last_seen_future_skew_secs=""
+  if [[ "$backend" == "fips-soak" ]]; then
+    if [[ -z "$expected_fsp_owner_placement" ]]; then
+      expected_fsp_owner_placement="${EXPECT_FSP_OWNER_PLACEMENT:-${NVPN_SOAK_EXPECT_FSP_OWNER_PLACEMENT:-}}"
+    fi
+    soak_max_ping_loss_pct="${MAX_PING_LOSS_PERCENT:-${NVPN_SOAK_MAX_PING_LOSS_PERCENT:-}}"
+    soak_max_ping_avg_ms="${MAX_PING_AVG_MS:-${NVPN_SOAK_MAX_PING_AVG_MS:-}}"
+    soak_max_ping_p95_ms="${MAX_PING_P95_MS:-${NVPN_SOAK_MAX_PING_P95_MS:-}}"
+    soak_max_ping_p99_ms="${MAX_PING_P99_MS:-${NVPN_SOAK_MAX_PING_P99_MS:-}}"
+    soak_max_ping_max_ms="${MAX_PING_MAX_MS:-${NVPN_SOAK_MAX_PING_MAX_MS:-}}"
+    soak_max_ping_avg_drift_ms="${MAX_PING_AVG_DRIFT_MS:-${NVPN_SOAK_MAX_PING_AVG_DRIFT_MS:-}}"
+    soak_max_ping_avg_drift_factor="${MAX_PING_AVG_DRIFT_FACTOR:-${NVPN_SOAK_MAX_PING_AVG_DRIFT_FACTOR:-}}"
+    soak_max_ping_p95_drift_ms="${MAX_PING_P95_DRIFT_MS:-${NVPN_SOAK_MAX_PING_P95_DRIFT_MS:-}}"
+    soak_max_ping_p95_drift_factor="${MAX_PING_P95_DRIFT_FACTOR:-${NVPN_SOAK_MAX_PING_P95_DRIFT_FACTOR:-}}"
+    soak_max_ping_p99_drift_ms="${MAX_PING_P99_DRIFT_MS:-${NVPN_SOAK_MAX_PING_P99_DRIFT_MS:-}}"
+    soak_max_ping_p99_drift_factor="${MAX_PING_P99_DRIFT_FACTOR:-${NVPN_SOAK_MAX_PING_P99_DRIFT_FACTOR:-}}"
+    soak_max_srtt_ms="${MAX_SRTT_MS:-${NVPN_SOAK_MAX_SRTT_MS:-}}"
+    soak_max_srtt_drift_ms="${MAX_SRTT_DRIFT_MS:-${NVPN_SOAK_MAX_SRTT_DRIFT_MS:-}}"
+    soak_max_srtt_drift_factor="${MAX_SRTT_DRIFT_FACTOR:-${NVPN_SOAK_MAX_SRTT_DRIFT_FACTOR:-}}"
+    soak_max_consecutive_high_srtt_samples="${MAX_CONSECUTIVE_HIGH_SRTT_SAMPLES:-${NVPN_SOAK_MAX_CONSECUTIVE_HIGH_SRTT_SAMPLES:-}}"
+    soak_max_fips_last_seen_age_secs="${MAX_FIPS_LAST_SEEN_AGE_SECS:-${NVPN_SOAK_MAX_FIPS_LAST_SEEN_AGE_SECS:-}}"
+    soak_max_fips_control_last_seen_age_secs="${MAX_FIPS_CONTROL_LAST_SEEN_AGE_SECS:-${NVPN_SOAK_MAX_FIPS_CONTROL_LAST_SEEN_AGE_SECS:-}}"
+    soak_max_fips_data_last_seen_age_secs="${MAX_FIPS_DATA_LAST_SEEN_AGE_SECS:-${NVPN_SOAK_MAX_FIPS_DATA_LAST_SEEN_AGE_SECS:-}}"
+    soak_max_fips_last_seen_future_skew_secs="${MAX_FIPS_LAST_SEEN_FUTURE_SKEW_SECS:-${NVPN_SOAK_MAX_FIPS_LAST_SEEN_FUTURE_SKEW_SECS:-}}"
+  fi
+  if [[ "$placement_profile" == "worker-open" ]]; then
+    if [[ -z "$expected_fsp_owner_placement" ]]; then
+      expected_fsp_owner_placement="worker-open"
+    fi
+    if [[ -z "${NVPN_DOCKER_EXPECT_FSP_OWNER_PLACEMENT_EXCLUSIVE+x}" ]]; then
+      expected_fsp_owner_placement_exclusive="1"
+    fi
+  fi
+  expected_fsp_owner_placement_exclusive="${expected_fsp_owner_placement_exclusive:-0}"
+  extra_connect_env="$(docker_bench_effective_extra_env)"
   if docker_bench_cpu_stress_enabled; then
     stress_enabled=1
     if docker_bench_cpu_stress_side_enabled local; then
@@ -193,15 +488,22 @@ docker_bench_write_metadata() {
       remote_workers="$(docker_bench_cpu_stress_workers remote)"
     fi
   fi
+  iperf_udp1000_per_stream_bandwidth="$(docker_bench_udp1000_per_stream_bandwidth)"
   if docker_bench_bool_enabled "${NVPN_DOCKER_PIPELINE_TRACE:-0}"; then
     pipeline_trace_enabled=1
     pipeline_trace_interval_secs="${NVPN_DOCKER_PIPELINE_INTERVAL_SECS:-5}"
   fi
-  if docker_bench_bool_enabled "${NVPN_PATCH_LOCAL_FIPS:-0}"; then
+  if docker_bench_local_fips_patch_enabled; then
     patch_local_fips_enabled=1
   fi
   if docker_bench_bool_enabled "${NVPN_DOCKER_REQUIRE_NO_DIRECT_FMP:-0}"; then
     require_no_direct_fmp=1
+  fi
+  if docker_bench_bool_enabled "${NVPN_DOCKER_REQUIRE_NO_FSP_AEAD_HELPERS:-0}"; then
+    require_no_fsp_aead_helpers=1
+  fi
+  if docker_bench_bool_enabled "${NVPN_DOCKER_REQUIRE_NO_PIPELINE_HARD_EVENTS:-0}"; then
+    require_no_pipeline_hard_events=1
   fi
   if docker_bench_direct_fmp_forced_enabled; then
     direct_fmp_forced=1
@@ -226,8 +528,23 @@ docker_bench_write_metadata() {
     --arg pipeline_trace_interval_secs "$pipeline_trace_interval_secs" \
     --arg iperf_interval_secs "$iperf_interval_secs" \
     --arg iperf_timeout_secs "$iperf_timeout_secs" \
-    --arg extra_connect_env "${NVPN_DOCKER_EXTRA_ENV:-}" \
+    --arg iperf_socket_buffer "${NVPN_DOCKER_IPERF_SOCKET_BUFFER:-}" \
+    --arg iperf_udp1000_parallel "${NVPN_DOCKER_UDP1000_PARALLEL:-}" \
+    --arg iperf_udp1000_bandwidth "${NVPN_DOCKER_UDP1000_BANDWIDTH:-1G}" \
+    --arg iperf_udp1000_per_stream_bandwidth "$iperf_udp1000_per_stream_bandwidth" \
+    --arg dataplane_profile "$dataplane_profile" \
+    --arg placement_profile "$placement_profile" \
+    --arg extra_connect_env "$extra_connect_env" \
+    --arg expected_fsp_owner_placement "$expected_fsp_owner_placement" \
+    --arg expected_fsp_owner_placement_exclusive "$expected_fsp_owner_placement_exclusive" \
+    --arg placement_preflight "$placement_preflight" \
+    --arg placement_preflight_mode "$placement_preflight_mode" \
+    --arg placement_preflight_duration "$placement_preflight_duration" \
+    --arg placement_preflight_streams "$placement_preflight_streams" \
     --arg require_no_direct_fmp "$require_no_direct_fmp" \
+    --arg require_no_fsp_aead_helpers "$require_no_fsp_aead_helpers" \
+    --arg require_no_pipeline_hard_events "$require_no_pipeline_hard_events" \
+    --arg allowed_pipeline_hard_events "$allowed_pipeline_hard_events" \
     --arg direct_fmp_forced "$direct_fmp_forced" \
     --arg patch_local_fips_enabled "$patch_local_fips_enabled" \
     --arg nvpn_git_head "$nvpn_git_head" \
@@ -238,6 +555,8 @@ docker_bench_write_metadata() {
     --arg guard_min_tcp_single_mbps "${NVPN_DOCKER_MIN_TCP_SINGLE_MBPS:-}" \
     --arg guard_min_tcp_4_mbps "${NVPN_DOCKER_MIN_TCP_4_MBPS:-}" \
     --arg guard_min_tcp_8_mbps "${NVPN_DOCKER_MIN_TCP_8_MBPS:-}" \
+    --arg guard_min_udp200_mbps "${NVPN_DOCKER_MIN_UDP200_MBPS:-}" \
+    --arg guard_min_udp1000_mbps "${NVPN_DOCKER_MIN_UDP1000_MBPS:-}" \
     --arg guard_max_tcp_retrans "${NVPN_DOCKER_MAX_TCP_RETRANS:-}" \
     --arg guard_max_tcp_single_retrans "${NVPN_DOCKER_MAX_TCP_SINGLE_RETRANS:-}" \
     --arg guard_max_tcp_4_retrans "${NVPN_DOCKER_MAX_TCP_4_RETRANS:-}" \
@@ -245,11 +564,63 @@ docker_bench_write_metadata() {
     --arg guard_max_udp_loss_pct "${NVPN_DOCKER_MAX_UDP_LOSS_PCT:-}" \
     --arg guard_max_udp200_loss_pct "${NVPN_DOCKER_MAX_UDP200_LOSS_PCT:-}" \
     --arg guard_max_udp1000_loss_pct "${NVPN_DOCKER_MAX_UDP1000_LOSS_PCT:-}" \
-    --arg guard_max_ping_loss_pct "${NVPN_DOCKER_MAX_PING_LOSS_PCT:-}" \
+    --arg guard_max_ping_loss_pct "${NVPN_DOCKER_MAX_PING_LOSS_PCT:-$soak_max_ping_loss_pct}" \
+    --arg guard_max_ping_avg_ms "$soak_max_ping_avg_ms" \
+    --arg guard_max_ping_p95_ms "$soak_max_ping_p95_ms" \
+    --arg guard_max_ping_p99_ms "$soak_max_ping_p99_ms" \
+    --arg guard_max_ping_max_ms "$soak_max_ping_max_ms" \
+    --arg guard_max_ping_avg_drift_ms "$soak_max_ping_avg_drift_ms" \
+    --arg guard_max_ping_avg_drift_factor "$soak_max_ping_avg_drift_factor" \
+    --arg guard_max_ping_p95_drift_ms "$soak_max_ping_p95_drift_ms" \
+    --arg guard_max_ping_p95_drift_factor "$soak_max_ping_p95_drift_factor" \
+    --arg guard_max_ping_p99_drift_ms "$soak_max_ping_p99_drift_ms" \
+    --arg guard_max_ping_p99_drift_factor "$soak_max_ping_p99_drift_factor" \
+    --arg guard_max_srtt_ms "$soak_max_srtt_ms" \
+    --arg guard_max_srtt_drift_ms "$soak_max_srtt_drift_ms" \
+    --arg guard_max_srtt_drift_factor "$soak_max_srtt_drift_factor" \
+    --arg guard_max_consecutive_high_srtt_samples "$soak_max_consecutive_high_srtt_samples" \
+    --arg guard_max_fips_last_seen_age_secs "$soak_max_fips_last_seen_age_secs" \
+    --arg guard_max_fips_control_last_seen_age_secs "$soak_max_fips_control_last_seen_age_secs" \
+    --arg guard_max_fips_data_last_seen_age_secs "$soak_max_fips_data_last_seen_age_secs" \
+    --arg guard_max_fips_last_seen_future_skew_secs "$soak_max_fips_last_seen_future_skew_secs" \
+    --arg guard_max_udp_kernel_dropped "${NVPN_DOCKER_MAX_UDP_KERNEL_DROPPED:-}" \
+    --arg guard_max_udp_socket_kernel_dropped "${NVPN_DOCKER_MAX_UDP_SOCKET_KERNEL_DROPPED:-}" \
+    --arg guard_max_udp_namespace_rcvbuf_errors "${NVPN_DOCKER_MAX_UDP_NAMESPACE_RCVBUF_ERRORS:-}" \
+    --arg guard_max_connected_udp_kernel_dropped "${NVPN_DOCKER_MAX_CONNECTED_UDP_KERNEL_DROPPED:-}" \
+    --arg guard_max_connected_udp_peer_kernel_dropped "${NVPN_DOCKER_MAX_CONNECTED_UDP_PEER_KERNEL_DROPPED:-}" \
+    --arg guard_max_connected_udp_drain_bulk_dropped "${NVPN_DOCKER_MAX_CONNECTED_UDP_DRAIN_BULK_DROPPED:-}" \
+    --arg guard_max_connected_udp_direct_decrypt_bulk_shed "${NVPN_DOCKER_MAX_CONNECTED_UDP_DIRECT_DECRYPT_BULK_SHED:-}" \
+    --arg guard_max_endpoint_event_bulk_dropped "${NVPN_DOCKER_MAX_ENDPOINT_EVENT_BULK_DROPPED:-}" \
+    --arg guard_max_tun_rx_dropped "${NVPN_DOCKER_MAX_TUN_RX_DROPPED:-}" \
+    --arg guard_max_tun_tx_dropped "${NVPN_DOCKER_MAX_TUN_TX_DROPPED:-}" \
+    --arg guard_max_decrypt_worker_queue_full "${NVPN_DOCKER_MAX_DECRYPT_WORKER_QUEUE_FULL:-}" \
+    --arg guard_max_decrypt_worker_bulk_dropped "${NVPN_DOCKER_MAX_DECRYPT_WORKER_BULK_DROPPED:-}" \
+    --arg guard_max_decrypt_fallback_pressure_drain "${NVPN_DOCKER_MAX_DECRYPT_FALLBACK_PRESSURE_DRAIN:-}" \
+    --arg guard_max_decrypt_fallback_priority_gated "${NVPN_DOCKER_MAX_DECRYPT_FALLBACK_PRIORITY_GATED:-}" \
+    --arg guard_max_decrypt_fsp_helper_window_fallback "${NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_WINDOW_FALLBACK:-}" \
+    --arg guard_max_decrypt_fsp_open_worker_window_fallback "${NVPN_DOCKER_MAX_DECRYPT_FSP_OPEN_WORKER_WINDOW_FALLBACK:-}" \
+    --arg guard_max_decrypt_fsp_helper_queue_full_fallback "${NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_QUEUE_FULL_FALLBACK:-}" \
+    --arg guard_max_decrypt_fsp_helper_completion_backlog_fallback "${NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_COMPLETION_BACKLOG_FALLBACK:-}" \
+    --arg guard_max_decrypt_fsp_owner_handoff_dropped "${NVPN_DOCKER_MAX_DECRYPT_FSP_OWNER_HANDOFF_DROPPED:-}" \
+    --arg guard_max_decrypt_fsp_open_worker_completion_backlog_fallback "${NVPN_DOCKER_MAX_DECRYPT_FSP_OPEN_WORKER_COMPLETION_BACKLOG_FALLBACK:-}" \
+    --arg guard_max_decrypt_fsp_worker_replay_dropped "${NVPN_DOCKER_MAX_DECRYPT_FSP_WORKER_REPLAY_DROPPED:-}" \
+    --arg guard_max_fmp_aead_completion_aead_failed "${NVPN_DOCKER_MAX_FMP_AEAD_COMPLETION_AEAD_FAILED:-}" \
+    --arg guard_max_fsp_aead_completion_aead_failed "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_AEAD_FAILED:-}" \
+    --arg guard_max_fsp_aead_completion_epoch_mismatch "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_EPOCH_MISMATCH:-}" \
+    --arg guard_max_fsp_aead_completion_stale_session "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_SESSION:-}" \
+    --arg guard_max_fsp_aead_completion_stale_order "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_ORDER:-}" \
+    --arg guard_max_fsp_aead_completion_stale_ticket "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_TICKET:-}" \
+    --arg guard_max_fsp_aead_completion_duplicate_ticket "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_DUPLICATE_TICKET:-}" \
+    --arg guard_max_fsp_aead_completion_window_exceeded "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_WINDOW_EXCEEDED:-}" \
+    --arg guard_max_fmp_aead_completion_replay_dropped "${NVPN_DOCKER_MAX_FMP_AEAD_COMPLETION_REPLAY_DROPPED:-}" \
+    --arg guard_max_fsp_aead_completion_replay_dropped "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED:-}" \
+    --arg guard_max_fsp_aead_completion_replay_dropped_helper "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED_HELPER:-}" \
+    --arg guard_max_fsp_aead_completion_replay_dropped_helper_returned "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED_HELPER_RETURNED:-}" \
+    --arg guard_max_fsp_owner_placement_other_path_rate "$max_fsp_owner_placement_other_path_rate" \
     'def bool_or_null($v):
        if $v == "" then null
-       elif $v == "true" then true
-       elif $v == "false" then false
+       elif ($v | test("^(1|true|TRUE|True|yes|YES|Yes|on|ON|On)$")) then true
+       elif ($v | test("^(0|false|FALSE|False|no|NO|No|off|OFF|Off)$")) then false
        else null
        end;
      def string_or_null($v):
@@ -259,8 +630,27 @@ docker_bench_write_metadata() {
       backend: $backend,
       duration_secs: ($duration_secs | tonumber),
       run_env: {
+        dataplane_profile: string_or_null($dataplane_profile),
+        placement_profile: string_or_null($placement_profile),
         extra_connect_env: $extra_connect_env,
+        expected_fsp_owner_placement: string_or_null($expected_fsp_owner_placement),
+        expected_fsp_owner_placement_exclusive: bool_or_null($expected_fsp_owner_placement_exclusive),
+        placement_preflight: string_or_null($placement_preflight),
+        placement_preflight_mode: string_or_null($placement_preflight_mode),
+        placement_preflight_duration_secs: (
+          if $placement_preflight_duration == "" then null
+          else ($placement_preflight_duration | tonumber)
+          end
+        ),
+        placement_preflight_streams: (
+          if $placement_preflight_streams == "" then null
+          else ($placement_preflight_streams | tonumber)
+          end
+        ),
         require_no_direct_fmp: ($require_no_direct_fmp == "1"),
+        require_no_fsp_aead_helpers: ($require_no_fsp_aead_helpers == "1"),
+        require_no_pipeline_hard_events: ($require_no_pipeline_hard_events == "1"),
+        allowed_pipeline_hard_events: string_or_null($allowed_pipeline_hard_events),
         direct_fmp_forced: ($direct_fmp_forced == "1")
       },
       cpu_stress: {
@@ -283,13 +673,23 @@ docker_bench_write_metadata() {
           if $iperf_timeout_secs == "" then null
           else ($iperf_timeout_secs | tonumber)
           end
-        )
+        ),
+        socket_buffer: string_or_null($iperf_socket_buffer),
+        udp1000_parallel: (
+          if $iperf_udp1000_parallel == "" then null
+          else ($iperf_udp1000_parallel | tonumber)
+          end
+        ),
+        udp1000_bandwidth: string_or_null($iperf_udp1000_bandwidth),
+        udp1000_per_stream_bandwidth: string_or_null($iperf_udp1000_per_stream_bandwidth)
       },
       guard_thresholds: {
         min_tcp_mbps: string_or_null($guard_min_tcp_mbps),
         min_tcp_single_mbps: string_or_null($guard_min_tcp_single_mbps),
         min_tcp_4_mbps: string_or_null($guard_min_tcp_4_mbps),
         min_tcp_8_mbps: string_or_null($guard_min_tcp_8_mbps),
+        min_udp200_mbps: string_or_null($guard_min_udp200_mbps),
+        min_udp1000_mbps: string_or_null($guard_min_udp1000_mbps),
         max_tcp_retrans: string_or_null($guard_max_tcp_retrans),
         max_tcp_single_retrans: string_or_null($guard_max_tcp_single_retrans),
         max_tcp_4_retrans: string_or_null($guard_max_tcp_4_retrans),
@@ -297,7 +697,59 @@ docker_bench_write_metadata() {
         max_udp_loss_pct: string_or_null($guard_max_udp_loss_pct),
         max_udp200_loss_pct: string_or_null($guard_max_udp200_loss_pct),
         max_udp1000_loss_pct: string_or_null($guard_max_udp1000_loss_pct),
-        max_ping_loss_pct: string_or_null($guard_max_ping_loss_pct)
+        max_ping_loss_pct: string_or_null($guard_max_ping_loss_pct),
+        max_ping_avg_ms: string_or_null($guard_max_ping_avg_ms),
+        max_ping_p95_ms: string_or_null($guard_max_ping_p95_ms),
+        max_ping_p99_ms: string_or_null($guard_max_ping_p99_ms),
+        max_ping_max_ms: string_or_null($guard_max_ping_max_ms),
+        max_ping_avg_drift_ms: string_or_null($guard_max_ping_avg_drift_ms),
+        max_ping_avg_drift_factor: string_or_null($guard_max_ping_avg_drift_factor),
+        max_ping_p95_drift_ms: string_or_null($guard_max_ping_p95_drift_ms),
+        max_ping_p95_drift_factor: string_or_null($guard_max_ping_p95_drift_factor),
+        max_ping_p99_drift_ms: string_or_null($guard_max_ping_p99_drift_ms),
+        max_ping_p99_drift_factor: string_or_null($guard_max_ping_p99_drift_factor),
+        max_srtt_ms: string_or_null($guard_max_srtt_ms),
+        max_srtt_drift_ms: string_or_null($guard_max_srtt_drift_ms),
+        max_srtt_drift_factor: string_or_null($guard_max_srtt_drift_factor),
+        max_consecutive_high_srtt_samples: string_or_null($guard_max_consecutive_high_srtt_samples),
+        max_fips_last_seen_age_secs: string_or_null($guard_max_fips_last_seen_age_secs),
+        max_fips_control_last_seen_age_secs: string_or_null($guard_max_fips_control_last_seen_age_secs),
+        max_fips_data_last_seen_age_secs: string_or_null($guard_max_fips_data_last_seen_age_secs),
+        max_fips_last_seen_future_skew_secs: string_or_null($guard_max_fips_last_seen_future_skew_secs),
+        max_udp_kernel_dropped: string_or_null($guard_max_udp_kernel_dropped),
+        max_udp_socket_kernel_dropped: string_or_null($guard_max_udp_socket_kernel_dropped),
+        max_udp_namespace_rcvbuf_errors: string_or_null($guard_max_udp_namespace_rcvbuf_errors),
+        max_connected_udp_kernel_dropped: string_or_null($guard_max_connected_udp_kernel_dropped),
+        max_connected_udp_peer_kernel_dropped: string_or_null($guard_max_connected_udp_peer_kernel_dropped),
+        max_connected_udp_drain_bulk_dropped: string_or_null($guard_max_connected_udp_drain_bulk_dropped),
+        max_connected_udp_direct_decrypt_bulk_shed: string_or_null($guard_max_connected_udp_direct_decrypt_bulk_shed),
+        max_endpoint_event_bulk_dropped: string_or_null($guard_max_endpoint_event_bulk_dropped),
+        max_tun_rx_dropped: string_or_null($guard_max_tun_rx_dropped),
+        max_tun_tx_dropped: string_or_null($guard_max_tun_tx_dropped),
+        max_decrypt_worker_queue_full: string_or_null($guard_max_decrypt_worker_queue_full),
+        max_decrypt_worker_bulk_dropped: string_or_null($guard_max_decrypt_worker_bulk_dropped),
+        max_decrypt_fallback_pressure_drain: string_or_null($guard_max_decrypt_fallback_pressure_drain),
+        max_decrypt_fallback_priority_gated: string_or_null($guard_max_decrypt_fallback_priority_gated),
+        max_decrypt_fsp_helper_window_fallback: string_or_null($guard_max_decrypt_fsp_helper_window_fallback),
+        max_decrypt_fsp_open_worker_window_fallback: string_or_null($guard_max_decrypt_fsp_open_worker_window_fallback),
+        max_decrypt_fsp_helper_queue_full_fallback: string_or_null($guard_max_decrypt_fsp_helper_queue_full_fallback),
+        max_decrypt_fsp_helper_completion_backlog_fallback: string_or_null($guard_max_decrypt_fsp_helper_completion_backlog_fallback),
+        max_decrypt_fsp_owner_handoff_dropped: string_or_null($guard_max_decrypt_fsp_owner_handoff_dropped),
+        max_decrypt_fsp_open_worker_completion_backlog_fallback: string_or_null($guard_max_decrypt_fsp_open_worker_completion_backlog_fallback),
+        max_decrypt_fsp_worker_replay_dropped: string_or_null($guard_max_decrypt_fsp_worker_replay_dropped),
+        max_fmp_aead_completion_aead_failed: string_or_null($guard_max_fmp_aead_completion_aead_failed),
+        max_fsp_aead_completion_aead_failed: string_or_null($guard_max_fsp_aead_completion_aead_failed),
+        max_fsp_aead_completion_epoch_mismatch: string_or_null($guard_max_fsp_aead_completion_epoch_mismatch),
+        max_fsp_aead_completion_stale_session: string_or_null($guard_max_fsp_aead_completion_stale_session),
+        max_fsp_aead_completion_stale_order: string_or_null($guard_max_fsp_aead_completion_stale_order),
+        max_fsp_aead_completion_stale_ticket: string_or_null($guard_max_fsp_aead_completion_stale_ticket),
+        max_fsp_aead_completion_duplicate_ticket: string_or_null($guard_max_fsp_aead_completion_duplicate_ticket),
+        max_fsp_aead_completion_window_exceeded: string_or_null($guard_max_fsp_aead_completion_window_exceeded),
+        max_fmp_aead_completion_replay_dropped: string_or_null($guard_max_fmp_aead_completion_replay_dropped),
+        max_fsp_aead_completion_replay_dropped: string_or_null($guard_max_fsp_aead_completion_replay_dropped),
+        max_fsp_aead_completion_replay_dropped_helper: string_or_null($guard_max_fsp_aead_completion_replay_dropped_helper),
+        max_fsp_aead_completion_replay_dropped_helper_returned: string_or_null($guard_max_fsp_aead_completion_replay_dropped_helper_returned),
+        max_fsp_owner_placement_other_path_rate: string_or_null($guard_max_fsp_owner_placement_other_path_rate)
       },
       source: {
         nvpn: {
@@ -365,10 +817,23 @@ docker_bench_append_summary_row() {
   local udp_1000_json="$9"
   local ping_output="${10}"
   local ping_loss ping_avg
+  local stress_enabled=false local_workers=0 remote_workers=0
+  local udp1000_parallel udp1000_per_stream_bandwidth
 
   read -r ping_loss ping_avg <<<"$(docker_bench_parse_ping_loss_avg "$ping_output")"
+  if docker_bench_cpu_stress_enabled; then
+    stress_enabled=true
+    if docker_bench_cpu_stress_side_enabled local; then
+      local_workers="$(docker_bench_cpu_stress_workers local)"
+    fi
+    if docker_bench_cpu_stress_side_enabled remote; then
+      remote_workers="$(docker_bench_cpu_stress_workers remote)"
+    fi
+  fi
+  udp1000_parallel="$(docker_bench_udp1000_parallel_streams)"
+  udp1000_per_stream_bandwidth="$(docker_bench_udp1000_per_stream_bandwidth)"
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$backend" \
     "$threads" \
     "$duration" \
@@ -384,7 +849,17 @@ docker_bench_append_summary_row() {
     "$(docker_bench_iperf_loss_pct "$udp_1000_json")" \
     "$ping_loss" \
     "$ping_avg" \
-    "$raw_dir" >>"$SUMMARY_TSV"
+    "$raw_dir" \
+    "$stress_enabled" \
+    "$(docker_bench_tsv_field "$(docker_bench_cpu_stress_sides)")" \
+    "$local_workers" \
+    "$remote_workers" \
+    "$(docker_bench_tsv_field "${NVPN_DOCKER_IPERF_SOCKET_BUFFER:-}")" \
+    "$udp1000_parallel" \
+    "$(docker_bench_tsv_field "${NVPN_DOCKER_UDP1000_BANDWIDTH:-1G}")" \
+    "$udp1000_per_stream_bandwidth" \
+    "$(docker_bench_tsv_field "${NVPN_DOCKER_DATAPLANE_PROFILE:-}")" \
+    "$(docker_bench_tsv_field "${NVPN_DOCKER_PLACEMENT_PROFILE:-}")" >>"$SUMMARY_TSV"
 }
 
 docker_bench_guard_threshold() {
@@ -499,6 +974,8 @@ docker_bench_assert_summary_guards() {
   docker_bench_guard_check_at_least "$failure_path" "tcp_single_mbps" "$tcp_single" "$(docker_bench_guard_threshold NVPN_DOCKER_MIN_TCP_SINGLE_MBPS NVPN_DOCKER_MIN_TCP_MBPS)" || failure_count=$((failure_count + 1))
   docker_bench_guard_check_at_least "$failure_path" "tcp_4_mbps" "$tcp_4" "$(docker_bench_guard_threshold NVPN_DOCKER_MIN_TCP_4_MBPS NVPN_DOCKER_MIN_TCP_MBPS)" || failure_count=$((failure_count + 1))
   docker_bench_guard_check_at_least "$failure_path" "tcp_8_mbps" "$tcp_8" "$(docker_bench_guard_threshold NVPN_DOCKER_MIN_TCP_8_MBPS NVPN_DOCKER_MIN_TCP_MBPS)" || failure_count=$((failure_count + 1))
+  docker_bench_guard_check_at_least "$failure_path" "udp_200_mbps" "$udp_200" "${NVPN_DOCKER_MIN_UDP200_MBPS:-}" || failure_count=$((failure_count + 1))
+  docker_bench_guard_check_at_least "$failure_path" "udp_1000_mbps" "$udp_1000" "${NVPN_DOCKER_MIN_UDP1000_MBPS:-}" || failure_count=$((failure_count + 1))
 
   docker_bench_guard_check_at_most "$failure_path" "tcp_single_retrans" "$tcp_single_retrans" "$(docker_bench_guard_threshold NVPN_DOCKER_MAX_TCP_SINGLE_RETRANS NVPN_DOCKER_MAX_TCP_RETRANS)" || failure_count=$((failure_count + 1))
   docker_bench_guard_check_at_most "$failure_path" "tcp_4_retrans" "$tcp_4_retrans" "$(docker_bench_guard_threshold NVPN_DOCKER_MAX_TCP_4_RETRANS NVPN_DOCKER_MAX_TCP_RETRANS)" || failure_count=$((failure_count + 1))
@@ -514,9 +991,537 @@ docker_bench_assert_summary_guards() {
   fi
 }
 
+docker_bench_tun_drop_total() {
+  local tun_summary="$1"
+  local column_name="$2"
+  [[ -s "$tun_summary" ]] || {
+    printf 'missing\n'
+    return 0
+  }
+  awk -F '\t' -v column_name="$column_name" '
+    NR == 1 {
+      for (i = 1; i <= NF; i++) {
+        if ($i == column_name) {
+          column = i
+          break
+        }
+      }
+      next
+    }
+    column > 0 && $column != "" {
+      rows += 1
+      total += $column + 0
+    }
+    END {
+      if (column == 0 || rows == 0) {
+        print "missing"
+      } else {
+        print total + 0
+      }
+    }
+  ' "$tun_summary"
+}
+
+docker_bench_assert_tun_drop_guards() {
+  local tun_summary="${1:-$RAW_DIR/nvpn-linux-tun-netdev.tsv}"
+  local failure_path="${OUTPUT_DIR}/guard-failures.tsv"
+  local failure_count=0
+  local threshold rx_drops tx_drops
+
+  if [[ -z "${NVPN_DOCKER_MAX_TUN_RX_DROPPED:-}" &&
+        -z "${NVPN_DOCKER_MAX_TUN_TX_DROPPED:-}" ]]; then
+    return 0
+  fi
+
+  threshold="${NVPN_DOCKER_MAX_TUN_RX_DROPPED:-}"
+  if [[ -n "$threshold" ]]; then
+    rx_drops="$(docker_bench_tun_drop_total "$tun_summary" rx_dropped)"
+    docker_bench_guard_check_at_most \
+      "$failure_path" \
+      "tun_rx_dropped_total" \
+      "$rx_drops" \
+      "$threshold" || failure_count=$((failure_count + 1))
+  fi
+
+  threshold="${NVPN_DOCKER_MAX_TUN_TX_DROPPED:-}"
+  if [[ -n "$threshold" ]]; then
+    tx_drops="$(docker_bench_tun_drop_total "$tun_summary" tx_dropped)"
+    docker_bench_guard_check_at_most \
+      "$failure_path" \
+      "tun_tx_dropped_total" \
+      "$tx_drops" \
+      "$threshold" || failure_count=$((failure_count + 1))
+  fi
+
+  if (( failure_count > 0 )); then
+    printf 'docker bench guard failed: wrote %s\n' "$failure_path" >&2
+    return 1
+  fi
+}
+
+docker_bench_pipeline_hard_event_total() {
+  local phase_summary="$1"
+  local event_name="$2"
+  [[ -s "$phase_summary" ]] || {
+    printf '0\n'
+    return 0
+  }
+  awk -F '\t' -v event_name="$event_name" '
+    NR == 1 {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "hard_events") {
+          hard_events_idx = i
+          break
+        }
+      }
+      next
+    }
+    hard_events_idx > 0 {
+      event_count = split($hard_events_idx, events, ";")
+      for (i = 1; i <= event_count; i++) {
+        split(events[i], event_parts, ":")
+        if (event_parts[1] != event_name) {
+          continue
+        }
+        metric_count = split(event_parts[2], metrics, ",")
+        for (j = 1; j <= metric_count; j++) {
+          split(metrics[j], kv, "=")
+          if (kv[1] == "total") {
+            total += kv[2] + 0
+          }
+        }
+      }
+    }
+    END {
+      print total + 0
+    }
+  ' "$phase_summary"
+}
+
+docker_bench_write_pipeline_hard_event_totals() {
+  local phase_summary="$1"
+  local output_path="$2"
+  printf '%s\t%s\t%s\n' event max_rate_per_sec total >"$output_path"
+  [[ -s "$phase_summary" ]] || return 0
+  awk -F '\t' '
+    NR == 1 {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "hard_events") {
+          hard_events_idx = i
+          break
+        }
+      }
+      next
+    }
+    hard_events_idx > 0 {
+      event_count = split($hard_events_idx, events, ";")
+      for (i = 1; i <= event_count; i++) {
+        split(events[i], event_parts, ":")
+        name = event_parts[1]
+        if (name == "") {
+          continue
+        }
+        metric_count = split(event_parts[2], metrics, ",")
+        for (j = 1; j <= metric_count; j++) {
+          split(metrics[j], kv, "=")
+          if (kv[1] == "max_rate_per_sec" && kv[2] + 0 > max_rate[name]) {
+            max_rate[name] = kv[2] + 0
+          } else if (kv[1] == "total") {
+            total[name] += kv[2] + 0
+          }
+        }
+        seen[name] = 1
+      }
+    }
+    END {
+      for (name in seen) {
+        printf "%s\t%g\t%g\n", name, max_rate[name] + 0, total[name] + 0
+      }
+    }
+  ' "$phase_summary" | LC_ALL=C sort >>"$output_path"
+}
+
+docker_bench_guard_pipeline_hard_event_at_most() {
+  local phase_summary="$1"
+  local failure_path="$2"
+  local event_name="$3"
+  local label="$4"
+  local threshold="$5"
+  local total
+
+  [[ -n "$threshold" ]] || return 0
+  total="$(docker_bench_pipeline_hard_event_total "$phase_summary" "$event_name")"
+  docker_bench_guard_check_at_most \
+    "$failure_path" \
+    "$label" \
+    "$total" \
+    "$threshold"
+}
+
+docker_bench_pipeline_hard_event_allowed() {
+  local event="$1"
+  local token
+  local allowed="${NVPN_DOCKER_ALLOW_PIPELINE_HARD_EVENTS:-}"
+  allowed="${allowed//,/ }"
+  for token in $allowed; do
+    [[ "$event" == "$token" ]] && return 0
+  done
+  return 1
+}
+
+docker_bench_assert_pipeline_hard_event_guards() {
+  local phase_summary="$1"
+  local failure_path="${OUTPUT_DIR}/guard-failures.tsv"
+  local failure_count=0
+  local require_no_pipeline_hard_events=0
+  local threshold peer_drops global_drops socket_drops namespace_drops bulk_drops
+  local completion_backlog_fallbacks fsp_worker_replay_drops
+  local event max_rate total totals_path
+
+  if docker_bench_bool_enabled "${NVPN_DOCKER_REQUIRE_NO_PIPELINE_HARD_EVENTS:-0}"; then
+    require_no_pipeline_hard_events=1
+  fi
+
+  if [[ "$require_no_pipeline_hard_events" != "1" &&
+        -z "${NVPN_DOCKER_MAX_UDP_KERNEL_DROPPED:-}" &&
+        -z "${NVPN_DOCKER_MAX_UDP_SOCKET_KERNEL_DROPPED:-}" &&
+        -z "${NVPN_DOCKER_MAX_UDP_NAMESPACE_RCVBUF_ERRORS:-}" &&
+        -z "${NVPN_DOCKER_MAX_CONNECTED_UDP_KERNEL_DROPPED:-}" &&
+        -z "${NVPN_DOCKER_MAX_CONNECTED_UDP_PEER_KERNEL_DROPPED:-}" &&
+        -z "${NVPN_DOCKER_MAX_CONNECTED_UDP_DRAIN_BULK_DROPPED:-}" &&
+        -z "${NVPN_DOCKER_MAX_CONNECTED_UDP_DIRECT_DECRYPT_BULK_SHED:-}" &&
+        -z "${NVPN_DOCKER_MAX_ENDPOINT_EVENT_BULK_DROPPED:-}" &&
+        -z "${NVPN_DOCKER_MAX_DECRYPT_WORKER_QUEUE_FULL:-}" &&
+        -z "${NVPN_DOCKER_MAX_DECRYPT_WORKER_BULK_DROPPED:-}" &&
+        -z "${NVPN_DOCKER_MAX_DECRYPT_FALLBACK_PRESSURE_DRAIN:-}" &&
+        -z "${NVPN_DOCKER_MAX_DECRYPT_FALLBACK_PRIORITY_GATED:-}" &&
+        -z "${NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_WINDOW_FALLBACK:-}" &&
+        -z "${NVPN_DOCKER_MAX_DECRYPT_FSP_OPEN_WORKER_WINDOW_FALLBACK:-}" &&
+        -z "${NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_QUEUE_FULL_FALLBACK:-}" &&
+        -z "${NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_COMPLETION_BACKLOG_FALLBACK:-}" &&
+        -z "${NVPN_DOCKER_MAX_DECRYPT_FSP_OPEN_WORKER_COMPLETION_BACKLOG_FALLBACK:-}" &&
+        -z "${NVPN_DOCKER_MAX_DECRYPT_FSP_WORKER_REPLAY_DROPPED:-}" &&
+        -z "${NVPN_DOCKER_MAX_FMP_AEAD_COMPLETION_AEAD_FAILED:-}" &&
+        -z "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_AEAD_FAILED:-}" &&
+        -z "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_EPOCH_MISMATCH:-}" &&
+        -z "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_SESSION:-}" &&
+        -z "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_ORDER:-}" &&
+        -z "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_TICKET:-}" &&
+        -z "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_DUPLICATE_TICKET:-}" &&
+        -z "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_WINDOW_EXCEEDED:-}" &&
+        -z "${NVPN_DOCKER_MAX_FMP_AEAD_COMPLETION_REPLAY_DROPPED:-}" &&
+        -z "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED:-}" &&
+        -z "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED_HELPER:-}" &&
+        -z "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED_HELPER_RETURNED:-}" ]]; then
+    return 0
+  fi
+
+  if [[ ! -s "$phase_summary" ]]; then
+    docker_bench_guard_record_failure \
+      "$failure_path" \
+      "pipeline_hard_events" \
+      "present" \
+      "missing" \
+      "present"
+    return 1
+  fi
+
+  if [[ "$require_no_pipeline_hard_events" == "1" ]]; then
+    totals_path="$(mktemp "${OUTPUT_DIR}/pipeline-hard-events.XXXXXX.tsv")"
+    docker_bench_write_pipeline_hard_event_totals "$phase_summary" "$totals_path"
+    while IFS=$'\t' read -r event max_rate total; do
+      [[ "$event" != "event" ]] || continue
+      [[ -n "$event" ]] || continue
+      docker_bench_pipeline_hard_event_allowed "$event" && continue
+      docker_bench_guard_check_at_most \
+        "$failure_path" \
+        "${event}_total" \
+        "$total" \
+        "0" || failure_count=$((failure_count + 1))
+    done <"$totals_path"
+    rm -f "$totals_path"
+  fi
+
+  threshold="${NVPN_DOCKER_MAX_UDP_KERNEL_DROPPED:-}"
+  if [[ -n "$threshold" ]]; then
+    global_drops="$(docker_bench_pipeline_hard_event_total "$phase_summary" udp_kernel_dropped)"
+    docker_bench_guard_check_at_most \
+      "$failure_path" \
+      "udp_kernel_dropped_total" \
+      "$global_drops" \
+      "$threshold" || failure_count=$((failure_count + 1))
+  fi
+
+  threshold="${NVPN_DOCKER_MAX_UDP_SOCKET_KERNEL_DROPPED:-}"
+  if [[ -n "$threshold" ]]; then
+    socket_drops="$(docker_bench_pipeline_hard_event_total "$phase_summary" udp_socket_kernel_dropped)"
+    docker_bench_guard_check_at_most \
+      "$failure_path" \
+      "udp_socket_kernel_dropped_total" \
+      "$socket_drops" \
+      "$threshold" || failure_count=$((failure_count + 1))
+  fi
+
+  threshold="${NVPN_DOCKER_MAX_UDP_NAMESPACE_RCVBUF_ERRORS:-}"
+  if [[ -n "$threshold" ]]; then
+    namespace_drops="$(docker_bench_pipeline_hard_event_total "$phase_summary" udp_namespace_rcvbuf_errors)"
+    docker_bench_guard_check_at_most \
+      "$failure_path" \
+      "udp_namespace_rcvbuf_errors_total" \
+      "$namespace_drops" \
+      "$threshold" || failure_count=$((failure_count + 1))
+  fi
+
+  threshold="${NVPN_DOCKER_MAX_CONNECTED_UDP_KERNEL_DROPPED:-}"
+  if [[ -n "$threshold" ]]; then
+    global_drops="$(docker_bench_pipeline_hard_event_total "$phase_summary" connected_udp_kernel_dropped)"
+    docker_bench_guard_check_at_most \
+      "$failure_path" \
+      "connected_udp_kernel_dropped_total" \
+      "$global_drops" \
+      "$threshold" || failure_count=$((failure_count + 1))
+  fi
+
+  threshold="${NVPN_DOCKER_MAX_CONNECTED_UDP_PEER_KERNEL_DROPPED:-}"
+  if [[ -n "$threshold" ]]; then
+    peer_drops="$(docker_bench_pipeline_hard_event_total "$phase_summary" connected_udp_peer_kernel_dropped)"
+    docker_bench_guard_check_at_most \
+      "$failure_path" \
+      "connected_udp_peer_kernel_dropped_total" \
+      "$peer_drops" \
+      "$threshold" || failure_count=$((failure_count + 1))
+  fi
+
+  threshold="${NVPN_DOCKER_MAX_CONNECTED_UDP_DRAIN_BULK_DROPPED:-}"
+  if [[ -n "$threshold" ]]; then
+    bulk_drops="$(docker_bench_pipeline_hard_event_total "$phase_summary" connected_udp_drain_bulk_dropped)"
+    docker_bench_guard_check_at_most \
+      "$failure_path" \
+      "connected_udp_drain_bulk_dropped_total" \
+      "$bulk_drops" \
+      "$threshold" || failure_count=$((failure_count + 1))
+  fi
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    connected_udp_direct_decrypt_bulk_shed \
+    connected_udp_direct_decrypt_bulk_shed_total \
+    "${NVPN_DOCKER_MAX_CONNECTED_UDP_DIRECT_DECRYPT_BULK_SHED:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    endpoint_event_bulk_dropped \
+    endpoint_event_bulk_dropped_total \
+    "${NVPN_DOCKER_MAX_ENDPOINT_EVENT_BULK_DROPPED:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    decrypt_worker_queue_full \
+    decrypt_worker_queue_full_total \
+    "${NVPN_DOCKER_MAX_DECRYPT_WORKER_QUEUE_FULL:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    decrypt_worker_bulk_dropped \
+    decrypt_worker_bulk_dropped_total \
+    "${NVPN_DOCKER_MAX_DECRYPT_WORKER_BULK_DROPPED:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    decrypt_fallback_pressure_drain \
+    decrypt_fallback_pressure_drain_total \
+    "${NVPN_DOCKER_MAX_DECRYPT_FALLBACK_PRESSURE_DRAIN:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    decrypt_fallback_priority_gated \
+    decrypt_fallback_priority_gated_total \
+    "${NVPN_DOCKER_MAX_DECRYPT_FALLBACK_PRIORITY_GATED:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    decrypt_fsp_helper_window_fallback \
+    decrypt_fsp_helper_window_fallback_total \
+    "${NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_WINDOW_FALLBACK:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    decrypt_fsp_open_worker_window_fallback \
+    decrypt_fsp_open_worker_window_fallback_total \
+    "${NVPN_DOCKER_MAX_DECRYPT_FSP_OPEN_WORKER_WINDOW_FALLBACK:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    decrypt_fsp_helper_queue_full_fallback \
+    decrypt_fsp_helper_queue_full_fallback_total \
+    "${NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_QUEUE_FULL_FALLBACK:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    decrypt_fsp_helper_completion_backlog_fallback \
+    decrypt_fsp_helper_completion_backlog_fallback_total \
+    "${NVPN_DOCKER_MAX_DECRYPT_FSP_HELPER_COMPLETION_BACKLOG_FALLBACK:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    decrypt_fsp_owner_handoff_dropped \
+    decrypt_fsp_owner_handoff_dropped_total \
+    "${NVPN_DOCKER_MAX_DECRYPT_FSP_OWNER_HANDOFF_DROPPED:-}" \
+    || failure_count=$((failure_count + 1))
+
+  threshold="${NVPN_DOCKER_MAX_DECRYPT_FSP_OPEN_WORKER_COMPLETION_BACKLOG_FALLBACK:-}"
+  if [[ -n "$threshold" ]]; then
+    completion_backlog_fallbacks="$(docker_bench_pipeline_hard_event_total "$phase_summary" decrypt_fsp_open_worker_completion_backlog_fallback)"
+    docker_bench_guard_check_at_most \
+      "$failure_path" \
+      "decrypt_fsp_open_worker_completion_backlog_fallback_total" \
+      "$completion_backlog_fallbacks" \
+      "$threshold" || failure_count=$((failure_count + 1))
+  fi
+
+  threshold="${NVPN_DOCKER_MAX_DECRYPT_FSP_WORKER_REPLAY_DROPPED:-}"
+  if [[ -n "$threshold" ]]; then
+    fsp_worker_replay_drops="$(docker_bench_pipeline_hard_event_total "$phase_summary" decrypt_fsp_worker_replay_dropped)"
+    docker_bench_guard_check_at_most \
+      "$failure_path" \
+      "decrypt_fsp_worker_replay_dropped_total" \
+      "$fsp_worker_replay_drops" \
+      "$threshold" || failure_count=$((failure_count + 1))
+  fi
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fmp_aead_completion_aead_failed \
+    fmp_aead_completion_aead_failed_total \
+    "${NVPN_DOCKER_MAX_FMP_AEAD_COMPLETION_AEAD_FAILED:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fsp_aead_completion_aead_failed \
+    fsp_aead_completion_aead_failed_total \
+    "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_AEAD_FAILED:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fsp_aead_completion_epoch_mismatch \
+    fsp_aead_completion_epoch_mismatch_total \
+    "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_EPOCH_MISMATCH:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fsp_aead_completion_stale_session \
+    fsp_aead_completion_stale_session_total \
+    "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_SESSION:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fsp_aead_completion_stale_order \
+    fsp_aead_completion_stale_order_total \
+    "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_ORDER:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fsp_aead_completion_stale_ticket \
+    fsp_aead_completion_stale_ticket_total \
+    "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_STALE_TICKET:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fsp_aead_completion_duplicate_ticket \
+    fsp_aead_completion_duplicate_ticket_total \
+    "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_DUPLICATE_TICKET:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fsp_aead_completion_window_exceeded \
+    fsp_aead_completion_window_exceeded_total \
+    "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_WINDOW_EXCEEDED:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fmp_aead_completion_replay_dropped \
+    fmp_aead_completion_replay_dropped_total \
+    "${NVPN_DOCKER_MAX_FMP_AEAD_COMPLETION_REPLAY_DROPPED:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fsp_aead_completion_replay_dropped \
+    fsp_aead_completion_replay_dropped_total \
+    "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fsp_aead_completion_replay_dropped_helper \
+    fsp_aead_completion_replay_dropped_helper_total \
+    "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED_HELPER:-}" \
+    || failure_count=$((failure_count + 1))
+
+  docker_bench_guard_pipeline_hard_event_at_most \
+    "$phase_summary" \
+    "$failure_path" \
+    fsp_aead_completion_replay_dropped_helper_returned \
+    fsp_aead_completion_replay_dropped_helper_returned_total \
+    "${NVPN_DOCKER_MAX_FSP_AEAD_COMPLETION_REPLAY_DROPPED_HELPER_RETURNED:-}" \
+    || failure_count=$((failure_count + 1))
+
+  if (( failure_count > 0 )); then
+    printf 'docker bench guard failed: wrote %s\n' "$failure_path" >&2
+    return 1
+  fi
+}
+
 docker_bench_pipeline_lines_after_start_from_stdin() {
   local start_line="${1:-0}"
   awk -v start_line="$start_line" 'NR > start_line'
+}
+
+docker_bench_pipeline_lines_in_range_from_stdin() {
+  local start_line="${1:-0}"
+  local end_line="${2:-0}"
+  awk -v start_line="$start_line" -v end_line="$end_line" \
+    'NR > start_line && (end_line <= 0 || NR <= end_line)'
 }
 
 docker_bench_peak_wait_pipeline_line_from_stdin() {
@@ -582,19 +1587,27 @@ docker_bench_peak_wait_pipeline_line_from_stdin() {
       if (value > score) score = value
       value = metric_avg_us(line, "decrypt_fallback_bulk_wait")
       if (value > score) score = value
+      value = metric_avg_us(line, "fsp_aead_worker_open_queue_wait")
+      if (value > score) score = value
+      value = metric_avg_us(line, "fsp_aead_worker_open_completion_wait")
+      if (value > score) score = value
       value = metric_avg_us(line, "endpoint_command_wait")
       if (value > score) score = value
       value = metric_avg_us(line, "endpoint_priority_command_wait")
       if (value > score) score = value
       value = metric_avg_us(line, "endpoint_bulk_command_wait")
       if (value > score) score = value
+      value = metric_avg_us(line, "connected_udp_drain_ring_wait")
+      if (value > score) score = value
+      value = metric_avg_us(line, "connected_udp_drain_priority_ring_wait")
+      if (value > score) score = value
+      value = metric_avg_us(line, "connected_udp_drain_bulk_ring_wait")
+      if (value > score) score = value
       return score
     }
     function nvpn_score(line, score, value) {
       score = -1
       value = metric_avg_us(line, "nvpn_tun_to_mesh_queue_wait")
-      if (value > score) score = value
-      value = metric_avg_us(line, "nvpn_mesh_to_tun_queue_wait")
       if (value > score) score = value
       return score
     }
@@ -759,7 +1772,7 @@ docker_bench_pipeline_queue_wait_top_summary() {
       return 0
     }
     BEGIN {
-      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait fmp_linux_bulk_container_queue_wait fmp_linux_bulk_container_ready_wait fmp_linux_bulk_container_first_slot_wait fmp_linux_bulk_container_all_slots_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait nvpn_mesh_to_tun_queue_wait"
+      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait connected_udp_drain_recv connected_udp_fast_path_dispatch connected_udp_drain_ring_wait connected_udp_drain_priority_ring_wait connected_udp_drain_bulk_ring_wait fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait fmp_linux_bulk_container_queue_wait fmp_linux_bulk_container_ready_wait fmp_linux_bulk_container_first_slot_wait fmp_linux_bulk_container_all_slots_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait fsp_aead_worker_open_queue_wait fsp_aead_worker_open_completion_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_direct_session_commit_wait decrypt_direct_session_data_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait"
       metric_count = split(metrics, names, " ")
       best_p99 = -1
       best_p95 = -1
@@ -793,6 +1806,78 @@ docker_bench_pipeline_queue_wait_top_summary() {
   '
 }
 
+docker_bench_pipeline_fsp_worker_open_wait_summary() {
+  local line="$1"
+  printf '%s\n' "$line" | awk '
+    function duration_ms(value, number) {
+      number = value + 0
+      if (value ~ /ns$/) {
+        return number / 1000000
+      }
+      if (value ~ /us$/) {
+        return number / 1000
+      }
+      if (value ~ /ms$/) {
+        return number
+      }
+      if (value ~ /s$/) {
+        return number * 1000
+      }
+      return number
+    }
+    function parse_wait(line, metric, start, rest, parts, rate_raw, p95_raw, p99_raw, max_raw, allmax_raw) {
+      start = index(line, metric "=")
+      if (start == 0) {
+        return 0
+      }
+      rest = substr(line, start)
+      split(rest, parts, " ")
+      if (parts[4] !~ /^p95<=/ || parts[5] !~ /^p99<=/ || parts[6] !~ /^max<=/ || parts[7] !~ /^allmax=/) {
+        return 0
+      }
+      rate_raw = parts[1]
+      p95_raw = parts[4]
+      p99_raw = parts[5]
+      max_raw = parts[6]
+      allmax_raw = parts[7]
+      sub(/^[^=]+=/, "", rate_raw)
+      sub(/\/s$/, "", rate_raw)
+      sub(/^p95<=/, "", p95_raw)
+      sub(/^p99<=/, "", p99_raw)
+      sub(/^max<=/, "", max_raw)
+      sub(/^allmax=/, "", allmax_raw)
+      metric_rate = rate_raw + 0
+      metric_p95 = duration_ms(p95_raw)
+      metric_p99 = duration_ms(p99_raw)
+      metric_max = duration_ms(max_raw)
+      metric_allmax = duration_ms(allmax_raw)
+      return 1
+    }
+    function append_summary(prefix) {
+      part = sprintf("%s_rate_per_sec=%g,%s_p95_ms=%g,%s_p99_ms=%g,%s_max_ms=%g,%s_allmax_ms=%g",
+        prefix, metric_rate, prefix, metric_p95, prefix, metric_p99, prefix, metric_max, prefix, metric_allmax)
+      if (summary == "") {
+        summary = part
+      } else {
+        summary = summary "," part
+      }
+    }
+    {
+      if (parse_wait($0, "fsp_aead_worker_open_queue_wait")) {
+        append_summary("queue")
+      }
+      if (parse_wait($0, "fsp_aead_worker_open_completion_wait")) {
+        append_summary("completion")
+      }
+    }
+    END {
+      if (summary != "") {
+        print summary
+      }
+    }
+  '
+}
+
 docker_bench_pipeline_worker_batch_summary() {
   local line="$1"
   local prefix="$2"
@@ -821,6 +1906,26 @@ docker_bench_pipeline_worker_batch_summary() {
       send_groups = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group") : 0
       send_group_packets = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_packets") : 0
       send_group_single = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_single") : 0
+      split_target = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_split_target") : 0
+      split_lane = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_split_lane") : 0
+      split_backpressure = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_split_backpressure") : 0
+      split_packet_cap = prefix == "fmp_worker_batch" ? parse_rate($0, "fmp_send_group_split_packet_cap") : 0
+      split_total = split_target + split_lane + split_backpressure + split_packet_cap
+      committed_dispatch = prefix == "fmp_worker_batch" ? parse_rate($0, "endpoint_committed_bulk_dispatch_batch") : 0
+      committed_packets = prefix == "fmp_worker_batch" ? parse_rate($0, "endpoint_committed_bulk_dispatch_packets") : 0
+      committed_merged_batches = prefix == "fmp_worker_batch" ? parse_rate($0, "endpoint_committed_bulk_dispatch_merged_batch") : 0
+      committed_merged_packets = prefix == "fmp_worker_batch" ? parse_rate($0, "endpoint_committed_bulk_dispatch_merged_packets") : 0
+      committed_avg = committed_dispatch > 0 ? committed_packets / committed_dispatch : 0
+      select_priority = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_select_priority") : 0
+      select_fmp_completion = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_select_fmp_completion") : 0
+      select_fsp_completion_packets = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_select_fsp_completion_packets") : 0
+      select_bulk_packets = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_select_bulk_packets") : 0
+      drain_priority = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_drain_priority") : 0
+      drain_completion_packets = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_drain_aead_completion_packets") : 0
+      drain_bulk_packets = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_drain_bulk_packets") : 0
+      interleave_completion_packets = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_bulk_interleave_aead_completion_packets") : 0
+      interleave_budget_exhausted = prefix == "decrypt_worker_batch" ? parse_rate($0, "decrypt_worker_bulk_interleave_budget_exhausted") : 0
+      scheduler_total = select_priority + select_fmp_completion + select_fsp_completion_packets + select_bulk_packets + drain_priority + drain_completion_packets + drain_bulk_packets + interleave_completion_packets + interleave_budget_exhausted
       avg = packets / flush
       full_pct = (full / flush) * 100
       single_pct = (single / flush) * 100
@@ -838,8 +1943,57 @@ docker_bench_pipeline_worker_batch_summary() {
       if (send_groups > 0) {
         summary = summary sprintf(",send_groups_per_flush=%.1f,send_group_avg_packets=%.1f,send_group_single_pct=%.1f,send_groups_per_sec=%g,send_group_packets_per_sec=%g", send_groups_per_flush, send_group_avg, send_group_single_pct, send_groups, send_group_packets)
       }
+      if (split_total > 0) {
+        summary = summary sprintf(",send_group_split_total_per_sec=%g,send_group_split_target_per_sec=%g,send_group_split_lane_per_sec=%g,send_group_split_backpressure_per_sec=%g,send_group_split_packet_cap_per_sec=%g", split_total, split_target, split_lane, split_backpressure, split_packet_cap)
+      }
+      if (committed_dispatch > 0) {
+        summary = summary sprintf(",committed_bulk_dispatch_avg_packets=%.1f,committed_bulk_dispatch_per_sec=%g,committed_bulk_dispatch_packets_per_sec=%g,committed_bulk_merged_batches_per_sec=%g,committed_bulk_merged_packets_per_sec=%g", committed_avg, committed_dispatch, committed_packets, committed_merged_batches, committed_merged_packets)
+      }
+      if (scheduler_total > 0) {
+        summary = summary sprintf(",select_priority_per_sec=%g,select_fmp_completion_per_sec=%g,select_fsp_completion_packets_per_sec=%g,select_bulk_packets_per_sec=%g,drain_priority_per_sec=%g,drain_completion_packets_per_sec=%g,drain_bulk_packets_per_sec=%g,bulk_interleave_completion_packets_per_sec=%g,bulk_interleave_budget_exhausted_per_sec=%g", select_priority, select_fmp_completion, select_fsp_completion_packets, select_bulk_packets, drain_priority, drain_completion_packets, drain_bulk_packets, interleave_completion_packets, interleave_budget_exhausted)
+      }
       print summary
       exit
+    }
+  '
+}
+
+docker_bench_fsp_owner_placement_line_from_stdin() {
+  awk '
+    function metric_rate(line, metric, start, rest, parts, value) {
+      start = index(line, metric "=")
+      if (start == 0) {
+        return 0
+      }
+      rest = substr(line, start + length(metric) + 1)
+      split(rest, parts, " ")
+      value = parts[1]
+      sub(/\/s$/, "", value)
+      return value + 0
+    }
+    function max(a, b) {
+      return a > b ? a : b
+    }
+    /^\[pipe / {
+      worker_open = metric_rate($0, "decrypt_fsp_path_worker_open")
+      worker_open_striped = metric_rate($0, "decrypt_fsp_path_worker_open_striped")
+      owner = metric_rate($0, "decrypt_fsp_owner_same") + metric_rate($0, "decrypt_fsp_owner_mismatch")
+      path = metric_rate($0, "decrypt_fsp_path_local") + metric_rate($0, "decrypt_fsp_path_handoff") + metric_rate($0, "decrypt_fsp_path_helper") + worker_open
+      bulk = max(metric_rate($0, "decrypt_worker_batch_bulk_packets"), metric_rate($0, "decrypt_worker_select_bulk_packets"))
+      bulk = max(bulk, metric_rate($0, "decrypt_worker_drain_bulk_packets"))
+      bulk = max(bulk, metric_rate($0, "decrypt_authenticated_session_bulk_wait"))
+      score = bulk + worker_open
+      fallback_score = owner + path
+      if (best == "" || score > best_score || (score == best_score && fallback_score >= best_fallback_score)) {
+        best = $0
+        best_score = score
+        best_fallback_score = fallback_score
+      }
+    }
+    END {
+      if (best != "") {
+        print best
+      }
     }
   '
 }
@@ -848,8 +2002,330 @@ docker_bench_pipeline_fmp_worker_batch_summary() {
   docker_bench_pipeline_worker_batch_summary "$1" "fmp_worker_batch"
 }
 
+docker_bench_pipeline_fmp_worker_dispatch_spread_summary() {
+  local line="$1"
+  printf '%s\n' "$line" | awk '
+    function parse_rate(line, metric, start, rest, parts, value) {
+      start = index(line, metric "=")
+      if (start == 0) {
+        return 0
+      }
+      rest = substr(line, start + length(metric) + 1)
+      split(rest, parts, " ")
+      value = parts[1]
+      sub(/\/s$/, "", value)
+      return value + 0
+    }
+    function append_rate(summary, label, value) {
+      if (value <= 0) {
+        return summary
+      }
+      if (summary != "") {
+        summary = summary ";"
+      }
+      return summary sprintf("%s:%g", label, value)
+    }
+    {
+      total = 0
+      active = 0
+      top_rate = 0
+      top_worker = ""
+      rate_count = 0
+      for (i = 0; i <= 7; i++) {
+        metric = "fmp_worker_dispatch_worker" i
+        rate = parse_rate($0, metric)
+        rates[i] = rate
+        total += rate
+        if (rate > 0) {
+          active++
+          rate_count++
+        }
+        if (rate > top_rate) {
+          top_rate = rate
+          top_worker = "w" i
+        }
+      }
+      other = parse_rate($0, "fmp_worker_dispatch_worker_other")
+      total += other
+      if (other > 0) {
+        active++
+        rate_count++
+      }
+      if (other > top_rate) {
+        top_rate = other
+        top_worker = "other"
+      }
+      if (total <= 0) {
+        next
+      }
+
+      meaningful = 0
+      for (i = 0; i <= 7; i++) {
+        if (rates[i] > 0 && (rates[i] / total) >= 0.01) {
+          meaningful++
+        }
+      }
+      if (other > 0 && (other / total) >= 0.01) {
+        meaningful++
+      }
+
+      keyed = parse_rate($0, "fmp_worker_dispatch_flow_keyed")
+      target_only = parse_rate($0, "fmp_worker_dispatch_target_only")
+      classified = keyed + target_only
+      top_pct = (top_rate / total) * 100
+      keyed_pct = classified > 0 ? (keyed / classified) * 100 : 0
+      target_only_pct = classified > 0 ? (target_only / classified) * 100 : 0
+
+      worker_rates = ""
+      for (i = 0; i <= 7; i++) {
+        worker_rates = append_rate(worker_rates, "w" i, rates[i])
+      }
+      worker_rates = append_rate(worker_rates, "other", other)
+
+      printf "active_workers=%d,workers_ge1pct=%d,top_worker=%s,top_pct=%.1f,flow_keyed_pct=%.1f,target_only_pct=%.1f,total_per_sec=%g,worker_rates=%s\n", active, meaningful, top_worker, top_pct, keyed_pct, target_only_pct, total, worker_rates
+      exit
+    }
+  '
+}
+
+docker_bench_pipeline_fsp_owner_placement_summary() {
+  local line="$1"
+  printf '%s\n' "$line" | awk '
+    function parse_rate(line, metric, start, rest, parts, value) {
+      start = index(line, metric "=")
+      if (start == 0) {
+        return 0
+      }
+      rest = substr(line, start + length(metric) + 1)
+      split(rest, parts, " ")
+      value = parts[1]
+      sub(/\/s$/, "", value)
+      return value + 0
+    }
+    function classify_path(local, handoff, helper, worker_open) {
+      if (worker_open > 0 && worker_open >= local && worker_open >= handoff && worker_open >= helper) {
+        return "worker-open"
+      }
+      if (helper > 0 && helper >= local && helper >= handoff) {
+        return "helper"
+      }
+      if (handoff > 0 && handoff >= local) {
+        return "handoff"
+      }
+      if (local > 0) {
+        return "local"
+      }
+      return "unknown"
+    }
+    {
+      same = parse_rate($0, "decrypt_fsp_owner_same")
+      mismatch = parse_rate($0, "decrypt_fsp_owner_mismatch")
+      local = parse_rate($0, "decrypt_fsp_path_local")
+      handoff = parse_rate($0, "decrypt_fsp_path_handoff")
+      helper = parse_rate($0, "decrypt_fsp_path_helper")
+      worker_open = parse_rate($0, "decrypt_fsp_path_worker_open")
+      worker_open_striped = parse_rate($0, "decrypt_fsp_path_worker_open_striped")
+      local_priority = parse_rate($0, "decrypt_fsp_path_local_priority")
+      local_bulk = parse_rate($0, "decrypt_fsp_path_local_bulk")
+      handoff_priority = parse_rate($0, "decrypt_fsp_path_handoff_priority")
+      handoff_bulk = parse_rate($0, "decrypt_fsp_path_handoff_bulk")
+      helper_bulk = parse_rate($0, "decrypt_fsp_path_helper_bulk")
+      worker_open_bulk = parse_rate($0, "decrypt_fsp_path_worker_open_bulk")
+      bulk_packets = parse_rate($0, "decrypt_worker_batch_bulk_packets")
+      select_bulk_packets = parse_rate($0, "decrypt_worker_select_bulk_packets")
+      drain_bulk_packets = parse_rate($0, "decrypt_worker_drain_bulk_packets")
+      if (same <= 0 && mismatch <= 0 && local <= 0 && handoff <= 0 && helper <= 0 && worker_open <= 0) {
+        next
+      }
+      owner = same >= mismatch ? "same" : "mismatch"
+      path = classify_path(local, handoff, helper, worker_open)
+      bulk_path = classify_path(local_bulk, handoff_bulk, helper_bulk, worker_open_bulk)
+      priority_path = classify_path(local_priority, handoff_priority, 0, 0)
+      printf "owner=%s,path=%s,bulk_path=%s,priority_path=%s,owner_same_per_sec=%g,owner_mismatch_per_sec=%g,path_local_per_sec=%g,path_handoff_per_sec=%g,path_helper_per_sec=%g,path_worker_open_per_sec=%g,path_worker_open_striped_per_sec=%g,path_local_priority_per_sec=%g,path_local_bulk_per_sec=%g,path_handoff_priority_per_sec=%g,path_handoff_bulk_per_sec=%g,path_helper_bulk_per_sec=%g,path_worker_open_bulk_per_sec=%g,bulk_packets_per_sec=%g,select_bulk_packets_per_sec=%g,drain_bulk_packets_per_sec=%g\n", owner, path, bulk_path, priority_path, same, mismatch, local, handoff, helper, worker_open, worker_open_striped, local_priority, local_bulk, handoff_priority, handoff_bulk, helper_bulk, worker_open_bulk, bulk_packets, select_bulk_packets, drain_bulk_packets
+      exit
+    }
+  '
+}
+
+docker_bench_pipeline_fsp_owner_placement_other_path_max() {
+  local line="$1"
+  local expected="$2"
+  local summary
+  summary="$(docker_bench_pipeline_fsp_owner_placement_summary "$line")"
+  printf '%s\n' "$summary" | awk -v expected="$expected" '
+    function field_value(name, count, i, kv) {
+      count = split($0, fields, ",")
+      for (i = 1; i <= count; i++) {
+        split(fields[i], kv, "=")
+        if (kv[1] == name) {
+          return kv[2] + 0
+        }
+      }
+      return 0
+    }
+    function consider(path, rate) {
+      if (path == expected) {
+        return
+      }
+      if (rate > max_rate) {
+        max_rate = rate
+        max_path = path
+      }
+    }
+    {
+      if ($0 == "") {
+        next
+      }
+      if (expected == "worker-open" || expected == "helper") {
+        consider("local", field_value("path_local_bulk_per_sec"))
+        consider("handoff", field_value("path_handoff_bulk_per_sec"))
+        consider("helper", field_value("path_helper_bulk_per_sec"))
+        consider("worker-open", field_value("path_worker_open_bulk_per_sec"))
+      } else {
+        consider("local", field_value("path_local_per_sec"))
+        consider("handoff", field_value("path_handoff_per_sec"))
+        consider("helper", field_value("path_helper_per_sec"))
+        consider("worker-open", field_value("path_worker_open_per_sec"))
+      }
+      printf "%s\t%g\n", max_path, max_rate
+      exit
+    }
+  '
+}
+
+docker_bench_pipeline_fsp_owner_placement_kind() {
+  local line="$1"
+  local summary
+  summary="$(docker_bench_pipeline_fsp_owner_placement_summary "$line")"
+  case "$summary" in
+    *path=worker-open*) printf 'worker-open\n' ;;
+    *path=helper*) printf 'helper\n' ;;
+    *path=handoff*) printf 'handoff\n' ;;
+    *path=local*) printf 'local\n' ;;
+    owner=same,*) printf 'same\n' ;;
+    owner=mismatch,*) printf 'mismatch\n' ;;
+  esac
+}
+
 docker_bench_pipeline_decrypt_worker_batch_summary() {
   docker_bench_pipeline_worker_batch_summary "$1" "decrypt_worker_batch"
+}
+
+docker_bench_pipeline_decrypt_worker_spread_summary() {
+  local line="$1"
+  printf '%s\n' "$line" | awk '
+    function parse_rate(line, metric, start, rest, parts, value) {
+      start = index(line, metric "=")
+      if (start == 0) {
+        return 0
+      }
+      rest = substr(line, start + length(metric) + 1)
+      split(rest, parts, " ")
+      value = parts[1]
+      sub(/\/s$/, "", value)
+      return value + 0
+    }
+    function append_rate(summary, label, value) {
+      if (value <= 0) {
+        return summary
+      }
+      if (summary != "") {
+        summary = summary ";"
+      }
+      return summary sprintf("%s:%g", label, value)
+    }
+    {
+      total = 0
+      active = 0
+      top_rate = 0
+      top_worker = ""
+      for (i = 0; i <= 7; i++) {
+        metric = "decrypt_worker_batch_worker" i
+        rate = parse_rate($0, metric)
+        rates[i] = rate
+        total += rate
+        if (rate > 0) {
+          active++
+        }
+        if (rate > top_rate) {
+          top_rate = rate
+          top_worker = "w" i
+        }
+      }
+      other = parse_rate($0, "decrypt_worker_batch_worker_other")
+      total += other
+      if (other > 0) {
+        active++
+      }
+      if (other > top_rate) {
+        top_rate = other
+        top_worker = "other"
+      }
+      if (total <= 0) {
+        next
+      }
+
+      meaningful = 0
+      for (i = 0; i <= 7; i++) {
+        if (rates[i] > 0 && (rates[i] / total) >= 0.01) {
+          meaningful++
+        }
+      }
+      if (other > 0 && (other / total) >= 0.01) {
+        meaningful++
+      }
+
+      worker_rates = ""
+      for (i = 0; i <= 7; i++) {
+        worker_rates = append_rate(worker_rates, "w" i, rates[i])
+      }
+      worker_rates = append_rate(worker_rates, "other", other)
+
+      printf "active_workers=%d,workers_ge1pct=%d,top_worker=%s,top_pct=%.1f,total_packets_per_sec=%g,worker_packet_rates=%s\n", active, meaningful, top_worker, (top_rate / total) * 100, total, worker_rates
+      exit
+    }
+  '
+}
+
+docker_bench_pipeline_decrypt_worker_turn_mix_summary() {
+  local line="$1"
+  printf '%s\n' "$line" | awk '
+    function parse_rate(line, metric, start, rest, parts, value) {
+      start = index(line, metric "=")
+      if (start == 0) {
+        return 0
+      }
+      rest = substr(line, start + length(metric) + 1)
+      split(rest, parts, " ")
+      value = parts[1]
+      sub(/\/s$/, "", value)
+      return value + 0
+    }
+    {
+      select_fmp_completion_batches = parse_rate($0, "decrypt_worker_select_fmp_completion")
+      select_fsp_completion_batches = parse_rate($0, "decrypt_worker_select_fsp_completion_batch")
+      select_fsp_completion_packets = parse_rate($0, "decrypt_worker_select_fsp_completion_packets")
+      select_bulk_packets = parse_rate($0, "decrypt_worker_select_bulk_packets")
+      drain_completion_batches = parse_rate($0, "decrypt_worker_drain_aead_completion_batch")
+      drain_completion_packets = parse_rate($0, "decrypt_worker_drain_aead_completion_packets")
+      drain_bulk_packets = parse_rate($0, "decrypt_worker_drain_bulk_packets")
+      interleave_completion_batches = parse_rate($0, "decrypt_worker_bulk_interleave_aead_completion_batch")
+      interleave_completion_packets = parse_rate($0, "decrypt_worker_bulk_interleave_aead_completion_packets")
+      interleave_budget_exhausted = parse_rate($0, "decrypt_worker_bulk_interleave_budget_exhausted")
+
+      completion_batches = select_fmp_completion_batches + select_fsp_completion_batches + drain_completion_batches + interleave_completion_batches
+      known_completion_packets = select_fsp_completion_packets + drain_completion_packets + interleave_completion_packets
+      bulk_packets = select_bulk_packets + drain_bulk_packets
+      total_known_packets = known_completion_packets + bulk_packets
+      if (completion_batches <= 0 && known_completion_packets <= 0 && bulk_packets <= 0) {
+        next
+      }
+      completion_packet_pct = total_known_packets > 0 ? (known_completion_packets / total_known_packets) * 100 : 0
+
+      printf "completion_packet_pct=%.1f,completion_batches_per_sec=%g,known_completion_packets_per_sec=%g,bulk_packets_per_sec=%g,select_fmp_completion_batches_per_sec=%g,select_fsp_completion_batches_per_sec=%g,select_fsp_completion_packets_per_sec=%g,select_bulk_packets_per_sec=%g,drain_completion_batches_per_sec=%g,drain_completion_packets_per_sec=%g,drain_bulk_packets_per_sec=%g,interleave_completion_batches_per_sec=%g,interleave_completion_packets_per_sec=%g,interleave_budget_exhausted_per_sec=%g\n", completion_packet_pct, completion_batches, known_completion_packets, bulk_packets, select_fmp_completion_batches, select_fsp_completion_batches, select_fsp_completion_packets, select_bulk_packets, drain_completion_batches, drain_completion_packets, drain_bulk_packets, interleave_completion_batches, interleave_completion_packets, interleave_budget_exhausted
+      exit
+    }
+  '
 }
 
 docker_bench_pipeline_linux_bulk_container_summary() {
@@ -1023,6 +2499,9 @@ docker_bench_pipeline_nvpn_tun_read_batch_summary() {
       full = parse_rate($0, "nvpn_tun_read_batch_full")
       single = parse_rate($0, "nvpn_tun_read_batch_single")
       bytes = parse_rate($0, "nvpn_tun_read_packet_bytes")
+      gso_frames = parse_rate($0, "nvpn_tun_read_vnet_gso_frames")
+      gso_segments = parse_rate($0, "nvpn_tun_read_vnet_gso_segments")
+      gso_segment_bytes = parse_rate($0, "nvpn_tun_read_vnet_gso_segment_bytes")
       if (flush <= 0 && packets <= 0 && bytes <= 0) {
         next
       }
@@ -1030,7 +2509,13 @@ docker_bench_pipeline_nvpn_tun_read_batch_summary() {
       full_pct = flush > 0 ? (full / flush) * 100 : 0
       single_pct = flush > 0 ? (single / flush) * 100 : 0
       avg_bytes = packets > 0 ? bytes / packets : 0
-      printf "avg_packets=%.1f,full_pct=%.1f,single_pct=%.1f,avg_packet_bytes=%.1f,flush_per_sec=%g,packets_per_sec=%g,bytes_per_sec=%g\n", avg_packets, full_pct, single_pct, avg_bytes, flush, packets, bytes
+      if (gso_frames > 0 || gso_segments > 0) {
+        gso_avg_segments = gso_frames > 0 ? gso_segments / gso_frames : 0
+        gso_avg_segment_bytes = gso_segments > 0 ? gso_segment_bytes / gso_segments : 0
+        printf "avg_packets=%.1f,full_pct=%.1f,single_pct=%.1f,avg_packet_bytes=%.1f,flush_per_sec=%g,packets_per_sec=%g,bytes_per_sec=%g,vnet_gso_frames_per_sec=%g,vnet_gso_segments_per_sec=%g,vnet_gso_avg_segments=%.1f,vnet_gso_avg_segment_bytes=%.1f\n", avg_packets, full_pct, single_pct, avg_bytes, flush, packets, bytes, gso_frames, gso_segments, gso_avg_segments, gso_avg_segment_bytes
+      } else {
+        printf "avg_packets=%.1f,full_pct=%.1f,single_pct=%.1f,avg_packet_bytes=%.1f,flush_per_sec=%g,packets_per_sec=%g,bytes_per_sec=%g\n", avg_packets, full_pct, single_pct, avg_bytes, flush, packets, bytes
+      }
       exit
     }
   '
@@ -1164,13 +2649,15 @@ docker_bench_pipeline_nvpn_tun_write_summary_from_stdin() {
 
 docker_bench_pipeline_hard_event_summary_from_stdin() {
   local start_line="${1:-0}"
-  awk -v start_line="$start_line" '
-    function parse_event(line, name, in_phase, start, rest, parts, rate_raw, rate, total_raw, total, i) {
-      start = index(line, name "=")
-      if (start == 0) {
+  local end_line="${2:-0}"
+  awk -v start_line="$start_line" -v end_line="$end_line" '
+    function parse_event(line, name, in_phase, pattern, start, rest, parts, rate_raw, rate, total_raw, total, i) {
+      pattern = "(^|[]] | )" name "="
+      if (match(line, pattern) == 0) {
         return
       }
-      rest = substr(line, start + length(name) + 1)
+      start = RSTART + RLENGTH
+      rest = substr(line, start)
       split(rest, parts, " ")
       rate_raw = parts[1]
       sub(/\/s$/, "", rate_raw)
@@ -1188,7 +2675,7 @@ docker_bench_pipeline_hard_event_summary_from_stdin() {
           total = total_raw + 0
           if (in_phase && (!(name in max_total) || total > max_total[name])) {
             max_total[name] = total
-          } else if (!in_phase && (!(name in base_total) || total > base_total[name])) {
+          } else if (before_phase && (!(name in base_total) || total > base_total[name])) {
             base_total[name] = total
           }
           break
@@ -1196,11 +2683,12 @@ docker_bench_pipeline_hard_event_summary_from_stdin() {
       }
     }
     BEGIN {
-      events = "udp_send_backpressure udp_send_backpressure_sleep udp_send_bulk_dropped connected_udp_activation_failed connected_udp_peer_cap_skipped connected_udp_fd_budget_skipped encrypt_worker_queue_full encrypt_worker_priority_queue_full encrypt_worker_bulk_queue_full encrypt_worker_bulk_dropped fmp_linux_bulk_container_queue_full fmp_linux_bulk_container_queue_full_packets endpoint_direct_fmp_receive_dropped endpoint_direct_fmp_receive_dropped_packets decrypt_worker_queue_full decrypt_worker_bulk_dropped decrypt_worker_register_full decrypt_worker_priority_dropped decrypt_fallback_backlog_high rx_loop_slow_maintenance_timeout rx_loop_slow_maintenance_skipped decrypt_fallback_bulk_dropped decrypt_fallback_priority_dropped decrypt_fallback_pressure_drain decrypt_fallback_priority_gated decrypt_fsp_priority_queue_full_fallback decrypt_fsp_bulk_queue_full_fallback decrypt_fsp_worker_replay_dropped decrypt_authenticated_session_priority_dropped decrypt_authenticated_session_bulk_dropped pending_tun_destination_dropped pending_tun_packet_dropped pending_endpoint_destination_dropped pending_endpoint_packet_dropped endpoint_event_backlog_high endpoint_command_bulk_dropped endpoint_event_bulk_dropped transport_channel_backlog_high transport_bulk_dropped nvpn_tun_to_mesh_bulk_dropped"
+      events = "udp_send_backpressure udp_send_backpressure_sleep udp_send_bulk_dropped udp_kernel_dropped udp_socket_kernel_dropped udp_namespace_rcvbuf_errors linux_bulk_udp_pace_wait connected_udp_activation_failed connected_udp_peer_cap_skipped connected_udp_fd_budget_skipped connected_udp_kernel_dropped connected_udp_peer_kernel_dropped connected_udp_drain_bulk_dropped connected_udp_direct_decrypt_bulk_shed encrypt_worker_queue_full encrypt_worker_priority_queue_full encrypt_worker_bulk_queue_full encrypt_worker_bulk_dropped fmp_linux_bulk_container_queue_full fmp_linux_bulk_container_queue_full_packets endpoint_bulk_fast_path_prepare_failed endpoint_bulk_fast_path_stage_full endpoint_bulk_fast_path_feedback_full decrypt_worker_queue_full decrypt_worker_bulk_dropped decrypt_worker_register_full decrypt_worker_priority_dropped decrypt_fallback_backlog_high rx_loop_slow_maintenance_timeout rx_loop_slow_maintenance_skipped decrypt_fallback_bulk_dropped decrypt_fallback_priority_dropped decrypt_fallback_pressure_drain decrypt_fallback_priority_gated decrypt_fsp_priority_queue_full_fallback decrypt_fsp_bulk_queue_full_fallback decrypt_fsp_owner_handoff_dropped decrypt_fsp_helper_window_fallback decrypt_fsp_open_worker_window_fallback decrypt_fsp_helper_queue_full_fallback decrypt_fsp_helper_completion_backlog_fallback decrypt_fsp_open_pool_queue_full_fallback decrypt_fsp_open_worker_completion_backlog_fallback decrypt_fsp_worker_replay_dropped decrypt_fsp_worker_replay_dropped_duplicate decrypt_fsp_worker_replay_dropped_too_old decrypt_fsp_worker_replay_dropped_too_old_lag_ge_2x_window decrypt_fsp_worker_replay_dropped_too_old_lag_ge_4x_window decrypt_fsp_worker_replay_dropped_too_old_lag_ge_16x_window decrypt_fsp_worker_replay_dropped_too_old_lag_ge_64x_window fmp_aead_completion_aead_failed fmp_aead_completion_replay_dropped fmp_aead_completion_replay_dropped_prechecked fmp_aead_completion_replay_dropped_deferred fmp_aead_completion_replay_dropped_duplicate fmp_aead_completion_replay_dropped_too_old fmp_aead_completion_replay_dropped_too_old_lag_ge_2x_window fmp_aead_completion_replay_dropped_too_old_lag_ge_4x_window fmp_aead_completion_replay_dropped_too_old_lag_ge_16x_window fmp_aead_completion_replay_dropped_too_old_lag_ge_64x_window fsp_aead_completion_aead_failed fsp_aead_completion_epoch_mismatch fsp_aead_completion_stale_session fsp_aead_completion_stale_order fsp_aead_completion_stale_ticket fsp_aead_completion_duplicate_ticket fsp_aead_completion_window_exceeded fsp_aead_completion_replay_dropped fsp_aead_completion_replay_dropped_helper fsp_aead_completion_replay_dropped_helper_returned fsp_aead_completion_replay_dropped_worker_open fsp_aead_completion_replay_dropped_worker_open_returned fsp_aead_completion_replay_dropped_duplicate fsp_aead_completion_replay_dropped_too_old fsp_aead_completion_replay_dropped_too_old_lag_ge_2x_window fsp_aead_completion_replay_dropped_too_old_lag_ge_4x_window fsp_aead_completion_replay_dropped_too_old_lag_ge_16x_window fsp_aead_completion_replay_dropped_too_old_lag_ge_64x_window decrypt_authenticated_session_priority_dropped decrypt_authenticated_session_bulk_dropped pending_tun_destination_dropped pending_tun_packet_dropped pending_endpoint_destination_dropped pending_endpoint_packet_dropped endpoint_event_backlog_high endpoint_command_bulk_dropped endpoint_event_bulk_dropped transport_channel_backlog_high transport_bulk_dropped nvpn_tun_to_mesh_bulk_dropped nvpn_tun_to_mesh_bulk_dropped_batches nvpn_tun_to_mesh_bulk_dropped_packet_cap nvpn_tun_to_mesh_bulk_dropped_channel_full"
       event_count = split(events, names, " ")
     }
     {
-      in_phase = (NR > start_line)
+      before_phase = (NR <= start_line)
+      in_phase = (NR > start_line && (end_line <= 0 || NR <= end_line))
       for (i = 1; i <= event_count; i++) {
         parse_event($0, names[i], in_phase)
       }

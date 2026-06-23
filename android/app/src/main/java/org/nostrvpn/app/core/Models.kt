@@ -49,6 +49,8 @@ data class AppState(
     val wireguardExitMtu: Int = 0,
     val wireguardExitPersistentKeepaliveSecs: Int = 0,
     val wireguardExitConfig: String = "",
+    val paidExitSeller: PaidExitSellerState = PaidExitSellerState(),
+    val paidRouteMarket: PaidRouteMarketState = PaidRouteMarketState(),
     val connectToNonRosterFipsPeers: Boolean = true,
     val fipsNostrDiscoveryEnabled: Boolean = true,
     val fipsBootstrapEnabled: Boolean = true,
@@ -139,6 +141,220 @@ data class HealthIssue(
     val detail: String = "",
 )
 
+data class PaidExitSellerState(
+    val supported: Boolean = false,
+    val enabled: Boolean = false,
+    val statusText: String = "",
+    val upstream: String = "",
+    val privateVpnAccess: String = "",
+    val internetText: String = "",
+    val publicIpText: String = "",
+    val meter: String = "",
+    val priceText: String = "",
+    val priceMsat: Long = 0,
+    val perUnits: Long = 0,
+    val perUnitsText: String = "",
+    val acceptedMints: List<String> = emptyList(),
+    val maxChannelCapacitySat: Long = 0,
+    val channelExpirySecs: Long = 0,
+    val channelExpiryText: String = "",
+    val settlementText: String = "",
+    val freeProbeUnits: Long = 0,
+    val freeProbeText: String = "",
+    val graceUnits: Long = 0,
+    val graceText: String = "",
+    val countryCode: String = "",
+    val region: String = "",
+    val asn: Int = 0,
+    val networkClass: String = "",
+    val ipv4: Boolean = false,
+    val ipv6: Boolean = false,
+    val channelCreditMsat: Long = 0,
+    val channelCreditText: String = "",
+    val channelCreditTitleText: String = "",
+    val channelCreditHelpText: String = "",
+    val channels: List<PaidRouteChannelState> = emptyList(),
+    val sessions: List<PaidRouteSessionState> = emptyList(),
+)
+
+data class PaidRouteWalletMintState(
+    val url: String = "",
+    val label: String = "",
+    val isDefault: Boolean = false,
+    val balanceKnown: Boolean = false,
+    val balanceMsat: Long = 0,
+    val balanceText: String = "",
+    val lastCheckedUnix: Long = 0,
+)
+
+data class PaidRouteWalletState(
+    val defaultMint: String = "",
+    val balanceKnown: Boolean = false,
+    val totalBalanceMsat: Long = 0,
+    val totalBalanceText: String = "",
+    val mints: List<PaidRouteWalletMintState> = emptyList(),
+    val lastAction: PaidRouteWalletActionState = PaidRouteWalletActionState(),
+)
+
+data class PaidRouteWalletActionState(
+    val kind: String = "",
+    val statusText: String = "",
+    val mintUrl: String = "",
+    val amountSat: Long = 0,
+    val amountText: String = "",
+    val feeSat: Long = 0,
+    val feeText: String = "",
+    val quoteId: String = "",
+    val paymentRequest: String = "",
+    val token: String = "",
+    val operationId: String = "",
+    val expiresAtUnix: Long = 0,
+    val preimage: String = "",
+)
+
+data class PaidRoutePaymentActionState(
+    val kind: String = "",
+    val statusText: String = "",
+    val payloadType: String = "",
+    val sessionId: String = "",
+    val leaseId: String = "",
+    val channelId: String = "",
+    val buyerNpub: String = "",
+    val sellerNpub: String = "",
+    val envelopeJson: String = "",
+    val paidMsat: Long = 0,
+    val paidText: String = "",
+    val deliveredUnits: Long = 0,
+    val deliveredUsageText: String = "",
+    val amountDueMsat: Long = 0,
+    val amountDueText: String = "",
+    val unpaidMsat: Long = 0,
+    val unpaidText: String = "",
+    val allowRouting: Boolean = false,
+)
+
+data class PaidRouteOfferState(
+    val key: String = "",
+    val offerId: String = "",
+    val sellerNpub: String = "",
+    val statusText: String = "",
+    val priceText: String = "",
+    val meter: String = "",
+    val priceMsat: Long = 0,
+    val perUnits: Long = 0,
+    val perUnitsText: String = "",
+    val acceptedMints: List<String> = emptyList(),
+    val maxChannelCapacitySat: Long = 0,
+    val channelExpirySecs: Long = 0,
+    val freeProbeUnits: Long = 0,
+    val freeProbeText: String = "",
+    val graceUnits: Long = 0,
+    val graceText: String = "",
+    val countryCode: String = "",
+    val region: String = "",
+    val asn: Int = 0,
+    val networkClass: String = "",
+    val ipv4: Boolean = false,
+    val ipv6: Boolean = false,
+    val hasQuality: Boolean = false,
+    val qualityText: String = "",
+    val bandwidthText: String = "",
+    val latencyMs: Int = 0,
+    val jitterMs: Int = 0,
+    val packetLossPpm: Int = 0,
+    val downBps: Long = 0,
+    val upBps: Long = 0,
+    val uptimeSecs: Long = 0,
+    val firstSeenUnix: Long = 0,
+    val lastSeenUnix: Long = 0,
+    val relayUrls: List<String> = emptyList(),
+)
+
+data class PaidRouteChannelState(
+    val channelId: String = "",
+    val offerId: String = "",
+    val role: String = "",
+    val status: String = "",
+    val mintUrl: String = "",
+    val counterpartyNpub: String = "",
+    val capacitySat: Long = 0,
+    val capacityText: String = "",
+    val paidMsat: Long = 0,
+    val paidText: String = "",
+    val updatedAtUnix: Long = 0,
+    val expiresAtUnix: Long = 0,
+    val error: String = "",
+)
+
+data class PaidRouteSessionState(
+    val sessionId: String = "",
+    val leaseId: String = "",
+    val channelId: String = "",
+    val statusText: String = "",
+    val lifecycleStatus: String = "",
+    val accessState: String = "",
+    val titleText: String = "",
+    val detailText: String = "",
+    val settlementText: String = "",
+    val collectActionText: String = "",
+    val collectActionHelpText: String = "",
+    val paymentChannelReady: Boolean = false,
+    val allowRouting: Boolean = false,
+    val deliveredUnits: Long = 0,
+    val usageText: String = "",
+    val amountDueMsat: Long = 0,
+    val amountDueText: String = "",
+    val paidMsat: Long = 0,
+    val paidText: String = "",
+    val unpaidMsat: Long = 0,
+    val unpaidText: String = "",
+    val activeMillis: Long = 0,
+    val bytes: Long = 0,
+    val packets: Long = 0,
+    val realizedExitIp: String = "",
+    val claimedCountryCode: String = "",
+    val observedCountryCode: String = "",
+    val countryClaimStatus: String = "",
+    val locationText: String = "",
+    val observedAsn: Int = 0,
+    val hasQuality: Boolean = false,
+    val qualityText: String = "",
+    val bandwidthText: String = "",
+    val latencyMs: Int = 0,
+    val jitterMs: Int = 0,
+    val packetLossPpm: Int = 0,
+    val downBps: Long = 0,
+    val upBps: Long = 0,
+    val updatedAtUnix: Long = 0,
+    val expiresAtUnix: Long = 0,
+)
+
+data class PaidRouteMarketFilterState(
+    val query: String = "",
+    val countryCode: String = "",
+    val networkClass: String = "",
+    val mintUrl: String = "",
+    val requireIpv4: Boolean = false,
+    val requireIpv6: Boolean = false,
+    val sort: String = "quality",
+)
+
+data class PaidRouteMarketState(
+    val supported: Boolean = false,
+    val statusText: String = "",
+    val storePath: String = "",
+    val wallet: PaidRouteWalletState = PaidRouteWalletState(),
+    val lastPaymentAction: PaidRoutePaymentActionState = PaidRoutePaymentActionState(),
+    val filter: PaidRouteMarketFilterState = PaidRouteMarketFilterState(),
+    val offers: List<PaidRouteOfferState> = emptyList(),
+    val visibleOffers: List<PaidRouteOfferState> = emptyList(),
+    val hiddenOfferCount: Long = 0,
+    val countryOptions: List<String> = emptyList(),
+    val networkClassOptions: List<String> = emptyList(),
+    val channels: List<PaidRouteChannelState> = emptyList(),
+    val sessions: List<PaidRouteSessionState> = emptyList(),
+)
+
 val AppState.activeNetwork: NetworkState?
     get() = networks.firstOrNull { it.enabled }
 
@@ -196,6 +412,8 @@ fun parseAppState(jsonText: String): AppState {
         wireguardExitMtu = json.optInt("wireguardExitMtu"),
         wireguardExitPersistentKeepaliveSecs = json.optInt("wireguardExitPersistentKeepaliveSecs"),
         wireguardExitConfig = json.optString("wireguardExitConfig"),
+        paidExitSeller = json.optJSONObject("paidExitSeller").toPaidExitSellerState(),
+        paidRouteMarket = json.optJSONObject("paidRouteMarket").toPaidRouteMarketState(),
         connectToNonRosterFipsPeers = json.optBoolean("connectToNonRosterFipsPeers", true),
         fipsNostrDiscoveryEnabled = json.optBoolean("fipsNostrDiscoveryEnabled", true),
         fipsBootstrapEnabled = json.optBoolean("fipsBootstrapEnabled", true),
@@ -296,6 +514,247 @@ private fun JSONArray?.toHealthList(): List<HealthIssue> = mapObjects { item ->
         severity = item.optString("severity"),
         summary = item.optString("summary"),
         detail = item.optString("detail"),
+    )
+}
+
+private fun JSONObject?.toPaidExitSellerState(): PaidExitSellerState {
+    if (this == null) return PaidExitSellerState()
+    return PaidExitSellerState(
+        supported = optBoolean("supported"),
+        enabled = optBoolean("enabled"),
+        statusText = optString("statusText"),
+        upstream = optString("upstream"),
+        privateVpnAccess = optString("privateVpnAccess"),
+        internetText = optString("internetText"),
+        publicIpText = optString("publicIpText"),
+        meter = optString("meter"),
+        priceText = optString("priceText"),
+        priceMsat = optLong("priceMsat"),
+        perUnits = optLong("perUnits"),
+        perUnitsText = optString("perUnitsText"),
+        acceptedMints = optJSONArray("acceptedMints").toStringList(),
+        maxChannelCapacitySat = optLong("maxChannelCapacitySat"),
+        channelExpirySecs = optLong("channelExpirySecs"),
+        channelExpiryText = optString("channelExpiryText"),
+        settlementText = optString("settlementText"),
+        freeProbeUnits = optLong("freeProbeUnits"),
+        freeProbeText = optString("freeProbeText"),
+        graceUnits = optLong("graceUnits"),
+        graceText = optString("graceText"),
+        countryCode = optString("countryCode"),
+        region = optString("region"),
+        asn = optInt("asn"),
+        networkClass = optString("networkClass"),
+        ipv4 = optBoolean("ipv4"),
+        ipv6 = optBoolean("ipv6"),
+        channelCreditMsat = optLong("channelCreditMsat"),
+        channelCreditText = optString("channelCreditText"),
+        channelCreditTitleText = optString("channelCreditTitleText"),
+        channelCreditHelpText = optString("channelCreditHelpText"),
+        channels = optJSONArray("channels").toPaidRouteChannelList(),
+        sessions = optJSONArray("sessions").toPaidRouteSessionList(),
+    )
+}
+
+private fun JSONObject?.toPaidRouteMarketState(): PaidRouteMarketState {
+    if (this == null) return PaidRouteMarketState()
+    val offers = optJSONArray("offers").toPaidRouteOfferList()
+    return PaidRouteMarketState(
+        supported = optBoolean("supported"),
+        statusText = optString("statusText"),
+        storePath = optString("storePath"),
+        wallet = optJSONObject("wallet").toPaidRouteWalletState(),
+        lastPaymentAction = optJSONObject("lastPaymentAction").toPaidRoutePaymentActionState(),
+        filter = optJSONObject("filter").toPaidRouteMarketFilterState(),
+        offers = offers,
+        visibleOffers = optJSONArray("visibleOffers").toPaidRouteOfferList().ifEmpty { offers },
+        hiddenOfferCount = optLong("hiddenOfferCount"),
+        countryOptions = optJSONArray("countryOptions").toStringList(),
+        networkClassOptions = optJSONArray("networkClassOptions").toStringList(),
+        channels = optJSONArray("channels").toPaidRouteChannelList(),
+        sessions = optJSONArray("sessions").toPaidRouteSessionList(),
+    )
+}
+
+private fun JSONObject?.toPaidRouteMarketFilterState(): PaidRouteMarketFilterState {
+    if (this == null) return PaidRouteMarketFilterState()
+    return PaidRouteMarketFilterState(
+        query = optString("query"),
+        countryCode = optString("countryCode"),
+        networkClass = optString("networkClass"),
+        mintUrl = optString("mintUrl"),
+        requireIpv4 = optBoolean("requireIpv4"),
+        requireIpv6 = optBoolean("requireIpv6"),
+        sort = optString("sort").ifBlank { "quality" },
+    )
+}
+
+private fun JSONObject?.toPaidRouteWalletState(): PaidRouteWalletState {
+    if (this == null) return PaidRouteWalletState()
+    return PaidRouteWalletState(
+        defaultMint = optString("defaultMint"),
+        balanceKnown = optBoolean("balanceKnown"),
+        totalBalanceMsat = optLong("totalBalanceMsat"),
+        totalBalanceText = optString("totalBalanceText"),
+        mints = optJSONArray("mints").toPaidRouteWalletMintList(),
+        lastAction = optJSONObject("lastAction").toPaidRouteWalletActionState(),
+    )
+}
+
+private fun JSONObject?.toPaidRouteWalletActionState(): PaidRouteWalletActionState {
+    if (this == null) return PaidRouteWalletActionState()
+    return PaidRouteWalletActionState(
+        kind = optString("kind"),
+        statusText = optString("statusText"),
+        mintUrl = optString("mintUrl"),
+        amountSat = optLong("amountSat"),
+        amountText = optString("amountText"),
+        feeSat = optLong("feeSat"),
+        feeText = optString("feeText"),
+        quoteId = optString("quoteId"),
+        paymentRequest = optString("paymentRequest"),
+        token = optString("token"),
+        operationId = optString("operationId"),
+        expiresAtUnix = optLong("expiresAtUnix"),
+        preimage = optString("preimage"),
+    )
+}
+
+private fun JSONObject?.toPaidRoutePaymentActionState(): PaidRoutePaymentActionState {
+    if (this == null) return PaidRoutePaymentActionState()
+    return PaidRoutePaymentActionState(
+        kind = optString("kind"),
+        statusText = optString("statusText"),
+        payloadType = optString("payloadType"),
+        sessionId = optString("sessionId"),
+        leaseId = optString("leaseId"),
+        channelId = optString("channelId"),
+        buyerNpub = optString("buyerNpub"),
+        sellerNpub = optString("sellerNpub"),
+        envelopeJson = optString("envelopeJson"),
+        paidMsat = optLong("paidMsat"),
+        paidText = optString("paidText"),
+        deliveredUnits = optLong("deliveredUnits"),
+        deliveredUsageText = optString("deliveredUsageText"),
+        amountDueMsat = optLong("amountDueMsat"),
+        amountDueText = optString("amountDueText"),
+        unpaidMsat = optLong("unpaidMsat"),
+        unpaidText = optString("unpaidText"),
+        allowRouting = optBoolean("allowRouting"),
+    )
+}
+
+private fun JSONArray?.toPaidRouteWalletMintList(): List<PaidRouteWalletMintState> = mapObjects { item ->
+    PaidRouteWalletMintState(
+        url = item.optString("url"),
+        label = item.optString("label"),
+        isDefault = item.optBoolean("isDefault"),
+        balanceKnown = item.optBoolean("balanceKnown"),
+        balanceMsat = item.optLong("balanceMsat"),
+        balanceText = item.optString("balanceText"),
+        lastCheckedUnix = item.optLong("lastCheckedUnix"),
+    )
+}
+
+private fun JSONArray?.toPaidRouteOfferList(): List<PaidRouteOfferState> = mapObjects { item ->
+    PaidRouteOfferState(
+        key = item.optString("key"),
+        offerId = item.optString("offerId"),
+        sellerNpub = item.optString("sellerNpub"),
+        statusText = item.optString("statusText"),
+        priceText = item.optString("priceText"),
+        meter = item.optString("meter"),
+        priceMsat = item.optLong("priceMsat"),
+        perUnits = item.optLong("perUnits"),
+        perUnitsText = item.optString("perUnitsText"),
+        acceptedMints = item.optJSONArray("acceptedMints").toStringList(),
+        maxChannelCapacitySat = item.optLong("maxChannelCapacitySat"),
+        channelExpirySecs = item.optLong("channelExpirySecs"),
+        freeProbeUnits = item.optLong("freeProbeUnits"),
+        freeProbeText = item.optString("freeProbeText"),
+        graceUnits = item.optLong("graceUnits"),
+        graceText = item.optString("graceText"),
+        countryCode = item.optString("countryCode"),
+        region = item.optString("region"),
+        asn = item.optInt("asn"),
+        networkClass = item.optString("networkClass"),
+        ipv4 = item.optBoolean("ipv4"),
+        ipv6 = item.optBoolean("ipv6"),
+        hasQuality = item.optBoolean("hasQuality"),
+        qualityText = item.optString("qualityText"),
+        bandwidthText = item.optString("bandwidthText"),
+        latencyMs = item.optInt("latencyMs"),
+        jitterMs = item.optInt("jitterMs"),
+        packetLossPpm = item.optInt("packetLossPpm"),
+        downBps = item.optLong("downBps"),
+        upBps = item.optLong("upBps"),
+        uptimeSecs = item.optLong("uptimeSecs"),
+        firstSeenUnix = item.optLong("firstSeenUnix"),
+        lastSeenUnix = item.optLong("lastSeenUnix"),
+        relayUrls = item.optJSONArray("relayUrls").toStringList(),
+    )
+}
+
+private fun JSONArray?.toPaidRouteChannelList(): List<PaidRouteChannelState> = mapObjects { item ->
+    PaidRouteChannelState(
+        channelId = item.optString("channelId"),
+        offerId = item.optString("offerId"),
+        role = item.optString("role"),
+        status = item.optString("status"),
+        mintUrl = item.optString("mintUrl"),
+        counterpartyNpub = item.optString("counterpartyNpub"),
+        capacitySat = item.optLong("capacitySat"),
+        capacityText = item.optString("capacityText"),
+        paidMsat = item.optLong("paidMsat"),
+        paidText = item.optString("paidText"),
+        updatedAtUnix = item.optLong("updatedAtUnix"),
+        expiresAtUnix = item.optLong("expiresAtUnix"),
+        error = item.optString("error"),
+    )
+}
+
+private fun JSONArray?.toPaidRouteSessionList(): List<PaidRouteSessionState> = mapObjects { item ->
+    PaidRouteSessionState(
+        sessionId = item.optString("sessionId"),
+        leaseId = item.optString("leaseId"),
+        channelId = item.optString("channelId"),
+        statusText = item.optString("statusText"),
+        lifecycleStatus = item.optString("lifecycleStatus"),
+        accessState = item.optString("accessState"),
+        titleText = item.optString("titleText"),
+        detailText = item.optString("detailText"),
+        settlementText = item.optString("settlementText"),
+        collectActionText = item.optString("collectActionText"),
+        collectActionHelpText = item.optString("collectActionHelpText"),
+        paymentChannelReady = item.optBoolean("paymentChannelReady"),
+        allowRouting = item.optBoolean("allowRouting"),
+        deliveredUnits = item.optLong("deliveredUnits"),
+        usageText = item.optString("usageText"),
+        amountDueMsat = item.optLong("amountDueMsat"),
+        amountDueText = item.optString("amountDueText"),
+        paidMsat = item.optLong("paidMsat"),
+        paidText = item.optString("paidText"),
+        unpaidMsat = item.optLong("unpaidMsat"),
+        unpaidText = item.optString("unpaidText"),
+        activeMillis = item.optLong("activeMillis"),
+        bytes = item.optLong("bytes"),
+        packets = item.optLong("packets"),
+        realizedExitIp = item.optString("realizedExitIp"),
+        claimedCountryCode = item.optString("claimedCountryCode"),
+        observedCountryCode = item.optString("observedCountryCode"),
+        countryClaimStatus = item.optString("countryClaimStatus"),
+        locationText = item.optString("locationText"),
+        observedAsn = item.optInt("observedAsn"),
+        hasQuality = item.optBoolean("hasQuality"),
+        qualityText = item.optString("qualityText"),
+        bandwidthText = item.optString("bandwidthText"),
+        latencyMs = item.optInt("latencyMs"),
+        jitterMs = item.optInt("jitterMs"),
+        packetLossPpm = item.optInt("packetLossPpm"),
+        downBps = item.optLong("downBps"),
+        upBps = item.optLong("upBps"),
+        updatedAtUnix = item.optLong("updatedAtUnix"),
+        expiresAtUnix = item.optLong("expiresAtUnix"),
     )
 }
 

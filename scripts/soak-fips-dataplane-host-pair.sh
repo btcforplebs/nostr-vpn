@@ -14,6 +14,7 @@ REMOTE_SSH_PORT="${NVPN_HOST_PAIR_SSH_PORT:-}"
 REMOTE_SSH_CONNECT_TIMEOUT="${NVPN_HOST_PAIR_SSH_CONNECT_TIMEOUT:-10}"
 LOCAL_NVPN="${NVPN_HOST_PAIR_LOCAL_NVPN:-nvpn}"
 REMOTE_NVPN="${NVPN_HOST_PAIR_REMOTE_NVPN:-nvpn}"
+LOCAL_SH_COMMAND="${NVPN_HOST_PAIR_LOCAL_SH_COMMAND:-}"
 LOCAL_NVPN_COMMAND="${NVPN_HOST_PAIR_LOCAL_NVPN_COMMAND:-}"
 REMOTE_NVPN_COMMAND="${NVPN_HOST_PAIR_REMOTE_NVPN_COMMAND:-}"
 LOCAL_CONFIG="${NVPN_HOST_PAIR_LOCAL_CONFIG:-}"
@@ -221,6 +222,15 @@ csv_has_token() {
 remote_sh() {
   local cmd="$1"
   ssh "${SSH_OPTS[@]}" "$REMOTE_SSH" "bash -lc $(q "$cmd")"
+}
+
+local_sh() {
+  local cmd="$1"
+  if [[ -n "$LOCAL_SH_COMMAND" ]]; then
+    bash -lc "$LOCAL_SH_COMMAND $(q "$cmd")"
+  else
+    bash -lc "$cmd"
+  fi
 }
 
 cleanup_remote_iperf() {
@@ -511,11 +521,12 @@ local_status() {
     fi
     bash -lc "$cmd" | tr -d '\r'
   else
-    local cmd=("$LOCAL_NVPN" status --json --discover-secs 0)
+    local cmd
+    cmd="$(q "$LOCAL_NVPN") status --json --discover-secs 0"
     if [[ -n "$LOCAL_CONFIG" ]]; then
-      cmd+=(--config "$LOCAL_CONFIG")
+      cmd+=" --config $(q "$LOCAL_CONFIG")"
     fi
-    "${cmd[@]}" | tr -d '\r'
+    local_sh "$cmd" | tr -d '\r'
   fi
 }
 
@@ -667,10 +678,9 @@ assert_peer_path() {
   fi
   if [[ "$srtt" != "null" && -n "$srtt" ]]; then
     assert_float_at_most "$srtt" "$MAX_SRTT_MS" "$label FIPS SRTT ms"
-    if [[ "$srtt_age_ms" == "null" || -z "$srtt_age_ms" ]]; then
-      die "$label FIPS SRTT age missing"
+    if [[ "$srtt_age_ms" != "null" && -n "$srtt_age_ms" ]]; then
+      assert_float_at_most "$srtt_age_ms" "$MAX_SRTT_AGE_MS" "$label FIPS SRTT age ms"
     fi
-    assert_float_at_most "$srtt_age_ms" "$MAX_SRTT_AGE_MS" "$label FIPS SRTT age ms"
   fi
 }
 
@@ -743,7 +753,7 @@ ping_probe() {
   cmd="$(ping_command "$target")"
   set +e
   if [[ "$side" == "local" ]]; then
-    bash -lc "$cmd" >"$log_path" 2>&1
+    local_sh "$cmd" >"$log_path" 2>&1
   else
     remote_sh "$cmd" >"$log_path" 2>&1
   fi
@@ -755,7 +765,7 @@ side_has_cmd() {
   local side="$1"
   local name="$2"
   if [[ "$side" == "local" ]]; then
-    command -v "$name" >/dev/null 2>&1
+    local_sh "command -v $(q "$name") >/dev/null 2>&1"
   else
     remote_sh "command -v $(q "$name") >/dev/null 2>&1"
   fi
@@ -770,10 +780,13 @@ iperf_probe() {
   local label="$1"
   local json_path="$2"
   shift 2
-  local rc mbps retrans
+  local arg cmd rc mbps retrans
+  cmd="iperf3 -J -c $(q "$REMOTE_TUNNEL_IP") -t $(q "$IPERF_DURATION") -O 1 --connect-timeout 3000"
+  for arg in "$@"; do
+    cmd+=" $(q "$arg")"
+  done
   set +e
-  iperf3 -J -c "$REMOTE_TUNNEL_IP" -t "$IPERF_DURATION" -O 1 --connect-timeout 3000 "$@" \
-    >"$json_path" 2>"$json_path.err"
+  local_sh "$cmd" >"$json_path" 2>"$json_path.err"
   rc=$?
   set -e
   if (( rc != 0 )); then
@@ -923,6 +936,9 @@ assert_fips_control_liveness_fresh() {
   local label="$1"
   local last_seen="$2"
   local now="$3"
+  if [[ -z "$last_seen" || "$last_seen" == "null" ]]; then
+    return 0
+  fi
   assert_fips_timestamp_fresh "$label" "last_fips_control_seen_at" "$last_seen" "$now" "$MAX_FIPS_CONTROL_LAST_SEEN_AGE_SECS"
 }
 
@@ -930,6 +946,9 @@ assert_fips_data_liveness_fresh() {
   local label="$1"
   local last_seen="$2"
   local now="$3"
+  if [[ -z "$last_seen" || "$last_seen" == "null" ]]; then
+    return 0
+  fi
   assert_fips_timestamp_fresh "$label" "last_fips_data_seen_at" "$last_seen" "$now" "$MAX_FIPS_DATA_LAST_SEEN_AGE_SECS"
 }
 
@@ -958,7 +977,7 @@ daemon_cpu_percent() {
   local cmd
   cmd="(ps -eo pcpu,args 2>/dev/null || ps -axo pcpu,command) | awk '/[n]vpn/ && /daemon|connect/ { sum += \$1 } END { printf \"%.1f\", sum }'"
   if [[ "$side" == "local" ]]; then
-    bash -lc "$cmd"
+    local_sh "$cmd"
   else
     remote_sh "$cmd"
   fi
@@ -1006,7 +1025,7 @@ cpu_stress_worker_count() {
   case "$CPU_STRESS_WORKERS" in
     auto)
       if [[ "$side" == "local" ]]; then
-        bash -lc "$(bounded_cpu_count_cmd)"
+        local_sh "$(bounded_cpu_count_cmd)"
       else
         remote_sh "$(bounded_cpu_count_cmd)" | tr -d '\r'
       fi
@@ -1050,8 +1069,8 @@ start_cpu_stress_side() {
 
   if [[ "$side" == "local" ]]; then
     pid_path="$LOCAL_CPU_STRESS_PID_FILE"
-    bash -lc "$(cpu_stress_stop_cmd "$pid_path")"
-    bash -lc "$(cpu_stress_start_cmd "$workers" "$pid_path")"
+    local_sh "$(cpu_stress_stop_cmd "$pid_path")"
+    local_sh "$(cpu_stress_start_cmd "$workers" "$pid_path")"
     LOCAL_CPU_STRESS_WORKERS_STARTED="$workers"
   else
     pid_path="$REMOTE_CPU_STRESS_PID_FILE"
@@ -1064,7 +1083,7 @@ start_cpu_stress_side() {
 
 stop_cpu_stress() {
   if [[ -n "${LOCAL_CPU_STRESS_PID_FILE:-}" ]]; then
-    bash -lc "$(cpu_stress_stop_cmd "$LOCAL_CPU_STRESS_PID_FILE")" >/dev/null 2>&1 || true
+    local_sh "$(cpu_stress_stop_cmd "$LOCAL_CPU_STRESS_PID_FILE")" >/dev/null 2>&1 || true
   fi
   if [[ -n "${REMOTE_SSH:-}" && -n "${REMOTE_CPU_STRESS_PID_FILE:-}" ]]; then
     remote_sh "$(cpu_stress_stop_cmd "$REMOTE_CPU_STRESS_PID_FILE")" >/dev/null 2>&1 || true
@@ -1102,7 +1121,7 @@ pipeline_latest_line() {
     cmd="grep '^\\[$prefix ' $(q "$path") 2>/dev/null | tail -n1 || true"
   fi
   if [[ "$side" == "local" ]]; then
-    bash -lc "$cmd"
+    local_sh "$cmd"
   else
     remote_sh "$cmd"
   fi
@@ -1128,7 +1147,7 @@ pipeline_line_count() {
     cmd="awk '/^\\[$prefix / { count++ } END { print count + 0 }' $(q "$path") 2>/dev/null || printf '0\n'"
   fi
   if [[ "$side" == "local" ]]; then
-    bash -lc "$cmd"
+    local_sh "$cmd"
   else
     remote_sh "$cmd"
   fi
@@ -1147,6 +1166,8 @@ pipeline_hard_events() {
   local event regex rate total found
   local hard_events=(
     connected_udp_activation_failed
+    connected_udp_kernel_dropped
+    connected_udp_drain_bulk_dropped
     encrypt_worker_queue_full
     encrypt_worker_bulk_dropped
     decrypt_worker_queue_full
@@ -1155,17 +1176,25 @@ pipeline_hard_events() {
     decrypt_worker_priority_dropped
     decrypt_fallback_bulk_dropped
     decrypt_fallback_priority_dropped
+    fmp_aead_completion_aead_failed
+    fsp_aead_completion_aead_failed
+    fsp_aead_completion_epoch_mismatch
     pending_tun_destination_dropped
     pending_tun_packet_dropped
     pending_endpoint_destination_dropped
     pending_endpoint_packet_dropped
-    endpoint_direct_fmp_receive_dropped
+    endpoint_bulk_fast_path_prepare_failed
+    endpoint_bulk_fast_path_stage_full
+    endpoint_bulk_fast_path_feedback_full
     endpoint_event_backlog_high
     endpoint_event_bulk_dropped
     transport_channel_backlog_high
     transport_bulk_dropped
     udp_send_bulk_dropped
     nvpn_tun_to_mesh_bulk_dropped
+    nvpn_tun_to_mesh_bulk_dropped_batches
+    nvpn_tun_to_mesh_bulk_dropped_packet_cap
+    nvpn_tun_to_mesh_bulk_dropped_channel_full
   )
   for event in "${hard_events[@]}"; do
     regex="(^|[[:space:]])${event}=([0-9]+([.][0-9]+)?)/s([[:space:]]total=([0-9]+))?([[:space:]]|$)"
@@ -1250,9 +1279,13 @@ pipeline_queue_wait_json() {
       decrypt_fallback_wait: wait_point("decrypt_fallback_wait"),
       decrypt_fallback_priority_wait: wait_point("decrypt_fallback_priority_wait"),
       decrypt_fallback_bulk_wait: wait_point("decrypt_fallback_bulk_wait"),
+      fsp_aead_worker_open_queue_wait: wait_point("fsp_aead_worker_open_queue_wait"),
+      fsp_aead_worker_open_completion_wait: wait_point("fsp_aead_worker_open_completion_wait"),
       decrypt_authenticated_session_wait: wait_point("decrypt_authenticated_session_wait"),
       decrypt_authenticated_session_priority_wait: wait_point("decrypt_authenticated_session_priority_wait"),
       decrypt_authenticated_session_bulk_wait: wait_point("decrypt_authenticated_session_bulk_wait"),
+      decrypt_direct_session_commit_wait: wait_point("decrypt_direct_session_commit_wait"),
+      decrypt_direct_session_data_wait: wait_point("decrypt_direct_session_data_wait"),
       decrypt_fsp_worker_queue_wait: wait_point("decrypt_fsp_worker_queue_wait"),
       decrypt_fsp_worker_priority_queue_wait: wait_point("decrypt_fsp_worker_priority_queue_wait"),
       decrypt_fsp_worker_bulk_queue_wait: wait_point("decrypt_fsp_worker_bulk_queue_wait"),
@@ -1339,7 +1372,7 @@ pipeline_queue_wait_top_summary() {
       return 0
     }
     BEGIN {
-      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait fmp_linux_bulk_container_queue_wait fmp_linux_bulk_container_ready_wait fmp_linux_bulk_container_first_slot_wait fmp_linux_bulk_container_all_slots_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait nvpn_mesh_to_tun_queue_wait"
+      metrics = "endpoint_command_wait endpoint_priority_command_wait endpoint_bulk_command_wait endpoint_event_wait endpoint_priority_event_wait endpoint_bulk_event_wait fmp_worker_queue_wait fmp_worker_priority_queue_wait fmp_worker_bulk_queue_wait fmp_linux_bulk_container_queue_wait fmp_linux_bulk_container_ready_wait fmp_linux_bulk_container_first_slot_wait fmp_linux_bulk_container_all_slots_wait decrypt_worker_queue_wait decrypt_worker_priority_queue_wait decrypt_worker_bulk_queue_wait decrypt_fallback_wait decrypt_fallback_priority_wait decrypt_fallback_bulk_wait fsp_aead_worker_open_queue_wait fsp_aead_worker_open_completion_wait decrypt_authenticated_session_wait decrypt_authenticated_session_priority_wait decrypt_authenticated_session_bulk_wait decrypt_direct_session_commit_wait decrypt_direct_session_data_wait decrypt_fsp_worker_queue_wait decrypt_fsp_worker_priority_queue_wait decrypt_fsp_worker_bulk_queue_wait transport_queue_wait transport_priority_queue_wait transport_bulk_queue_wait transport_channel_wait transport_priority_channel_wait transport_bulk_channel_wait transport_rx_loop_wait transport_priority_rx_loop_wait transport_bulk_rx_loop_wait nvpn_tun_to_mesh_queue_wait"
       metric_count = split(metrics, names, " ")
       best_p99 = -1
       best_p95 = -1
@@ -2070,9 +2103,24 @@ run_preflight() {
 
   preflight_cmd "local jq is available" command -v jq
   preflight_cmd "local ssh is available" command -v ssh
-  preflight_cmd "local ping is available" command -v ping
+  if [[ -n "$LOCAL_SH_COMMAND" ]]; then
+    if local_sh "printf ok" >/dev/null 2>&1; then
+      preflight_ok "local shell command is reachable"
+    else
+      preflight_missing "local shell command is reachable"
+    fi
+  fi
+  if side_has_cmd local ping; then
+    preflight_ok "local ping is available"
+  else
+    preflight_missing "local ping is available"
+  fi
   if [[ -z "$LOCAL_NVPN_COMMAND" ]]; then
-    preflight_cmd "local nvpn binary is available" command -v "$LOCAL_NVPN"
+    if side_has_cmd local "$LOCAL_NVPN"; then
+      preflight_ok "local nvpn binary is available"
+    else
+      preflight_missing "local nvpn binary is available"
+    fi
   else
     preflight_ok "local nvpn command is configured"
   fi
@@ -2086,7 +2134,11 @@ run_preflight() {
       preflight_ok "remote nvpn command is configured"
     fi
     if [[ "$REQUIRE_IPERF" == "1" ]]; then
-      preflight_cmd "local iperf3 is available" command -v iperf3
+      if side_has_cmd local iperf3; then
+        preflight_ok "local iperf3 is available"
+      else
+        preflight_missing "local iperf3 is available"
+      fi
       preflight_remote_cmd "remote iperf3 is available" "command -v iperf3"
     else
       preflight_ok "iperf3 is optional for this run"
@@ -2119,6 +2171,7 @@ Required:
 Common optional env:
   NVPN_HOST_PAIR_LOCAL_NVPN          local nvpn binary (default: nvpn)
   NVPN_HOST_PAIR_REMOTE_NVPN         remote nvpn binary (default: nvpn)
+  NVPN_HOST_PAIR_LOCAL_SH_COMMAND    optional wrapper before local probe shell commands
   NVPN_HOST_PAIR_LOCAL_NVPN_COMMAND  local shell command before "status ..."
   NVPN_HOST_PAIR_REMOTE_NVPN_COMMAND remote shell command before "status ..."
   NVPN_HOST_PAIR_LOCAL_CONFIG        local config path

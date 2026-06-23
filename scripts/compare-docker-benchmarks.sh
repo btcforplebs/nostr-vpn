@@ -9,13 +9,17 @@ REFERENCE_INPUT="${NVPN_DOCKER_COMPARISON_REFERENCE_DIR:-${2:-}}"
 OUTPUT_DIR="${NVPN_DOCKER_COMPARISON_OUTPUT_DIR:-${3:-$ROOT_DIR/artifacts/docker-reference-comparisons/$(date -u +%Y%m%dT%H%M%SZ)}}"
 NVPN_BACKEND="${NVPN_DOCKER_COMPARISON_NVPN_BACKEND:-nvpn}"
 NVPN_THREADS="${NVPN_DOCKER_COMPARISON_NVPN_THREADS:-}"
+NVPN_LABEL="${NVPN_DOCKER_COMPARISON_NVPN_LABEL:-nvpn}"
 REFERENCE_BACKEND="${NVPN_DOCKER_COMPARISON_REFERENCE_BACKEND:-boringtun}"
 REFERENCE_THREADS="${NVPN_DOCKER_COMPARISON_REFERENCE_THREADS:-}"
+REFERENCE_LABEL="${NVPN_DOCKER_COMPARISON_REFERENCE_LABEL:-reference}"
 MIN_THROUGHPUT_PCT="${NVPN_DOCKER_COMPARISON_MIN_THROUGHPUT_PCT:-90}"
 MAX_RETRANS_PCT="${NVPN_DOCKER_COMPARISON_MAX_RETRANS_PCT:-150}"
 MAX_LOSS_DELTA_PCT="${NVPN_DOCKER_COMPARISON_MAX_LOSS_DELTA_PCT:-1}"
 MAX_STRESS_UDP_LOSS_DELTA_PCT="${NVPN_DOCKER_COMPARISON_STRESS_UDP_LOSS_DELTA_PCT:-5}"
 MAX_PING_AVG_DELTA_MS="${NVPN_DOCKER_COMPARISON_MAX_PING_AVG_DELTA_MS:-1}"
+REQUIRE_NVPN_UDP_ZERO_LOSS="${NVPN_DOCKER_COMPARISON_REQUIRE_NVPN_UDP_ZERO_LOSS:-1}"
+REQUIRE_NVPN_PING_ZERO_LOSS="${NVPN_DOCKER_COMPARISON_REQUIRE_NVPN_PING_ZERO_LOSS:-1}"
 ENFORCE_THRESHOLDS="${NVPN_DOCKER_COMPARISON_ENFORCE_THRESHOLDS:-0}"
 
 die() {
@@ -32,13 +36,17 @@ Env alternatives:
   NVPN_DOCKER_COMPARISON_REFERENCE_DIR=<dir-or-summary>
   NVPN_DOCKER_COMPARISON_OUTPUT_DIR=<dir>
   NVPN_DOCKER_COMPARISON_NVPN_BACKEND=nvpn
+  NVPN_DOCKER_COMPARISON_NVPN_LABEL=nvpn
   NVPN_DOCKER_COMPARISON_REFERENCE_BACKEND=boringtun
+  NVPN_DOCKER_COMPARISON_REFERENCE_LABEL=reference
   NVPN_DOCKER_COMPARISON_REFERENCE_THREADS=1
   NVPN_DOCKER_COMPARISON_MIN_THROUGHPUT_PCT=90
   NVPN_DOCKER_COMPARISON_MAX_RETRANS_PCT=150
   NVPN_DOCKER_COMPARISON_MAX_LOSS_DELTA_PCT=1
   NVPN_DOCKER_COMPARISON_STRESS_UDP_LOSS_DELTA_PCT=5
   NVPN_DOCKER_COMPARISON_MAX_PING_AVG_DELTA_MS=1
+  NVPN_DOCKER_COMPARISON_REQUIRE_NVPN_UDP_ZERO_LOSS=1
+  NVPN_DOCKER_COMPARISON_REQUIRE_NVPN_PING_ZERO_LOSS=1
   NVPN_DOCKER_COMPARISON_ENFORCE_THRESHOLDS=0
 
 Inputs are summary.tsv artifacts from scripts/perf-docker.sh and
@@ -195,6 +203,20 @@ threshold_lower_delta_status() {
     }'
 }
 
+threshold_zero_status() {
+  local actual="$1"
+  awk -v actual="$actual" '
+    BEGIN {
+      if (actual == "") {
+        print "unknown";
+      } else if ((actual + 0) == 0) {
+        print "pass";
+      } else {
+        print "fail";
+      }
+    }'
+}
+
 write_row() {
   local first=1 arg
   for arg in "$@"; do
@@ -327,6 +349,23 @@ write_threshold_lower_delta() {
     "${delta:+$delta$unit}"
 }
 
+write_threshold_zero() {
+  local check="$1"
+  local metric="$2"
+  local nvpn_summary="$3"
+  local nvpn_value status
+  nvpn_value="$(tsv_value "$nvpn_summary" "$metric" "$NVPN_BACKEND" "$NVPN_THREADS")"
+  status="$(threshold_zero_status "$nvpn_value")"
+  write_row \
+    "$check" \
+    "$metric" \
+    "$status" \
+    "$nvpn_value" \
+    "" \
+    "==0" \
+    ""
+}
+
 tsv_to_json() {
   local file="$1"
   jq -R -s '
@@ -354,6 +393,8 @@ main() {
   local reference_stress_enabled reference_stress_sides reference_stress_local_workers reference_stress_remote_workers
   local nvpn_pipeline_trace_enabled nvpn_pipeline_trace_interval_secs
   local reference_pipeline_trace_enabled reference_pipeline_trace_interval_secs
+  local nvpn_iperf_socket_buffer nvpn_iperf_udp1000_parallel nvpn_iperf_udp1000_bandwidth nvpn_iperf_udp1000_per_stream_bandwidth
+  local reference_iperf_socket_buffer reference_iperf_udp1000_parallel reference_iperf_udp1000_bandwidth reference_iperf_udp1000_per_stream_bandwidth
   local nvpn_extra_connect_env reference_extra_connect_env
   local nvpn_source_head nvpn_source_dirty nvpn_fips_patch_enabled nvpn_fips_patch_head nvpn_fips_patch_dirty
   local reference_source_head reference_source_dirty reference_fips_patch_enabled reference_fips_patch_head reference_fips_patch_dirty
@@ -370,6 +411,14 @@ main() {
   nvpn_pipeline_trace_interval_secs="$(metadata_value "$NVPN_INPUT" '.pipeline_trace.interval_secs')"
   reference_pipeline_trace_enabled="$(metadata_value "$REFERENCE_INPUT" '.pipeline_trace.enabled')"
   reference_pipeline_trace_interval_secs="$(metadata_value "$REFERENCE_INPUT" '.pipeline_trace.interval_secs')"
+  nvpn_iperf_socket_buffer="$(metadata_value "$NVPN_INPUT" '.iperf.socket_buffer')"
+  nvpn_iperf_udp1000_parallel="$(metadata_value "$NVPN_INPUT" '.iperf.udp1000_parallel')"
+  nvpn_iperf_udp1000_bandwidth="$(metadata_value "$NVPN_INPUT" '.iperf.udp1000_bandwidth')"
+  nvpn_iperf_udp1000_per_stream_bandwidth="$(metadata_value "$NVPN_INPUT" '.iperf.udp1000_per_stream_bandwidth')"
+  reference_iperf_socket_buffer="$(metadata_value "$REFERENCE_INPUT" '.iperf.socket_buffer')"
+  reference_iperf_udp1000_parallel="$(metadata_value "$REFERENCE_INPUT" '.iperf.udp1000_parallel')"
+  reference_iperf_udp1000_bandwidth="$(metadata_value "$REFERENCE_INPUT" '.iperf.udp1000_bandwidth')"
+  reference_iperf_udp1000_per_stream_bandwidth="$(metadata_value "$REFERENCE_INPUT" '.iperf.udp1000_per_stream_bandwidth')"
   nvpn_extra_connect_env="$(metadata_value "$NVPN_INPUT" '.run_env.extra_connect_env')"
   reference_extra_connect_env="$(metadata_value "$REFERENCE_INPUT" '.run_env.extra_connect_env')"
   nvpn_source_head="$(metadata_value "$NVPN_INPUT" '.source.nvpn.git_head')"
@@ -393,6 +442,13 @@ main() {
   if is_true_value "$nvpn_stress_enabled" && is_true_value "$reference_stress_enabled"; then
     effective_udp_loss_delta_pct="$MAX_STRESS_UDP_LOSS_DELTA_PCT"
   fi
+  local iperf_mismatch="false"
+  if [[ "$nvpn_iperf_socket_buffer" != "$reference_iperf_socket_buffer" \
+      || "$nvpn_iperf_udp1000_parallel" != "$reference_iperf_udp1000_parallel" \
+      || "$nvpn_iperf_udp1000_bandwidth" != "$reference_iperf_udp1000_bandwidth" \
+      || "$nvpn_iperf_udp1000_per_stream_bandwidth" != "$reference_iperf_udp1000_per_stream_bandwidth" ]]; then
+    iperf_mismatch="true"
+  fi
 
   local comparison_tsv ratios_tsv comparison_json
   local thresholds_tsv
@@ -409,8 +465,8 @@ main() {
     tcp_8_mbps tcp_8_retrans udp_200_mbps udp_200_loss_pct \
     udp_1000_mbps udp_1000_loss_pct ping_loss_pct ping_avg_ms raw_dir \
     >"$comparison_tsv"
-  write_normalized_summary_row nvpn "$nvpn_summary" "$NVPN_BACKEND" "$NVPN_THREADS" "$NVPN_INPUT" >>"$comparison_tsv"
-  write_normalized_summary_row reference "$reference_summary" "$REFERENCE_BACKEND" "$REFERENCE_THREADS" "$REFERENCE_INPUT" >>"$comparison_tsv"
+  write_normalized_summary_row "$NVPN_LABEL" "$nvpn_summary" "$NVPN_BACKEND" "$NVPN_THREADS" "$NVPN_INPUT" >>"$comparison_tsv"
+  write_normalized_summary_row "$REFERENCE_LABEL" "$reference_summary" "$REFERENCE_BACKEND" "$REFERENCE_THREADS" "$REFERENCE_INPUT" >>"$comparison_tsv"
 
   write_row metric unit better_when nvpn reference nvpn_percent_of_reference nvpn_minus_reference >"$ratios_tsv"
   write_metric_ratio tcp_single_mbps Mbps higher "$nvpn_summary" "$reference_summary" >>"$ratios_tsv"
@@ -439,6 +495,13 @@ main() {
   write_threshold_lower_delta udp_1000_loss udp_1000_loss_pct "$effective_udp_loss_delta_pct" pp "$nvpn_summary" "$reference_summary" >>"$thresholds_tsv"
   write_threshold_lower_delta ping_loss ping_loss_pct "$MAX_LOSS_DELTA_PCT" pp "$nvpn_summary" "$reference_summary" >>"$thresholds_tsv"
   write_threshold_lower_delta ping_avg ping_avg_ms "$MAX_PING_AVG_DELTA_MS" ms "$nvpn_summary" "$reference_summary" >>"$thresholds_tsv"
+  if [[ "$REQUIRE_NVPN_UDP_ZERO_LOSS" == "1" ]]; then
+    write_threshold_zero nvpn_udp_200_zero_loss udp_200_loss_pct "$nvpn_summary" >>"$thresholds_tsv"
+    write_threshold_zero nvpn_udp_1000_zero_loss udp_1000_loss_pct "$nvpn_summary" >>"$thresholds_tsv"
+  fi
+  if [[ "$REQUIRE_NVPN_PING_ZERO_LOSS" == "1" ]]; then
+    write_threshold_zero nvpn_ping_zero_loss ping_loss_pct "$nvpn_summary" >>"$thresholds_tsv"
+  fi
 
   local comparison_rows ratios thresholds threshold_failures threshold_unknowns threshold_status
   comparison_rows="$(tsv_to_json "$comparison_tsv")"
@@ -459,6 +522,8 @@ main() {
     --arg reference_summary "$reference_summary" \
     --arg nvpn_backend "$NVPN_BACKEND" \
     --arg reference_backend "$REFERENCE_BACKEND" \
+    --arg nvpn_label "$NVPN_LABEL" \
+    --arg reference_label "$REFERENCE_LABEL" \
     --arg nvpn_threads "$NVPN_THREADS" \
     --arg reference_threads "$REFERENCE_THREADS" \
     --arg nvpn_stress_enabled "$nvpn_stress_enabled" \
@@ -474,6 +539,15 @@ main() {
     --arg reference_pipeline_trace_enabled "$reference_pipeline_trace_enabled" \
     --arg reference_pipeline_trace_interval_secs "$reference_pipeline_trace_interval_secs" \
     --arg pipeline_trace_mismatch "$pipeline_trace_mismatch" \
+    --arg nvpn_iperf_socket_buffer "$nvpn_iperf_socket_buffer" \
+    --arg nvpn_iperf_udp1000_parallel "$nvpn_iperf_udp1000_parallel" \
+    --arg nvpn_iperf_udp1000_bandwidth "$nvpn_iperf_udp1000_bandwidth" \
+    --arg nvpn_iperf_udp1000_per_stream_bandwidth "$nvpn_iperf_udp1000_per_stream_bandwidth" \
+    --arg reference_iperf_socket_buffer "$reference_iperf_socket_buffer" \
+    --arg reference_iperf_udp1000_parallel "$reference_iperf_udp1000_parallel" \
+    --arg reference_iperf_udp1000_bandwidth "$reference_iperf_udp1000_bandwidth" \
+    --arg reference_iperf_udp1000_per_stream_bandwidth "$reference_iperf_udp1000_per_stream_bandwidth" \
+    --arg iperf_mismatch "$iperf_mismatch" \
     --arg nvpn_extra_connect_env "$nvpn_extra_connect_env" \
     --arg reference_extra_connect_env "$reference_extra_connect_env" \
     --arg nvpn_source_head "$nvpn_source_head" \
@@ -492,6 +566,8 @@ main() {
     --arg max_stress_udp_loss_delta_pct "$MAX_STRESS_UDP_LOSS_DELTA_PCT" \
     --arg effective_udp_loss_delta_pct "$effective_udp_loss_delta_pct" \
     --arg max_ping_avg_delta_ms "$MAX_PING_AVG_DELTA_MS" \
+    --arg require_nvpn_udp_zero_loss "$REQUIRE_NVPN_UDP_ZERO_LOSS" \
+    --arg require_nvpn_ping_zero_loss "$REQUIRE_NVPN_PING_ZERO_LOSS" \
     --arg threshold_status "$threshold_status" \
     --arg threshold_failures "$threshold_failures" \
     --arg threshold_unknowns "$threshold_unknowns" \
@@ -512,6 +588,8 @@ main() {
         reference_summary: $reference_summary,
         nvpn_backend: $nvpn_backend,
         reference_backend: $reference_backend,
+        nvpn_label: $nvpn_label,
+        reference_label: $reference_label,
         nvpn_threads: $nvpn_threads,
         reference_threads: $reference_threads
       },
@@ -538,6 +616,21 @@ main() {
         reference: {
           enabled: bool($reference_pipeline_trace_enabled),
           interval_secs: num($reference_pipeline_trace_interval_secs)
+        }
+      },
+      iperf: {
+        mismatch: bool($iperf_mismatch),
+        nvpn: {
+          socket_buffer: (if $nvpn_iperf_socket_buffer == "" then null else $nvpn_iperf_socket_buffer end),
+          udp1000_parallel: num($nvpn_iperf_udp1000_parallel),
+          udp1000_bandwidth: (if $nvpn_iperf_udp1000_bandwidth == "" then null else $nvpn_iperf_udp1000_bandwidth end),
+          udp1000_per_stream_bandwidth: (if $nvpn_iperf_udp1000_per_stream_bandwidth == "" then null else $nvpn_iperf_udp1000_per_stream_bandwidth end)
+        },
+        reference: {
+          socket_buffer: (if $reference_iperf_socket_buffer == "" then null else $reference_iperf_socket_buffer end),
+          udp1000_parallel: num($reference_iperf_udp1000_parallel),
+          udp1000_bandwidth: (if $reference_iperf_udp1000_bandwidth == "" then null else $reference_iperf_udp1000_bandwidth end),
+          udp1000_per_stream_bandwidth: (if $reference_iperf_udp1000_per_stream_bandwidth == "" then null else $reference_iperf_udp1000_per_stream_bandwidth end)
         }
       },
       provenance: {
@@ -576,7 +669,9 @@ main() {
         max_loss_delta_pct: num($max_loss_delta_pct),
         max_stress_udp_loss_delta_pct: num($max_stress_udp_loss_delta_pct),
         effective_udp_loss_delta_pct: num($effective_udp_loss_delta_pct),
-        max_ping_avg_delta_ms: num($max_ping_avg_delta_ms)
+        max_ping_avg_delta_ms: num($max_ping_avg_delta_ms),
+        require_nvpn_udp_zero_loss: bool($require_nvpn_udp_zero_loss),
+        require_nvpn_ping_zero_loss: bool($require_nvpn_ping_zero_loss)
       },
       threshold_status: {
         status: $threshold_status,

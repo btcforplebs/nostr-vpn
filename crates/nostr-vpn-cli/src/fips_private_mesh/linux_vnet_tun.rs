@@ -18,7 +18,6 @@ union LinuxIfReqIfru {
     ifru_flags: libc::c_short,
     ifru_mtu: libc::c_int,
 }
-
 #[repr(C)]
 struct LinuxIfReq {
     ifr_name: [libc::c_uchar; libc::IFNAMSIZ],
@@ -556,7 +555,14 @@ fn handle_linux_vnet_read(frame: &mut [u8], batch: &mut TunPipelineBatch) -> io:
         ));
     }
 
-    linux_vnet_gso_split(packet, hdr, gso_type, is_v6, batch)
+    let count = linux_vnet_gso_split(packet, hdr, gso_type, is_v6, batch)?;
+    let segment_bytes = batch
+        .iter()
+        .rev()
+        .take(count)
+        .fold(0usize, |total, packet| total.saturating_add(packet.bytes.len()));
+    crate::pipeline_profile::record_tun_read_vnet_gso_split(count, segment_bytes);
+    Ok(count)
 }
 
 fn linux_vnet_gso_none_checksum(
@@ -627,8 +633,8 @@ fn linux_vnet_gso_split(
             "Linux vnet TUN GSO packet is too short for IP addresses",
         ));
     }
-    let src = packet[src_addr_offset..src_addr_offset + addr_len].to_vec();
-    let dst = packet[src_addr_offset + addr_len..src_addr_offset + addr_len * 2].to_vec();
+    let src = &packet[src_addr_offset..src_addr_offset + addr_len];
+    let dst = &packet[src_addr_offset + addr_len..src_addr_offset + addr_len * 2];
 
     let mut next_segment_data_at = usize::from(hdr.hdr_len);
     let mut count = 0_usize;
@@ -676,13 +682,12 @@ fn linux_vnet_gso_split(
         out[hdr_len..].copy_from_slice(&packet[next_segment_data_at..next_segment_end]);
 
         let transport_len = total_len - csum_start;
-        let pseudo_sum =
-            linux_vnet_pseudo_header_sum(protocol, &src, &dst, transport_len as u16);
+        let pseudo_sum = linux_vnet_pseudo_header_sum(protocol, src, dst, transport_len as u16);
         let transport_checksum = !linux_vnet_checksum(&out[csum_start..], pseudo_sum);
         let out_csum_at = csum_start + usize::from(hdr.csum_offset);
         out[out_csum_at..out_csum_at + 2].copy_from_slice(&transport_checksum.to_be_bytes());
 
-        push_tun_pipeline_packet(batch, &out);
+        push_tun_pipeline_packet_owned_finalized(batch, out);
         count += 1;
         next_segment_data_at = next_segment_end;
     }

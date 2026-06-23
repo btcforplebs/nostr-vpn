@@ -15,7 +15,7 @@
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
         app.networks[0].admins = vec![admin_pubkey.clone()];
 
         let config = FipsPrivateTunnelConfig::from_app(
@@ -57,6 +57,72 @@
     }
 
     #[test]
+    fn link_event_path_hint_refresh_does_not_require_endpoint_restart() {
+        let alice_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let alice_nsec = alice_keys.secret_key().to_bech32().expect("alice nsec");
+        let alice_pubkey = alice_keys.public_key().to_hex();
+        let bob_pubkey = bob_keys.public_key().to_hex();
+        let bob_npub = bob_keys.public_key().to_bech32().expect("bob npub");
+        let network_id = "fips-link-refresh-restart-test";
+
+        let mut app = AppConfig::default();
+        app.nostr.secret_key = alice_nsec;
+        app.networks[0].enabled = true;
+        app.networks[0].network_id = network_id.to_string();
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+
+        let current = FipsPrivateTunnelConfig::from_app(
+            &app,
+            network_id,
+            "utun-test",
+            Some(&alice_pubkey),
+            None,
+            &[(
+                bob_pubkey.clone(),
+                vec![("203.0.113.22:51820".to_string(), 123_000)],
+            )],
+        )
+        .expect("current fips tunnel config");
+        let refreshed = FipsPrivateTunnelConfig::from_app(
+            &app,
+            network_id,
+            "utun-test",
+            Some(&alice_pubkey),
+            None,
+            &[],
+        )
+        .expect("refreshed fips tunnel config");
+
+        let current_bob = current
+            .endpoint_peers
+            .iter()
+            .find(|peer| peer.npub == bob_npub)
+            .expect("current bob endpoint peer");
+        assert_eq!(current_bob.addresses.len(), 1);
+        let refreshed_bob = refreshed
+            .endpoint_peers
+            .iter()
+            .find(|peer| peer.npub == bob_npub)
+            .expect("refreshed bob endpoint peer");
+        assert!(
+            refreshed_bob.addresses.is_empty(),
+            "link-event refreshes must not carry stale live direct hints forward",
+        );
+        assert!(
+            !fips_tunnel_requires_endpoint_restart(&current, &refreshed),
+            "path-hint-only refreshes should be applied in place, not by restarting FIPS",
+        );
+
+        let mut changed_port = refreshed.clone();
+        changed_port.listen_port = changed_port.listen_port.saturating_add(1);
+        assert!(
+            fips_tunnel_requires_endpoint_restart(&refreshed, &changed_port),
+            "transport bind changes still require a real endpoint restart",
+        );
+    }
+
+    #[test]
     fn tunnel_config_keeps_static_endpoint_hint_for_control_only_admin() {
         let alice_keys = Keys::generate();
         let admin_keys = Keys::generate();
@@ -70,7 +136,7 @@
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = Vec::new();
+        app.networks[0].devices = Vec::new();
         app.networks[0].admins = vec![admin_pubkey.clone()];
         app.networks[0].outbound_join_request = Some(PendingOutboundJoinRequest {
             recipient: admin_pubkey.clone(),
@@ -117,9 +183,10 @@
 
         let mut app = AppConfig::default();
         app.nostr.secret_key = alice_nsec;
+        app.connect_to_non_roster_fips_peers = true;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
 
         let mut recent = nostr_vpn_core::recent_peers::RecentPeerEndpoints::default();
         assert!(recent.note_success(&charlie_pubkey, "203.0.113.55:51820", 123));
@@ -160,6 +227,61 @@
     }
 
     #[test]
+    fn tunnel_config_drops_non_roster_transit_when_discovery_not_open() {
+        if std::env::var("NVPN_FIPS_NOSTR_DISCOVERY_POLICY").is_ok() {
+            return;
+        }
+
+        let alice_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let charlie_keys = Keys::generate();
+        let alice_nsec = alice_keys.secret_key().to_bech32().expect("alice nsec");
+        let alice_pubkey = alice_keys.public_key().to_hex();
+        let bob_pubkey = bob_keys.public_key().to_hex();
+        let bob_npub = bob_keys.public_key().to_bech32().expect("bob npub");
+        let charlie_pubkey = charlie_keys.public_key().to_hex();
+        let charlie_npub = charlie_keys.public_key().to_bech32().expect("charlie npub");
+        let network_id = "fips-configured-only-transit-test";
+
+        let mut app = AppConfig::default();
+        app.nostr.secret_key = alice_nsec;
+        app.connect_to_non_roster_fips_peers = false;
+        app.networks[0].enabled = true;
+        app.networks[0].network_id = network_id.to_string();
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.fips_bootstrap_peers.clear();
+        app.fips_bootstrap_peers.insert(
+            charlie_npub.clone(),
+            vec!["203.0.113.55:51820".to_string()],
+        );
+
+        let mut recent = nostr_vpn_core::recent_peers::RecentPeerEndpoints::default();
+        assert!(recent.note_success(&bob_pubkey, "1.1.1.1:51820", 123));
+        assert!(recent.note_success(&charlie_pubkey, "203.0.113.66:51820", 456));
+
+        let config = FipsPrivateTunnelConfig::from_app(
+            &app,
+            network_id,
+            "utun-test",
+            Some(&alice_pubkey),
+            Some(&recent),
+            &[],
+        )
+        .expect("fips tunnel config");
+
+        assert_eq!(config.nostr_discovery_policy, NostrDiscoveryPolicy::ConfiguredOnly);
+        assert_eq!(config.open_discovery_max_pending, 0);
+        assert!(
+            config.endpoint_peers.iter().any(|peer| peer.npub == bob_npub),
+            "roster recent hints should still be retained"
+        );
+        assert!(
+            config.endpoint_peers.iter().all(|peer| peer.npub != charlie_npub),
+            "configured-only discovery must not seed non-roster transit peers"
+        );
+    }
+
+    #[test]
     fn tunnel_config_caps_recent_outside_roster_transit_peers() {
         let alice_keys = Keys::generate();
         let bob_keys = Keys::generate();
@@ -171,9 +293,10 @@
 
         let mut app = AppConfig::default();
         app.nostr.secret_key = alice_nsec;
+        app.connect_to_non_roster_fips_peers = true;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
         app.fips_bootstrap_enabled = false;
 
         let mut recent = nostr_vpn_core::recent_peers::RecentPeerEndpoints::default();
@@ -237,6 +360,64 @@
     }
 
     #[test]
+    fn tunnel_config_caps_bootstrap_transit_peers_without_exhausting_open_discovery() {
+        let alice_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let alice_nsec = alice_keys.secret_key().to_bech32().expect("alice nsec");
+        let alice_pubkey = alice_keys.public_key().to_hex();
+        let bob_pubkey = bob_keys.public_key().to_hex();
+        let network_id = "fips-bootstrap-transit-cap-test";
+
+        let mut app = AppConfig::default();
+        app.nostr.secret_key = alice_nsec;
+        app.connect_to_non_roster_fips_peers = true;
+        app.networks[0].enabled = true;
+        app.networks[0].network_id = network_id.to_string();
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.fips_bootstrap_peers.clear();
+
+        let mut bootstrap_npubs = Vec::new();
+        for i in 0..(FIPS_NOSTR_OPEN_DISCOVERY_MAX_PENDING + 2) {
+            let keys = Keys::generate();
+            let npub = keys.public_key().to_bech32().expect("bootstrap npub");
+            app.fips_bootstrap_peers.insert(
+                npub.clone(),
+                vec![format!("203.0.113.{}:51820", i + 10)],
+            );
+            bootstrap_npubs.push(npub);
+        }
+
+        let config = FipsPrivateTunnelConfig::from_app(
+            &app,
+            network_id,
+            "utun-test",
+            Some(&alice_pubkey),
+            None,
+            &[],
+        )
+        .expect("fips tunnel config");
+
+        let seeded_bootstrap = config
+            .endpoint_peers
+            .iter()
+            .filter(|peer| bootstrap_npubs.iter().any(|npub| npub == &peer.npub))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            seeded_bootstrap.len(),
+            FIPS_STATIC_NON_ROSTER_TRANSIT_MAX_SEEDS,
+            "bootstrap transit peers should not consume the whole open-discovery cap"
+        );
+        assert_eq!(
+            config.open_discovery_max_pending,
+            FIPS_NOSTR_OPEN_DISCOVERY_MAX_PENDING
+                - FIPS_STATIC_NON_ROSTER_TRANSIT_MAX_SEEDS
+                - FIPS_RECENT_NON_ROSTER_TRANSIT_MAX_SEEDS,
+            "bounded bootstrap transit should leave a nonzero fresh open-discovery budget"
+        );
+        assert!(config.open_discovery_max_pending > 0);
+    }
+
+    #[test]
     fn recent_transit_seed_cap_prefers_static_public_endpoints() {
         let capped = cap_recent_non_roster_transit_endpoints(
             vec![
@@ -258,7 +439,7 @@
     }
 
     #[test]
-    fn endpoint_peer_hints_mark_static_addresses_as_preferred_priority() {
+    fn endpoint_peer_hints_make_private_static_addresses_last_resort() {
         let endpoint_peers = fips_endpoint_peers_from_mesh(
             &[],
             vec![("peer".to_string(), vec!["192.168.178.91:51830".to_string()])],
@@ -283,16 +464,81 @@
             .find(|hint| hint.addr == "89.27.103.157:33838")
             .expect("recent hint");
 
-        assert_eq!(static_hint.priority, FIPS_STATIC_PEER_ENDPOINT_PRIORITY);
+        assert_eq!(
+            static_hint.priority,
+            FIPS_PRIVATE_STATIC_PEER_ENDPOINT_PRIORITY
+        );
         assert_eq!(recent_hint.priority, FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY);
         assert_eq!(
             fips_peer_address_from_hint(static_hint).priority,
-            FIPS_STATIC_PEER_ENDPOINT_PRIORITY
+            FIPS_PRIVATE_STATIC_PEER_ENDPOINT_PRIORITY
         );
         assert_eq!(
             fips_peer_address_from_hint(recent_hint).priority,
             FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY
         );
+    }
+
+    #[test]
+    fn endpoint_peer_hints_make_private_recent_addresses_last_resort() {
+        let endpoint_peers = fips_endpoint_peers_from_mesh(
+            &[],
+            Vec::new(),
+            vec![(
+                "peer".to_string(),
+                vec![("192.168.178.91:51830".to_string(), 123_000)],
+            )],
+        );
+
+        let peer = endpoint_peers
+            .iter()
+            .find(|peer| peer.npub == "peer")
+            .expect("peer");
+        let recent_hint = peer
+            .addresses
+            .iter()
+            .find(|hint| hint.addr == "192.168.178.91:51830")
+            .expect("recent hint");
+
+        assert_eq!(recent_hint.seen_at_ms, Some(123_000));
+        assert_eq!(
+            recent_hint.priority,
+            FIPS_PRIVATE_STATIC_PEER_ENDPOINT_PRIORITY
+        );
+        assert_eq!(
+            fips_peer_address_from_hint(recent_hint).priority,
+            FIPS_PRIVATE_STATIC_PEER_ENDPOINT_PRIORITY
+        );
+    }
+
+    #[test]
+    fn endpoint_peer_hints_treat_public_static_addresses_as_hints() {
+        let endpoint_peers = fips_endpoint_peers_from_mesh(
+            &[],
+            vec![("peer".to_string(), vec!["198.51.100.91:51830".to_string()])],
+            vec![(
+                "peer".to_string(),
+                vec![("89.27.103.157:33838".to_string(), 123_000)],
+            )],
+        );
+
+        let peer = endpoint_peers
+            .iter()
+            .find(|peer| peer.npub == "peer")
+            .expect("peer");
+        let static_hint = peer
+            .addresses
+            .iter()
+            .find(|hint| hint.addr == "198.51.100.91:51830")
+            .expect("static hint");
+        let recent_hint = peer
+            .addresses
+            .iter()
+            .find(|hint| hint.addr == "89.27.103.157:33838")
+            .expect("recent hint");
+
+        assert_eq!(static_hint.priority, FIPS_PUBLIC_PEER_ENDPOINT_PRIORITY);
+        assert_eq!(recent_hint.priority, FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY);
     }
 
     #[test]
@@ -323,7 +569,7 @@
         assert_eq!(matching_hints[0].seen_at_ms, None);
         assert_eq!(
             matching_hints[0].priority,
-            FIPS_STATIC_PEER_ENDPOINT_PRIORITY
+            FIPS_PUBLIC_PEER_ENDPOINT_PRIORITY
         );
         assert_eq!(
             fips_peer_address_from_hint(matching_hints[0]).seen_at_ms,
@@ -517,7 +763,7 @@ default            192.168.178.1      UGScg                 en0
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
         app.fips_peer_endpoints.insert(
             bob_npub.clone(),
             vec![

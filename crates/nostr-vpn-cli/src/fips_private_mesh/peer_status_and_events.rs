@@ -41,6 +41,8 @@ fn fips_peer_presence_stale(last_seen_at: Option<u64>, now: u64) -> bool {
 fn fips_peer_ping_interval_secs(last_seen_at: Option<u64>, link_connected: bool, now: u64) -> u64 {
     if fips_peer_presence_fresh(last_seen_at, now) {
         FIPS_PEER_ACTIVE_PING_INTERVAL_SECS
+    } else if last_seen_at.is_some() {
+        FIPS_PEER_DISCOVERY_PROBE_INTERVAL_SECS
     } else if link_connected {
         FIPS_PEER_LINK_PING_INTERVAL_SECS
     } else {
@@ -79,6 +81,7 @@ fn mesh_status_from_endpoint_peer(
         rekey_in_progress: peer.rekey_in_progress,
         rekey_draining: peer.rekey_draining,
         current_k_bit: peer.current_k_bit,
+        last_outbound_route: peer.last_outbound_route.clone(),
         direct_probe_pending: peer.direct_probe_pending,
         direct_probe_after_ms: peer.direct_probe_after_ms,
         direct_probe_retry_count: peer.direct_probe_retry_count,
@@ -464,6 +467,41 @@ fn recent_transit_group_rank(addrs: &[(String, u64)]) -> (u8, u64) {
         .max()
         .unwrap_or(0);
     (best_score, freshest_seen_at_ms(addrs))
+}
+
+fn static_transit_group_rank(addrs: &[String]) -> u8 {
+    addrs
+        .iter()
+        .map(|addr| recent_transit_endpoint_score(addr))
+        .max()
+        .unwrap_or(0)
+}
+
+fn cap_static_non_roster_transit_endpoints(
+    groups: Vec<(String, Vec<String>)>,
+    roster_endpoint_npubs: &HashSet<String>,
+    max_non_roster: usize,
+) -> Vec<(String, Vec<String>)> {
+    let mut roster = Vec::new();
+    let mut non_roster = Vec::new();
+
+    for (participant, addrs) in groups {
+        if roster_endpoint_npubs.contains(&normalize_fips_endpoint_npub(&participant)) {
+            roster.push((participant, addrs));
+        } else {
+            non_roster.push((participant, addrs));
+        }
+    }
+
+    non_roster.sort_by(|left, right| {
+        static_transit_group_rank(&right.1)
+            .cmp(&static_transit_group_rank(&left.1))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    non_roster.truncate(max_non_roster);
+
+    roster.extend(non_roster);
+    roster
 }
 
 fn cap_recent_non_roster_transit_endpoints(

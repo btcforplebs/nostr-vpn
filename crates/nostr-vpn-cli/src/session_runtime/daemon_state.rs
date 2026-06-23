@@ -216,6 +216,9 @@ pub(crate) fn build_daemon_runtime_state(
             fips_rekey_in_progress: status.is_some_and(|status| status.rekey_in_progress),
             fips_rekey_draining: status.is_some_and(|status| status.rekey_draining),
             fips_current_k_bit: status.and_then(|status| status.current_k_bit),
+            fips_last_outbound_route: status
+                .and_then(|status| status.last_outbound_route.clone())
+                .unwrap_or_default(),
             direct_probe_pending: status.is_some_and(|status| status.direct_probe_pending),
             direct_probe_after_ms: status.and_then(|status| status.direct_probe_after_ms),
             direct_probe_retry_count: status
@@ -297,6 +300,7 @@ pub(crate) fn build_daemon_runtime_state(
     DaemonRuntimeState {
         updated_at: now,
         binary_version: PRODUCT_VERSION.to_string(),
+        fips_core_version: fips_core_build_version(),
         local_endpoint,
         advertised_endpoint,
         listen_port,
@@ -346,4 +350,71 @@ pub(crate) fn persist_daemon_runtime_state(
             port_mapping,
         ),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn persist_daemon_runtime_and_cleanup_state(
+    state_file: &Path,
+    config_path: &Path,
+    app: &AppConfig,
+    vpn_enabled: bool,
+    expected_peers: usize,
+    tunnel_runtime: &CliTunnelRuntime,
+    fips_peer_statuses: &[MeshPeerStatus],
+    fips_relay_statuses: &[DaemonRelayState],
+    advertised_routes_by_participant: &HashMap<String, Vec<String>>,
+    vpn_status: &str,
+    network: &NetworkSummary,
+    port_mapping: &PortMappingStatus,
+) -> bool {
+    let persisted = match persist_daemon_runtime_state(
+        state_file,
+        app,
+        vpn_enabled,
+        expected_peers,
+        tunnel_runtime,
+        fips_peer_statuses,
+        fips_relay_statuses,
+        advertised_routes_by_participant,
+        vpn_status,
+        network,
+        port_mapping,
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("daemon: failed to persist runtime state: {error}");
+            false
+        }
+    };
+    if let Err(error) = persist_daemon_network_cleanup_state(config_path, tunnel_runtime) {
+        eprintln!("daemon: failed to persist network cleanup state: {error}");
+    }
+    persisted
+}
+
+pub(crate) fn disconnected_daemon_runtime_state(
+    expected_peers: usize,
+    network: &NetworkSummary,
+) -> DaemonRuntimeState {
+    DaemonRuntimeState {
+        updated_at: unix_timestamp(),
+        binary_version: PRODUCT_VERSION.to_string(),
+        fips_core_version: fips_core_build_version(),
+        local_endpoint: String::new(),
+        advertised_endpoint: String::new(),
+        listen_port: 0,
+        vpn_enabled: false,
+        vpn_active: false,
+        vpn_status: "Disconnected".to_string(),
+        expected_peer_count: expected_peers,
+        connected_peer_count: 0,
+        fips_direct_roster_peer_count: 0,
+        fips_other_peer_count: 0,
+        mesh_ready: false,
+        health: Vec::new(),
+        network: network.clone(),
+        port_mapping: PortMappingStatus::default(),
+        relays: Vec::new(),
+        peers: Vec::new(),
+    }
 }

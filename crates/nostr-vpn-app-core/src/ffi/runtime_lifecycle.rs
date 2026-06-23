@@ -58,6 +58,9 @@ impl NativeAppRuntime {
             invite_broadcast_expires_at: None,
             nearby_discovery_expires_at: None,
             lan_peers: HashMap::new(),
+            paid_route_market_filter: NativePaidRouteMarketFilterState::default(),
+            paid_route_wallet_last_action: NativePaidRouteWalletActionState::default(),
+            paid_route_payment_last_action: NativePaidRoutePaymentActionState::default(),
             privileged_command_runner: None,
         };
         runtime.refresh_expected_service_binary_version();
@@ -106,6 +109,9 @@ impl NativeAppRuntime {
             invite_broadcast_expires_at: None,
             nearby_discovery_expires_at: None,
             lan_peers: HashMap::new(),
+            paid_route_market_filter: NativePaidRouteMarketFilterState::default(),
+            paid_route_wallet_last_action: NativePaidRouteWalletActionState::default(),
+            paid_route_payment_last_action: NativePaidRoutePaymentActionState::default(),
             privileged_command_runner: None,
         }
     }
@@ -356,6 +362,20 @@ impl NativeAppRuntime {
                 String::new()
             } else {
                 wireguard_exit_config_text(&self.config.wireguard_exit)
+            },
+            paid_exit_seller: NativePaidExitSellerState {
+                supported: false,
+                ..NativePaidExitSellerState::default()
+            },
+            paid_route_market: NativePaidRouteMarketState {
+                supported: false,
+                wallet: NativePaidRouteWalletState {
+                    last_action: self.paid_route_wallet_last_action.clone(),
+                    ..NativePaidRouteWalletState::default()
+                },
+                last_payment_action: self.paid_route_payment_last_action.clone(),
+                filter: self.paid_route_market_filter.clone(),
+                ..NativePaidRouteMarketState::default()
             },
             fips_host_tunnel_enabled: !config_unavailable && self.config.fips_host_tunnel_enabled,
             connect_to_non_roster_fips_peers: !config_unavailable

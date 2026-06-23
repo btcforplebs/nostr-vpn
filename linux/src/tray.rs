@@ -483,7 +483,7 @@ fn build_menu(state: &NativeAppState) -> MenuNode {
         }
         exit_children.push(toggle_item(
             30,
-            "Offer This Device",
+            "Share This Device",
             true,
             state.advertise_exit_node,
             TrayCommand::ToggleExitOffer,
@@ -491,7 +491,7 @@ fn build_menu(state: &NativeAppState) -> MenuNode {
         exit_children.push(separator(31));
         exit_children.push(radio_item(
             32,
-            "No exit node",
+            "This Device",
             state.exit_node.is_empty(),
             TrayCommand::SetExitNode(String::new()),
         ));
@@ -512,7 +512,7 @@ fn build_menu(state: &NativeAppState) -> MenuNode {
         );
         children.push(MenuNode {
             id: 33,
-            label: "Exit Node".to_string(),
+            label: "Internet Source".to_string(),
             enabled: true,
             separator: false,
             toggle: None,

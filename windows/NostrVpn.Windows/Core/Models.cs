@@ -72,6 +72,8 @@ public sealed class NativeAppState
     public ushort WireguardExitMtu { get; set; }
     public ushort WireguardExitPersistentKeepaliveSecs { get; set; }
     public string WireguardExitConfig { get; set; } = "";
+    public NativePaidExitSellerState PaidExitSeller { get; set; } = new();
+    public NativePaidRouteMarketState PaidRouteMarket { get; set; } = new();
     public bool FipsHostTunnelEnabled { get; set; }
     public bool ConnectToNonRosterFipsPeers { get; set; }
     public bool FipsNostrDiscoveryEnabled { get; set; }
@@ -107,6 +109,301 @@ public sealed class NativeRelayState
     public string Status { get; set; } = "";
     public bool Enabled { get; set; } = true;
     public bool Connected => Enabled && string.Equals(Status, "connected", StringComparison.OrdinalIgnoreCase);
+}
+
+public sealed class NativePaidExitSellerState
+{
+    public bool Supported { get; set; }
+    public bool Enabled { get; set; }
+    public string StatusText { get; set; } = "";
+    public string Upstream { get; set; } = "";
+    public string PrivateVpnAccess { get; set; } = "";
+    public string InternetText { get; set; } = "";
+    public string PublicIpText { get; set; } = "";
+    public string Meter { get; set; } = "";
+    public string PriceText { get; set; } = "";
+    public ulong PriceMsat { get; set; }
+    public ulong PerUnits { get; set; }
+    public string PerUnitsText { get; set; } = "";
+    public List<string> AcceptedMints { get; set; } = [];
+    public ulong MaxChannelCapacitySat { get; set; }
+    public ulong ChannelExpirySecs { get; set; }
+    public string ChannelExpiryText { get; set; } = "";
+    public string SettlementText { get; set; } = "";
+    public ulong FreeProbeUnits { get; set; }
+    public string FreeProbeText { get; set; } = "";
+    public ulong GraceUnits { get; set; }
+    public string GraceText { get; set; } = "";
+    public string CountryCode { get; set; } = "";
+    public string Region { get; set; } = "";
+    public uint Asn { get; set; }
+    public string NetworkClass { get; set; } = "";
+    public bool Ipv4 { get; set; }
+    public bool Ipv6 { get; set; }
+    public ulong ChannelCreditMsat { get; set; }
+    public string ChannelCreditText { get; set; } = "";
+    public string ChannelCreditTitleText { get; set; } = "";
+    public string ChannelCreditHelpText { get; set; } = "";
+    public List<NativePaidRouteChannelState> Channels { get; set; } = [];
+    public List<NativePaidRouteSessionState> Sessions { get; set; } = [];
+}
+
+public sealed class NativePaidRouteWalletMintState
+{
+    public string Url { get; set; } = "";
+    public string Label { get; set; } = "";
+    public bool IsDefault { get; set; }
+    public bool BalanceKnown { get; set; }
+    public ulong BalanceMsat { get; set; }
+    public string BalanceText { get; set; } = "";
+    public ulong LastCheckedUnix { get; set; }
+}
+
+public sealed class NativePaidRouteWalletState
+{
+    public string DefaultMint { get; set; } = "";
+    public bool BalanceKnown { get; set; }
+    public ulong TotalBalanceMsat { get; set; }
+    public string TotalBalanceText { get; set; } = "";
+    public List<NativePaidRouteWalletMintState> Mints { get; set; } = [];
+    public NativePaidRouteWalletActionState LastAction { get; set; } = new();
+}
+
+public sealed class NativePaidRouteWalletActionState
+{
+    public string Kind { get; set; } = "";
+    public string StatusText { get; set; } = "";
+    public string MintUrl { get; set; } = "";
+    public ulong AmountSat { get; set; }
+    public string AmountText { get; set; } = "";
+    public ulong FeeSat { get; set; }
+    public string FeeText { get; set; } = "";
+    public string QuoteId { get; set; } = "";
+    public string PaymentRequest { get; set; } = "";
+    public string Token { get; set; } = "";
+    public string OperationId { get; set; } = "";
+    public ulong ExpiresAtUnix { get; set; }
+    public string Preimage { get; set; } = "";
+    public string DisplayStatusText => string.IsNullOrWhiteSpace(StatusText)
+        ? NativeDisplayText.WalletActionTitle(Kind)
+        : StatusText;
+}
+
+public sealed class NativePaidRoutePaymentActionState
+{
+    public string Kind { get; set; } = "";
+    public string StatusText { get; set; } = "";
+    public string PayloadType { get; set; } = "";
+    public string SessionId { get; set; } = "";
+    public string LeaseId { get; set; } = "";
+    public string ChannelId { get; set; } = "";
+    public string BuyerNpub { get; set; } = "";
+    public string SellerNpub { get; set; } = "";
+    public string EnvelopeJson { get; set; } = "";
+    public ulong PaidMsat { get; set; }
+    public string PaidText { get; set; } = "";
+    public ulong DeliveredUnits { get; set; }
+    public string DeliveredUsageText { get; set; } = "";
+    public ulong AmountDueMsat { get; set; }
+    public string AmountDueText { get; set; } = "";
+    public ulong UnpaidMsat { get; set; }
+    public string UnpaidText { get; set; } = "";
+    public bool AllowRouting { get; set; }
+    public string DisplayStatusText => string.IsNullOrWhiteSpace(StatusText)
+        ? NativeDisplayText.PaymentActionTitle(Kind)
+        : StatusText;
+}
+
+public sealed class NativePaidRouteOfferState
+{
+    public string Key { get; set; } = "";
+    public string OfferId { get; set; } = "";
+    public string SellerNpub { get; set; } = "";
+    public string StatusText { get; set; } = "";
+    public string PriceText { get; set; } = "";
+    public string Meter { get; set; } = "";
+    public ulong PriceMsat { get; set; }
+    public ulong PerUnits { get; set; }
+    public string PerUnitsText { get; set; } = "";
+    public List<string> AcceptedMints { get; set; } = [];
+    public ulong MaxChannelCapacitySat { get; set; }
+    public ulong ChannelExpirySecs { get; set; }
+    public ulong FreeProbeUnits { get; set; }
+    public string FreeProbeText { get; set; } = "";
+    public ulong GraceUnits { get; set; }
+    public string GraceText { get; set; } = "";
+    public string CountryCode { get; set; } = "";
+    public string Region { get; set; } = "";
+    public uint Asn { get; set; }
+    public string NetworkClass { get; set; } = "";
+    public bool Ipv4 { get; set; }
+    public bool Ipv6 { get; set; }
+    public bool HasQuality { get; set; }
+    public string QualityText { get; set; } = "";
+    public string BandwidthText { get; set; } = "";
+    public uint LatencyMs { get; set; }
+    public uint JitterMs { get; set; }
+    public uint PacketLossPpm { get; set; }
+    public ulong DownBps { get; set; }
+    public ulong UpBps { get; set; }
+    public ulong UptimeSecs { get; set; }
+    public ulong FirstSeenUnix { get; set; }
+    public ulong LastSeenUnix { get; set; }
+    public List<string> RelayUrls { get; set; } = [];
+    public string DisplayCountry => string.IsNullOrWhiteSpace(CountryCode) ? "Unknown country" : CountryCode.ToUpperInvariant();
+    public string DisplayNetworkClass => NativeDisplayText.NetworkClassTitle(NetworkClass);
+    public string DisplayPrice => string.IsNullOrWhiteSpace(PriceText)
+        ? NativeDisplayText.PriceText(PriceMsat, PerUnits, Meter, PerUnitsText)
+        : PriceText;
+    public string DisplayMetricText => NativeDisplayText.MetricText(QualityText, BandwidthText);
+}
+
+public sealed class NativePaidRouteChannelState
+{
+    public string ChannelId { get; set; } = "";
+    public string OfferId { get; set; } = "";
+    public string Role { get; set; } = "";
+    public string Status { get; set; } = "";
+    public string MintUrl { get; set; } = "";
+    public string CounterpartyNpub { get; set; } = "";
+    public ulong CapacitySat { get; set; }
+    public string CapacityText { get; set; } = "";
+    public ulong PaidMsat { get; set; }
+    public string PaidText { get; set; } = "";
+    public ulong UpdatedAtUnix { get; set; }
+    public ulong ExpiresAtUnix { get; set; }
+    public string Error { get; set; } = "";
+}
+
+public sealed class NativePaidRouteSessionState
+{
+    public string SessionId { get; set; } = "";
+    public string LeaseId { get; set; } = "";
+    public string ChannelId { get; set; } = "";
+    public string StatusText { get; set; } = "";
+    public string LifecycleStatus { get; set; } = "";
+    public string AccessState { get; set; } = "";
+    public string TitleText { get; set; } = "";
+    public string DetailText { get; set; } = "";
+    public string SettlementText { get; set; } = "";
+    public string CollectActionText { get; set; } = "";
+    public string CollectActionHelpText { get; set; } = "";
+    public bool PaymentChannelReady { get; set; }
+    public bool AllowRouting { get; set; }
+    public ulong DeliveredUnits { get; set; }
+    public string UsageText { get; set; } = "";
+    public ulong AmountDueMsat { get; set; }
+    public string AmountDueText { get; set; } = "";
+    public ulong PaidMsat { get; set; }
+    public string PaidText { get; set; } = "";
+    public ulong UnpaidMsat { get; set; }
+    public string UnpaidText { get; set; } = "";
+    public ulong ActiveMillis { get; set; }
+    public ulong Bytes { get; set; }
+    public ulong Packets { get; set; }
+    public string RealizedExitIp { get; set; } = "";
+    public string ClaimedCountryCode { get; set; } = "";
+    public string ObservedCountryCode { get; set; } = "";
+    public string CountryClaimStatus { get; set; } = "";
+    public string LocationText { get; set; } = "";
+    public uint ObservedAsn { get; set; }
+    public bool HasQuality { get; set; }
+    public string QualityText { get; set; } = "";
+    public string BandwidthText { get; set; } = "";
+    public uint LatencyMs { get; set; }
+    public uint JitterMs { get; set; }
+    public uint PacketLossPpm { get; set; }
+    public ulong DownBps { get; set; }
+    public ulong UpBps { get; set; }
+    public ulong UpdatedAtUnix { get; set; }
+    public ulong ExpiresAtUnix { get; set; }
+    public string DisplayTitle
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(TitleText))
+            {
+                return TitleText;
+            }
+            if (AllowRouting)
+            {
+                return "Ready";
+            }
+            if (UnpaidMsat > 0)
+            {
+                return "Payment needed";
+            }
+            if (!PaymentChannelReady)
+            {
+                return "Needs funds";
+            }
+            return NativeDisplayText.PlainStatus(
+                string.IsNullOrWhiteSpace(StatusText) ? LifecycleStatus : StatusText,
+                "Session");
+        }
+    }
+    public string DisplayDetail
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(DetailText))
+            {
+                return DetailText;
+            }
+            var access = NativeDisplayText.AccessTitle(AccessState, string.IsNullOrWhiteSpace(LifecycleStatus) ? "session" : LifecycleStatus);
+            var usage = !string.IsNullOrWhiteSpace(UsageText)
+                ? UsageText
+                : Bytes > 0
+                ? $"{NativeDisplayText.FormatBytes(Bytes)} used"
+                : Packets > 0
+                    ? $"{Packets} packets"
+                    : $"{DeliveredUnits} units";
+            var due = string.IsNullOrWhiteSpace(AmountDueText)
+                ? $"{NativeDisplayText.FormatMsat(AmountDueMsat)} due"
+                : AmountDueText;
+            return $"{access}, {usage}, {due}";
+        }
+    }
+    public string DisplayLocationText
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(LocationText))
+            {
+                return LocationText;
+            }
+            var claim = NativeDisplayText.CountryClaimText(ClaimedCountryCode, ObservedCountryCode, CountryClaimStatus);
+            if (!string.IsNullOrWhiteSpace(RealizedExitIp) && !string.IsNullOrWhiteSpace(claim))
+            {
+                return $"{RealizedExitIp} · {claim}";
+            }
+            return !string.IsNullOrWhiteSpace(RealizedExitIp) ? RealizedExitIp : claim;
+        }
+    }
+    public string DisplayPaidText => string.IsNullOrWhiteSpace(PaidText) ? $"{NativeDisplayText.FormatMsat(PaidMsat)} paid" : PaidText;
+    public string DisplayBehindText => string.IsNullOrWhiteSpace(UnpaidText)
+        ? UnpaidMsat > 0 ? $"{NativeDisplayText.FormatMsat(UnpaidMsat)} behind" : ""
+        : UnpaidText;
+    public string DisplayMetricText => NativeDisplayText.MetricText(QualityText, BandwidthText);
+    public string DisplaySettlementText => SettlementText;
+    public bool CanOpenChannel => !string.IsNullOrWhiteSpace(SessionId) && !PaymentChannelReady;
+    public bool CanPay => !string.IsNullOrWhiteSpace(SessionId) && PaymentChannelReady && UnpaidMsat > 0;
+    public bool CanSettleChannel => !string.IsNullOrWhiteSpace(SessionId)
+        && PaymentChannelReady
+        && !string.Equals(LifecycleStatus, "closed", System.StringComparison.Ordinal)
+        && !string.Equals(LifecycleStatus, "expired", System.StringComparison.Ordinal);
+}
+
+public sealed class NativePaidRouteMarketState
+{
+    public bool Supported { get; set; }
+    public string StatusText { get; set; } = "";
+    public string StorePath { get; set; } = "";
+    public NativePaidRouteWalletState Wallet { get; set; } = new();
+    public NativePaidRoutePaymentActionState LastPaymentAction { get; set; } = new();
+    public List<NativePaidRouteOfferState> Offers { get; set; } = [];
+    public List<NativePaidRouteChannelState> Channels { get; set; } = [];
+    public List<NativePaidRouteSessionState> Sessions { get; set; } = [];
 }
 
 public sealed class NativeNetworkState
@@ -178,7 +475,7 @@ public sealed class NativeParticipantState
     public string LastSeenDisplay => string.IsNullOrWhiteSpace(LastSeenText) ? "-" : LastSeenText;
     public string LastFipsControlSeenDisplay => string.IsNullOrWhiteSpace(LastFipsControlSeenText) ? "-" : LastFipsControlSeenText;
     public string LastFipsDataSeenDisplay => string.IsNullOrWhiteSpace(LastFipsDataSeenText) ? "-" : LastFipsDataSeenText;
-    public string FipsSrttAgeDisplay => FipsSrttAgeMs == 0 ? "-" : FormatDurationMs(FipsSrttAgeMs);
+    public string FipsSrttAgeDisplay => FipsSrttAgeMs == 0 ? "-" : NativeDisplayText.FormatDurationMs(FipsSrttAgeMs);
     public string TxBytesDisplay => FormatBytes(TxBytes);
     public string RxBytesDisplay => FormatBytes(RxBytes);
     public string RoleText
@@ -200,7 +497,7 @@ public sealed class NativeParticipantState
             }
             if (OffersExitNode)
             {
-                roles.Add("Exit node");
+                roles.Add("Shares internet");
             }
             return roles.Count == 0 ? "Member" : string.Join(", ", roles);
         }
@@ -285,10 +582,197 @@ public sealed class NativeParticipantState
             value /= 1024;
             unitIndex++;
         }
-        return unitIndex == 0 ? $"{bytes} B" : $"{value:0.0} {units[unitIndex]}";
+        if (unitIndex == 0)
+        {
+            return $"{bytes} B";
+        }
+        return Math.Abs(value - Math.Round(value)) < 0.05
+            ? $"{value:0} {units[unitIndex]}"
+            : $"{value:0.0} {units[unitIndex]}";
+    }
+}
+
+internal static class NativeDisplayText
+{
+    public static string FormatMsat(ulong msat)
+    {
+        if (msat == 0)
+        {
+            return "0 sat";
+        }
+        var whole = msat / 1_000;
+        var remainder = msat % 1_000;
+        return remainder == 0 ? $"{whole} sat" : $"{whole}.{remainder:D3} sat";
     }
 
-    private static string FormatDurationMs(ulong ms)
+    public static string FormatBytes(ulong bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        var value = (double)bytes;
+        var index = 0;
+        while (value >= 1024 && index < units.Length - 1)
+        {
+            value /= 1024;
+            index++;
+        }
+        if (index == 0)
+        {
+            return $"{bytes} B";
+        }
+        return Math.Abs(value - Math.Round(value)) < 0.05
+            ? $"{value:0} {units[index]}"
+            : $"{value:0.0} {units[index]}";
+    }
+
+    public static string PriceText(ulong priceMsat, ulong perUnits, string meter, string perUnitsText = "") =>
+        $"{FormatMsat(priceMsat)} / {FirstNonEmpty(perUnitsText, MeterUnitText(perUnits, meter))}";
+
+    public static string MeterUnitText(ulong perUnits, string meter) => meter switch
+    {
+        "bytes" => FormatDecimalBytes(perUnits),
+        "milliseconds" or "millisecond" or "ms" => $"{perUnits} ms",
+        "packets" or "packet" => perUnits == 1 ? "1 packet" : $"{perUnits} packets",
+        "" => $"{perUnits} units",
+        _ => $"{perUnits} {meter}",
+    };
+
+    public static string TrafficUnitText(ulong units, string meter) =>
+        meter == "bytes" ? FormatBytes(units) : MeterUnitText(units, meter);
+
+    public static string MetricText(string qualityText, string bandwidthText)
+    {
+        var parts = new List<string>();
+        foreach (var value in new[] { qualityText, bandwidthText })
+        {
+            var text = value.Trim();
+            if (!string.IsNullOrWhiteSpace(text)
+                && !string.Equals(text, "Quality unmeasured", StringComparison.OrdinalIgnoreCase))
+            {
+                parts.Add(text);
+            }
+        }
+        return string.Join(" · ", parts);
+    }
+
+    private static string FirstNonEmpty(params string[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private static string FormatDecimalBytes(ulong bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        var value = (double)bytes;
+        var index = 0;
+        while (value >= 1000 && index < units.Length - 1)
+        {
+            value /= 1000;
+            index++;
+        }
+        if (index == 0)
+        {
+            return $"{bytes} B";
+        }
+        return Math.Abs(value - Math.Round(value)) < 0.05
+            ? $"{value:0} {units[index]}"
+            : $"{value:0.0} {units[index]}";
+    }
+
+    public static string NetworkClassTitle(string value) => value switch
+    {
+        "datacenter" => "Datacenter",
+        "residential" => "Residential",
+        "mobile" => "Mobile",
+        "satellite" => "Satellite",
+        "community_mesh" => "Community mesh",
+        "unknown" or "" => "Unknown",
+        _ => value.Replace('_', ' '),
+    };
+
+    public static string PaidExitUpstreamTitle(string value) => value switch
+    {
+        "wireguard_exit" or "wireguard" or "wg" or "upstream_vpn" or "vpn" => "My internet through WireGuard",
+        _ => "My internet",
+    };
+
+    public static string AccessTitle(string value, string fallback) => value switch
+    {
+        "paid" => "Paid",
+        "free_probe" => "Free test",
+        "grace" => "Grace",
+        "suspended" => "Paused",
+        _ => PlainStatus(value, fallback),
+    };
+
+    public static string PlainStatus(string value, string fallback)
+    {
+        var raw = string.IsNullOrWhiteSpace(value) ? fallback : value;
+        return raw switch
+        {
+            "opening" => "Opening",
+            "probing" => "Checking quality",
+            "active" => "Active",
+            "paused" => "Paused",
+            "closed" => "Closed",
+            "session" => "Session",
+            _ => Humanize(raw),
+        };
+    }
+
+    public static string PaymentActionTitle(string kind) => kind switch
+    {
+        "send" => "Payment sent",
+        "receive" => "Payment received",
+        "apply" => "Payment applied",
+        "create" => "Payment ready",
+        "open_channel" => "Exit funded",
+        "sign" => "Payment ready",
+        "close" => "Channel settled",
+        "stream" => "Payments sent",
+        "probe" => "Quality checked",
+        "" => "",
+        _ => Humanize(kind),
+    };
+
+    public static string WalletActionTitle(string kind) => kind switch
+    {
+        "topup" => "Invoice ready",
+        "receive" => "Token imported",
+        "send" => "Token ready",
+        "withdraw" => "Invoice paid",
+        "refresh" => "Wallet refreshed",
+        "open_channel" => "Exit funded",
+        "" => "",
+        _ => Humanize(kind),
+    };
+
+    public static string CountryClaimText(string claimed, string observed, string status) => status switch
+    {
+        "match" => string.IsNullOrWhiteSpace(observed) && string.IsNullOrWhiteSpace(claimed)
+            ? ""
+            : $"{(string.IsNullOrWhiteSpace(observed) ? claimed : observed)} verified",
+        "mismatch" => string.IsNullOrWhiteSpace(claimed)
+            ? "country mismatch"
+            : $"claimed {claimed}",
+        _ => !string.IsNullOrWhiteSpace(observed) ? observed : claimed,
+    };
+
+    private static string Humanize(string value)
+    {
+        var text = value.Replace('_', ' ');
+        return string.IsNullOrWhiteSpace(text)
+            ? ""
+            : char.ToUpperInvariant(text[0]) + text[1..];
+    }
+
+    public static string FormatDurationMs(ulong ms)
     {
         if (ms < 1_000)
         {

@@ -82,7 +82,7 @@ pub(crate) fn shared_roster_publish_allowed(
 fn network_roster_from_shared(shared: &SharedNetworkRoster) -> NetworkRoster {
     NetworkRoster {
         network_name: shared.name.clone(),
-        participants: shared.participants.clone(),
+        devices: shared.devices.clone(),
         admins: shared.admins.clone(),
         aliases: shared.aliases.clone(),
         signed_at: if shared.updated_at > 0 {

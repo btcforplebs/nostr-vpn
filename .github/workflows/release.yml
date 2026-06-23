@@ -43,6 +43,10 @@ jobs:
 
       - name: Run release gate
         env:
+          # The native Linux app job runs the GUI smoke in a fresh runner job.
+          # Keep verify focused on Rust/Docker gates so Docker perf artifacts do
+          # not leave the runner resource-starved before the duplicate GUI build.
+          NVPN_RELEASE_GATE_LINUX_GUI_SMOKE: '0'
           NVPN_RELEASE_GATE_WINDOWS_GUI_SMOKE: '0'
           NVPN_RELEASE_GATE_WINDOWS_WG_EXIT_E2E: '0'
         run: ./scripts/release-gate.sh
@@ -96,7 +100,7 @@ jobs:
 
       - name: Build CLI natively
         if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }} -p nvpn
+        run: cargo build --release --locked -p nvpn --target ${{ matrix.target }}
 
       - name: Test macOS WireGuard exit native dataplane
         if: ${{ runner.os == 'macOS' }}
@@ -352,6 +356,7 @@ jobs:
           set -euo pipefail
           RELEASE_VERSION="${{ github.event.inputs.tag || github.ref_name }}"
           cargo build --release --locked --manifest-path linux/Cargo.toml
+          cargo build --release --locked -p nvpn
           (cd linux && cargo deb --no-build)
           mkdir -p dist
           cp "$(ls -1t linux/target/debian/*.deb | head -1)" "dist/nostr-vpn-${RELEASE_VERSION}-linux-x64.deb"

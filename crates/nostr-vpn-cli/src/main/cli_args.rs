@@ -30,6 +30,7 @@ impl DaemonControlRequest {
 
 #[derive(Debug, Parser)]
 #[command(name = "nvpn")]
+#[command(version)]
 #[command(about = "FIPS private mesh VPN")]
 struct Cli {
     #[command(subcommand)]
@@ -45,9 +46,9 @@ enum Command {
         config: Option<PathBuf>,
         #[arg(long)]
         force: bool,
-        /// Participant Nostr pubkeys (npub or hex) that define the network.
-        #[arg(long = "participant")]
-        participants: Vec<String>,
+        /// Device Nostr pubkeys (npub or hex) that define the network.
+        #[arg(long = "device", alias = "participant")]
+        devices: Vec<String>,
     },
     /// Show the running CLI version.
     Version(VersionArgs),
@@ -89,10 +90,12 @@ enum Command {
     /// `--accept`, import the first valid invite seen (queues a join request
     /// to the broadcaster, same as `nvpn import-invite`).
     Discover(DiscoverArgs),
-    /// Add one or more participants to the active network roster.
-    AddParticipant(UpdateRosterArgs),
-    /// Remove one or more participants from the active network roster.
-    RemoveParticipant(UpdateRosterArgs),
+    /// Add one or more devices to the active network roster.
+    #[command(alias = "add-participant")]
+    AddDevice(UpdateRosterArgs),
+    /// Remove one or more devices from the active network roster.
+    #[command(alias = "remove-participant")]
+    RemoveDevice(UpdateRosterArgs),
     /// Add one or more admins to the active network roster.
     AddAdmin(UpdateRosterArgs),
     /// Remove one or more admins from the active network roster.
@@ -111,6 +114,10 @@ enum Command {
     /// this does not create a tun device and does not modify routes.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     WgUpstreamTest(WgUpstreamTestArgs),
+    /// Manage Cashu-paid public exit routing.
+    #[cfg(feature = "paid-exit")]
+    #[command(name = "paid-exit")]
+    PaidExit(PaidExitArgs),
     /// Internal config import helper for elevated GUI writes.
     #[command(hide = true)]
     ApplyConfig(ApplyConfigArgs),
@@ -193,6 +200,9 @@ struct InstallCliArgs {
 struct VersionArgs {
     #[arg(long)]
     json: bool,
+    /// Print component build details in text output.
+    #[arg(long)]
+    verbose: bool,
 }
 
 #[derive(Debug, Args)]
@@ -298,8 +308,8 @@ struct ConnectArgs {
     config: Option<PathBuf>,
     #[arg(long)]
     network_id: Option<String>,
-    #[arg(long = "participant")]
-    participants: Vec<String>,
+    #[arg(long = "device", alias = "participant")]
+    devices: Vec<String>,
     #[arg(long, default_value_t = default_tunnel_iface())]
     iface: String,
     #[arg(long, alias = "announce-interval-secs", default_value_t = 20)]
@@ -312,8 +322,8 @@ struct DaemonArgs {
     config: Option<PathBuf>,
     #[arg(long)]
     network_id: Option<String>,
-    #[arg(long = "participant")]
-    participants: Vec<String>,
+    #[arg(long = "device", alias = "participant")]
+    devices: Vec<String>,
     #[arg(long, default_value_t = default_tunnel_iface())]
     iface: String,
     #[arg(long, alias = "announce-interval-secs", default_value_t = 20)]
@@ -330,8 +340,8 @@ struct StartArgs {
     config: Option<PathBuf>,
     #[arg(long)]
     network_id: Option<String>,
-    #[arg(long = "participant")]
-    participants: Vec<String>,
+    #[arg(long = "device", alias = "participant")]
+    devices: Vec<String>,
     #[arg(long, default_value_t = default_tunnel_iface())]
     iface: String,
     #[arg(long, alias = "announce-interval-secs", default_value_t = 20)]
@@ -378,8 +388,8 @@ struct StatusArgs {
     config: Option<PathBuf>,
     #[arg(long)]
     network_id: Option<String>,
-    #[arg(long = "participant")]
-    participants: Vec<String>,
+    #[arg(long = "device", alias = "participant")]
+    devices: Vec<String>,
     #[arg(long, hide = true, default_value_t = 2)]
     discover_secs: u64,
     #[arg(long)]
@@ -402,8 +412,8 @@ struct SetArgs {
     tunnel_ip: Option<String>,
     #[arg(long)]
     listen_port: Option<u16>,
-    #[arg(long = "participant")]
-    participants: Vec<String>,
+    #[arg(long = "device", alias = "participant")]
+    devices: Vec<String>,
     #[arg(long)]
     exit_node: Option<String>,
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
@@ -412,6 +422,54 @@ struct SetArgs {
     advertise_routes: Option<String>,
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     advertise_exit_node: Option<bool>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    paid_exit_enabled: Option<bool>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_meter: Option<String>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_upstream: Option<String>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_price_msat: Option<u64>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long, value_name = "UNITS")]
+    paid_exit_per_units: Option<String>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_accepted_mints: Option<String>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_country_code: Option<String>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_region: Option<String>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_asn: Option<u32>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_network_class: Option<String>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_ipv4: Option<bool>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_ipv6: Option<bool>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_max_channel_capacity_sat: Option<u64>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long)]
+    paid_exit_channel_expiry_secs: Option<u64>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long, value_name = "UNITS")]
+    paid_exit_free_probe_units: Option<String>,
+    #[cfg(feature = "paid-exit")]
+    #[arg(long, value_name = "UNITS")]
+    paid_exit_grace_units: Option<String>,
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     wireguard_exit_enabled: Option<bool>,
     #[arg(long)]
@@ -514,8 +572,8 @@ struct UpdateRosterArgs {
     config: Option<PathBuf>,
     #[arg(long)]
     network_id: Option<String>,
-    #[arg(long = "participant", required = true)]
-    participants: Vec<String>,
+    #[arg(long = "device", alias = "participant", required = true)]
+    devices: Vec<String>,
     #[arg(long)]
     publish: bool,
     #[arg(long)]
@@ -529,8 +587,8 @@ struct PingArgs {
     config: Option<PathBuf>,
     #[arg(long)]
     network_id: Option<String>,
-    #[arg(long = "participant")]
-    participants: Vec<String>,
+    #[arg(long = "device", alias = "participant")]
+    devices: Vec<String>,
     #[arg(long, hide = true, default_value_t = 2)]
     discover_secs: u64,
     #[arg(long, default_value_t = 3)]
@@ -545,8 +603,8 @@ struct DoctorArgs {
     config: Option<PathBuf>,
     #[arg(long)]
     network_id: Option<String>,
-    #[arg(long = "participant")]
-    participants: Vec<String>,
+    #[arg(long = "device", alias = "participant")]
+    devices: Vec<String>,
     #[arg(long, default_value_t = 4)]
     timeout_secs: u64,
     #[arg(long)]
@@ -561,8 +619,8 @@ struct IpArgs {
     config: Option<PathBuf>,
     #[arg(long)]
     network_id: Option<String>,
-    #[arg(long = "participant")]
-    participants: Vec<String>,
+    #[arg(long = "device", alias = "participant")]
+    devices: Vec<String>,
     #[arg(long, hide = true, default_value_t = 2)]
     discover_secs: u64,
     #[arg(long)]
@@ -578,8 +636,8 @@ struct WhoisArgs {
     config: Option<PathBuf>,
     #[arg(long)]
     network_id: Option<String>,
-    #[arg(long = "participant")]
-    participants: Vec<String>,
+    #[arg(long = "device", alias = "participant")]
+    devices: Vec<String>,
     #[arg(long, hide = true, default_value_t = 2)]
     discover_secs: u64,
     #[arg(long)]

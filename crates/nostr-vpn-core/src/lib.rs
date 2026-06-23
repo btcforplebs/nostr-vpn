@@ -14,6 +14,10 @@ pub mod magic_dns;
 mod network_roster;
 mod network_routes;
 pub mod packet_checksums;
+pub mod paid_route_probe;
+#[cfg(feature = "paid-exit")]
+pub mod paid_route_store;
+pub mod paid_routes;
 pub mod paths;
 pub mod platform_paths;
 pub mod process_ext;

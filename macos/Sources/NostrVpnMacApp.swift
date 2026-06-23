@@ -15,7 +15,14 @@ struct NostrVpnMacApp: App {
 
     var body: some Scene {
         WindowGroup("Nostr VPN", id: "main") {
-            RootView(manager: manager)
+            GeometryReader { proxy in
+                ZStack {
+                    Color(nsColor: .windowBackgroundColor)
+                        .ignoresSafeArea()
+                    RootView(manager: manager)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+            }
                 .frame(minWidth: 880, minHeight: 620)
                 .onAppear {
                     appDelegate.configure(manager: manager)

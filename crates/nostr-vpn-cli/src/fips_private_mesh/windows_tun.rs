@@ -153,7 +153,8 @@ fn write_windows_fips_packet_batch(session: &Arc<Session>, packets: &mut Vec<Vec
 
 #[cfg(target_os = "windows")]
 fn windows_fips_packet_debug_enabled() -> bool {
-    std::env::var_os("NVPN_FIPS_PACKET_DEBUG").is_some()
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("NVPN_FIPS_PACKET_DEBUG").is_some())
 }
 
 #[cfg(target_os = "windows")]

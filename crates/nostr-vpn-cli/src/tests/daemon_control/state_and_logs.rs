@@ -68,6 +68,57 @@ fn read_daemon_state_trims_nul_padding() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn status_json_peers_preserves_daemon_reachability() {
+    let peer = DaemonPeerState {
+        participant_pubkey: Keys::generate().public_key().to_hex(),
+        node_id: "peer".to_string(),
+        tunnel_ip: "10.44.0.2/32".to_string(),
+        endpoint: "fips".to_string(),
+        runtime_endpoint: Some("203.0.113.2:9000".to_string()),
+        fips_endpoint_npub: String::new(),
+        fips_transport_addr: "203.0.113.2:9000".to_string(),
+        fips_transport_type: "udp".to_string(),
+        fips_srtt_ms: Some(7),
+        fips_srtt_age_ms: Some(10),
+        fips_packets_sent: 1,
+        fips_packets_recv: 2,
+        fips_bytes_sent: 3,
+        fips_bytes_recv: 4,
+        fips_rekey_in_progress: false,
+        fips_rekey_draining: false,
+        fips_current_k_bit: None,
+        fips_last_outbound_route: String::new(),
+        direct_probe_pending: false,
+        direct_probe_after_ms: None,
+        direct_probe_retry_count: 0,
+        direct_probe_auto_reconnect: false,
+        direct_probe_expires_at_ms: None,
+        fips_nostr_traversal_failures: 0,
+        fips_nostr_traversal_in_cooldown: false,
+        fips_nostr_traversal_cooldown_until_ms: None,
+        fips_nostr_traversal_last_observed_skew_ms: None,
+        tx_bytes: 5,
+        rx_bytes: 6,
+        public_key: String::new(),
+        advertised_routes: Vec::new(),
+        last_mesh_seen_at: 123,
+        last_fips_seen_at: Some(123),
+        last_fips_control_seen_at: Some(123),
+        last_fips_data_seen_at: Some(123),
+        reachable: true,
+        last_handshake_at: Some(123),
+        error: None,
+    };
+
+    let value = crate::status_json_peers(Some(std::slice::from_ref(&peer)), &[]);
+    let peers = value.as_array().expect("status peers array");
+    assert_eq!(peers.len(), 1);
+    assert_eq!(peers[0]["reachable"], true);
+    assert_eq!(peers[0]["fips_srtt_ms"], 7);
+    assert_eq!(peers[0]["fips_transport_type"], "udp");
+}
+
 #[cfg(unix)]
 #[test]
 fn atomic_runtime_write_creates_private_file() {
@@ -304,7 +355,7 @@ fn persist_daemon_runtime_state_marks_vpn_on_as_active() {
     let state_path = dir.join("daemon.state.json");
 
     let mut config = AppConfig::generated();
-    config.networks[0].participants = vec!["11".repeat(32)];
+    config.networks[0].devices = vec!["11".repeat(32)];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
 
     crate::persist_daemon_runtime_state(
@@ -340,7 +391,7 @@ fn persist_daemon_runtime_state_marks_vpn_on_as_active() {
 fn fips_runtime_state_is_ready_without_waiting_for_every_peer() {
     let mut config = AppConfig::generated();
     activate_first_network(&mut config);
-    config.networks[0].participants = vec!["11".repeat(32), "22".repeat(32)];
+    config.networks[0].devices = vec!["11".repeat(32), "22".repeat(32)];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
 
     let state = crate::build_daemon_runtime_state(
@@ -368,7 +419,7 @@ fn fips_runtime_state_rejects_far_future_peer_timestamps() {
     let mut config = AppConfig::generated();
     activate_first_network(&mut config);
     let peer_pubkey = Keys::generate().public_key().to_hex();
-    config.networks[0].participants = vec![peer_pubkey.clone()];
+    config.networks[0].devices = vec![peer_pubkey.clone()];
     let tunnel_runtime = crate::CliTunnelRuntime::new("utun100");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -396,6 +447,7 @@ fn fips_runtime_state_rejects_far_future_peer_timestamps() {
             rekey_in_progress: false,
             rekey_draining: false,
             current_k_bit: None,
+            last_outbound_route: None,
             direct_probe_pending: false,
             direct_probe_after_ms: None,
             direct_probe_retry_count: 0,

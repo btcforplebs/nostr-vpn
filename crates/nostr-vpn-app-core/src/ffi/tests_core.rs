@@ -383,7 +383,7 @@
         assert_eq!(saved_config.network_id, "abcd1234ef56");
         assert!(saved_config.listen_for_join_requests);
         assert_ne!(saved_config.invite_secret, old_invite_secret);
-        assert!(saved_config.participants.contains(&peer_hex));
+        assert!(saved_config.devices.contains(&peer_hex));
         assert!(saved_config.admins.contains(&admin_one_hex));
         assert!(saved_config.admins.contains(&admin_two_hex));
         assert_eq!(
@@ -410,7 +410,7 @@
             .network_by_id(&saved_id)
             .expect("saved network config");
         assert!(saved_config.enabled);
-        assert!(!saved_config.participants.contains(&peer_hex));
+        assert!(!saved_config.devices.contains(&peer_hex));
         assert!(!saved_config.admins.contains(&admin_one_hex));
         assert!(saved_config.admins.contains(&admin_two_hex));
         assert!(
@@ -459,7 +459,7 @@
         let peer_pubkey = "26525c442dd039de4e728b41ee8d7f717b267ab25b7c219d53a3249e1c9174cc";
         create_test_network(&mut runtime, "Home");
         runtime.config.networks[0].admins = vec![own_pubkey.clone()];
-        runtime.config.networks[0].participants = vec![peer_pubkey.to_string()];
+        runtime.config.networks[0].devices = vec![peer_pubkey.to_string()];
 
         let state = runtime.state();
         let network = &state.networks[0];
@@ -524,7 +524,7 @@
             .own_nostr_pubkey_hex()
             .expect("generated config should have own pubkey");
         runtime.config.networks[0].admins = vec![own_pubkey.clone()];
-        runtime.config.networks[0].participants = Vec::new();
+        runtime.config.networks[0].devices = Vec::new();
 
         runtime.dispatch(NativeAppAction::SetParticipantAlias {
             npub: to_npub(&own_pubkey),
@@ -578,7 +578,7 @@
         runtime.mobile_runtime = true;
         runtime.config_path = dir.join("config.toml");
         create_test_network(&mut runtime, "Home");
-        runtime.config.networks[0].participants = vec![peer_hex.clone()];
+        runtime.config.networks[0].devices = vec![peer_hex.clone()];
 
         runtime.dispatch(NativeAppAction::SetParticipantEndpointHints {
             npub: peer_npub.clone(),
@@ -708,7 +708,7 @@
         runtime.config.exit_node_leak_protection = true;
         create_test_network(&mut runtime, "Home");
         runtime.config.networks[0].admins = vec![own_pubkey];
-        runtime.config.networks[0].participants = vec![exit_pubkey.to_string()];
+        runtime.config.networks[0].devices = vec![exit_pubkey.to_string()];
         runtime
             .config
             .set_peer_alias(exit_pubkey, "lab-exit")

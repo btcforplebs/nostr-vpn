@@ -17,11 +17,11 @@ import SwiftUI
 ///     Copy Device ID
 ///     ─────────────
 ///     <network-name> ▶            ← list of network peers (copy npub)
-///     Exit Node ▶                 ← offer toggle + selection
+///     Internet Source ▶           ← share toggle + selection
 ///       <exit status, if any>
-///       ☐ Offer This Device
+///       ☐ Share This Device
 ///       ─────────
-///       ☑ No exit node
+///       ☑ This Device
 ///       Device 1
 ///       Device 2
 ///     ─────────────
@@ -48,7 +48,7 @@ final class TrayController: NSObject {
     private let networkSubmenu = NSMenu()
     private let exitNodeSubmenu = NSMenu()
 
-    // Stable items inside Exit Node submenu
+    // Stable items inside Internet Source submenu
     private let exitNodeStatusItem = NSMenuItem()
     private let offerExitItem = NSMenuItem()
     private let exitNodeSelectionSeparator = NSMenuItem.separator()
@@ -116,18 +116,18 @@ final class TrayController: NSObject {
         networkSubmenuItem.submenu = networkSubmenu
         networkSubmenuItem.isHidden = true
 
-        exitNodeSubmenuItem.title = "Exit Node"
+        exitNodeSubmenuItem.title = "Internet Source"
         exitNodeSubmenuItem.submenu = exitNodeSubmenu
 
-        // Exit Node submenu skeleton.
+        // Internet Source submenu skeleton.
         exitNodeStatusItem.isEnabled = false
         exitNodeStatusItem.isHidden = true
 
-        offerExitItem.title = "Offer This Device"
+        offerExitItem.title = "Share This Device"
         offerExitItem.target = self
         offerExitItem.action = #selector(handleToggleOfferExit)
 
-        noExitNodeItem.title = "No exit node"
+        noExitNodeItem.title = "This Device"
         noExitNodeItem.target = self
         noExitNodeItem.action = #selector(handleSelectNoExit)
 
@@ -185,7 +185,7 @@ final class TrayController: NSObject {
             self?.manager.copy(item.npub, as: .peerNpub, peerNpub: item.npub)
         }
 
-        // Exit Node submenu
+        // Internet Source submenu
         exitNodeStatusItem.title = snapshot.exitNodeStatusText
         exitNodeStatusItem.isHidden = snapshot.exitNodeStatusText.isEmpty
         offerExitItem.state = snapshot.advertiseExitNode ? .on : .off
@@ -216,11 +216,11 @@ final class TrayController: NSObject {
         }
     }
 
-    /// The Exit Node submenu has stable header items (status, offer, separator,
-    /// "No exit node") followed by a dynamic list of peers offering exit. Keep
+    /// The Internet Source submenu has stable header items (status, share, separator,
+    /// "This Device") followed by a dynamic list of peers sharing internet. Keep
     /// the header items in place and rebuild the trailing peer list.
     private func rebuildExitNodePeers(items: [SubmenuItem<ExitNodeRow>], selectedNpub: String) {
-        // Drop everything past the "No exit node" item.
+        // Drop everything past the "This Device" item.
         let keepCount = exitNodeSubmenu.items.firstIndex(of: noExitNodeItem).map { $0 + 1 } ?? 0
         while exitNodeSubmenu.items.count > keepCount {
             exitNodeSubmenu.removeItem(at: exitNodeSubmenu.items.count - 1)

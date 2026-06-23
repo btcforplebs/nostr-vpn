@@ -10,7 +10,7 @@
             enabled: true,
             network_id: "mesh".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: Vec::new(),
+            devices: Vec::new(),
             admins: vec![admin_hex],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -86,7 +86,7 @@
             "mesh",
             NetworkRoster {
                 network_name: "Home".to_string(),
-                participants: vec![member_hex],
+                devices: vec![member_hex],
                 admins: vec![known_admin_hex, outsider_hex],
                 aliases: HashMap::new(),
                 signed_at: 1_726_000_000,
@@ -123,7 +123,7 @@
             enabled: true,
             network_id: "test".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: vec![peer.to_string()],
+            devices: vec![peer.to_string()],
             admins: vec![own],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -178,7 +178,7 @@
             enabled: true,
             network_id: "test".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: vec![peer.to_string()],
+            devices: vec![peer.to_string()],
             admins: vec![own],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -337,7 +337,7 @@
             enabled: true,
             network_id: "test".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: vec![peer.to_string()],
+            devices: vec![peer.to_string()],
             admins: vec![own],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -394,7 +394,7 @@
             enabled: true,
             network_id: "test".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: vec![peer.to_string()],
+            devices: vec![peer.to_string()],
             admins: vec![own],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -418,7 +418,7 @@
             &vec![FipsPeerAddressHint {
                 addr: "192.168.50.10:51820".to_string(),
                 seen_at_ms: None,
-                priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
+                priority: FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY,
             }]
         );
     }
@@ -436,7 +436,7 @@
             enabled: true,
             network_id: "test".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: Vec::new(),
+            devices: Vec::new(),
             admins: vec![admin.clone()],
             listen_for_join_requests: false,
             invite_inviter: admin.clone(),
@@ -472,17 +472,26 @@
             &vec![FipsPeerAddressHint {
                 addr: "192.168.50.10:51820".to_string(),
                 seen_at_ms: None,
-                priority: FIPS_STATIC_PEER_ENDPOINT_PRIORITY,
+                priority: FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY,
             }]
         );
         let endpoint_config =
-            fips_peer_configs_from_mesh(&config.peers, &config.peer_hints, &config.bootstrap_peers);
+            fips_peer_configs_from_mesh(
+                &config.peers,
+                &config.peer_hints,
+                &config.bootstrap_peers,
+                false,
+            );
         let endpoint_peer = endpoint_config
             .iter()
             .find(|peer| peer.npub == admin_npub)
             .expect("admin endpoint config");
         assert_eq!(endpoint_peer.addresses.len(), 1);
         assert_eq!(endpoint_peer.addresses[0].addr, "192.168.50.10:51820");
+        assert_eq!(
+            endpoint_peer.addresses[0].priority,
+            FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY
+        );
     }
 
     #[test]
@@ -496,7 +505,7 @@
             enabled: true,
             network_id: "test".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: Vec::new(),
+            devices: Vec::new(),
             admins: vec![own],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -527,6 +536,7 @@
     #[test]
     fn mobile_config_seeds_bootstrap_transit_peers() {
         let mut app = AppConfig::generated();
+        app.connect_to_non_roster_fips_peers = true;
         app.fips_bootstrap_enabled = true;
         app.ensure_defaults();
         let mobile = MobileTunnelConfig::from_app(&app).expect("mobile config");

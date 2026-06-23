@@ -149,6 +149,7 @@ final class AppManager: ObservableObject {
         }
         syncLaunchAgentWithSettings()
         startAutomaticUpdateChecks()
+        refresh()
         guard refreshTask == nil else {
             return
         }
@@ -480,6 +481,344 @@ final class AppManager: ObservableObject {
         dispatch(.updateSettings(patch: settingsPatch(advertiseExitNode: enabled)), status: "Saving routing")
     }
 
+    func setPaidExitEnabled(_ enabled: Bool) {
+        dispatch(.updateSettings(patch: settingsPatch(paidExitEnabled: enabled)), status: "Saving selling")
+    }
+
+    func savePaidExitSellerSettings(
+        upstream: String,
+        meter: String,
+        priceMsat: String,
+        perUnits: String,
+        acceptedMints: String,
+        maxChannelCapacitySat: String,
+        channelExpirySecs: String,
+        freeProbeUnits: String,
+        graceUnits: String,
+        countryCode: String,
+        region: String,
+        asn: String,
+        networkClass: String,
+        ipv4: Bool,
+        ipv6: Bool
+    ) {
+        dispatch(.updateSettings(patch: settingsPatch(
+            paidExitUpstream: upstream,
+            paidExitMeter: meter,
+            paidExitPriceMsat: UInt64(priceMsat.trimmingCharacters(in: .whitespacesAndNewlines)),
+            paidExitPerUnits: Self.parsePaidExitPricingUnits(perUnits, meter: meter),
+            paidExitAcceptedMints: acceptedMints,
+            paidExitMaxChannelCapacitySat: UInt64(maxChannelCapacitySat.trimmingCharacters(in: .whitespacesAndNewlines)),
+            paidExitChannelExpirySecs: Self.parsePaidExitDurationSeconds(channelExpirySecs),
+            paidExitFreeProbeUnits: Self.parsePaidExitTrafficUnits(freeProbeUnits, meter: meter),
+            paidExitGraceUnits: Self.parsePaidExitTrafficUnits(graceUnits, meter: meter),
+            paidExitCountryCode: countryCode,
+            paidExitRegion: region,
+            paidExitAsn: asn,
+            paidExitNetworkClass: networkClass,
+            paidExitIpv4: ipv4,
+            paidExitIpv6: ipv6
+        )), status: "Saving seller settings")
+    }
+
+    private static func parsePaidExitPricingUnits(_ value: String, meter: String) -> UInt64? {
+        parsePaidExitUnits(value, meter: meter, byteScale: 1_000)
+    }
+
+    private static func parsePaidExitTrafficUnits(_ value: String, meter: String) -> UInt64? {
+        parsePaidExitUnits(value, meter: meter, byteScale: 1_024)
+    }
+
+    private static func parsePaidExitDurationSeconds(_ value: String) -> UInt64? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let seconds = UInt64(trimmed) {
+            return seconds
+        }
+        let lowercased = trimmed
+            .replacingOccurrences(of: ",", with: "")
+            .lowercased()
+        var numberText = ""
+        var unitText = ""
+        for character in lowercased {
+            if character.isNumber || character == "." {
+                numberText.append(character)
+            } else if !character.isWhitespace {
+                unitText.append(character)
+            }
+        }
+        guard let amount = Double(numberText), amount.isFinite, amount >= 0 else {
+            return nil
+        }
+        let multiplier: Double
+        switch unitText {
+        case "", "s", "sec", "secs", "second", "seconds":
+            multiplier = 1
+        case "m", "min", "mins", "minute", "minutes":
+            multiplier = 60
+        case "h", "hr", "hrs", "hour", "hours":
+            multiplier = 3_600
+        case "d", "day", "days":
+            multiplier = 86_400
+        default:
+            return nil
+        }
+        let seconds = (amount * multiplier).rounded()
+        guard seconds >= 0, seconds <= Double(UInt64.max) else {
+            return nil
+        }
+        return UInt64(seconds)
+    }
+
+    private static func parsePaidExitUnits(_ value: String, meter: String, byteScale: Double) -> UInt64? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let rawUnits = UInt64(trimmed) {
+            return rawUnits
+        }
+        guard meter == "bytes" else {
+            return parsePlainUnitCount(trimmed)
+        }
+        return parseByteUnitCount(trimmed, scale: byteScale)
+    }
+
+    private static func parsePlainUnitCount(_ value: String) -> UInt64? {
+        let lowercased = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let numberText = lowercased
+            .split(whereSeparator: { !$0.isNumber })
+            .first
+            .map(String.init) ?? ""
+        return UInt64(numberText)
+    }
+
+    private static func parseByteUnitCount(_ value: String, scale: Double) -> UInt64? {
+        let lowercased = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: "")
+            .lowercased()
+        var numberText = ""
+        var unitText = ""
+        for character in lowercased {
+            if character.isNumber || character == "." {
+                numberText.append(character)
+            } else if !character.isWhitespace {
+                unitText.append(character)
+            }
+        }
+        guard let amount = Double(numberText), amount.isFinite, amount >= 0 else {
+            return nil
+        }
+        let multiplier: Double
+        switch unitText {
+        case "", "b", "byte", "bytes":
+            multiplier = 1
+        case "k", "kb", "kib":
+            multiplier = scale
+        case "m", "mb", "mib":
+            multiplier = pow(scale, 2)
+        case "g", "gb", "gib":
+            multiplier = pow(scale, 3)
+        case "t", "tb", "tib":
+            multiplier = pow(scale, 4)
+        default:
+            return nil
+        }
+        let units = (amount * multiplier).rounded()
+        guard units >= 0, units <= Double(UInt64.max) else {
+            return nil
+        }
+        return UInt64(units)
+    }
+
+    func addPaidRouteWalletMint(url: String, label: String?) {
+        let trimmedUrl = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedUrl.isEmpty else { return }
+        let trimmedLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        dispatch(
+            .addPaidRouteWalletMint(url: trimmedUrl, label: trimmedLabel?.isEmpty == false ? trimmedLabel : nil),
+            status: "Saving wallet"
+        )
+    }
+
+    func removePaidRouteWalletMint(_ url: String) {
+        dispatch(.removePaidRouteWalletMint(url: url), status: "Saving wallet")
+    }
+
+    func setPaidRouteDefaultMint(_ url: String) {
+        dispatch(.setPaidRouteDefaultMint(url: url), status: "Saving wallet")
+    }
+
+    func refreshPaidRouteWallet() {
+        dispatch(.refreshPaidRouteWallet(refresh: true), status: "Refreshing wallet")
+    }
+
+    func topUpPaidRouteWallet(mintUrl: String?, amountSat: String) {
+        guard let amount = Self.parsePositiveUInt64(amountSat) else { return }
+        dispatch(
+            .topUpPaidRouteWallet(mintUrl: Self.optionalTrimmed(mintUrl), amountSat: amount),
+            status: "Creating invoice"
+        )
+    }
+
+    func receivePaidRouteWalletToken(_ token: String) {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        dispatch(.receivePaidRouteWalletToken(token: trimmed), status: "Receiving token")
+    }
+
+    func sendPaidRouteWalletToken(mintUrl: String?, amountSat: String) {
+        guard let amount = Self.parsePositiveUInt64(amountSat) else { return }
+        dispatch(
+            .sendPaidRouteWalletToken(mintUrl: Self.optionalTrimmed(mintUrl), amountSat: amount),
+            status: "Creating token"
+        )
+    }
+
+    func withdrawPaidRouteWalletLightning(mintUrl: String?, invoice: String) {
+        let trimmedInvoice = invoice.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInvoice.isEmpty else { return }
+        dispatch(
+            .withdrawPaidRouteWalletLightning(
+                mintUrl: Self.optionalTrimmed(mintUrl),
+                invoice: trimmedInvoice
+            ),
+            status: "Paying invoice"
+        )
+    }
+
+    func buyPaidRouteOffer(_ offer: NativePaidRouteOfferState) {
+        dispatch(
+            .buyPaidRouteOffer(
+                offerKey: offer.key,
+                mintUrl: nil,
+                channelCapacitySat: nil
+            ),
+            status: "Connecting"
+        )
+    }
+
+    func usePaidRouteSession(_ session: NativePaidRouteSessionState) {
+        dispatch(
+            .selectPaidRouteSession(sessionId: session.sessionId, connect: true),
+            status: "Connecting"
+        )
+    }
+
+    func probePaidRouteSession(_ session: NativePaidRouteSessionState) {
+        dispatch(
+            .probePaidRouteSession(
+                sessionId: session.sessionId,
+                timeoutSecs: 5
+            ),
+            status: "Checking connection"
+        )
+    }
+
+    func openPaidRouteChannelFromWallet(_ session: NativePaidRouteSessionState) {
+        dispatch(
+            .openPaidRouteChannelFromWallet(
+                sessionId: session.sessionId,
+                mintUrl: nil,
+                paidMsat: nil,
+                maxAmountPerOutput: nil,
+                keysetId: nil
+            ),
+            status: "Funding seller"
+        )
+    }
+
+    func signPaidRoutePaymentEnvelopeFromWallet(_ session: NativePaidRouteSessionState) {
+        dispatch(
+            .signPaidRoutePaymentEnvelopeFromWallet(
+                sessionId: session.sessionId,
+                kind: "balance-update",
+                deliveredUnits: nil,
+                paidMsat: nil
+            ),
+            status: "Paying seller"
+        )
+    }
+
+    func closePaidRouteChannelFromWallet(_ session: NativePaidRouteSessionState) {
+        dispatch(
+            .closePaidRouteChannelFromWallet(
+                sessionId: session.sessionId,
+                publish: true
+            ),
+            status: "Closing channel"
+        )
+    }
+
+    func sendPaidRoutePaymentEnvelope(_ envelopeJson: String) {
+        let trimmed = envelopeJson.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        dispatch(.sendPaidRoutePaymentEnvelope(envelopeJson: trimmed), status: "Sending payment")
+    }
+
+    func streamPaidRoutePayments() {
+        dispatch(
+            .streamPaidRoutePayments(publish: true, minIncrementMsat: 1, limit: 0),
+            status: "Paying for usage"
+        )
+    }
+
+    func receivePaidRoutePayments() {
+        dispatch(.receivePaidRoutePayments(durationSecs: 5), status: "Receiving payments")
+    }
+
+    func collectPaidExitChannel(_ session: NativePaidRouteSessionState) {
+        let channelId = session.channelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !channelId.isEmpty else { return }
+        dispatch(.collectPaidExitChannel(channelId: channelId), status: "Collecting payment")
+    }
+
+    func collectDuePaidExitChannels() {
+        dispatch(.collectDuePaidExitChannels, status: "Collecting payments")
+    }
+
+    private static func optionalTrimmed(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func emptyAllFilter(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed == "all" ? "" : trimmed
+    }
+
+    private static func parsePositiveUInt64(_ value: String) -> UInt64? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let amount = UInt64(trimmed), amount > 0 else {
+            return nil
+        }
+        return amount
+    }
+
+    func publishPaidExitOffer() {
+        dispatch(.publishPaidExitOffer, status: "Advertising listing")
+    }
+
+    func setPaidRouteMarketFilter(countryCode: String, networkClass: String, sort: String) {
+        dispatch(
+            .setPaidRouteMarketFilter(
+                query: "",
+                countryCode: Self.emptyAllFilter(countryCode),
+                networkClass: Self.emptyAllFilter(networkClass),
+                mintUrl: "",
+                requireIpv4: false,
+                requireIpv6: false,
+                sort: sort.isEmpty ? "quality" : sort
+            ),
+            status: "Filtering sellers"
+        )
+    }
+
+    func discoverPaidRouteOffers() {
+        dispatch(.discoverPaidRouteOffers(durationSecs: 5), status: "Finding sellers")
+    }
+
     func setWireGuardExitEnabled(_ enabled: Bool) {
         dispatch(.updateSettings(patch: settingsPatch(wireguardExitEnabled: enabled)), status: "Saving WireGuard")
     }
@@ -552,27 +891,27 @@ final class AppManager: ObservableObject {
     }
 
     func setExitNode(_ npub: String) {
-        dispatch(.updateSettings(patch: settingsPatch(exitNode: npub)), status: "Saving exit node")
+        dispatch(.updateSettings(patch: settingsPatch(exitNode: npub)), status: "Saving internet source")
     }
 
     func selectDirectExit() {
         dispatch(
             .updateSettings(patch: settingsPatch(exitNode: "", wireguardExitEnabled: false)),
-            status: "Saving exit node"
+            status: "Saving internet source"
         )
     }
 
     func selectWireGuardUpstreamExit() {
         dispatch(
             .updateSettings(patch: settingsPatch(exitNode: "", wireguardExitEnabled: true)),
-            status: "Saving exit node"
+            status: "Saving internet source"
         )
     }
 
     func selectPeerExit(_ npub: String) {
         dispatch(
             .updateSettings(patch: settingsPatch(exitNode: npub, wireguardExitEnabled: false)),
-            status: "Saving exit node"
+            status: "Saving internet source"
         )
     }
 
@@ -1254,6 +1593,7 @@ final class AppManager: ObservableObject {
             admins: [selfNpub],
             participants: [local, macbook, iphone, android, ubuntu]
         )
+        let sellerScreenshot = CommandLine.arguments.contains("--nvpn-screenshot-paid-seller")
 
         return NativeAppState(
             rev: 1,
@@ -1295,11 +1635,11 @@ final class AppManager: ObservableObject {
             ],
             networkId: networkId,
             activeNetworkInvite: "nvpn://invite/demo-mesh",
-            exitNode: "",
+            exitNode: sellerScreenshot ? "" : "npub1paidexitfinlanddemo",
             exitNodeLeakProtection: true,
-            exitNodeActive: false,
+            exitNodeActive: !sellerScreenshot,
             exitNodeBlocked: false,
-            exitNodeStatusText: "",
+            exitNodeStatusText: sellerScreenshot ? "" : "Using paid internet: FI satellite",
             advertiseExitNode: false,
             advertisedRoutes: [],
             effectiveAdvertisedRoutes: [],
@@ -1316,6 +1656,305 @@ final class AppManager: ObservableObject {
             wireguardExitMtu: 1280,
             wireguardExitPersistentKeepaliveSecs: 25,
             wireguardExitConfig: "",
+            paidExitSeller: NativePaidExitSellerState(
+                supported: true,
+                enabled: true,
+                statusText: "Selling public internet",
+                upstream: "host_default",
+                privateVpnAccess: "denied",
+                internetText: "My internet",
+                publicIpText: "203.0.113.8",
+                meter: "bytes",
+                priceText: "2.500 sat / 1 MB",
+                priceMsat: 2_500,
+                perUnits: 1_000_000,
+                perUnitsText: "1 MB",
+                acceptedMints: ["https://mint.minibits.cash/Bitcoin"],
+                maxChannelCapacitySat: 250,
+                channelExpirySecs: 86_400,
+                channelExpiryText: "1 day",
+                settlementText: "Channels end after 1 day or when you manually collect",
+                freeProbeUnits: 1_048_576,
+                freeProbeText: "1 MB",
+                graceUnits: 262_144,
+                graceText: "256 KB",
+                countryCode: "FI",
+                region: "Uusimaa",
+                asn: 12345,
+                networkClass: "satellite",
+                ipv4: true,
+                ipv6: false,
+                channelCreditMsat: 35_000,
+                channelCreditText: "35 sat",
+                channelCreditTitleText: "Pending buyer credit",
+                channelCreditHelpText: "Collect to move it into wallet",
+                channels: [
+                    NativePaidRouteChannelState(
+                        channelId: "seller-channel-demo",
+                        offerId: "internet-exit",
+                        role: "seller",
+                        status: "active",
+                        mintUrl: "https://mint.minibits.cash/Bitcoin",
+                        counterpartyNpub: "npub1buyerstreamdemo",
+                        capacitySat: 250,
+                        capacityText: "250 sat",
+                        paidMsat: 35_000,
+                        paidText: "35 sat paid",
+                        updatedAtUnix: 1_780_650_010,
+                        expiresAtUnix: 1_780_650_900,
+                        error: ""
+                    )
+                ],
+                sessions: [
+                    NativePaidRouteSessionState(
+                        sessionId: "seller-session-demo",
+                        leaseId: "seller-lease-demo",
+                        channelId: "seller-channel-demo",
+                        statusText: "Routing paid traffic",
+                        lifecycleStatus: "active",
+                        accessState: "paid",
+                        titleText: "Buyer online",
+                        detailText: "Paid, 11.4 MB used, 30 sat due",
+                        settlementText: "Ends in 15 min or when you manually collect",
+                        collectActionText: "End & Collect",
+                        collectActionHelpText: "Stop routing and move paid channel funds to wallet",
+                        paymentChannelReady: true,
+                        allowRouting: true,
+                        deliveredUnits: 12_000_000,
+                        usageText: "11.4 MB used",
+                        amountDueMsat: 30_000,
+                        amountDueText: "30 sat due",
+                        paidMsat: 35_000,
+                        paidText: "35 sat paid",
+                        unpaidMsat: 0,
+                        unpaidText: "",
+                        activeMillis: 0,
+                        bytes: 12_000_000,
+                        packets: 8_120,
+                        realizedExitIp: "203.0.113.8",
+                        claimedCountryCode: "FI",
+                        observedCountryCode: "FI",
+                        countryClaimStatus: "match",
+                        locationText: "FI",
+                        observedAsn: 12345,
+                        hasQuality: true,
+                        qualityText: "42 ms · 7 ms jitter · 0.05% loss",
+                        bandwidthText: "25 Mbps down · 5 Mbps up",
+                        latencyMs: 42,
+                        jitterMs: 7,
+                        packetLossPpm: 500,
+                        downBps: 25_000_000,
+                        upBps: 5_000_000,
+                        updatedAtUnix: 1_780_650_010,
+                        expiresAtUnix: 1_780_650_900
+                    )
+                ]
+            ),
+            paidRouteMarket: NativePaidRouteMarketState(
+                supported: true,
+                statusText: "2 internet sellers found",
+                storePath: "/Users/demo/Library/Application Support/nvpn/paid-routes.json",
+                wallet: NativePaidRouteWalletState(
+                    defaultMint: "https://mint.minibits.cash/Bitcoin",
+                    balanceKnown: true,
+                    totalBalanceMsat: 123_000,
+                    totalBalanceText: "123 sat",
+                    mints: [
+                        NativePaidRouteWalletMintState(
+                            url: "https://mint.minibits.cash/Bitcoin",
+                            label: "Minibits",
+                            isDefault: true,
+                            balanceKnown: true,
+                            balanceMsat: 123_000,
+                            balanceText: "123 sat",
+                            lastCheckedUnix: 1_780_650_000
+                        )
+                    ],
+                    lastAction: NativePaidRouteWalletActionState(
+                        kind: "topup",
+                        statusText: "Invoice ready",
+                        mintUrl: "https://mint.minibits.cash/Bitcoin",
+                        amountSat: 1_000,
+                        amountText: "1000 sat",
+                        feeSat: 0,
+                        feeText: "",
+                        quoteId: "quote-demo",
+                        paymentRequest: "lnbc1000n1pdemoexamplepaidroutewalletinvoice",
+                        token: "",
+                        operationId: "",
+                        expiresAtUnix: 1_780_653_600,
+                        preimage: ""
+                    )
+                ),
+                lastPaymentAction: NativePaidRoutePaymentActionState(
+                    kind: "",
+                    statusText: "",
+                    payloadType: "",
+                    sessionId: "",
+                    leaseId: "",
+                    channelId: "",
+                    buyerNpub: "",
+                    sellerNpub: "",
+                    envelopeJson: "",
+                    paidMsat: 0,
+                    paidText: "0 sat paid",
+                    deliveredUnits: 0,
+                    deliveredUsageText: "0 units",
+                    amountDueMsat: 0,
+                    amountDueText: "0 sat due",
+                    unpaidMsat: 0,
+                    unpaidText: "",
+                    allowRouting: false
+                ),
+                filter: NativePaidRouteMarketFilterState(
+                    query: "",
+                    countryCode: "",
+                    networkClass: "",
+                    mintUrl: "",
+                    requireIpv4: false,
+                    requireIpv6: false,
+                    sort: "quality"
+                ),
+                offers: [
+                    NativePaidRouteOfferState(
+                        key: "seller-fi:internet-exit",
+                        offerId: "internet-exit",
+                        sellerNpub: "npub1paidexitfinlanddemo",
+                        statusText: "FI - satellite - 42 ms - seen 2m ago",
+                        priceText: "2.500 sat / 1 MB",
+                        meter: "bytes",
+                        priceMsat: 2_500,
+                        perUnits: 1_000_000,
+                        perUnitsText: "1 MB",
+                        acceptedMints: ["https://mint.minibits.cash/Bitcoin"],
+                        maxChannelCapacitySat: 250,
+                        channelExpirySecs: 900,
+                        freeProbeUnits: 1_048_576,
+                        freeProbeText: "1 MB",
+                        graceUnits: 262_144,
+                        graceText: "256 KB",
+                        countryCode: "FI",
+                        region: "Uusimaa",
+                        asn: 14593,
+                        networkClass: "satellite",
+                        ipv4: true,
+                        ipv6: false,
+                        hasQuality: true,
+                        qualityText: "42 ms · 7 ms jitter · 0.05% loss",
+                        bandwidthText: "25 Mbps down · 5 Mbps up",
+                        latencyMs: 42,
+                        jitterMs: 7,
+                        packetLossPpm: 500,
+                        downBps: 25_000_000,
+                        upBps: 5_000_000,
+                        uptimeSecs: 3_600,
+                        firstSeenUnix: 1_780_649_000,
+                        lastSeenUnix: 1_780_650_000,
+                        relayUrls: ["wss://relay.damus.io"]
+                    ),
+                    NativePaidRouteOfferState(
+                        key: "seller-de:internet-exit",
+                        offerId: "internet-exit",
+                        sellerNpub: "npub1paidexitgermanydemo",
+                        statusText: "DE - datacenter - 18 ms - seen 5m ago",
+                        priceText: "0.800 sat / 1 MB",
+                        meter: "bytes",
+                        priceMsat: 800,
+                        perUnits: 1_000_000,
+                        perUnitsText: "1 MB",
+                        acceptedMints: ["https://mint.minibits.cash/Bitcoin"],
+                        maxChannelCapacitySat: 500,
+                        channelExpirySecs: 900,
+                        freeProbeUnits: 1_048_576,
+                        freeProbeText: "1 MB",
+                        graceUnits: 262_144,
+                        graceText: "256 KB",
+                        countryCode: "DE",
+                        region: "Hesse",
+                        asn: 12_345,
+                        networkClass: "datacenter",
+                        ipv4: true,
+                        ipv6: true,
+                        hasQuality: true,
+                        qualityText: "18 ms · 3 ms jitter · 0.01% loss",
+                        bandwidthText: "90 Mbps down · 20 Mbps up",
+                        latencyMs: 18,
+                        jitterMs: 3,
+                        packetLossPpm: 100,
+                        downBps: 90_000_000,
+                        upBps: 20_000_000,
+                        uptimeSecs: 86_400,
+                        firstSeenUnix: 1_780_648_000,
+                        lastSeenUnix: 1_780_649_800,
+                        relayUrls: ["wss://relay.nostr.band"]
+                    )
+                ],
+                visibleOffers: [],
+                hiddenOfferCount: 0,
+                countryOptions: ["DE", "FI"],
+                networkClassOptions: ["datacenter", "satellite"],
+                channels: [
+                    NativePaidRouteChannelState(
+                        channelId: "channel-fi-1",
+                        offerId: "internet-exit",
+                        role: "buyer",
+                        status: "active",
+                        mintUrl: "https://mint.minibits.cash/Bitcoin",
+                        counterpartyNpub: "npub1paidexitfinlanddemo",
+                        capacitySat: 250,
+                        capacityText: "250 sat",
+                        paidMsat: 25_000,
+                        paidText: "25 sat paid",
+                        updatedAtUnix: 1_780_650_000,
+                        expiresAtUnix: 1_780_650_900,
+                        error: ""
+                    )
+                ],
+                sessions: [
+                    NativePaidRouteSessionState(
+                        sessionId: "session-fi-1",
+                        leaseId: "lease-fi-1",
+                        channelId: "channel-fi-1",
+                        statusText: "Awaiting payment update",
+                        lifecycleStatus: "active",
+                        accessState: "grace",
+                        titleText: "Ready",
+                        detailText: "Grace, 2.4 MB used, 3.750 sat due",
+                        settlementText: "Channel ends in 15 min",
+                        collectActionText: "",
+                        collectActionHelpText: "",
+                        paymentChannelReady: true,
+                        allowRouting: true,
+                        deliveredUnits: 2_500_000,
+                        usageText: "2.4 MB used",
+                        amountDueMsat: 3_750,
+                        amountDueText: "3.750 sat due",
+                        paidMsat: 2_500,
+                        paidText: "2.500 sat paid",
+                        unpaidMsat: 1_250,
+                        unpaidText: "1.250 sat behind",
+                        activeMillis: 31_000,
+                        bytes: 2_500_000,
+                        packets: 1_920,
+                        realizedExitIp: "198.51.100.42",
+                        claimedCountryCode: "FI",
+                        observedCountryCode: "FI",
+                        countryClaimStatus: "match",
+                        locationText: "198.51.100.42 - FI matches claim",
+                        observedAsn: 14593,
+                        hasQuality: true,
+                        qualityText: "42 ms · 7 ms jitter · 0.05% loss",
+                        bandwidthText: "25 Mbps down · 5 Mbps up",
+                        latencyMs: 42,
+                        jitterMs: 7,
+                        packetLossPpm: 500,
+                        downBps: 25_000_000,
+                        upBps: 5_000_000,
+                        updatedAtUnix: 1_780_650_000,
+                        expiresAtUnix: 1_780_650_900
+                    )
+                ]
+            ),
             fipsHostTunnelEnabled: false,
             connectToNonRosterFipsPeers: true,
             fipsNostrDiscoveryEnabled: true,
@@ -1491,6 +2130,10 @@ enum CopyValue {
     case meshId
     case invite
     case peerNpub
+    case paymentRequest
+    case cashuToken
+    case lightningPreimage
+    case paymentEnvelope
 }
 
 enum QrImportError: LocalizedError {
@@ -1956,6 +2599,22 @@ func settingsPatch(
     wireguardExitMtu: UInt16? = nil,
     wireguardExitPersistentKeepaliveSecs: UInt16? = nil,
     wireguardExitConfig: String? = nil,
+    paidExitEnabled: Bool? = nil,
+    paidExitUpstream: String? = nil,
+    paidExitMeter: String? = nil,
+    paidExitPriceMsat: UInt64? = nil,
+    paidExitPerUnits: UInt64? = nil,
+    paidExitAcceptedMints: String? = nil,
+    paidExitMaxChannelCapacitySat: UInt64? = nil,
+    paidExitChannelExpirySecs: UInt64? = nil,
+    paidExitFreeProbeUnits: UInt64? = nil,
+    paidExitGraceUnits: UInt64? = nil,
+    paidExitCountryCode: String? = nil,
+    paidExitRegion: String? = nil,
+    paidExitAsn: String? = nil,
+    paidExitNetworkClass: String? = nil,
+    paidExitIpv4: Bool? = nil,
+    paidExitIpv6: Bool? = nil,
     fipsHostTunnelEnabled: Bool? = nil,
     connectToNonRosterFipsPeers: Bool? = nil,
     fipsNostrDiscoveryEnabled: Bool? = nil,
@@ -1991,6 +2650,22 @@ func settingsPatch(
         wireguardExitMtu: wireguardExitMtu,
         wireguardExitPersistentKeepaliveSecs: wireguardExitPersistentKeepaliveSecs,
         wireguardExitConfig: wireguardExitConfig,
+        paidExitEnabled: paidExitEnabled,
+        paidExitUpstream: paidExitUpstream,
+        paidExitMeter: paidExitMeter,
+        paidExitPriceMsat: paidExitPriceMsat,
+        paidExitPerUnits: paidExitPerUnits,
+        paidExitAcceptedMints: paidExitAcceptedMints,
+        paidExitMaxChannelCapacitySat: paidExitMaxChannelCapacitySat,
+        paidExitChannelExpirySecs: paidExitChannelExpirySecs,
+        paidExitFreeProbeUnits: paidExitFreeProbeUnits,
+        paidExitGraceUnits: paidExitGraceUnits,
+        paidExitCountryCode: paidExitCountryCode,
+        paidExitRegion: paidExitRegion,
+        paidExitAsn: paidExitAsn,
+        paidExitNetworkClass: paidExitNetworkClass,
+        paidExitIpv4: paidExitIpv4,
+        paidExitIpv6: paidExitIpv6,
         fipsHostTunnelEnabled: fipsHostTunnelEnabled,
         connectToNonRosterFipsPeers: connectToNonRosterFipsPeers,
         fipsNostrDiscoveryEnabled: fipsNostrDiscoveryEnabled,

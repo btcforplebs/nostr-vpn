@@ -12,7 +12,7 @@ impl FipsPrivateMeshRuntime {
             private_mesh_mtu_from_app(None),
             fips_nostr_discovery_policy_from_env(),
         );
-        Self::bind_with_config(identity_nsec, scope, peers, config, Vec::new()).await
+        Self::bind_with_config(identity_nsec, scope, peers, config, Vec::new(), Vec::new()).await
     }
 
     async fn bind_with_config(
@@ -21,6 +21,7 @@ impl FipsPrivateMeshRuntime {
         peers: Vec<FipsMeshPeerConfig>,
         config: Config,
         local_allowed_ips: Vec<String>,
+        paid_route_admissions: Vec<FipsPaidRouteAdmission>,
     ) -> Result<Self> {
         let scope = scope.into();
         let endpoint = FipsEndpoint::builder()
@@ -32,7 +33,11 @@ impl FipsPrivateMeshRuntime {
             .await
             .context("failed to bind embedded FIPS endpoint")?;
         let peer_identities = peer_identity_map(&peers);
-        let mesh = FipsMeshRuntime::with_local_routes(peers, local_allowed_ips);
+        let mesh = FipsMeshRuntime::with_local_routes_and_paid_route_admissions(
+            peers,
+            local_allowed_ips,
+            paid_route_admissions,
+        );
         let peer_activity = peer_activity_map(&mesh.peer_pubkeys(), None);
 
         Ok(Self {
@@ -114,11 +119,12 @@ impl FipsPrivateMeshRuntime {
             let Some(outgoing) = mesh.route_outbound_packet_owned_with_peer(packet) else {
                 continue;
             };
+            let participant_key = outgoing.participant_pubkey_bytes.copied();
             Self::push_endpoint_send_run(
                 &mut runs,
                 &peer_identities,
                 outgoing.participant_pubkey,
-                outgoing.participant_pubkey_bytes.copied(),
+                participant_key,
                 outgoing.endpoint_node_addr,
                 FipsEndpointPayload::new(outgoing.bytes),
             );
@@ -148,16 +154,29 @@ impl FipsPrivateMeshRuntime {
             let _t = crate::pipeline_profile::Timer::start(crate::pipeline_profile::Stage::MeshRoute);
             for packet in packets.drain(..) {
                 let class = packet.class;
+                let packet_debug = fips_unix_packet_debug_enabled();
+                let debug_description = packet_debug.then(|| describe_ip_packet(&packet.bytes));
                 let Some(outgoing) = mesh.route_outbound_packet_owned_with_peer(packet.bytes) else {
+                    if let Some(description) = debug_description {
+                        eprintln!("fips: TUN packet had no FIPS route {description}");
+                    }
                     continue;
                 };
                 routed_packets += 1;
+                if packet_debug {
+                    eprintln!(
+                        "fips: TUN packet routed to {} {}",
+                        outgoing.participant_pubkey,
+                        describe_ip_packet(&outgoing.bytes)
+                    );
+                }
+                let participant_key = outgoing.participant_pubkey_bytes.copied();
                 let payload = FipsEndpointPayload::from_classified(outgoing.bytes, class);
                 Self::push_endpoint_send_run(
                     &mut runs,
                     &peer_identities,
                     outgoing.participant_pubkey,
-                    outgoing.participant_pubkey_bytes.copied(),
+                    participant_key,
                     outgoing.endpoint_node_addr,
                     payload,
                 );

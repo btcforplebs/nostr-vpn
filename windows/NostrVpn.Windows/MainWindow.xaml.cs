@@ -211,6 +211,125 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void DiscoverPaidRoutes_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.DiscoverPaidRouteOffersAsync();
+    }
+
+    private async void RefreshPaidRouteWallet_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.RefreshPaidRouteWalletAsync();
+    }
+
+    private async void AddPaidRouteWalletMint_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.AddPaidRouteWalletMintAsync();
+    }
+
+    private async void TopUpPaidRouteWallet_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.TopUpPaidRouteWalletAsync();
+    }
+
+    private async void ReceivePaidRouteWalletToken_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.ReceivePaidRouteWalletTokenAsync();
+    }
+
+    private async void SendPaidRouteWalletToken_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.SendPaidRouteWalletTokenAsync();
+    }
+
+    private async void WithdrawPaidRouteWalletLightning_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.WithdrawPaidRouteWalletLightningAsync();
+    }
+
+    private void CopyWalletValue_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string value })
+        {
+            ViewModel.CopyText(value);
+        }
+    }
+
+    private async void StreamPaidRoutePayments_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.StreamPaidRoutePaymentsAsync();
+    }
+
+    private async void SendPaidRoutePaymentEnvelope_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.SendPaidRoutePaymentEnvelopeAsync();
+    }
+
+    private async void BuyPaidRouteOffer_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: NativePaidRouteOfferState offer })
+        {
+            await ViewModel.BuyPaidRouteOfferAsync(offer);
+        }
+    }
+
+    private async void UsePaidRouteSession_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: NativePaidRouteSessionState session })
+        {
+            await ViewModel.SelectPaidRouteSessionAsync(session);
+        }
+    }
+
+    private async void ProbePaidRouteSession_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: NativePaidRouteSessionState session })
+        {
+            await ViewModel.ProbePaidRouteSessionAsync(session);
+        }
+    }
+
+    private async void OpenPaidRouteChannel_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: NativePaidRouteSessionState session })
+        {
+            await ViewModel.OpenPaidRouteChannelAsync(session);
+        }
+    }
+
+    private async void SignPaidRoutePayment_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: NativePaidRouteSessionState session })
+        {
+            await ViewModel.SignPaidRoutePaymentAsync(session);
+        }
+    }
+
+    private async void ClosePaidRouteChannel_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: NativePaidRouteSessionState session })
+        {
+            await ViewModel.ClosePaidRouteChannelAsync(session);
+        }
+    }
+
+    private async void PaidExitEnabled_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is CheckBox checkBox)
+        {
+            await ViewModel.SetPaidExitEnabledAsync(checkBox.IsChecked == true);
+        }
+    }
+
+    private async void PublishPaidExitOffer_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.PublishPaidExitOfferAsync();
+    }
+
+    private async void ReceivePaidRoutePayments_Click(object sender, RoutedEventArgs e)
+    {
+        await ViewModel.ReceivePaidRoutePaymentsAsync();
+    }
+
     private async void RelayEnabled_Click(object sender, RoutedEventArgs e)
     {
         if (sender is CheckBox { Tag: NativeRelayState relay } checkBox)

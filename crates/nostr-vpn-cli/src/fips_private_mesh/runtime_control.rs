@@ -6,7 +6,7 @@ impl FipsPrivateMeshRuntime {
         };
         let participants = self.ping_due_participants(now)?;
         let mut sent = 0usize;
-        for participant in participants {
+        for participant in participants.into_iter().take(FIPS_PEER_PING_MAX_PER_TICK) {
             self.note_ping_attempt(&participant, now)?;
             if self.send_control_frame(&participant, &frame).await.is_ok() {
                 sent += 1;
@@ -125,8 +125,9 @@ impl FipsPrivateMeshRuntime {
                 hex::encode(endpoint_node_addr)
             )
         })?;
+        let payload = FipsEndpointPayload::new(data);
         self.endpoint
-            .send_to_peer(identity, data)
+            .send_classified_batch_to_peer(identity, vec![payload])
             .await
             .context("failed to send private packet over FIPS endpoint data")
     }
@@ -307,5 +308,22 @@ impl FipsPrivateMeshRuntime {
             .update_peers(peers)
             .await
             .context("fips: update_peers rejected by endpoint")
+    }
+
+    pub(crate) async fn refresh_peer_paths(
+        &self,
+        endpoint_peers: &[FipsEndpointPeerTransportConfig],
+    ) -> Result<usize> {
+        let peers = endpoint_peers
+            .iter()
+            .map(|peer| {
+                PeerIdentity::from_npub(&peer.npub)
+                    .with_context(|| format!("invalid FIPS endpoint peer npub {}", peer.npub))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.endpoint
+            .refresh_peer_paths(peers)
+            .await
+            .context("fips: refresh_peer_paths rejected by endpoint")
     }
 }

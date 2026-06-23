@@ -84,7 +84,7 @@
             enabled: true,
             network_id: "test".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: vec![peer.to_string()],
+            devices: vec![peer.to_string()],
             admins: vec![own],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -124,7 +124,7 @@
             enabled: true,
             network_id: "test".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: vec![peer.to_string()],
+            devices: vec![peer.to_string()],
             admins: vec![own],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -163,6 +163,7 @@
             rekey_in_progress: false,
             rekey_draining: false,
             current_k_bit: None,
+            last_outbound_route: None,
             direct_probe_pending: true,
             direct_probe_after_ms: Some(98_765),
             direct_probe_retry_count: 2,
@@ -245,7 +246,7 @@
             enabled: true,
             network_id: "test".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: vec![peer.to_string()],
+            devices: vec![peer.to_string()],
             admins: vec![own],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -316,7 +317,7 @@
             enabled: true,
             network_id: "test".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: vec![own.clone()],
+            devices: vec![own.clone()],
             admins: vec![own],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -452,7 +453,7 @@
             enabled: true,
             network_id: "test".to_string(),
             invite_secret: "join-secret".to_string(),
-            participants: vec![peer.to_string()],
+            devices: vec![peer.to_string()],
             admins: vec![own],
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -595,7 +596,7 @@
         assert!(config.node.discovery.lan.enabled);
         assert_eq!(
             config.node.discovery.nostr.policy,
-            NostrDiscoveryPolicy::Open
+            NostrDiscoveryPolicy::ConfiguredOnly
         );
         assert_eq!(
             config.node.discovery.nostr.open_discovery_max_pending,
@@ -725,7 +726,7 @@
         assert_eq!(peer_config.addresses[0].addr, "192.168.50.10:51820");
         assert_eq!(
             peer_config.addresses[0].priority,
-            FIPS_STATIC_PEER_ENDPOINT_PRIORITY
+            FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY
         );
     }
 
@@ -753,6 +754,7 @@
         let mobile = MobileTunnelConfig {
             peers: vec![roster_peer],
             peer_hints,
+            connect_to_non_roster_fips_peers: true,
             ..empty_config()
         };
         let config = fips_endpoint_config("nostr-vpn:test", &mobile);
@@ -768,7 +770,7 @@
         assert_eq!(transit_config.addresses[0].seen_at_ms, Some(1234));
         assert_eq!(
             transit_config.addresses[0].priority,
-            FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY
+            FIPS_PRIVATE_PEER_ENDPOINT_PRIORITY
         );
         assert!(
             transit_config.discovery_fallback_transit,

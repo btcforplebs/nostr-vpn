@@ -1,5 +1,5 @@
 import { statSync } from 'node:fs'
-import { basename } from 'node:path'
+import { basename, join, posix as pathPosix } from 'node:path'
 
 export function parseEnvFile(text) {
   const values = {}
@@ -477,6 +477,47 @@ export function buildReleaseManifestFiles(manifest) {
     // so old installed apps can update into a fixed build.
     ['manifest.json', text],
   ]
+}
+
+export function validateStagedReleaseTree(stageDir, manifest) {
+  if (!manifest || !Array.isArray(manifest.assets)) {
+    throw new Error('Release manifest does not contain an assets array.')
+  }
+
+  for (const asset of manifest.assets) {
+    if (!asset || typeof asset.path !== 'string' || typeof asset.name !== 'string') {
+      throw new Error('Release manifest contains an asset without a name and path.')
+    }
+
+    const normalizedPath = pathPosix.normalize(asset.path)
+    if (
+      normalizedPath !== asset.path ||
+      normalizedPath.startsWith('..') ||
+      normalizedPath.includes('/../') ||
+      normalizedPath.startsWith('/') ||
+      normalizedPath !== `assets/${asset.name}`
+    ) {
+      throw new Error(`Release manifest contains unsafe asset path: ${asset.path}`)
+    }
+
+    const assetPath = join(stageDir, normalizedPath)
+    let stats
+    try {
+      stats = statSync(assetPath)
+    } catch {
+      throw new Error(`Release manifest lists missing asset: ${asset.path}`)
+    }
+
+    if (!stats.isFile()) {
+      throw new Error(`Release manifest asset is not a file: ${asset.path}`)
+    }
+
+    if (Number.isFinite(asset.size) && stats.size !== asset.size) {
+      throw new Error(
+        `Release manifest size mismatch for ${asset.path}: manifest ${asset.size} bytes, staged file ${stats.size} bytes.`,
+      )
+    }
+  }
 }
 
 export function renderReleaseNotes({

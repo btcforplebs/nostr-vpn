@@ -1,7 +1,6 @@
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
-    async fn endpoint_data_runtime_blocking_recv_for_each_avoids_endpoint_and_event_batch_staging()
-    {
+    async fn endpoint_data_runtime_blocking_recv_batch_into_stages_before_event_handling() {
         let keys = Keys::generate();
         let nsec = keys.secret_key().to_bech32().expect("nsec");
         let participant_pubkey = keys.public_key().to_hex();
@@ -31,29 +30,27 @@
 
         let (runtime, packets) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let stop = AtomicBool::new(false);
+            let mut messages = Vec::with_capacity(3);
+            let mut events = Vec::with_capacity(3);
             let mut packets = Vec::with_capacity(3);
 
             let received = runtime
-                .recv_mesh_event_batch_blocking_for_each(2, &stop, |event| {
-                    match event {
-                        FipsPrivateMeshEvent::Packet(packet) => packets.push(packet),
-                        event => panic!("expected packet event, got {event:?}"),
-                    }
-                    true
-                })?
+                .recv_mesh_event_batch_blocking_into(&mut messages, &mut events, 2, &stop)?
                 .expect("batch should contain admitted packets");
             assert_eq!(received, 2);
+            packets.extend(events.drain(..).map(|event| match event {
+                FipsPrivateMeshEvent::Packet(packet) => packet,
+                event => panic!("expected packet event, got {event:?}"),
+            }));
 
             let received = runtime
-                .recv_mesh_event_batch_blocking_for_each(8, &stop, |event| {
-                    match event {
-                        FipsPrivateMeshEvent::Packet(packet) => packets.push(packet),
-                        event => panic!("expected packet event, got {event:?}"),
-                    }
-                    true
-                })?
+                .recv_mesh_event_batch_blocking_into(&mut messages, &mut events, 8, &stop)?
                 .expect("batch should contain admitted packets");
             assert_eq!(received, 1);
+            packets.extend(events.drain(..).map(|event| match event {
+                FipsPrivateMeshEvent::Packet(packet) => packet,
+                event => panic!("expected packet event, got {event:?}"),
+            }));
 
             Ok((runtime, packets))
         })
@@ -64,6 +61,9 @@
         assert_eq!(packets, vec![first, second, third]);
         runtime.shutdown().await.expect("shutdown");
     }
+
+    static LOCAL_UDP_ENDPOINT_TEST_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
 
     fn available_udp_port() -> u16 {
         UdpSocket::bind("127.0.0.1:0")
@@ -89,7 +89,7 @@
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![
+        app.networks[0].devices = vec![
             alice_pubkey.clone(),
             bob_pubkey.clone(),
             carol_pubkey.clone(),
@@ -210,6 +210,7 @@
 
     #[tokio::test]
     async fn two_local_endpoints_exchange_raw_packets_over_fips() {
+        let _local_udp_guard = LOCAL_UDP_ENDPOINT_TEST_LOCK.lock().await;
         let alice_keys = Keys::generate();
         let bob_keys = Keys::generate();
         let alice_nsec = alice_keys.secret_key().to_bech32().expect("alice nsec");
@@ -234,6 +235,7 @@
             }],
             direct_udp_endpoint_config(alice_port, &bob_npub, bob_port, true),
             vec![format!("{alice_ip}/32")],
+            Vec::new(),
         )
         .await
         .expect("alice endpoint should bind");
@@ -247,6 +249,7 @@
             }],
             direct_udp_endpoint_config(bob_port, &alice_npub, alice_port, false),
             vec![format!("{bob_ip}/32")],
+            Vec::new(),
         )
         .await
         .expect("bob endpoint should bind");
@@ -280,6 +283,7 @@
 
     #[tokio::test]
     async fn relayed_control_ping_marks_peer_present_without_direct_link() {
+        let _local_udp_guard = LOCAL_UDP_ENDPOINT_TEST_LOCK.lock().await;
         let alice_keys = Keys::generate();
         let bob_keys = Keys::generate();
         let carol_keys = Keys::generate();
@@ -317,6 +321,7 @@
             ],
             direct_udp_endpoint_config_many(alice_port, &[(&bob_npub, bob_port, true)]),
             vec![format!("{alice_ip}/32")],
+            Vec::new(),
         )
         .await
         .expect("alice endpoint should bind");
@@ -343,6 +348,7 @@
                 ],
             ),
             vec![format!("{bob_ip}/32")],
+            Vec::new(),
         )
         .await
         .expect("bob endpoint should bind");
@@ -363,6 +369,7 @@
             ],
             direct_udp_endpoint_config_many(carol_port, &[(&bob_npub, bob_port, true)]),
             vec![format!("{carol_ip}/32")],
+            Vec::new(),
         )
         .await
         .expect("carol endpoint should bind");
@@ -530,7 +537,7 @@
     }
 
     #[test]
-    fn endpoint_config_advertises_app_owned_endpoint_over_nostr() {
+    fn endpoint_config_uses_stun_when_public_advert_has_private_app_endpoint() {
         let keys = Keys::generate();
         let participant_pubkey = keys.public_key().to_hex();
         let peer = FipsMeshPeerConfig::from_participant_pubkey(
@@ -596,9 +603,38 @@
         assert_eq!(udp.bind_addr.as_deref(), Some("0.0.0.0:51820"));
         assert!(!udp.outbound_only());
         assert!(udp.advertise_on_nostr());
+        assert!(udp.is_public());
         assert!(udp.accept_connections());
-        assert_eq!(udp.external_addr.as_deref(), Some("192.168.50.20:51820"));
+        assert_eq!(udp.external_addr.as_deref(), None);
         assert_eq!(config.peers.len(), 1);
+    }
+
+    #[test]
+    fn endpoint_config_advertises_public_app_endpoint_over_nostr() {
+        let transport = FipsEndpointTransportConfig {
+            listen_port: 51820,
+            advertised_endpoint: "198.51.100.20:51820".to_string(),
+            advertise_public_endpoint: true,
+            nostr_discovery_enabled: true,
+            stun_servers: Vec::new(),
+            nostr_relays: Vec::new(),
+            share_local_candidates: false,
+        };
+
+        let config = fips_endpoint_config(
+            &[],
+            Some(&transport),
+            super::resolve_private_mesh_mtu(None, None, None),
+            NostrDiscoveryPolicy::Open,
+        );
+        let udp = match config.transports.udp {
+            fips_endpoint::TransportInstances::Single(udp) => udp,
+            _ => panic!("expected one UDP transport"),
+        };
+
+        assert!(udp.advertise_on_nostr());
+        assert!(udp.is_public());
+        assert_eq!(udp.external_addr.as_deref(), Some("198.51.100.20:51820"));
     }
 
     #[test]
@@ -614,7 +650,7 @@
         app.nostr.secret_key = alice_nsec;
         app.networks[0].enabled = true;
         app.networks[0].network_id = network_id.to_string();
-        app.networks[0].participants = vec![alice_pubkey.clone(), bob_pubkey];
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey];
         app.node.connected_udp = ConnectedUdpConfig {
             enabled: Some(false),
             fd_reserve: Some(2048),
@@ -644,6 +680,100 @@
 
         assert!(!endpoint_config.node.connected_udp.enabled);
         assert_eq!(endpoint_config.node.connected_udp.fd_reserve, 2048);
+    }
+
+    #[test]
+    fn app_connected_udp_default_uses_platform_fips_default() {
+        let alice_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let alice_nsec = alice_keys.secret_key().to_bech32().expect("alice nsec");
+        let alice_pubkey = alice_keys.public_key().to_hex();
+        let bob_pubkey = bob_keys.public_key().to_hex();
+        let network_id = "connected-udp-default-test";
+
+        let mut app = AppConfig::default();
+        app.nostr.secret_key = alice_nsec;
+        app.networks[0].enabled = true;
+        app.networks[0].network_id = network_id.to_string();
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey];
+
+        let tunnel_config = FipsPrivateTunnelConfig::from_app(
+            &app,
+            network_id,
+            "utun-test",
+            Some(&alice_pubkey),
+            None,
+            &[],
+        )
+        .expect("fips tunnel config");
+
+        let endpoint_config = fips_endpoint_config_with_open_discovery_limit(
+            &tunnel_config.endpoint_peers,
+            None,
+            tunnel_config.mesh_mtu,
+            tunnel_config.nostr_discovery_policy,
+            tunnel_config.open_discovery_max_pending,
+            Some(&tunnel_config.connected_udp),
+        );
+
+        #[cfg(target_os = "macos")]
+        assert!(
+            !endpoint_config.node.connected_udp.enabled,
+            "macOS should inherit FIPS' default-off connected UDP behavior"
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            endpoint_config.node.connected_udp.enabled,
+            "non-macOS should inherit FIPS connected UDP default"
+        );
+    }
+
+    #[test]
+    fn static_peer_endpoint_keeps_connected_udp_fast_path_available() {
+        let alice_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let alice_pubkey = alice_keys.public_key().to_hex();
+        let bob_pubkey = bob_keys.public_key().to_hex();
+        let bob_npub = bob_keys.public_key().to_bech32().expect("bob npub");
+        let network_id = "static-connected-udp-test";
+
+        let mut app = AppConfig::default();
+        app.nostr.secret_key = alice_keys.secret_key().to_bech32().expect("alice nsec");
+        app.networks[0].enabled = true;
+        app.networks[0].network_id = network_id.to_string();
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey];
+        app.fips_peer_endpoints.insert(
+            bob_npub,
+            vec!["192.168.50.30:51820".to_string()],
+        );
+        app.node.connected_udp = ConnectedUdpConfig {
+            enabled: Some(true),
+            fd_reserve: None,
+        };
+
+        let tunnel_config = FipsPrivateTunnelConfig::from_app(
+            &app,
+            network_id,
+            "utun-test",
+            Some(&alice_pubkey),
+            None,
+            &[],
+        )
+        .expect("fips tunnel config");
+
+        let endpoint_config = fips_endpoint_config_with_open_discovery_limit(
+            &tunnel_config.endpoint_peers,
+            None,
+            tunnel_config.mesh_mtu,
+            tunnel_config.nostr_discovery_policy,
+            tunnel_config.open_discovery_max_pending,
+            Some(&tunnel_config.connected_udp),
+        );
+
+        assert!(
+            endpoint_config.node.connected_udp.enabled,
+            "connected UDP stays globally available; FIPS owns per-peer static-path liveness so one static hint does not downgrade the whole endpoint"
+        );
     }
 
     #[test]

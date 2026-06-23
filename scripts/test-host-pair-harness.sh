@@ -146,9 +146,9 @@ EOF
 
 test_pipeline_hard_events() {
   local line got
-  line="[pipe 10s] udp_send_backpressure=12/s encrypt_worker_queue_full=0/s total=0 decrypt_worker_bulk_dropped=2.5/s total=0 decrypt_fallback_backlog_high=1/s endpoint_direct_fmp_receive_dropped=2/s total=2 endpoint_event_backlog_high=1/s endpoint_event_bulk_dropped=5/s transport_channel_backlog_high=1/s transport_bulk_dropped=3/s udp_send_bulk_dropped=0/s total=4 nvpn_tun_to_mesh_bulk_dropped=0/s total=0"
+  line="[pipe 10s] udp_send_backpressure=12/s encrypt_worker_queue_full=0/s total=0 decrypt_worker_bulk_dropped=2.5/s total=0 decrypt_fallback_backlog_high=1/s fmp_aead_completion_aead_failed=1/s total=2 fsp_aead_completion_aead_failed=0.5/s total=1 fsp_aead_completion_epoch_mismatch=0.4/s total=1 endpoint_bulk_fast_path_prepare_failed=1/s total=3 endpoint_bulk_fast_path_stage_full=0/s total=0 endpoint_bulk_fast_path_feedback_full=0.5/s total=4 endpoint_event_backlog_high=1/s endpoint_event_bulk_dropped=5/s transport_channel_backlog_high=1/s transport_bulk_dropped=3/s udp_send_bulk_dropped=0/s total=4 nvpn_tun_to_mesh_bulk_dropped=2/s total=8 nvpn_tun_to_mesh_bulk_dropped_batches=1/s total=4 nvpn_tun_to_mesh_bulk_dropped_channel_full=2/s total=8"
   got="$(pipeline_hard_events "$line")"
-  assert_eq "$got" "decrypt_worker_bulk_dropped,endpoint_direct_fmp_receive_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped,udp_send_bulk_dropped" "hard pipeline events"
+  assert_eq "$got" "decrypt_worker_bulk_dropped,fmp_aead_completion_aead_failed,fsp_aead_completion_aead_failed,fsp_aead_completion_epoch_mismatch,endpoint_bulk_fast_path_prepare_failed,endpoint_bulk_fast_path_feedback_full,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped,udp_send_bulk_dropped,nvpn_tun_to_mesh_bulk_dropped,nvpn_tun_to_mesh_bulk_dropped_batches,nvpn_tun_to_mesh_bulk_dropped_channel_full" "hard pipeline events"
 
   line="[pipe 10s] encrypt_worker_queue_full=0/s total=0 decrypt_worker_bulk_dropped=0/s total=0"
   got="$(pipeline_hard_events "$line")"
@@ -197,7 +197,7 @@ test_pipeline_priority_hard_event_policy() {
 
 test_pipeline_queue_wait_parser() {
   local line got
-  line="[pipe 10s] endpoint_command_wait=10/s avg=125.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_priority_command_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_bulk_command_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms endpoint_event_wait=10/s avg=250.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_worker_queue_wait=10/s avg=250.0us p50<=262.1us p95<=1.0ms p99<=2.1ms max<=4.2ms allmax=4.2ms fmp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms fmp_worker_bulk_queue_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_linux_bulk_container_ready_wait=8/s avg=400.0us p50<=524.3us p95<=4.2ms p99<=8.4ms max<=16.8ms allmax=16.8ms decrypt_worker_queue_wait=10/s avg=150.0us p50<=262.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms decrypt_fallback_wait=10/s avg=200.0us p50<=262.1us p95<=1.0ms p99<=3.1ms max<=4.2ms allmax=4.2ms decrypt_authenticated_session_priority_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms decrypt_fsp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_queue_wait=10/s avg=125.0us p50<=131.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms transport_channel_wait=10/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_rx_loop_wait=10/s avg=50.0us p50<=65.5us p95<=131.1us p99<=262.1us max<=524.3us allmax=524.3us"
+  line="[pipe 10s] endpoint_command_wait=10/s avg=125.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_priority_command_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_bulk_command_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms endpoint_event_wait=10/s avg=250.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_worker_queue_wait=10/s avg=250.0us p50<=262.1us p95<=1.0ms p99<=2.1ms max<=4.2ms allmax=4.2ms fmp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms fmp_worker_bulk_queue_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_linux_bulk_container_ready_wait=8/s avg=400.0us p50<=524.3us p95<=4.2ms p99<=8.4ms max<=16.8ms allmax=16.8ms decrypt_worker_queue_wait=10/s avg=150.0us p50<=262.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms decrypt_fallback_wait=10/s avg=200.0us p50<=262.1us p95<=1.0ms p99<=3.1ms max<=4.2ms allmax=4.2ms fsp_aead_worker_open_queue_wait=10/s avg=400.0us p50<=524.3us p95<=1.0ms p99<=2.1ms max<=4.2ms allmax=4.2ms fsp_aead_worker_open_completion_wait=10/s avg=700.0us p50<=1.0ms p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms decrypt_authenticated_session_priority_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms decrypt_fsp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_queue_wait=10/s avg=125.0us p50<=131.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms transport_channel_wait=10/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_rx_loop_wait=10/s avg=50.0us p50<=65.5us p95<=131.1us p99<=262.1us max<=524.3us allmax=524.3us"
 
   got="$(pipeline_queue_wait_json "$line" | jq -r '.endpoint_command_wait.p95_ms')"
   assert_eq "$got" "0.2621" "endpoint command wait p95 ms"
@@ -231,6 +231,12 @@ test_pipeline_queue_wait_parser() {
 
   got="$(pipeline_queue_wait_json "$line" | jq -r '.decrypt_fallback_wait.p99_ms')"
   assert_eq "$got" "3.1" "FIPS decrypt fallback wait p99 ms"
+
+  got="$(pipeline_queue_wait_json "$line" | jq -r '.fsp_aead_worker_open_queue_wait.p95_ms')"
+  assert_eq "$got" "1.0" "FSP AEAD worker-open queue wait p95 ms"
+
+  got="$(pipeline_queue_wait_json "$line" | jq -r '.fsp_aead_worker_open_completion_wait.p99_ms')"
+  assert_eq "$got" "4.2" "FSP AEAD worker-open completion wait p99 ms"
 
   got="$(pipeline_queue_wait_json "$line" | jq -r '.decrypt_authenticated_session_priority_wait.p99_ms')"
   assert_eq "$got" "0.5243" "authenticated session priority wait p99 ms"
@@ -280,6 +286,10 @@ test_pipeline_top_queue_wait_summary() {
   line_a="[pipe 10s] fmp_worker_bulk_queue_wait=20/s avg=1.0ms p50<=1.0ms p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_linux_bulk_container_all_slots_wait=20/s avg=2.0ms p50<=2.1ms p95<=4.2ms p99<=16.8ms max<=33.6ms allmax=33.6ms"
   got="$(pipeline_queue_wait_top_summary "$line_a" "")"
   assert_eq "$got" "fmp_linux_bulk_container_all_slots_wait:rate_per_sec=20,p95_ms=4.2,p99_ms=16.8,max_ms=33.6,allmax_ms=33.6" "top queue wait includes Linux bulk container waits"
+
+  line_a="[pipe 10s] fsp_aead_worker_open_completion_wait=5/s avg=7.0ms p50<=8.4ms p95<=16.8ms p99<=33.6ms max<=67.1ms allmax=67.1ms"
+  got="$(pipeline_queue_wait_top_summary "$line_a" "")"
+  assert_eq "$got" "fsp_aead_worker_open_completion_wait:rate_per_sec=5,p95_ms=16.8,p99_ms=33.6,max_ms=67.1,allmax_ms=67.1" "top queue wait includes FSP worker-open waits"
 }
 
 test_pipeline_priority_queue_wait_policy() {
@@ -391,6 +401,8 @@ test_fips_liveness_policy() {
     MAX_FIPS_CONTROL_LAST_SEEN_AGE_SECS=10
     MAX_FIPS_LAST_SEEN_FUTURE_SKEW_SECS=5
     assert_fips_control_liveness_fresh "fixture" 100 105
+    assert_fips_control_liveness_fresh "fixture" "" 105
+    assert_fips_control_liveness_fresh "fixture" null 105
   )
 
   assert_fails_with \
@@ -403,6 +415,8 @@ test_fips_liveness_policy() {
     MAX_FIPS_DATA_LAST_SEEN_AGE_SECS=10
     MAX_FIPS_LAST_SEEN_FUTURE_SKEW_SECS=5
     assert_fips_data_liveness_fresh "fixture" 100 105
+    assert_fips_data_liveness_fresh "fixture" "" 105
+    assert_fips_data_liveness_fresh "fixture" null 105
   )
 
   assert_fails_with \
@@ -413,11 +427,12 @@ test_fips_liveness_policy() {
 }
 
 test_direct_path_policy() {
-  local direct_status fallback_status unreachable_status stale_srtt_status
+  local direct_status fallback_status unreachable_status stale_srtt_status missing_srtt_age_status
   direct_status="$(peer_status_fixture true "198.51.100.10:51820")"
   fallback_status="$(peer_status_fixture true "203.0.113.99:51820")"
   unreachable_status="$(peer_status_fixture false "198.51.100.10:51820")"
   stale_srtt_status="$(peer_status_fixture true "198.51.100.10:51820" 42 120001)"
+  missing_srtt_age_status="$(peer_status_fixture true "198.51.100.10:51820" 42 null)"
 
   (
     ALLOW_NON_DIRECT=0
@@ -434,6 +449,12 @@ test_direct_path_policy() {
   (
     ALLOW_NON_DIRECT=1
     assert_peer_path "$fallback_status" "peer-a" "198.51.100.10" "local"
+  )
+
+  (
+    ALLOW_NON_DIRECT=0
+    MAX_SRTT_AGE_MS=120000
+    assert_peer_path "$missing_srtt_age_status" "peer-a" "198.51.100.10" "local"
   )
 
   assert_fails_with \

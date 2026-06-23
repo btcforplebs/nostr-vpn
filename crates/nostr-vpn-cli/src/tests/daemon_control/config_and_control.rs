@@ -12,7 +12,7 @@ fn apply_config_file_writes_target_config() {
     let mut config = AppConfig::generated();
     activate_first_network(&mut config);
     config.node_name = "windows-box".to_string();
-    config.networks[0].participants = vec!["ab".repeat(32)];
+    config.networks[0].devices = vec!["ab".repeat(32)];
     config.save(&source).expect("save source config");
 
     apply_config_file(&source, &target).expect("apply config should succeed");

@@ -1,3 +1,4 @@
+use crate::join_requests::MeshJoinRequest;
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, PublicKey, Tag, Timestamp};
@@ -5,14 +6,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-use crate::join_requests::MeshJoinRequest;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkRoster {
     #[serde(default)]
     pub network_name: String,
-    pub participants: Vec<String>,
+    #[serde(default, alias = "participants")]
+    pub devices: Vec<String>,
     #[serde(default)]
     pub admins: Vec<String>,
     #[serde(default)]
@@ -28,16 +27,13 @@ pub struct NetworkRoster {
     #[serde(default)]
     pub dns_strict: bool,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedRoster {
     pub event: Event,
 }
-
 const SIGNED_ROSTER_KIND: u16 = 30_388;
 const SIGNED_ROSTER_VERSION: &str = "1";
 const SIGNED_ROSTER_APP: &str = "nostr-vpn/shared-roster";
-
 impl SignedRoster {
     pub fn sign(network_id: impl Into<String>, roster: NetworkRoster, keys: &Keys) -> Result<Self> {
         let event = EventBuilder::new(Kind::Custom(SIGNED_ROSTER_KIND), "")
@@ -113,11 +109,11 @@ fn signed_roster_tags(network_id: &str, roster: &NetworkRoster) -> Result<Vec<Ta
         tags.push(roster_tag(&["name", roster.network_name.trim()])?);
     }
 
-    let mut participants = normalize_roster_pubkeys(&roster.participants, "participant")?;
-    participants.sort();
-    participants.dedup();
-    for participant in participants {
-        tags.push(roster_tag(&["member", &participant])?);
+    let mut devices = normalize_roster_pubkeys(&roster.devices, "device")?;
+    devices.sort();
+    devices.dedup();
+    for device in devices {
+        tags.push(roster_tag(&["member", &device])?);
     }
 
     let mut admins = normalize_roster_pubkeys(&roster.admins, "admin")?;
@@ -164,7 +160,7 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
     let mut version_ok = false;
     let mut network_id = None;
     let mut network_name = String::new();
-    let mut participants = Vec::new();
+    let mut devices = Vec::new();
     let mut admins = Vec::new();
     let mut aliases = HashMap::new();
     let mut dns_servers = Vec::new();
@@ -190,7 +186,7 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
             }
             "member" => {
                 if let Some(value) = parts.get(1) {
-                    participants.push(normalize_roster_pubkey(value, "participant")?);
+                    devices.push(normalize_roster_pubkey(value, "device")?);
                 }
             }
             "admin" => {
@@ -229,8 +225,8 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
         return Err(anyhow!("signed roster event has unsupported version"));
     }
 
-    participants.sort();
-    participants.dedup();
+    devices.sort();
+    devices.dedup();
     admins.sort();
     admins.dedup();
     dns_servers.dedup();
@@ -242,7 +238,7 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
         network_id,
         NetworkRoster {
             network_name,
-            participants,
+            devices,
             admins,
             aliases,
             signed_at,
@@ -255,7 +251,6 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
 fn roster_tag(parts: &[&str]) -> Result<Tag> {
     Tag::parse(parts.iter().copied()).map_err(|error| anyhow!("invalid roster event tag: {error}"))
 }
-
 fn normalize_roster_pubkeys(values: &[String], role: &str) -> Result<Vec<String>> {
     values
         .iter()
@@ -268,17 +263,28 @@ fn normalize_roster_pubkey(value: &str, role: &str) -> Result<String> {
         .map(|pubkey| pubkey.to_hex())
         .map_err(|error| anyhow!("invalid roster {role} pubkey: {error}"))
 }
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerCapabilities {
     #[serde(default)]
     pub advertised_routes: Vec<String>,
     #[serde(default)]
     pub endpoint_hints: Vec<PeerEndpointHint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dataplane_features: Vec<String>,
     #[serde(default)]
     pub signed_at: u64,
 }
 
+pub fn local_fips_dataplane_features() -> Vec<String> {
+    Vec::new()
+}
+impl PeerCapabilities {
+    pub fn supports_dataplane_feature(&self, feature: &str) -> bool {
+        self.dataplane_features
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(feature))
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerEndpointHint {
     #[serde(default = "default_peer_endpoint_hint_transport")]
@@ -624,7 +630,7 @@ pub fn signed_roster_control_frame(signed_roster: SignedRoster) -> FipsControlFr
     let network_id = signed_roster.network_id().unwrap_or_default();
     let roster = signed_roster.roster().unwrap_or_else(|_| NetworkRoster {
         network_name: String::new(),
-        participants: Vec::new(),
+        devices: Vec::new(),
         admins: Vec::new(),
         aliases: HashMap::new(),
         signed_at: signed_roster.signed_at(),
@@ -650,7 +656,7 @@ pub fn peer_capabilities_control_frame(
 
 pub fn network_roster_from_shared(
     network_name: String,
-    participants: Vec<String>,
+    devices: Vec<String>,
     admins: Vec<String>,
     aliases: HashMap<String, String>,
     signed_at: u64,
@@ -659,7 +665,7 @@ pub fn network_roster_from_shared(
 ) -> NetworkRoster {
     NetworkRoster {
         network_name,
-        participants,
+        devices,
         admins,
         aliases,
         signed_at,
@@ -706,6 +712,7 @@ mod tests {
             capabilities: PeerCapabilities {
                 advertised_routes: vec!["0.0.0.0/0".to_string(), "::/0".to_string()],
                 endpoint_hints: vec![PeerEndpointHint::udp("192.168.50.22:51820")],
+                dataplane_features: vec!["future_feature".to_string()],
                 signed_at: 99,
             },
         };
@@ -725,7 +732,24 @@ mod tests {
 
         assert_eq!(caps.advertised_routes, vec!["0.0.0.0/0".to_string()]);
         assert!(caps.endpoint_hints.is_empty());
+        assert!(caps.dataplane_features.is_empty());
         assert_eq!(caps.signed_at, 99);
+    }
+
+    #[test]
+    fn peer_capabilities_match_dataplane_features_case_insensitively() {
+        let caps = PeerCapabilities {
+            dataplane_features: vec!["FUTURE_FEATURE".to_string()],
+            ..PeerCapabilities::default()
+        };
+
+        assert!(caps.supports_dataplane_feature("future_feature"));
+        assert!(!caps.supports_dataplane_feature("unknown_feature"));
+    }
+
+    #[test]
+    fn local_dataplane_features_are_empty_without_protocol_extensions() {
+        assert!(local_fips_dataplane_features().is_empty());
     }
 
     #[test]
@@ -738,7 +762,7 @@ mod tests {
         aliases.insert(alice.clone(), "alice".to_string());
         let roster = NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![bob.clone(), alice.clone()],
+            devices: vec![bob.clone(), alice.clone()],
             admins: vec![admin.public_key().to_hex()],
             aliases,
             signed_at: 123,
@@ -767,7 +791,7 @@ mod tests {
         aliases.insert(member.clone(), "phone".to_string());
         let roster = NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![member.clone()],
+            devices: vec![member.clone()],
             admins: vec![admin.public_key().to_hex()],
             aliases,
             signed_at: 123,
@@ -841,7 +865,7 @@ mod tests {
         let member = Keys::generate().public_key().to_hex();
         let roster = NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![member],
+            devices: vec![member],
             admins: vec![admin.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at: 123,
@@ -927,7 +951,7 @@ mod tests {
     fn large_control_frame_fragments_under_direct_limit() {
         let roster = NetworkRoster {
             network_name: "Network 1".to_string(),
-            participants: (0..12).map(|value| format!("{value:064x}")).collect(),
+            devices: (0..12).map(|value| format!("{value:064x}")).collect(),
             admins: vec!["f".repeat(64)],
             aliases: (0..12)
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))
@@ -958,7 +982,7 @@ mod tests {
     fn fragment_buffer_decodes_fragmented_frame() {
         let roster = NetworkRoster {
             network_name: "Network 1".to_string(),
-            participants: (0..12).map(|value| format!("{value:064x}")).collect(),
+            devices: (0..12).map(|value| format!("{value:064x}")).collect(),
             admins: vec!["f".repeat(64)],
             aliases: (0..12)
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))
@@ -990,7 +1014,7 @@ mod tests {
     fn fragment_buffer_keys_sources_by_bytes() {
         let roster = NetworkRoster {
             network_name: "Network 1".to_string(),
-            participants: (0..12).map(|value| format!("{value:064x}")).collect(),
+            devices: (0..12).map(|value| format!("{value:064x}")).collect(),
             admins: vec!["f".repeat(64)],
             aliases: (0..12)
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))

@@ -236,7 +236,7 @@ fn pending_join_self_alias_uses_self_until_roster_names_device() {
     assert_eq!(alias, "self");
     assert_eq!(config.self_magic_dns_name().as_deref(), Some("self.nvpn"));
 
-    config.networks[0].participants = vec![own_hex];
+    config.networks[0].devices = vec![own_hex];
     config.ensure_defaults();
 
     assert_eq!(
@@ -318,8 +318,39 @@ fn save_serializes_user_facing_pubkeys_as_npubs() {
 
     assert!(raw.contains(&format!("public_key = \"{own_npub}\"")));
     assert!(raw.contains(&format!("exit_node = \"{peer_npub}\"")));
-    assert!(raw.contains(&format!("participants = [\"{peer_npub}\"]")));
+    assert!(raw.contains(&format!("devices = [\"{peer_npub}\"]")));
+    assert!(!raw.contains("participants ="));
     assert!(!raw.contains(&peer_hex));
+}
+
+#[test]
+fn legacy_participants_key_loads_and_saves_as_devices() {
+    let peer = Keys::generate();
+    let peer_hex = peer.public_key().to_hex();
+    let peer_npub = peer.public_key().to_bech32().expect("peer npub");
+    let raw = format!(
+        r#"
+[[networks]]
+id = "network-1"
+name = "Network 1"
+enabled = true
+network_id = "nostr-vpn"
+participants = ["{peer_npub}"]
+"#
+    );
+
+    let mut config: AppConfig = toml::from_str(&raw).expect("parse legacy participants config");
+    config.ensure_defaults();
+
+    assert_eq!(config.device_pubkeys_hex(), vec![peer_hex]);
+
+    let path = unique_temp_config_path("legacy-participants-save-devices");
+    config.save(&path).expect("save migrated config");
+    let saved = fs::read_to_string(&path).expect("read migrated config");
+    let _ = fs::remove_file(&path);
+
+    assert!(saved.contains(&format!("devices = [\"{peer_npub}\"]")));
+    assert!(!saved.contains("participants ="));
 }
 
 #[test]

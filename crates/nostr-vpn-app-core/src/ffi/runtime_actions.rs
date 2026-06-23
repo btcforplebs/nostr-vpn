@@ -226,6 +226,56 @@ impl NativeAppRuntime {
                     .set_fips_peer_endpoint_hints(&npub, &endpoint_hints)?;
                 self.save_reload_and_refresh()
             }
+            NativeAppAction::SetPaidRouteMarketFilter {
+                query,
+                country_code,
+                network_class,
+                mint_url,
+                require_ipv4,
+                require_ipv6,
+                sort,
+            } => {
+                self.paid_route_market_filter = NativePaidRouteMarketFilterState {
+                    query: query.trim().to_string(),
+                    country_code: country_code.trim().to_ascii_uppercase(),
+                    network_class: network_class.trim().to_ascii_lowercase(),
+                    mint_url: mint_url.trim().to_string(),
+                    require_ipv4,
+                    require_ipv6,
+                    sort: if sort.trim().is_empty() {
+                        "quality".to_string()
+                    } else {
+                        sort.trim().to_ascii_lowercase()
+                    },
+                };
+                Ok(())
+            }
+            NativeAppAction::AddPaidRouteWalletMint { .. }
+            | NativeAppAction::RemovePaidRouteWalletMint { .. }
+            | NativeAppAction::SetPaidRouteDefaultMint { .. }
+            | NativeAppAction::RefreshPaidRouteWallet { .. }
+            | NativeAppAction::TopUpPaidRouteWallet { .. }
+            | NativeAppAction::ReceivePaidRouteWalletToken { .. }
+            | NativeAppAction::SendPaidRouteWalletToken { .. }
+            | NativeAppAction::WithdrawPaidRouteWalletLightning { .. }
+            | NativeAppAction::BuyPaidRouteOffer { .. }
+            | NativeAppAction::SelectPaidRouteSession { .. }
+            | NativeAppAction::ProbePaidRouteSession { .. }
+            | NativeAppAction::RecordPaidRouteProbe { .. }
+            | NativeAppAction::CreatePaidRoutePaymentEnvelope { .. }
+            | NativeAppAction::OpenPaidRouteChannelFromWallet { .. }
+            | NativeAppAction::SignPaidRoutePaymentEnvelopeFromWallet { .. }
+            | NativeAppAction::ClosePaidRouteChannelFromWallet { .. }
+            | NativeAppAction::ApplyPaidRoutePaymentEnvelope { .. }
+            | NativeAppAction::SendPaidRoutePaymentEnvelope { .. }
+            | NativeAppAction::StreamPaidRoutePayments { .. }
+            | NativeAppAction::ReceivePaidRoutePayments { .. }
+            | NativeAppAction::CollectPaidExitChannel { .. }
+            | NativeAppAction::CollectDuePaidExitChannels
+            | NativeAppAction::PublishPaidExitOffer
+            | NativeAppAction::DiscoverPaidRouteOffers { .. } => {
+                Err(anyhow!("paid route native actions need the CLI handler port"))
+            }
             NativeAppAction::UpdateSettings { patch } => {
                 self.apply_settings_patch(patch)?;
                 self.save_reload_and_refresh()
@@ -326,7 +376,7 @@ impl NativeAppRuntime {
             return false;
         };
         network
-            .participants
+            .devices
             .iter()
             .chain(network.admins.iter())
             .any(|member| member == &own_pubkey)
@@ -582,9 +632,9 @@ impl NativeAppRuntime {
             normalize_runtime_network_id(&network.network_id) == signal_network_id
                 && (network.admins.iter().any(|admin| admin == &sender_hex)
                     || network
-                        .participants
+                        .devices
                         .iter()
-                        .any(|participant| participant == &sender_hex))
+                        .any(|device| device == &sender_hex))
         })
     }
 }

@@ -11,7 +11,7 @@ exclude = ["linux"]
 resolver = "2"
 
 [workspace.package]
-version = "4.0.77"
+version = "4.0.87"
 edition = "2024"
 license = "MIT"
 authors = ["Nostr VPN contributors"]
@@ -24,17 +24,19 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 boringtun = "0.7"
+cashu-service = { version = "0.2.56", default-features = false }
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
-fips-endpoint = "0.3.35"
-fips-core = "0.3.60"
+fips-endpoint = "0.3.52"
+fips-core = "0.3.77"
 futures = "0.3"
-hashtree-updater = "0.2.67"
+hashtree-updater = "0.2.72"
 hex = "0.4"
 hickory-proto = "0.26"
 hostname = "0.4"
 netdev = "0.43"
 rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -47,7 +49,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uniffi = "0.29"
 uuid = { version = "1", features = ["v4", "serde"] }
-nostr-sdk = { version = "0.44", default-features = false, features = ["nip44"] }
+nostr-sdk = { version = "0.44", default-features = false, features = ["nip44", "nip59"] }
 nostr-vpn-core = { version = "4.0.40", path = "crates/nostr-vpn-core" }
 nostr-vpn-wintun = { version = "4.0.40", path = "crates/nostr-vpn-wintun" }
 

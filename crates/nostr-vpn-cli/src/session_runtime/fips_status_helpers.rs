@@ -127,6 +127,7 @@ struct RecentPeerRefresh<'a> {
 #[cfg(feature = "embedded-fips")]
 struct FipsRestartContext<'a> {
     app: &'a nostr_vpn_core::config::AppConfig,
+    config_path: &'a std::path::Path,
     network_id: &'a str,
     fallback_iface: &'a str,
     own_pubkey: Option<&'a str>,
@@ -138,7 +139,7 @@ struct FipsRestartContext<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FipsLinkEventRefresh {
     None,
-    RestartEndpoint,
+    RefreshPaths,
 }
 
 #[cfg(feature = "embedded-fips")]
@@ -156,10 +157,17 @@ pub(crate) fn fips_link_event_refresh(
     resumed_after_sleep: bool,
 ) -> FipsLinkEventRefresh {
     if network_changed || endpoint_changed || underlay_repaired || resumed_after_sleep {
-        FipsLinkEventRefresh::RestartEndpoint
+        FipsLinkEventRefresh::RefreshPaths
     } else {
         FipsLinkEventRefresh::None
     }
+}
+
+#[cfg(feature = "embedded-fips")]
+pub(crate) fn fips_link_event_should_seed_recent_peers(
+    refresh: FipsLinkEventRefresh,
+) -> bool {
+    matches!(refresh, FipsLinkEventRefresh::None)
 }
 
 #[cfg(feature = "embedded-fips")]
@@ -182,23 +190,28 @@ pub(crate) fn fips_stale_participant_restart_due(
 fn fips_pending_roster_links_detected(
     peer_statuses: &[MeshPeerStatus],
     relay_statuses: &[DaemonRelayState],
+    roster_pubkeys: &HashSet<String>,
     expected_peers: usize,
 ) -> bool {
     if expected_peers == 0
+        || roster_pubkeys.is_empty()
         || !relay_statuses
             .iter()
             .any(|relay| relay.status.eq_ignore_ascii_case("connected"))
     {
         return false;
     }
-    let connected = peer_statuses.iter().filter(|status| status.connected).count();
-    if connected > 0 {
+    if peer_statuses
+        .iter()
+        .any(|status| roster_pubkeys.contains(&status.pubkey) && status.connected)
+    {
         return false;
     }
     let pending = peer_statuses
         .iter()
         .filter(|status| {
-            !status.connected
+            roster_pubkeys.contains(&status.pubkey)
+                && !status.connected
                 && status.last_seen_at.is_none()
                 && status.error.as_deref() == Some("fips link pending")
         })
@@ -210,11 +223,17 @@ fn fips_pending_roster_links_detected(
 pub(crate) fn fips_pending_roster_restart_due(
     peer_statuses: &[MeshPeerStatus],
     relay_statuses: &[DaemonRelayState],
+    roster_pubkeys: &HashSet<String>,
     expected_peers: usize,
     state: &mut FipsPendingRosterRestartState,
     now: u64,
 ) -> bool {
-    if !fips_pending_roster_links_detected(peer_statuses, relay_statuses, expected_peers) {
+    if !fips_pending_roster_links_detected(
+        peer_statuses,
+        relay_statuses,
+        roster_pubkeys,
+        expected_peers,
+    ) {
         state.pending_since = None;
         return false;
     }
@@ -256,6 +275,38 @@ fn endpoint_peer_signature(
                 addresses,
             )
         })
+        .collect()
+}
+
+#[cfg(feature = "embedded-fips")]
+fn endpoint_peers_for_participant_refresh(
+    endpoint_peers: &[crate::fips_private_mesh::FipsEndpointPeerTransportConfig],
+    participants: &[String],
+) -> Vec<crate::fips_private_mesh::FipsEndpointPeerTransportConfig> {
+    if participants.is_empty() {
+        return Vec::new();
+    }
+
+    let participant_keys = participants
+        .iter()
+        .filter_map(|participant| {
+            nostr_sdk::prelude::PublicKey::parse(participant.trim())
+                .ok()
+                .map(|key| *key.as_bytes())
+        })
+        .collect::<std::collections::HashSet<_>>();
+    if participant_keys.is_empty() {
+        return Vec::new();
+    }
+
+    endpoint_peers
+        .iter()
+        .filter(|peer| {
+            nostr_sdk::prelude::PublicKey::parse(peer.npub.trim())
+                .ok()
+                .is_some_and(|key| participant_keys.contains(key.as_bytes()))
+        })
+        .cloned()
         .collect()
 }
 
@@ -332,7 +383,7 @@ async fn update_recent_peers_from_runtime(
 }
 
 #[cfg(feature = "embedded-fips")]
-async fn restart_fips_tunnel_runtime_after_link_event(
+async fn refresh_fips_tunnel_runtime_after_link_event(
     runtime: &mut Option<crate::fips_private_mesh::FipsPrivateTunnelRuntime>,
     context: FipsRestartContext<'_>,
     reason: &str,
@@ -341,12 +392,13 @@ async fn restart_fips_tunnel_runtime_after_link_event(
         .as_ref()
         .map(|runtime| runtime.iface().to_string())
         .unwrap_or_else(|| context.fallback_iface.to_string());
-    let live_peer_endpoints = runtime
-        .as_ref()
-        .map(|runtime| runtime.peer_endpoint_hints())
-        .unwrap_or_default();
+    // Link events mean the old runtime's learned endpoint hints may belong to
+    // a previous underlay/NAT mapping. Keep the endpoint bound and make fips
+    // re-earn direct paths from configured hints and fresh discovery.
+    let live_peer_endpoints = Vec::new();
     let config = fips_tunnel_config_from_app(
         context.app,
+        context.config_path,
         context.network_id,
         config_iface,
         context.own_pubkey,
@@ -354,15 +406,17 @@ async fn restart_fips_tunnel_runtime_after_link_event(
         &live_peer_endpoints,
     )?;
     let endpoint_peer_signature = endpoint_peer_signature(&config.endpoint_peers);
-    if let Some(existing) = runtime.take() {
-        existing.stop().await?;
+    if let Some(existing) = runtime.as_mut() {
+        existing.apply_config(config).await?;
+        eprintln!(
+            "daemon: refreshed FIPS private mesh paths on {} after {reason}",
+            existing.iface()
+        );
+    } else {
+        let started = crate::fips_private_mesh::FipsPrivateTunnelRuntime::start(config).await?;
+        eprintln!("daemon: FIPS private mesh on {} after {reason}", started.iface());
+        *runtime = Some(started);
     }
-    let restarted = crate::fips_private_mesh::FipsPrivateTunnelRuntime::start(config).await?;
-    eprintln!(
-        "daemon: restarted FIPS private mesh on {} after {reason}",
-        restarted.iface()
-    );
-    *runtime = Some(restarted);
     *context.last_endpoint_peer_signature = endpoint_peer_signature;
     Ok(())
 }
@@ -376,7 +430,7 @@ async fn restart_fips_tunnel_runtime_after_stale_participants(
 ) -> Result<bool> {
     let stale_participants = runtime
         .as_ref()
-        .map(|runtime| runtime.stale_participants_with_connected_links(now))
+        .map(|runtime| runtime.stale_participants_needing_path_refresh(now))
         .unwrap_or_default();
     if stale_participants.is_empty() {
         return Ok(false);
@@ -385,16 +439,72 @@ async fn restart_fips_tunnel_runtime_after_stale_participants(
         return Ok(false);
     }
     eprintln!(
-        "daemon: restarting FIPS private mesh after {} participant(s) stopped responding while endpoint links stayed connected",
+        "daemon: refreshing FIPS peer paths after {} participant(s) stopped responding while endpoint paths need refresh",
         stale_participants.len()
     );
-    restart_fips_tunnel_runtime_after_link_event(
-        runtime,
+    refresh_fips_tunnel_runtime_peer_paths(runtime, context, &stale_participants).await
+}
+
+#[cfg(feature = "embedded-fips")]
+async fn refresh_fips_tunnel_runtime_peer_paths(
+    runtime: &mut Option<crate::fips_private_mesh::FipsPrivateTunnelRuntime>,
+    context: FipsRestartContext<'_>,
+    stale_participants: &[String],
+) -> Result<bool> {
+    let Some(current) = runtime.as_ref() else {
+        return Ok(false);
+    };
+    refresh_fips_tunnel_runtime_peer_paths_in_place(
+        current,
         context,
-        "stale FIPS participant traffic",
+        stale_participants,
+        "stale participant liveness",
     )
     .await?;
-    Ok(true)
+    Ok(false)
+}
+
+#[cfg(feature = "embedded-fips")]
+async fn refresh_fips_tunnel_runtime_peer_paths_in_place(
+    current: &crate::fips_private_mesh::FipsPrivateTunnelRuntime,
+    context: FipsRestartContext<'_>,
+    participants: &[String],
+    reason: &str,
+) -> Result<()> {
+    let live_peer_endpoints = current.peer_endpoint_hints();
+    let config = fips_tunnel_config_from_app(
+        context.app,
+        context.config_path,
+        context.network_id,
+        current.iface().to_string(),
+        context.own_pubkey,
+        context.recent_peers,
+        &live_peer_endpoints,
+    )?;
+    let endpoint_peer_signature = endpoint_peer_signature(&config.endpoint_peers);
+    let outcome = current.update_peers(&config.endpoint_peers).await?;
+    let refresh_endpoint_peers =
+        endpoint_peers_for_participant_refresh(&config.endpoint_peers, participants);
+    if refresh_endpoint_peers.is_empty() {
+        eprintln!(
+            "daemon: no matching FIPS endpoint peer paths for {} participant(s) after {reason}",
+            participants.len()
+        );
+        *context.last_endpoint_peer_signature = endpoint_peer_signature;
+        return Ok(());
+    }
+    let refreshed = current.refresh_peer_paths(&refresh_endpoint_peers).await?;
+    *context.last_endpoint_peer_signature = endpoint_peer_signature;
+    eprintln!(
+        "daemon: refreshed FIPS endpoint peer paths in place after {reason} (targets={} added={} updated={} unchanged={} removed={} direct_refreshes={})",
+        refresh_endpoint_peers.len(),
+        outcome.added,
+        outcome.updated,
+        outcome.unchanged,
+        outcome.removed,
+        refreshed
+    );
+    Ok(())
 }
 
 #[cfg(feature = "embedded-fips")]
@@ -425,6 +535,7 @@ async fn restart_fips_tunnel_runtime_after_pending_roster_links(
     if !fips_pending_roster_restart_due(
         &peer_statuses,
         &relay_statuses,
+        &fips_roster_pubkeys(context.app, context.own_pubkey),
         expected_peers,
         state,
         now,
@@ -432,15 +543,23 @@ async fn restart_fips_tunnel_runtime_after_pending_roster_links(
         return Ok(false);
     }
     eprintln!(
-        "daemon: restarting FIPS private mesh after all {expected_peers} roster link(s) stayed pending with relay discovery connected"
+        "daemon: refreshing FIPS private mesh paths after all {expected_peers} roster link(s) stayed pending with relay discovery connected"
     );
-    restart_fips_tunnel_runtime_after_link_event(
+    refresh_fips_tunnel_runtime_after_link_event(
         runtime,
         context,
         "all FIPS roster links pending",
     )
     .await?;
     Ok(true)
+}
+
+#[cfg(feature = "embedded-fips")]
+fn fips_roster_pubkeys(app: &AppConfig, own_pubkey: Option<&str>) -> HashSet<String> {
+    app.participant_pubkeys_hex()
+        .into_iter()
+        .filter(|participant| Some(participant.as_str()) != own_pubkey)
+        .collect()
 }
 
 #[cfg(any(target_os = "macos", test))]

@@ -23,6 +23,13 @@ assert_eq() {
   [[ "$got" == "$want" ]] || fail "$label: got '$got', want '$want'"
 }
 
+assert_contains() {
+  local got="$1"
+  local want="$2"
+  local label="$3"
+  [[ "$got" == *"$want"* ]] || fail "$label: missing '$want' in '$got'"
+}
+
 assert_file_contains() {
   local file="$1"
   local pattern="$2"
@@ -159,6 +166,25 @@ test_counter_progress_policy() {
     "counter no-progress" \
     "fixture counter did not advance" \
     bash -c 'source "$1"; assert_counter_advanced 10 10 "fixture"' \
+    bash "$SOAK_SCRIPT"
+}
+
+test_srtt_progress_policy() {
+  local high_count=0
+
+  record_srtt_progress fixture 12 high_count
+  assert_eq "$high_count" "0" "good SRTT clears high counter"
+
+  record_srtt_progress fixture 2500 high_count
+  assert_eq "$high_count" "1" "single high SRTT is tolerated"
+
+  record_srtt_progress fixture 9 high_count
+  assert_eq "$high_count" "0" "good SRTT clears prior high sample"
+
+  assert_fails_with \
+    "consecutive high SRTT" \
+    "fixture FIPS SRTT stayed above 1000ms" \
+    bash -c 'source "$1"; high_count=2; record_srtt_progress fixture 2500 high_count' \
     bash "$SOAK_SCRIPT"
 }
 
@@ -340,6 +366,21 @@ test_docker_cpu_stress_wiring() {
   assert_file_contains "$SOAK_SCRIPT" "docker_bench_stop_cpu_stress" "CPU stress cleanup hook"
 }
 
+test_docker_dataplane_profile_reaches_daemon_env() {
+  local got
+  (
+    NVPN_DOCKER_DATAPLANE_PROFILE=linux-vnet-lan
+    NVPN_DOCKER_PLACEMENT_PROFILE=worker-open
+    EXTRA_ENV="FIPS_DECRYPT_WORKERS=2"
+    got="$(daemon_env)"
+    assert_contains "$got" "NVPN_FIPS_LINUX_TUN_VNET=1" "daemon env linux vnet"
+    assert_contains "$got" "NVPN_MESH_UNDERLAY_UDP_MTU=1472" "daemon env LAN MTU"
+    assert_contains "$got" "FIPS_DECRYPT_WORKERS=2" "daemon env preserves soak extra env"
+    assert_contains "$got" "NVPN_PIPELINE_TRACE=1" "daemon env pipeline trace"
+    assert_contains "$got" "NVPN_PIPELINE_INTERVAL_SECS=15" "daemon env pipeline interval"
+  )
+}
+
 test_sample_json_uses_file_inputs() {
   assert_file_contains "$SOAK_SCRIPT" "write_sample_json_file" "sample JSON temp-file helper"
   assert_file_contains "$SOAK_SCRIPT" "jq -Rsc" "pipeline parser stdin input"
@@ -352,7 +393,7 @@ test_sample_json_uses_file_inputs() {
 
 test_pipeline_queue_wait_parser() {
   local sample got
-  sample="$(pipeline_lines_to_json '[pipe 10s] endpoint_command_wait=10/s avg=125.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_priority_command_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_bulk_command_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms endpoint_event_wait=10/s avg=250.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_worker_queue_wait=10/s avg=250.0us p50<=262.1us p95<=1.0ms p99<=2.1ms max<=4.2ms allmax=4.2ms fmp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms fmp_worker_bulk_queue_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_linux_bulk_container_ready_wait=8/s avg=400.0us p50<=524.3us p95<=4.2ms p99<=8.4ms max<=16.8ms allmax=16.8ms decrypt_worker_queue_wait=10/s avg=150.0us p50<=262.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms decrypt_fallback_wait=10/s avg=200.0us p50<=262.1us p95<=1.0ms p99<=3.1ms max<=4.2ms allmax=4.2ms decrypt_authenticated_session_priority_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms decrypt_fsp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_queue_wait=10/s avg=125.0us p50<=131.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms transport_channel_wait=10/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_rx_loop_wait=10/s avg=50.0us p50<=65.5us p95<=131.1us p99<=262.1us max<=524.3us allmax=524.3us udp_send_connected=10/s')"
+  sample="$(pipeline_lines_to_json '[pipe 10s] endpoint_command_wait=10/s avg=125.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_priority_command_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms endpoint_bulk_command_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms endpoint_event_wait=10/s avg=250.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_worker_queue_wait=10/s avg=250.0us p50<=262.1us p95<=1.0ms p99<=2.1ms max<=4.2ms allmax=4.2ms fmp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms fmp_worker_bulk_queue_wait=8/s avg=300.0us p50<=262.1us p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms fmp_linux_bulk_container_ready_wait=8/s avg=400.0us p50<=524.3us p95<=4.2ms p99<=8.4ms max<=16.8ms allmax=16.8ms decrypt_worker_queue_wait=10/s avg=150.0us p50<=262.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms decrypt_fallback_wait=10/s avg=200.0us p50<=262.1us p95<=1.0ms p99<=3.1ms max<=4.2ms allmax=4.2ms fsp_aead_worker_open_queue_wait=10/s avg=400.0us p50<=524.3us p95<=1.0ms p99<=2.1ms max<=4.2ms allmax=4.2ms fsp_aead_worker_open_completion_wait=10/s avg=700.0us p50<=1.0ms p95<=2.1ms p99<=4.2ms max<=8.4ms allmax=8.4ms decrypt_authenticated_session_priority_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms decrypt_fsp_worker_priority_queue_wait=2/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_queue_wait=10/s avg=125.0us p50<=131.1us p95<=524.3us p99<=1.0ms max<=2.1ms allmax=2.1ms transport_channel_wait=10/s avg=100.0us p50<=131.1us p95<=262.1us p99<=524.3us max<=1.0ms allmax=1.0ms transport_rx_loop_wait=10/s avg=50.0us p50<=65.5us p95<=131.1us p99<=262.1us max<=524.3us allmax=524.3us udp_send_connected=10/s')"
 
   got="$(jq -r '.line_count' <<<"$sample")"
   assert_eq "$got" "1" "pipeline line count"
@@ -368,6 +409,12 @@ test_pipeline_queue_wait_parser() {
 
   got="$(jq -r '.queue_wait_ms.endpoint_event_wait.latest.p99_ms' <<<"$sample")"
   assert_eq "$got" "4.2" "endpoint event wait p99 ms"
+
+  got="$(jq -r '.queue_wait_ms.fsp_aead_worker_open_queue_wait.latest.p95_ms' <<<"$sample")"
+  assert_eq "$got" "1.0" "FSP AEAD worker-open queue wait p95 ms"
+
+  got="$(jq -r '.queue_wait_ms.fsp_aead_worker_open_completion_wait.latest.p99_ms' <<<"$sample")"
+  assert_eq "$got" "4.2" "FSP AEAD worker-open completion wait p99 ms"
 
   got="$(jq -r '.queue_wait_ms.fmp_worker_queue_wait.latest.p95_ms' <<<"$sample")"
   assert_eq "$got" "1.0" "FIPS worker queue wait p95 ms"
@@ -424,11 +471,59 @@ test_pipeline_raw_selectors() {
     "[pipe 10s] fmp_worker_batch_packets=48000/s udp_send_connected=48000/s fmp_worker_queue_wait=48000/s avg=40.0us p50<=65.5us p95<=131.1us p99<=262.1us max<=1.0ms allmax=1.0ms" \
     "pipeline load raw selects highest packet mover rate"
 
+  got="$(jq -r '.placement_raw' <<<"$sample")"
+  assert_eq \
+    "$got" \
+    "[pipe 10s] fmp_worker_batch_packets=48000/s udp_send_connected=48000/s fmp_worker_queue_wait=48000/s avg=40.0us p50<=65.5us p95<=131.1us p99<=262.1us max<=1.0ms allmax=1.0ms" \
+    "pipeline placement raw falls back to load-shaped line when no FSP bulk receive counters exist"
+
   got="$(jq -r '.peak_wait_raw' <<<"$sample")"
   assert_eq \
     "$got" \
     "[pipe 10s] fmp_worker_batch_packets=12/s udp_send_connected=12/s fmp_worker_queue_wait=12/s avg=2.0ms p50<=2.1ms p95<=4.2ms p99<=8.4ms max<=16.8ms allmax=16.8ms" \
     "pipeline peak wait raw selects worst wait line"
+}
+
+test_pipeline_fsp_owner_placement_guard() {
+  local sample ack_sample got
+  sample="$(
+    pipeline_lines_to_json $'[pipe 10s] fmp_worker_batch_packets=90000/s decrypt_fsp_owner_same=0/s decrypt_fsp_owner_mismatch=13000/s decrypt_fsp_path_local=0/s decrypt_fsp_path_handoff=13000/s decrypt_fsp_path_helper=0/s decrypt_fsp_path_worker_open=0/s decrypt_worker_batch_priority_packets=26000/s decrypt_worker_batch_bulk_packets=0/s\n[pipe 10s] fmp_worker_batch_packets=48000/s decrypt_fsp_owner_same=0/s decrypt_fsp_owner_mismatch=48000/s decrypt_fsp_path_local=0/s decrypt_fsp_path_handoff=0/s decrypt_fsp_path_helper=0/s decrypt_fsp_path_worker_open=48000/s decrypt_worker_batch_bulk_packets=48000/s'
+  )"
+  ack_sample="$(
+    pipeline_lines_to_json '[pipe 10s] fmp_worker_batch_packets=90000/s decrypt_fsp_owner_same=0/s decrypt_fsp_owner_mismatch=13000/s decrypt_fsp_path_local=0/s decrypt_fsp_path_handoff=13000/s decrypt_fsp_path_helper=0/s decrypt_fsp_path_worker_open=0/s decrypt_worker_batch_priority_packets=26000/s decrypt_worker_batch_bulk_packets=0/s'
+  )"
+
+  got="$(pipeline_fsp_owner_placement_line "$sample")"
+  assert_eq \
+    "$got" \
+    "[pipe 10s] fmp_worker_batch_packets=48000/s decrypt_fsp_owner_same=0/s decrypt_fsp_owner_mismatch=48000/s decrypt_fsp_path_local=0/s decrypt_fsp_path_handoff=0/s decrypt_fsp_path_helper=0/s decrypt_fsp_path_worker_open=48000/s decrypt_worker_batch_bulk_packets=48000/s" \
+    "FSP owner placement line prefers bulk receive over sender load"
+
+  (
+    EXPECT_FSP_OWNER_PLACEMENT=worker-open
+    assert_expected_fsp_owner_placement_sample "fixture" "$sample"
+  )
+  (
+    EXPECT_FSP_OWNER_PLACEMENT=mismatch
+    assert_expected_fsp_owner_placement_sample "fixture" "$sample"
+  )
+
+  assert_fails_with \
+    "placement mismatch" \
+    "expected fixture FSP owner placement handoff, got kind=worker-open summary=owner=mismatch,path=worker-open" \
+    bash -c 'source "$1"; EXPECT_FSP_OWNER_PLACEMENT=handoff; assert_expected_fsp_owner_placement_sample "fixture" "$2"' \
+    bash "$SOAK_SCRIPT" "$sample"
+
+  (
+    EXPECT_FSP_OWNER_PLACEMENT=worker-open
+    assert_expected_fsp_owner_placement_any_sample "node-a FIPS" "$sample" "node-b FIPS" "$ack_sample"
+  )
+
+  assert_fails_with \
+    "placement validation" \
+    "unknown expected FSP owner placement" \
+    bash -c 'source "$1"; EXPECT_FSP_OWNER_PLACEMENT=bogus; validate_expected_fsp_owner_placement' \
+    bash "$SOAK_SCRIPT"
 }
 
 test_pipeline_failure_artifact() {
@@ -542,12 +637,12 @@ test_pipeline_priority_queue_wait_guard() {
 
 test_pipeline_hard_event_policy() {
   local sample got
-  sample="$(pipeline_lines_to_json '[pipe 10s] connected_udp_activation_failed=1/s connected_udp_peer_cap_skipped=4/s connected_udp_fd_budget_skipped=7/s encrypt_worker_queue_full=0/s total=0 encrypt_worker_bulk_queue_full=2/s total=2 decrypt_worker_bulk_dropped=2/s decrypt_fallback_backlog_high=1/s decrypt_fallback_priority_gated=1/s decrypt_fsp_bulk_queue_full_fallback=1/s decrypt_authenticated_session_bulk_dropped=1/s endpoint_direct_fmp_receive_dropped=2/s total=2 endpoint_direct_fmp_receive_dropped_packets=12/s total=12 endpoint_event_backlog_high=1/s endpoint_event_bulk_dropped=5/s transport_channel_backlog_high=1/s transport_bulk_dropped=3/s udp_send_bulk_dropped=0/s total=0 nvpn_tun_to_mesh_bulk_dropped=0/s total=0')"
+  sample="$(pipeline_lines_to_json '[pipe 10s] connected_udp_activation_failed=1/s connected_udp_peer_cap_skipped=4/s connected_udp_fd_budget_skipped=7/s connected_udp_kernel_dropped=6/s total=6 encrypt_worker_queue_full=0/s total=0 encrypt_worker_bulk_queue_full=2/s total=2 decrypt_worker_bulk_dropped=2/s decrypt_fallback_backlog_high=1/s decrypt_fallback_priority_gated=1/s decrypt_fsp_bulk_queue_full_fallback=1/s decrypt_fsp_helper_window_fallback=1/s decrypt_fsp_open_worker_window_fallback=1/s decrypt_fsp_helper_queue_full_fallback=1/s decrypt_fsp_helper_completion_backlog_fallback=1/s decrypt_fsp_open_worker_completion_backlog_fallback=1/s fmp_aead_completion_aead_failed=1/s total=3 fsp_aead_completion_aead_failed=1/s total=2 fsp_aead_completion_epoch_mismatch=1/s total=4 decrypt_authenticated_session_bulk_dropped=1/s endpoint_event_backlog_high=1/s endpoint_event_bulk_dropped=5/s transport_channel_backlog_high=1/s transport_bulk_dropped=3/s udp_send_bulk_dropped=0/s total=0 nvpn_tun_to_mesh_bulk_dropped=2/s total=20 nvpn_tun_to_mesh_bulk_dropped_batches=1/s total=10 nvpn_tun_to_mesh_bulk_dropped_packet_cap=2/s total=20 nvpn_tun_to_mesh_bulk_dropped_channel_full=0/s total=0')"
 
   got="$(pipeline_hard_events "$sample")"
   assert_eq \
     "$got" \
-    "connected_udp_activation_failed,decrypt_worker_bulk_dropped,endpoint_direct_fmp_receive_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped" \
+    "connected_udp_activation_failed,connected_udp_kernel_dropped,decrypt_worker_bulk_dropped,decrypt_fsp_helper_window_fallback,decrypt_fsp_open_worker_window_fallback,decrypt_fsp_helper_queue_full_fallback,decrypt_fsp_helper_completion_backlog_fallback,decrypt_fsp_open_worker_completion_backlog_fallback,fmp_aead_completion_aead_failed,fsp_aead_completion_aead_failed,fsp_aead_completion_epoch_mismatch,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped,nvpn_tun_to_mesh_bulk_dropped,nvpn_tun_to_mesh_bulk_dropped_batches,nvpn_tun_to_mesh_bulk_dropped_packet_cap" \
     "hard pipeline events"
 
   got="$(jq -r '.seen.decrypt_fallback_backlog_high' <<<"$sample")"
@@ -568,6 +663,15 @@ test_pipeline_hard_event_policy() {
   got="$(jq -r '.seen.decrypt_authenticated_session_bulk_dropped' <<<"$sample")"
   assert_eq "$got" "true" "authenticated session bulk dropped seen flag"
 
+  got="$(jq -r '.max_totals.fmp_aead_completion_aead_failed' <<<"$sample")"
+  assert_eq "$got" "3" "FMP AEAD completion failed total"
+
+  got="$(jq -r '.seen.fsp_aead_completion_aead_failed' <<<"$sample")"
+  assert_eq "$got" "true" "FSP AEAD completion failed seen flag"
+
+  got="$(jq -r '.max_totals.fsp_aead_completion_epoch_mismatch' <<<"$sample")"
+  assert_eq "$got" "4" "FSP AEAD completion epoch mismatch total"
+
   got="$(jq -r '.rates_per_sec.transport_channel_backlog_high' <<<"$sample")"
   assert_eq "$got" "1" "transport channel backlog high rate"
 
@@ -577,12 +681,9 @@ test_pipeline_hard_event_policy() {
   got="$(jq -r '.rates_per_sec.endpoint_event_bulk_dropped' <<<"$sample")"
   assert_eq "$got" "5" "endpoint event bulk dropped rate"
 
-  got="$(jq -r '.rates_per_sec.endpoint_direct_fmp_receive_dropped_packets' <<<"$sample")"
-  assert_eq "$got" "12" "direct-FMP receive dropped packets rate"
-
   assert_fails_with \
     "hard event policy" \
-    "fixture observed hard pipeline events: connected_udp_activation_failed,decrypt_worker_bulk_dropped,endpoint_direct_fmp_receive_dropped,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped" \
+    "fixture observed hard pipeline events: connected_udp_activation_failed,connected_udp_kernel_dropped,decrypt_worker_bulk_dropped,decrypt_fsp_helper_window_fallback,decrypt_fsp_open_worker_window_fallback,decrypt_fsp_helper_queue_full_fallback,decrypt_fsp_helper_completion_backlog_fallback,decrypt_fsp_open_worker_completion_backlog_fallback,fmp_aead_completion_aead_failed,fsp_aead_completion_aead_failed,fsp_aead_completion_epoch_mismatch,endpoint_event_backlog_high,endpoint_event_bulk_dropped,transport_channel_backlog_high,transport_bulk_dropped,nvpn_tun_to_mesh_bulk_dropped,nvpn_tun_to_mesh_bulk_dropped_batches,nvpn_tun_to_mesh_bulk_dropped_packet_cap" \
     bash -c 'source "$1"; ALLOW_QUEUE_EVENTS=0; assert_pipeline_ok "fixture" "$2"' \
     bash "$SOAK_SCRIPT" "$sample"
 
@@ -619,6 +720,7 @@ test_ping_parser_percentiles
 test_ping_thresholds
 test_tail_drift_thresholds
 test_counter_progress_policy
+test_srtt_progress_policy
 test_iperf_timeout_configuration
 test_iperf_probe_uses_container_timeout
 test_iperf_probe_timeout_is_reported
@@ -627,9 +729,11 @@ test_rekey_stuck_policy
 test_direct_probe_overdue_policy
 test_cpu_policy
 test_docker_cpu_stress_wiring
+test_docker_dataplane_profile_reaches_daemon_env
 test_sample_json_uses_file_inputs
 test_pipeline_queue_wait_parser
 test_pipeline_raw_selectors
+test_pipeline_fsp_owner_placement_guard
 test_pipeline_failure_artifact
 test_pipeline_freshness_policy
 test_pipeline_queue_wait_thresholds

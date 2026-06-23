@@ -410,7 +410,7 @@ internal fun GeneralSettingsCard(state: AppState, dispatch: (JSONObject) -> Unit
                     dispatch(NativeActions.updateSettings("exitNodeLeakProtection" to enabled))
                 },
             )
-            Text("Block internet if exit node disconnects")
+            Text("Block internet if selected source disconnects")
         }
     }
 }

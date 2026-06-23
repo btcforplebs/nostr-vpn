@@ -67,7 +67,7 @@ impl AppConfig {
     pub fn join_requests_enabled(&self) -> bool {
         self.networks
             .iter()
-            .any(|network| network.listen_for_join_requests)
+            .any(|network| network.enabled && network.listen_for_join_requests)
     }
 
     pub fn record_inbound_join_request(
@@ -98,7 +98,7 @@ impl AppConfig {
         }
 
         if network
-            .participants
+            .devices
             .iter()
             .any(|participant| participant == &requester)
         {
@@ -181,24 +181,24 @@ impl AppConfig {
         self.set_network_mesh_id(&active_network_entry_id, network_id)
     }
 
-    pub fn add_participant_to_network(
+    pub fn add_device_to_network(
         &mut self,
         network_id: &str,
-        participant: &str,
+        device: &str,
     ) -> Result<String> {
-        let normalized = normalize_nostr_pubkey(participant)?;
+        let normalized = normalize_nostr_pubkey(device)?;
         {
             let network = self
                 .network_by_id_mut(network_id)
                 .ok_or_else(|| anyhow::anyhow!("network not found"))?;
             if !network
-                .participants
+                .devices
                 .iter()
                 .any(|configured| configured == &normalized)
             {
-                network.participants.push(normalized.clone());
-                network.participants.sort();
-                network.participants.dedup();
+                network.devices.push(normalized.clone());
+                network.devices.sort();
+                network.devices.dedup();
             }
         }
 
@@ -208,12 +208,20 @@ impl AppConfig {
         Ok(normalized)
     }
 
-    pub fn remove_participant_from_network(
+    pub fn add_participant_to_network(
         &mut self,
         network_id: &str,
         participant: &str,
+    ) -> Result<String> {
+        self.add_device_to_network(network_id, participant)
+    }
+
+    pub fn remove_device_from_network(
+        &mut self,
+        network_id: &str,
+        device: &str,
     ) -> Result<()> {
-        let normalized = normalize_nostr_pubkey(participant)?;
+        let normalized = normalize_nostr_pubkey(device)?;
         {
             let network = self
                 .network_by_id_mut(network_id)
@@ -223,7 +231,7 @@ impl AppConfig {
                 return Err(anyhow::anyhow!("cannot remove the last admin"));
             }
             network
-                .participants
+                .devices
                 .retain(|configured| configured != &normalized);
             network
                 .admins
@@ -237,6 +245,14 @@ impl AppConfig {
         self.normalize_selected_exit_node();
         self.normalize_peer_aliases();
         Ok(())
+    }
+
+    pub fn remove_participant_from_network(
+        &mut self,
+        network_id: &str,
+        participant: &str,
+    ) -> Result<()> {
+        self.remove_device_from_network(network_id, participant)
     }
 
     pub fn add_admin_to_network(&mut self, network_id: &str, admin: &str) -> Result<String> {
@@ -306,7 +322,7 @@ impl AppConfig {
             .network_by_id(network_id)
             .ok_or_else(|| anyhow::anyhow!("network not found"))?;
         let mut members = network
-            .participants
+            .devices
             .iter()
             .chain(network.admins.iter())
             .filter_map(|member| normalize_nostr_pubkey(member).ok())
@@ -331,7 +347,7 @@ impl AppConfig {
             return Vec::new();
         };
         let mut members = network
-            .participants
+            .devices
             .iter()
             .chain(network.admins.iter())
             .filter_map(|member| normalize_nostr_pubkey(member).ok())

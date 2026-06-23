@@ -33,6 +33,9 @@ DURATION="${DURATION:-10}"
 IPERF_INTERVAL_SECS="${NVPN_DOCKER_IPERF_INTERVAL_SECS:-0}"
 IPERF_TIMEOUT_SECS="${NVPN_DOCKER_IPERF_TIMEOUT_SECS:-$((DURATION + 30))}"
 NVPN_DOCKER_IPERF_TIMEOUT_SECS="$IPERF_TIMEOUT_SECS"
+IPERF_SOCKET_BUFFER="${NVPN_DOCKER_IPERF_SOCKET_BUFFER:-}"
+UDP1000_PARALLEL="${NVPN_DOCKER_UDP1000_PARALLEL:-}"
+UDP1000_BANDWIDTH="${NVPN_DOCKER_UDP1000_BANDWIDTH:-1G}"
 SKIP_BUILD="${NVPN_DOCKER_SKIP_BUILD:-0}"
 OUTPUT_DIR="${NVPN_BORINGTUN_DOCKER_OUTPUT_DIR:-$ROOT_DIR/artifacts/boringtun-docker/$(date -u +%Y%m%dT%H%M%SZ)}"
 RAW_DIR="$OUTPUT_DIR/raw"
@@ -42,6 +45,28 @@ BOB_TUN="10.44.0.2"
 ALICE_BRIDGE="10.203.0.10"
 BOB_BRIDGE="10.203.0.11"
 WG_PORT="51820"
+
+if [[ -n "$IPERF_SOCKET_BUFFER" && ! "$IPERF_SOCKET_BUFFER" =~ ^[0-9]+([KMG])?$ ]]; then
+  echo "perf-boringtun: invalid NVPN_DOCKER_IPERF_SOCKET_BUFFER=$IPERF_SOCKET_BUFFER (expected bytes or K/M/G suffix)" >&2
+  exit 2
+fi
+if [[ -n "$UDP1000_PARALLEL" && ! "$UDP1000_PARALLEL" =~ ^[1-9][0-9]*$ ]]; then
+  echo "perf-boringtun: invalid NVPN_DOCKER_UDP1000_PARALLEL=$UDP1000_PARALLEL (expected positive integer)" >&2
+  exit 2
+fi
+if [[ ! "$UDP1000_BANDWIDTH" =~ ^[0-9]+([KMG])?$ ]]; then
+  echo "perf-boringtun: invalid NVPN_DOCKER_UDP1000_BANDWIDTH=$UDP1000_BANDWIDTH (expected bits/sec or K/M/G suffix)" >&2
+  exit 2
+fi
+UDP1000_PER_STREAM_BANDWIDTH="$(docker_bench_udp1000_per_stream_bandwidth)"
+IPERF_SOCKET_BUFFER_ARGS=()
+if [[ -n "$IPERF_SOCKET_BUFFER" ]]; then
+  IPERF_SOCKET_BUFFER_ARGS=(-w "$IPERF_SOCKET_BUFFER")
+fi
+UDP1000_PARALLEL_ARGS=()
+if [[ -n "$UDP1000_PARALLEL" && "$UDP1000_PARALLEL" != "1" ]]; then
+  UDP1000_PARALLEL_ARGS=(-P "$UDP1000_PARALLEL")
+fi
 
 if [[ -n "${SINGLE_PASS:-}" ]]; then
   THREADS_LIST=("${WG_THREADS:-4}")
@@ -138,26 +163,77 @@ run_test_json() {
   local label="$1"
   local json_path="$2"
   shift 2
+  local is_udp=0
+  [[ "${1:-}" == "-u" ]] && is_udp=1
   printf '## %s\n' "$label"
   local err_path="$json_path.stderr"
   local iperf_cmd=(
     timeout --kill-after=5s "$IPERF_TIMEOUT_SECS"
     iperf3 -c "$BOB_TUN" -t "$DURATION" -i "$IPERF_INTERVAL_SECS" -f m
-    --connect-timeout 3000 --json "$@"
+    --connect-timeout 3000 --json
   )
+  if (( is_udp )) && [[ -n "$IPERF_SOCKET_BUFFER" ]]; then
+    iperf_cmd+=("${IPERF_SOCKET_BUFFER_ARGS[@]}")
+  fi
+  iperf_cmd+=("$@")
   if ! "${COMPOSE[@]}" exec -T node-a "${iperf_cmd[@]}" >"$json_path" 2>"$err_path"; then
+    cat "$err_path" >&2
+    cat "$json_path" >&2
+    return 1
+  fi
+  if jq -e 'has("error")' "$json_path" >/dev/null; then
     cat "$err_path" >&2
     cat "$json_path" >&2
     return 1
   fi
   rm -f "$err_path"
   printf '  receiver: %s Mbps' "$(docker_bench_iperf_mbps "$json_path")"
-  if [[ "${1:-}" == "-u" ]]; then
+  if (( is_udp )); then
     printf ', loss: %s%%' "$(docker_bench_iperf_loss_pct "$json_path")"
   else
     printf ', retrans: %s' "$(docker_bench_iperf_retrans "$json_path")"
   fi
   printf '\n\n'
+}
+
+write_iperf_socket_buffer_summary() {
+  local threads="$1"
+  local output_path="$RAW_DIR/boringtun-threads-$threads-iperf-socket-buffers.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    phase protocol streams requested_sock_bufsize actual_recv_buf actual_send_buf \
+    >"$output_path"
+  local phase json_path prefix
+  prefix="$RAW_DIR/boringtun-threads-$threads"
+  for phase in tcp-single tcp-4 tcp-8 udp-200 udp-1000; do
+    json_path="$prefix-$phase"
+    case "$phase" in
+      udp-200) json_path="$prefix-udp-200m.json" ;;
+      udp-1000) json_path="$prefix-udp-1000m.json" ;;
+      *) json_path="$prefix-$phase.json" ;;
+    esac
+    [[ -s "$json_path" ]] || continue
+    jq -r --arg phase "$phase" '
+      [
+        $phase,
+        (.start.test_start.protocol // ""),
+        (.start.test_start.num_streams // ""),
+        (.start.sock_bufsize // ""),
+        (.start.rcvbuf_actual // ""),
+        (.start.sndbuf_actual // "")
+      ] | @tsv
+    ' "$json_path" >>"$output_path" 2>/dev/null || true
+  done
+}
+
+write_udp_receiver_limits() {
+  local threads="$1"
+  local service prefix
+  for service in node-a node-b; do
+    prefix="$RAW_DIR/boringtun-threads-$threads-$service"
+    "${COMPOSE[@]}" exec -T "$service" sh -lc \
+      'for key in net.core.rmem_default net.core.rmem_max net.core.wmem_default net.core.wmem_max net.ipv4.udp_mem net.ipv4.udp_rmem_min net.ipv4.udp_wmem_min; do printf "%s\t" "$key"; sysctl -n "$key" 2>/dev/null || printf "unavailable\n"; done' \
+      >"$prefix-udp-receiver-limits.tsv" 2>/dev/null || true
+  done
 }
 
 run_ping_summary() {
@@ -197,7 +273,13 @@ run_boringtun_pass() {
   run_test_json "TCP 4 streams" "$tcp_4_json" -P 4
   run_test_json "TCP 8 streams" "$tcp_8_json" -P 8
   run_test_json "UDP 200 Mbit target" "$udp_200_json" -u -b 200M
-  run_test_json "UDP 1000 Mbit target" "$udp_1000_json" -u -b 1G
+  if [[ ${#UDP1000_PARALLEL_ARGS[@]} -gt 0 ]]; then
+    run_test_json "UDP 1000 Mbit target" "$udp_1000_json" -u -b "$UDP1000_PER_STREAM_BANDWIDTH" "${UDP1000_PARALLEL_ARGS[@]}"
+  else
+    run_test_json "UDP 1000 Mbit target" "$udp_1000_json" -u -b "$UDP1000_BANDWIDTH"
+  fi
+  write_iperf_socket_buffer_summary "$threads"
+  write_udp_receiver_limits "$threads"
   run_ping_summary "$ping_output"
   docker_bench_append_summary_row \
     boringtun \

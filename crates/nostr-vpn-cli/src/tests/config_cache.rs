@@ -25,7 +25,7 @@ fn participants_override_targets_the_active_network() {
             enabled: false,
             network_id: "mesh-home".to_string(),
             invite_secret: "home-secret".to_string(),
-            participants: vec![alice.clone()],
+            devices: vec![alice.clone()],
             admins: Vec::new(),
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -42,7 +42,7 @@ fn participants_override_targets_the_active_network() {
             enabled: true,
             network_id: "mesh-work".to_string(),
             invite_secret: "work-secret".to_string(),
-            participants: vec![bob],
+            devices: vec![bob],
             admins: Vec::new(),
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -60,17 +60,11 @@ fn participants_override_targets_the_active_network() {
 
     assert_eq!(config.participant_pubkeys_hex(), vec![carol.clone()]);
     assert_eq!(
-        config
-            .network_by_id("home")
-            .expect("home network")
-            .participants,
+        config.network_by_id("home").expect("home network").devices,
         vec![alice]
     );
     assert_eq!(
-        config
-            .network_by_id("work")
-            .expect("work network")
-            .participants,
+        config.network_by_id("work").expect("work network").devices,
         vec![carol]
     );
 }
@@ -99,7 +93,7 @@ fn pending_join_request_recipients_use_selected_admin_and_skip_self() {
     let backup_admin = Keys::generate().public_key().to_hex();
 
     config.networks[0].enabled = true;
-    config.networks[0].participants.clear();
+    config.networks[0].devices.clear();
     config.networks[0].admins = vec![own_pubkey, admin.clone(), backup_admin];
     config.networks[0].outbound_join_request = Some(PendingOutboundJoinRequest {
         recipient: admin.clone(),
@@ -120,7 +114,7 @@ fn pending_join_request_recipients_fall_back_to_admins_without_self() {
     let stale_recipient = Keys::generate().public_key().to_hex();
 
     config.networks[0].enabled = true;
-    config.networks[0].participants.clear();
+    config.networks[0].devices.clear();
     config.networks[0].admins = vec![own_pubkey, admin.clone()];
     config.networks[0].outbound_join_request = Some(PendingOutboundJoinRequest {
         recipient: stale_recipient,
@@ -143,7 +137,7 @@ fn participants_override_marks_shared_roster_updated_for_admin_owned_network() {
     apply_participants_override(&mut config, vec![member.clone()]).expect("apply override");
 
     let active_network = config.active_network();
-    assert_eq!(active_network.participants, vec![member]);
+    assert_eq!(active_network.devices, vec![member]);
     assert!(active_network.shared_roster_updated_at > 0);
     assert_eq!(active_network.shared_roster_signed_by, own_pubkey);
 }
@@ -203,7 +197,7 @@ fn forwarded_signed_roster_can_be_selected_for_peer_sync() {
 
     alice.networks[0].name = "Home".to_string();
     alice.networks[0].network_id = "mesh".to_string();
-    alice.networks[0].participants = vec![bob_pubkey.clone(), carol_pubkey.clone()];
+    alice.networks[0].devices = vec![bob_pubkey.clone(), carol_pubkey.clone()];
     alice.networks[0].admins = vec![alice_pubkey.clone(), bob_pubkey.clone()];
     alice.networks[0].shared_roster_updated_at = 1_726_000_000;
     alice.networks[0].shared_roster_signed_by = alice_pubkey.clone();
@@ -220,7 +214,7 @@ fn forwarded_signed_roster_can_be_selected_for_peer_sync() {
 
     bob.networks[0].name = "Home".to_string();
     bob.networks[0].network_id = "mesh".to_string();
-    bob.networks[0].participants = vec![alice_pubkey.clone(), carol_pubkey];
+    bob.networks[0].devices = vec![alice_pubkey.clone(), carol_pubkey];
     bob.networks[0].admins = vec![alice_pubkey, bob_pubkey];
     bob.networks[0].shared_roster_updated_at = signed.signed_at();
     bob.networks[0].shared_roster_signed_by = signed.signer_pubkey_hex().expect("signer");
@@ -289,7 +283,7 @@ fn inbound_fips_roster_accepts_admin_signed_event() {
         "mesh",
         NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![member_hex.clone()],
+            devices: vec![member_hex.clone()],
             admins: vec![admin_hex.clone()],
             aliases: HashMap::new(),
             signed_at: 1_726_000_000,
@@ -306,7 +300,7 @@ fn inbound_fips_roster_accepts_admin_signed_event() {
 
     assert_eq!(result.as_deref(), Some("Home"));
     assert_eq!(config.networks[0].name, "Home");
-    assert_eq!(config.networks[0].participants, vec![member_hex]);
+    assert_eq!(config.networks[0].devices, vec![member_hex]);
     assert_eq!(config.networks[0].admins, vec![admin_hex.clone()]);
     assert_eq!(config.networks[0].shared_roster_updated_at, 1_726_000_000);
     assert_eq!(config.networks[0].shared_roster_signed_by, admin_hex);
@@ -337,7 +331,7 @@ fn inbound_fips_roster_rejects_tampered_signed_event() {
         "mesh",
         NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![member_hex],
+            devices: vec![member_hex],
             admins: vec![admin_hex],
             aliases: HashMap::new(),
             signed_at: 1_726_000_000,
@@ -393,7 +387,7 @@ fn inbound_fips_roster_ignores_signed_event_from_non_admin_author() {
         "mesh",
         NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![member_hex],
+            devices: vec![member_hex],
             admins: vec![known_admin_hex, outsider_hex],
             aliases: HashMap::new(),
             signed_at: 1_726_000_000,
@@ -428,7 +422,7 @@ fn active_network_invite_code_roundtrips_current_roster() {
     let inviter_npub = nostr_vpn_core::invite::to_npub(&inviter_hex);
     config.networks[0].name = "Work".to_string();
     config.networks[0].network_id = "8d4f34f5425bc50e".to_string();
-    config.networks[0].participants = vec![participant_hex];
+    config.networks[0].devices = vec![participant_hex];
     config.networks[0].admins = vec![inviter_hex.clone(), admin_hex];
     config.networks[0].invite_inviter = inviter_hex;
     config.node.endpoint = "192.168.50.10:51820".to_string();
@@ -476,7 +470,7 @@ fn active_network_invite_requires_local_admin_key() {
         .own_nostr_pubkey_hex()
         .expect("generated config has own key");
     config.networks[0].network_id = "8d4f34f5425bc50e".to_string();
-    config.networks[0].participants = vec![own_pubkey];
+    config.networks[0].devices = vec![own_pubkey];
     config.networks[0].admins = vec![other_admin];
     config.node.endpoint = "192.168.50.10:51820".to_string();
 
@@ -525,7 +519,7 @@ fn importing_current_invite_queues_join_request_to_admin() {
         config.fips_peer_endpoints.get(&admin_npub),
         Some(&vec!["192.168.50.20:51820".to_string()])
     );
-    assert!(network.participants.is_empty());
+    assert!(network.devices.is_empty());
 }
 
 #[test]
@@ -580,7 +574,7 @@ fn manual_join_invite_with_admin_id_and_mesh_id_queues_join_request() {
     // Manual invite carries no participants — the requester is added
     // only after the admin accepts and broadcasts the updated roster.
     assert!(
-        network.participants.is_empty(),
+        network.devices.is_empty(),
         "no participants until the admin accepts and propagates the roster"
     );
 }
@@ -600,7 +594,7 @@ fn config_overrides_set_the_active_network_mesh_id() {
             enabled: false,
             network_id: "mesh-home".to_string(),
             invite_secret: "home-secret".to_string(),
-            participants: vec!["11".repeat(32)],
+            devices: vec!["11".repeat(32)],
             admins: Vec::new(),
             listen_for_join_requests: true,
             invite_inviter: String::new(),
@@ -617,7 +611,7 @@ fn config_overrides_set_the_active_network_mesh_id() {
             enabled: true,
             network_id: "mesh-work".to_string(),
             invite_secret: "work-secret".to_string(),
-            participants: vec!["22".repeat(32)],
+            devices: vec!["22".repeat(32)],
             admins: Vec::new(),
             listen_for_join_requests: true,
             invite_inviter: String::new(),

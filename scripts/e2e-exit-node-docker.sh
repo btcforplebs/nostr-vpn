@@ -2,15 +2,36 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PROJECT_NAME="nostr-vpn-e2e-exit-node"
+PROJECT_NAME="${NVPN_EXIT_NODE_E2E_PROJECT_NAME:-nostr-vpn-e2e-exit-node}"
 COMPOSE=(docker compose -p "$PROJECT_NAME" -f "$ROOT_DIR/docker-compose.exit-node-e2e.yml")
 
 CONFIG_PATH="/root/.config/nvpn/config.toml"
 NETWORK_ID="${NVPN_EXIT_NODE_E2E_NETWORK_ID:-docker-exit}"
 IDLE_CPU_MAX_PERCENT="${NVPN_E2E_IDLE_CPU_MAX_PERCENT:-80}"
-NODE_A_PUBLIC_IP="${NVPN_E2E_NODE_A_PUBLIC_IP:-172.31.242.10}"
-NAT_B_PUBLIC_IP="${NVPN_E2E_NAT_B_PUBLIC_IP:-172.31.242.11}"
-PUBLIC_INTERNET_TARGET="${NVPN_EXIT_NODE_E2E_PUBLIC_IP:-172.31.242.100}"
+MESH_REFRESH_SECS="${NVPN_EXIT_NODE_E2E_MESH_REFRESH_SECS:-5}"
+NODE_A_PUBLIC_IP="${NVPN_E2E_NODE_A_PUBLIC_IP:-198.18.242.10}"
+NAT_B_PUBLIC_IP="${NVPN_E2E_NAT_B_PUBLIC_IP:-198.18.242.11}"
+PUBLIC_INTERNET_TARGET="${NVPN_EXIT_NODE_E2E_PUBLIC_IP:-198.18.242.100}"
+NODE_B_PRIVATE_SUBNET="172.30.242.0/24"
+CASHU_MINT_IP="${NVPN_E2E_CASHU_MINT_IP:-198.18.242.50}"
+CASHU_MINT_URL="${NVPN_EXIT_NODE_E2E_CASHU_MINT_URL:-http://$CASHU_MINT_IP:3338}"
+PAID_EXIT_MODE="${NVPN_EXIT_NODE_E2E_PAID:-0}"
+PAID_EXIT_PAYMENT_MODE="${NVPN_EXIT_NODE_E2E_PAYMENT_MODE:-spilman}"
+PAID_EXIT_MINT="${NVPN_EXIT_NODE_E2E_MINT:-}"
+PAID_EXIT_PRICE_MSAT="${NVPN_EXIT_NODE_E2E_PRICE_MSAT:-1}"
+PAID_EXIT_PER_UNITS="${NVPN_EXIT_NODE_E2E_PER_UNITS:-1000}"
+PAID_EXIT_TOKEN_AMOUNT_SAT="${NVPN_EXIT_NODE_E2E_TOKEN_AMOUNT_SAT:-10}"
+PAID_EXIT_TOKEN_PAID_MSAT="${NVPN_EXIT_NODE_E2E_TOKEN_PAID_MSAT:-10000}"
+PAID_EXIT_LEASE_ID="${NVPN_EXIT_NODE_E2E_LEASE_ID:-lease-docker-paid-exit}"
+PAID_EXIT_CHANNEL_ID="${NVPN_EXIT_NODE_E2E_CHANNEL_ID:-token-docker-paid-exit}"
+PAID_EXIT_SPILMAN_CHANNEL_CAPACITY_SAT="${NVPN_EXIT_NODE_E2E_SPILMAN_CHANNEL_CAPACITY_SAT:-10}"
+PAID_EXIT_SPILMAN_OPEN_PAID_MSAT="${NVPN_EXIT_NODE_E2E_SPILMAN_OPEN_PAID_MSAT:-0}"
+PAID_EXIT_SPILMAN_WALLET_TOPUP_SAT="${NVPN_EXIT_NODE_E2E_SPILMAN_WALLET_TOPUP_SAT:-25}"
+PAID_EXIT_SPILMAN_FREE_PROBE_UNITS="${NVPN_EXIT_NODE_E2E_SPILMAN_FREE_PROBE_UNITS:-0}"
+PAID_EXIT_SPILMAN_GRACE_UNITS="${NVPN_EXIT_NODE_E2E_SPILMAN_GRACE_UNITS:-65536}"
+PAID_EXIT_PROBE_PORT="${NVPN_EXIT_NODE_E2E_PROBE_PORT:-8080}"
+PAID_EXIT_SESSION_ID=""
+PAID_EXIT_PROBE_JSON=""
 
 cleanup() {
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -29,13 +50,15 @@ dump_debug() {
   set +e
   echo "exit-node docker e2e failed, collecting debug output..."
   "${COMPOSE[@]}" ps || true
-  for service in internet-target nat-b node-a node-b; do
+  for service in cashu-mint internet-target nat-b node-a node-b; do
     echo "--- logs: $service ---"
     "${COMPOSE[@]}" logs --no-color --tail 120 "$service" || true
   done
   for node in node-a node-b; do
     echo "--- $node status ---"
     "${COMPOSE[@]}" exec -T "$node" nvpn status --json --discover-secs 0 || true
+    echo "--- $node paid-exit status ---"
+    "${COMPOSE[@]}" exec -T "$node" nvpn paid-exit status --json || true
     echo "--- $node daemon.state.json ---"
     "${COMPOSE[@]}" exec -T "$node" sh -lc "cat /root/.config/nvpn/daemon.state.json 2>/dev/null || true" || true
     echo "--- $node daemon.log ---"
@@ -47,6 +70,8 @@ dump_debug() {
     echo "--- $node iptables ---"
     "${COMPOSE[@]}" exec -T "$node" sh -lc "iptables -S || true; iptables -t nat -S || true" || true
   done
+  echo "--- internet-target paid-exit probe fixture ---"
+  "${COMPOSE[@]}" exec -T internet-target sh -lc "cat /tmp/nvpn-paid-exit-probe-fixture.log 2>/dev/null || true" || true
 }
 
 on_exit() {
@@ -100,6 +125,94 @@ wait_for_service() {
   exit 1
 }
 
+wait_for_cashu_mint() {
+  for _ in $(seq 1 60); do
+    if "${COMPOSE[@]}" exec -T node-a sh -lc "nc -z '$CASHU_MINT_IP' 3338" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "exit-node docker e2e failed: Cashu test mint did not become reachable at $CASHU_MINT_URL" >&2
+  exit 1
+}
+
+start_paid_exit_probe_fixture() {
+  "${COMPOSE[@]}" exec -T internet-target sh -lc "cat > /tmp/nvpn-paid-exit-probe-fixture.py <<'PY'
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+import json
+import os
+import sys
+
+EXIT_IP = os.environ.get('NVPN_PROBE_IP', '198.18.242.10')
+COUNTRY = os.environ.get('NVPN_PROBE_COUNTRY', 'FI')
+ASN = int(os.environ.get('NVPN_PROBE_ASN', '64500'))
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        sys.stderr.write(fmt % args + '\n')
+
+    def send_body(self, body, content_type):
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_json(self, value):
+        self.send_body(json.dumps(value).encode('utf-8'), 'application/json')
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path == '/ip':
+            self.send_json({'ip': EXIT_IP})
+            return
+        if parsed.path.startswith('/geoip/'):
+            self.send_json({'country_code': COUNTRY, 'asn': ASN})
+            return
+        if parsed.path == '/down':
+            raw = parse_qs(parsed.query).get('bytes', ['1024'])[0]
+            try:
+                count = max(1, min(int(raw), 1048576))
+            except ValueError:
+                count = 1024
+            self.send_body(b'0' * count, 'application/octet-stream')
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path != '/up':
+            self.send_response(404)
+            self.end_headers()
+            return
+        length = int(self.headers.get('Content-Length', '0') or '0')
+        if length:
+            self.rfile.read(length)
+        self.send_body(b'ok', 'text/plain')
+
+port = int(sys.argv[1])
+server = ThreadingHTTPServer(('0.0.0.0', port), Handler)
+server.serve_forever()
+PY
+NVPN_PROBE_IP='$NODE_A_PUBLIC_IP' NVPN_PROBE_COUNTRY='FI' NVPN_PROBE_ASN='64500' nohup python3 /tmp/nvpn-paid-exit-probe-fixture.py '$PAID_EXIT_PROBE_PORT' >/tmp/nvpn-paid-exit-probe-fixture.log 2>&1 </dev/null &"
+}
+
+wait_for_paid_exit_probe_fixture() {
+  for _ in $(seq 1 30); do
+    if "${COMPOSE[@]}" exec -T node-a sh -lc "nc -z '$PUBLIC_INTERNET_TARGET' '$PAID_EXIT_PROBE_PORT'" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "exit-node docker e2e failed: paid-exit probe fixture did not become reachable at $PUBLIC_INTERNET_TARGET:$PAID_EXIT_PROBE_PORT" >&2
+  "${COMPOSE[@]}" exec -T internet-target sh -lc "cat /tmp/nvpn-paid-exit-probe-fixture.log 2>/dev/null || true" >&2 || true
+  exit 1
+}
+
 ping_until_success() {
   local node="$1"
   local target="$2"
@@ -112,6 +225,61 @@ ping_until_success() {
   done
 
   return 1
+}
+
+truthy() {
+  case "${1:-}" in
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_paid_exit_payment_mode() {
+  local raw="${1:-}"
+  local normalized
+  normalized="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
+    token|cashu-token|cashu_token|cashu-token-lease|cashu_token_lease|fallback|dev)
+      printf 'token\n'
+      ;;
+    spilman|cashu-spilman|cashu_spilman|streaming|channel)
+      printf 'spilman\n'
+      ;;
+    *)
+      echo "exit-node docker e2e failed: unsupported paid-exit payment mode '$raw'" >&2
+      exit 1
+      ;;
+  esac
+}
+
+wait_for_paid_exit_wallet_balance() {
+  local node="$1"
+  local mint="$2"
+  local minimum_sat="$3"
+  local status=""
+  local balance="0"
+
+  for _ in $(seq 1 60); do
+    status="$("${COMPOSE[@]}" exec -T "$node" env RUST_LOG=warn nvpn paid-exit wallet \
+      --config "$CONFIG_PATH" \
+      --json \
+      show \
+      --refresh | tr -d '\r')" || true
+    if [[ -n "$status" ]]; then
+      balance="$(jq -r --arg mint "$mint" '[.cashu.entries[]? | select(.mint_url == $mint and .unit == "sat") | .balance] | add // 0' <<<"$status" 2>/dev/null || printf '0')"
+      if [[ "${balance:-0}" =~ ^[0-9]+$ ]] && (( balance >= minimum_sat )); then
+        printf '%s\n' "$status"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+
+  echo "exit-node docker e2e failed: buyer wallet did not reach ${minimum_sat}sat at $mint (last balance ${balance:-0}sat)" >&2
+  if [[ -n "$status" ]]; then
+    printf '%s\n' "$status" >&2
+  fi
+  exit 1
 }
 
 assert_idle_cpu_below() {
@@ -134,14 +302,68 @@ assert_idle_cpu_below() {
   fi
 }
 
+block_docker_nat_shortcuts() {
+  "${COMPOSE[@]}" exec -T node-a sh -lc \
+    "ip route replace blackhole '$NODE_B_PRIVATE_SUBNET'"
+  "${COMPOSE[@]}" exec -T node-b sh -lc '
+    iptables -I OUTPUT -p udp -d 172.30.242.1 --dport 51820 -j DROP
+    iptables -I INPUT -p udp -s 172.30.242.1 --sport 51820 -j DROP
+  '
+}
+
+assert_no_private_b_fips_shortcut() {
+  local status="$1"
+  local node="$2"
+  local compact
+  compact="$(printf '%s' "$status" | compact_json)"
+  if grep -q '"fips_transport_addr":"172\.30\.242\.' <<<"$compact"; then
+    echo "exit-node docker e2e failed: $node used node-b's Docker-private subnet as its FIPS transport" >&2
+    printf '%s\n' "$status" >&2
+    exit 1
+  fi
+}
+
+PAID_EXIT_PAYMENT_MODE="$(normalize_paid_exit_payment_mode "$PAID_EXIT_PAYMENT_MODE")"
+if [[ -z "$PAID_EXIT_MINT" ]]; then
+  if [[ "$PAID_EXIT_PAYMENT_MODE" == "spilman" ]]; then
+    PAID_EXIT_MINT="$CASHU_MINT_URL"
+  else
+    PAID_EXIT_MINT="https://mint.example"
+  fi
+fi
+
+if truthy "$PAID_EXIT_MODE" && [[ "$PAID_EXIT_PAYMENT_MODE" == "spilman" ]] && ! command -v jq >/dev/null 2>&1; then
+  echo "exit-node docker e2e failed: jq is required for Spilman paid-exit e2e assertions" >&2
+  exit 1
+fi
+
 cleanup
 
-"${COMPOSE[@]}" build >/dev/null
-"${COMPOSE[@]}" up -d internet-target node-a nat-b >/dev/null
+if truthy "$PAID_EXIT_MODE"; then
+  export NVPN_EXIT_NODE_E2E_DOCKERFILE="${NVPN_EXIT_NODE_E2E_DOCKERFILE:-Dockerfile.paid-exit-e2e}"
+  export NVPN_CASHU_SPILMAN_CHANNELS_REPO_PATH="${NVPN_CASHU_SPILMAN_CHANNELS_REPO_PATH:-../cashu_spilman_channels}"
+fi
+if truthy "$PAID_EXIT_MODE" && [[ "$PAID_EXIT_PAYMENT_MODE" == "spilman" ]]; then
+  export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}paid-exit"
+fi
 
-for service in internet-target node-a nat-b; do
+SERVICES=(internet-target node-a nat-b)
+if truthy "$PAID_EXIT_MODE" && [[ "$PAID_EXIT_PAYMENT_MODE" == "spilman" ]]; then
+  SERVICES=(cashu-mint "${SERVICES[@]}")
+fi
+
+"${COMPOSE[@]}" build "${SERVICES[@]}" node-b >/dev/null
+
+"${COMPOSE[@]}" up -d "${SERVICES[@]}" >/dev/null
+
+for service in "${SERVICES[@]}"; do
   wait_for_service "$service"
 done
+if truthy "$PAID_EXIT_MODE" && [[ "$PAID_EXIT_PAYMENT_MODE" == "spilman" ]]; then
+  wait_for_cashu_mint
+  start_paid_exit_probe_fixture
+  wait_for_paid_exit_probe_fixture
+fi
 
 "${COMPOSE[@]}" up -d node-b >/dev/null
 wait_for_service node-b
@@ -151,6 +373,7 @@ NODE_B_PRIVATE_IFACE="$(private_iface_for_ip node-b 172.30.242.3/24)"
 
 "${COMPOSE[@]}" exec -T node-b sh -lc \
   "ip route del default >/dev/null 2>&1 || true; ip route add default via 172.30.242.2 dev $NODE_B_PRIVATE_IFACE; ip route replace $NODE_A_PUBLIC_IP via 172.30.242.2 dev $NODE_B_PRIVATE_IFACE"
+block_docker_nat_shortcuts
 
 for node in node-a node-b; do
   "${COMPOSE[@]}" exec -T "$node" nvpn init --force >/dev/null
@@ -188,13 +411,140 @@ fi
   --fips-peer-endpoint "$ALICE_NPUB=$NODE_A_PUBLIC_IP:51820" \
   --exit-node "$ALICE_NPUB" >/dev/null
 
+if truthy "$PAID_EXIT_MODE"; then
+  PAID_MAX_CHANNEL_CAPACITY_SAT="$PAID_EXIT_TOKEN_AMOUNT_SAT"
+  PAID_FREE_PROBE_UNITS=0
+  PAID_GRACE_UNITS=0
+  if [[ "$PAID_EXIT_PAYMENT_MODE" == "spilman" ]]; then
+    PAID_MAX_CHANNEL_CAPACITY_SAT="$PAID_EXIT_SPILMAN_CHANNEL_CAPACITY_SAT"
+    PAID_FREE_PROBE_UNITS="$PAID_EXIT_SPILMAN_FREE_PROBE_UNITS"
+    PAID_GRACE_UNITS="$PAID_EXIT_SPILMAN_GRACE_UNITS"
+  fi
+
+  "${COMPOSE[@]}" exec -T node-a nvpn paid-exit run \
+    --config "$CONFIG_PATH" \
+    --offer-id internet-exit \
+    --upstream host-default \
+    --meter bytes \
+    --price-msat "$PAID_EXIT_PRICE_MSAT" \
+    --per-units "$PAID_EXIT_PER_UNITS" \
+    --accepted-mint "$PAID_EXIT_MINT" \
+    --max-channel-capacity-sat "$PAID_MAX_CHANNEL_CAPACITY_SAT" \
+    --channel-expiry-secs 3600 \
+    --free-probe-units "$PAID_FREE_PROBE_UNITS" \
+    --grace-units "$PAID_GRACE_UNITS" \
+    --country-code FI \
+    --network-class datacenter \
+    --no-reload-daemon \
+    --json >/dev/null
+
+  if [[ "$PAID_EXIT_PAYMENT_MODE" == "token" ]]; then
+    PAID_SENT_AT="$("${COMPOSE[@]}" exec -T node-a date +%s | tr -d '\r')"
+    PAID_EXPIRES_AT="$((PAID_SENT_AT + 3600))"
+    PAID_ENVELOPE="$(
+      cat <<EOF
+{"version":1,"service_id":"internet-exit","lease_id":"$PAID_EXIT_LEASE_ID","buyer":"$BOB_NPUB","seller":"$ALICE_NPUB","sent_at_unix":$PAID_SENT_AT,"payload":{"type":"cashu_token_lease","channel_id":"$PAID_EXIT_CHANNEL_ID","mint_url":"$PAID_EXIT_MINT","unit":"sat","amount":$PAID_EXIT_TOKEN_AMOUNT_SAT,"paid_msat":$PAID_EXIT_TOKEN_PAID_MSAT,"expires_unix":$PAID_EXPIRES_AT,"token":"cashuBdockerpaidexit"}}
+EOF
+    )"
+    printf '%s' "$PAID_ENVELOPE" | "${COMPOSE[@]}" exec -T node-a nvpn paid-exit apply-payment \
+      --config "$CONFIG_PATH" \
+      --json \
+      --no-reload-daemon \
+      --envelope-stdin >/dev/null
+    PAID_STATUS="$("${COMPOSE[@]}" exec -T node-a nvpn paid-exit status --json | tr -d '\r')"
+    PAID_COMPACT="$(printf '%s' "$PAID_STATUS" | compact_json)"
+    grep -q '"mode":"cashu_token_lease"' <<<"$PAID_COMPACT"
+    grep -q '"has_token":true' <<<"$PAID_COMPACT"
+    grep -q '"seller_admissions":\[[^]]*"allow_routing":true' <<<"$PAID_COMPACT"
+  else
+    "${COMPOSE[@]}" exec -T node-b env RUST_LOG=warn nvpn paid-exit wallet \
+      --config "$CONFIG_PATH" \
+      --json \
+      add-mint "$PAID_EXIT_MINT" \
+      --make-default >/dev/null
+    "${COMPOSE[@]}" exec -T node-b env RUST_LOG=warn nvpn paid-exit wallet \
+      --config "$CONFIG_PATH" \
+      --json \
+      topup "$PAID_EXIT_SPILMAN_WALLET_TOPUP_SAT" \
+      --mint "$PAID_EXIT_MINT" >/dev/null
+    wait_for_paid_exit_wallet_balance node-b "$PAID_EXIT_MINT" "$PAID_EXIT_SPILMAN_WALLET_TOPUP_SAT" >/dev/null
+
+    OFFER_JSON="$("${COMPOSE[@]}" exec -T node-a env RUST_LOG=warn nvpn paid-exit offer \
+      --config "$CONFIG_PATH" \
+      --offer-id internet-exit \
+      --json | tr -d '\r')"
+    if ! OFFER_EVENT="$(jq -c '.event' <<<"$OFFER_JSON" 2>/dev/null)"; then
+      echo "exit-node docker e2e failed: seller offer output was not valid JSON" >&2
+      printf '%s\n' "$OFFER_JSON" >&2
+      exit 1
+    fi
+    if [[ -z "$OFFER_EVENT" || "$OFFER_EVENT" == "null" ]]; then
+      echo "exit-node docker e2e failed: seller offer did not include a signed event" >&2
+      printf '%s\n' "$OFFER_JSON" >&2
+      exit 1
+    fi
+    printf '%s' "$OFFER_EVENT" | "${COMPOSE[@]}" exec -T node-b env RUST_LOG=warn nvpn paid-exit import-offer \
+      --config "$CONFIG_PATH" \
+      --event-stdin \
+      --json >/dev/null
+
+    BUY_JSON="$("${COMPOSE[@]}" exec -T node-b env RUST_LOG=warn nvpn paid-exit buy \
+      --config "$CONFIG_PATH" \
+      --mint "$PAID_EXIT_MINT" \
+      --channel-capacity-sat "$PAID_EXIT_SPILMAN_CHANNEL_CAPACITY_SAT" \
+      --initial-paid-msat "$PAID_EXIT_SPILMAN_OPEN_PAID_MSAT" \
+      --no-reload-daemon \
+      --json \
+      internet-exit | tr -d '\r')"
+    if ! PAID_EXIT_SESSION_ID="$(jq -r '.session.session_id // empty' <<<"$BUY_JSON" 2>/dev/null)"; then
+      echo "exit-node docker e2e failed: buyer session output was not valid JSON" >&2
+      printf '%s\n' "$BUY_JSON" >&2
+      exit 1
+    fi
+    if [[ -z "$PAID_EXIT_SESSION_ID" ]]; then
+      echo "exit-node docker e2e failed: buyer session was not created" >&2
+      printf '%s\n' "$BUY_JSON" >&2
+      exit 1
+    fi
+
+    OPEN_JSON="$("${COMPOSE[@]}" exec -T node-b env RUST_LOG=warn nvpn paid-exit create-payment \
+      --config "$CONFIG_PATH" \
+      "$PAID_EXIT_SESSION_ID" \
+      --kind channel-open \
+      --open-from-wallet \
+      --mint "$PAID_EXIT_MINT" \
+      --paid-msat "$PAID_EXIT_SPILMAN_OPEN_PAID_MSAT" \
+      --json | tr -d '\r')"
+    if ! OPEN_ENVELOPE="$(jq -c '.payment.envelope' <<<"$OPEN_JSON" 2>/dev/null)"; then
+      echo "exit-node docker e2e failed: buyer channel-open output was not valid JSON" >&2
+      printf '%s\n' "$OPEN_JSON" >&2
+      exit 1
+    fi
+    if [[ -z "$OPEN_ENVELOPE" || "$OPEN_ENVELOPE" == "null" ]]; then
+      echo "exit-node docker e2e failed: buyer channel-open did not include a payment envelope" >&2
+      printf '%s\n' "$OPEN_JSON" >&2
+      exit 1
+    fi
+    printf '%s' "$OPEN_ENVELOPE" | "${COMPOSE[@]}" exec -T node-a nvpn paid-exit apply-payment \
+      --config "$CONFIG_PATH" \
+      --json \
+      --no-reload-daemon \
+      --envelope-stdin >/dev/null
+
+    PAID_STATUS="$("${COMPOSE[@]}" exec -T node-a nvpn paid-exit status --json | tr -d '\r')"
+    PAID_COMPACT="$(printf '%s' "$PAID_STATUS" | compact_json)"
+    grep -q '"mode":"cashu_spilman"' <<<"$PAID_COMPACT"
+    grep -q '"seller_admissions":\[[^]]*"allow_routing":true' <<<"$PAID_COMPACT"
+  fi
+fi
+
 for node in node-a node-b; do
   "${COMPOSE[@]}" exec -T "$node" sh -lc \
-    "sed -i 's|^discovery_timeout_secs = .*|discovery_timeout_secs = 2|' '$CONFIG_PATH'"
+    "sed -i 's|^discovery_timeout_secs = .*|discovery_timeout_secs = 2|' '$CONFIG_PATH'; sed -i '/^lan_discovery_enabled = /d' '$CONFIG_PATH'; sed -i '1ilan_discovery_enabled = false' '$CONFIG_PATH'"
 done
 
-"${COMPOSE[@]}" exec -T node-a nvpn start --daemon --connect >/dev/null
-"${COMPOSE[@]}" exec -T node-b nvpn start --daemon --connect >/dev/null
+"${COMPOSE[@]}" exec -T node-a nvpn start --daemon --connect --mesh-refresh-interval-secs "$MESH_REFRESH_SECS" >/dev/null
+"${COMPOSE[@]}" exec -T node-b nvpn start --daemon --connect --mesh-refresh-interval-secs "$MESH_REFRESH_SECS" >/dev/null
 
 ALICE_STATUS=""
 BOB_STATUS=""
@@ -246,6 +596,8 @@ if grep -q 'FIPS route refresh failed' <<<"$ALICE_STATUS$BOB_STATUS"; then
 fi
 grep -q '"endpoint":"fips"' <<<"$ALICE_COMPACT"
 grep -q '"endpoint":"fips"' <<<"$BOB_COMPACT"
+assert_no_private_b_fips_shortcut "$ALICE_STATUS" "node-a"
+assert_no_private_b_fips_shortcut "$BOB_STATUS" "node-b"
 grep -q '"effective_advertised_routes":\[[^]]*"0.0.0.0/0"' <<<"$ALICE_COMPACT"
 
 if [[ -z "$ALICE_TUNNEL_IP" || -z "$BOB_TUNNEL_IP" ]]; then
@@ -269,12 +621,149 @@ if ! grep -q 'dev utun100' <<<"$PUBLIC_ROUTE"; then
   exit 1
 fi
 
+REALIZED_IP_LOG="/tmp/nvpn-exit-node-realized-ip.log"
+"${COMPOSE[@]}" exec -T internet-target sh -lc \
+  "timeout 12 tcpdump -ni any -c 1 'icmp and src host $NODE_A_PUBLIC_IP and dst host $PUBLIC_INTERNET_TARGET'" \
+  >"$REALIZED_IP_LOG" 2>&1 &
+TCPDUMP_PID=$!
+sleep 1
+
 if ! ping_until_success node-b "$PUBLIC_INTERNET_TARGET" /tmp/nvpn-exit-node-public-ping.log; then
   echo "exit-node docker e2e failed: unable to reach public internet target '$PUBLIC_INTERNET_TARGET' through exit node" >&2
   if [[ -f /tmp/nvpn-exit-node-public-ping.log ]]; then
     cat /tmp/nvpn-exit-node-public-ping.log
   fi
   exit 1
+fi
+if ! wait "$TCPDUMP_PID"; then
+  echo "exit-node docker e2e failed: public target did not observe ICMP from exit IP '$NODE_A_PUBLIC_IP'" >&2
+  cat "$REALIZED_IP_LOG" 2>/dev/null || true
+  exit 1
+fi
+grep -q "$NODE_A_PUBLIC_IP" "$REALIZED_IP_LOG"
+
+if truthy "$PAID_EXIT_MODE"; then
+  if [[ "$PAID_EXIT_PAYMENT_MODE" == "spilman" ]]; then
+    PROBE_BASE_URL="http://$PUBLIC_INTERNET_TARGET:$PAID_EXIT_PROBE_PORT"
+    PAID_EXIT_PROBE_JSON="$("${COMPOSE[@]}" exec -T node-b env RUST_LOG=warn nvpn paid-exit probe \
+      --config "$CONFIG_PATH" \
+      "$PAID_EXIT_SESSION_ID" \
+      --no-stun \
+      --ip-url "$PROBE_BASE_URL/ip" \
+      --geoip-url-template "$PROBE_BASE_URL/geoip/{ip}" \
+      --download-url "$PROBE_BASE_URL/down?bytes={bytes}" \
+      --upload-url "$PROBE_BASE_URL/up" \
+      --bandwidth-bytes 1024 \
+      --samples 2 \
+      --timeout-secs 5 \
+      --no-reload-daemon \
+      --json | tr -d '\r')"
+    if ! jq -e --arg ip "$NODE_A_PUBLIC_IP" '
+      .measurement.realized_exit_ip == $ip
+      and .measurement.observed_country_code == "FI"
+      and .measurement.observed_asn == 64500
+      and ((.measurement.quality.latency_ms | type) == "number")
+      and ((.measurement.quality.jitter_ms | type) == "number")
+      and .measurement.quality.packet_loss_ppm == 0
+      and ((.measurement.quality.down_bps // 0) > 0)
+      and ((.measurement.quality.up_bps // 0) > 0)
+      and .geoip_error == null
+      and .bandwidth_error == null
+      and .probe.changed == true
+    ' <<<"$PAID_EXIT_PROBE_JSON" >/dev/null; then
+      echo "exit-node docker e2e failed: buyer paid-exit probe did not measure realized IP, GeoIP, and bandwidth" >&2
+      printf '%s\n' "$PAID_EXIT_PROBE_JSON" >&2
+      exit 1
+    fi
+
+    BUYER_PAID_STATUS="$("${COMPOSE[@]}" exec -T node-b nvpn paid-exit status --json | tr -d '\r')"
+    if ! jq -e --arg sid "$PAID_EXIT_SESSION_ID" --arg ip "$NODE_A_PUBLIC_IP" '
+      any(.sessions[]?;
+        .session_id == $sid
+        and .realized_exit_ip == $ip
+        and .observed_country_code == "FI"
+        and .observed_asn == 64500
+        and .country_claim.status == "match"
+        and .country_claim.matches == true
+        and ((.quality.latency_ms | type) == "number")
+        and ((.quality.jitter_ms | type) == "number")
+        and .quality.packet_loss_ppm == 0
+        and ((.quality.down_bps // 0) > 0)
+        and ((.quality.up_bps // 0) > 0)
+      )
+    ' <<<"$BUYER_PAID_STATUS" >/dev/null; then
+      echo "exit-node docker e2e failed: buyer paid-exit status did not persist realized IP and quality" >&2
+      printf '%s\n' "$BUYER_PAID_STATUS" >&2
+      exit 1
+    fi
+
+    STREAM_JSON=""
+    for _ in $(seq 1 30); do
+      STREAM_JSON="$("${COMPOSE[@]}" exec -T node-b env RUST_LOG=warn nvpn paid-exit stream-payments \
+        --config "$CONFIG_PATH" \
+        --min-increment-msat 1 \
+        --json | tr -d '\r')" || true
+      if [[ -n "$STREAM_JSON" ]] && [[ "$(jq -r '.signed_count // 0' <<<"$STREAM_JSON")" -gt 0 ]]; then
+        break
+      fi
+      sleep 1
+    done
+    if [[ -z "$STREAM_JSON" ]] || [[ "$(jq -r '.signed_count // 0' <<<"$STREAM_JSON")" -le 0 ]]; then
+      echo "exit-node docker e2e failed: buyer did not sign a Spilman balance update after routed usage" >&2
+      if [[ -n "$STREAM_JSON" ]]; then
+        printf '%s\n' "$STREAM_JSON" >&2
+      fi
+      exit 1
+    fi
+    STREAM_PAYLOAD_TYPE="$(jq -r '.signed[0].payment.payload_type // empty' <<<"$STREAM_JSON")"
+    STREAM_PAID_MSAT="$(jq -r '.signed[0].payment.paid_msat // 0' <<<"$STREAM_JSON")"
+    STREAM_ENVELOPE="$(jq -c '.signed[0].payment.envelope' <<<"$STREAM_JSON")"
+    if [[ "$STREAM_PAYLOAD_TYPE" != "balance_update" ]] \
+      || [[ -z "$STREAM_ENVELOPE" || "$STREAM_ENVELOPE" == "null" ]] \
+      || ! [[ "$STREAM_PAID_MSAT" =~ ^[0-9]+$ ]] \
+      || (( STREAM_PAID_MSAT <= PAID_EXIT_SPILMAN_OPEN_PAID_MSAT )); then
+      echo "exit-node docker e2e failed: signed Spilman update did not advance paid balance" >&2
+      printf '%s\n' "$STREAM_JSON" >&2
+      exit 1
+    fi
+    printf '%s' "$STREAM_ENVELOPE" | "${COMPOSE[@]}" exec -T node-a nvpn paid-exit apply-payment \
+      --config "$CONFIG_PATH" \
+      --json \
+      --no-reload-daemon \
+      --envelope-stdin >/dev/null
+
+    PAID_AFTER_STATUS=""
+    for _ in $(seq 1 20); do
+      PAID_AFTER_STATUS="$("${COMPOSE[@]}" exec -T node-a nvpn paid-exit status --json | tr -d '\r')"
+      PAID_AFTER_COMPACT="$(printf '%s' "$PAID_AFTER_STATUS" | compact_json)"
+      if grep -q '"mode":"cashu_spilman"' <<<"$PAID_AFTER_COMPACT" \
+        && grep -q '"state":"paid"' <<<"$PAID_AFTER_COMPACT" \
+        && grep -q '"allow_routing":true' <<<"$PAID_AFTER_COMPACT"; then
+        break
+      fi
+      sleep 1
+    done
+    PAID_AFTER_COMPACT="$(printf '%s' "$PAID_AFTER_STATUS" | compact_json)"
+    grep -q '"mode":"cashu_spilman"' <<<"$PAID_AFTER_COMPACT"
+    grep -q '"state":"paid"' <<<"$PAID_AFTER_COMPACT"
+    grep -q '"allow_routing":true' <<<"$PAID_AFTER_COMPACT"
+  else
+    PAID_AFTER_STATUS=""
+    for _ in $(seq 1 20); do
+      PAID_AFTER_STATUS="$("${COMPOSE[@]}" exec -T node-a nvpn paid-exit status --json | tr -d '\r')"
+      PAID_AFTER_COMPACT="$(printf '%s' "$PAID_AFTER_STATUS" | compact_json)"
+      if grep -q '"mode":"cashu_token_lease"' <<<"$PAID_AFTER_COMPACT" \
+        && grep -q '"state":"paid"' <<<"$PAID_AFTER_COMPACT" \
+        && grep -q '"allow_routing":true' <<<"$PAID_AFTER_COMPACT"; then
+        break
+      fi
+      sleep 1
+    done
+    PAID_AFTER_COMPACT="$(printf '%s' "$PAID_AFTER_STATUS" | compact_json)"
+    grep -q '"mode":"cashu_token_lease"' <<<"$PAID_AFTER_COMPACT"
+    grep -q '"state":"paid"' <<<"$PAID_AFTER_COMPACT"
+    grep -q '"allow_routing":true' <<<"$PAID_AFTER_COMPACT"
+  fi
 fi
 
 echo "--- Default route ---"
@@ -283,8 +772,22 @@ echo "--- Public internet route ---"
 echo "$PUBLIC_ROUTE"
 echo "--- Public internet ping ---"
 cat /tmp/nvpn-exit-node-public-ping.log
+echo "--- Realized exit IP capture ---"
+cat "$REALIZED_IP_LOG"
+if [[ -n "$PAID_EXIT_PROBE_JSON" ]]; then
+  echo "--- Paid exit buyer probe ---"
+  printf '%s\n' "$PAID_EXIT_PROBE_JSON"
+fi
 
 assert_idle_cpu_below node-a
 assert_idle_cpu_below node-b
 
-echo "exit-node docker e2e passed: tunnel traffic reached the selected exit node and the default route switched into the tunnel"
+if truthy "$PAID_EXIT_MODE"; then
+  if [[ "$PAID_EXIT_PAYMENT_MODE" == "spilman" ]]; then
+    echo "paid-exit docker e2e passed: Spilman channel-open and signed balance-update payments allowed paid tunnel traffic and the public target observed exit IP $NODE_A_PUBLIC_IP"
+  else
+    echo "paid-exit docker e2e passed: token-lease admission allowed paid tunnel traffic and the public target observed exit IP $NODE_A_PUBLIC_IP"
+  fi
+else
+  echo "exit-node docker e2e passed: tunnel traffic reached the selected exit node, the default route switched into the tunnel, and the public target observed exit IP $NODE_A_PUBLIC_IP"
+fi

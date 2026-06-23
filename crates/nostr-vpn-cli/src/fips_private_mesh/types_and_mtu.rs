@@ -34,12 +34,18 @@ struct TunPipelinePacket {
 type TunPipelineBatch = Vec<TunPipelinePacket>;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[derive(Clone)]
+struct TunWriteBatch {
+    priority: Vec<Vec<u8>>,
+    bulk: Vec<Vec<u8>>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct TunPipelineQueueTx {
     priority: mpsc::UnboundedSender<TunPipelineBatch>,
     bulk: mpsc::Sender<TunPipelineBatch>,
     bulk_queued_packets: Arc<AtomicUsize>,
     bulk_packet_capacity: usize,
+    bulk_available: Arc<Notify>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -47,8 +53,8 @@ struct TunPipelineQueueRx {
     priority: mpsc::UnboundedReceiver<TunPipelineBatch>,
     bulk: mpsc::Receiver<TunPipelineBatch>,
     bulk_queued_packets: Arc<AtomicUsize>,
-    bulk_coalesce_delay: std::time::Duration,
-    deferred_bulk: Option<TunPipelineBatch>,
+    bulk_packet_capacity: usize,
+    bulk_available: Arc<Notify>,
     priority_closed: bool,
     bulk_closed: bool,
 }
@@ -89,47 +95,134 @@ impl TunPipelinePacket {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+impl TunWriteBatch {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            priority: Vec::with_capacity(capacity.min(16)),
+            bulk: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.priority.clear();
+        self.bulk.clear();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.priority.is_empty() && self.bulk.is_empty()
+    }
+
+    fn push(&mut self, packet: Vec<u8>) {
+        match classify_endpoint_payload(&packet).lane() {
+            EndpointPayloadLane::Priority => self.priority.push(packet),
+            EndpointPayloadLane::Bulk => self.bulk.push(packet),
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl TunPipelineQueueTx {
     fn channel(capacity: usize) -> (Self, TunPipelineQueueRx) {
         let capacity = capacity.max(1);
         let (priority_tx, priority_rx) = mpsc::unbounded_channel();
         let (bulk_tx, bulk_rx) = mpsc::channel(capacity);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
+        let bulk_available = Arc::new(Notify::new());
         (
             Self {
                 priority: priority_tx,
                 bulk: bulk_tx,
                 bulk_queued_packets: Arc::clone(&bulk_queued_packets),
                 bulk_packet_capacity: capacity,
+                bulk_available: Arc::clone(&bulk_available),
             },
             TunPipelineQueueRx {
                 priority: priority_rx,
                 bulk: bulk_rx,
                 bulk_queued_packets,
-                bulk_coalesce_delay: fips_tun_bulk_coalesce_delay(),
-                deferred_bulk: None,
+                bulk_packet_capacity: capacity,
+                bulk_available,
                 priority_closed: false,
                 bulk_closed: false,
             },
         )
     }
+
+    fn bulk_available_packet_slots(&self) -> usize {
+        self.bulk_packet_capacity.saturating_sub(
+            self.bulk_queued_packets
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    fn tun_read_backpressure_ready(&self, read_burst: usize) -> bool {
+        self.tun_read_backpressure_ready_for_slots(read_burst)
+    }
+
+    fn tun_read_backpressure_ready_for_slots(&self, slots: usize) -> bool {
+        self.bulk.is_closed()
+            || self.bulk_available_packet_slots()
+                >= self.tun_read_backpressure_min_slots(slots)
+    }
+
+    fn tun_read_backpressure_min_slots(&self, read_burst: usize) -> usize {
+        read_burst.max(1).min(self.bulk_packet_capacity)
+    }
+
+    async fn wait_for_tun_read_bulk_headroom(&self, read_burst: usize) -> bool {
+        self.wait_for_tun_read_bulk_slots(read_burst).await
+    }
+
+    async fn wait_for_tun_read_bulk_slots(&self, slots: usize) -> bool {
+        let needed = self.tun_read_backpressure_min_slots(slots);
+        loop {
+            if self.bulk.is_closed() {
+                return false;
+            }
+            if self.bulk_available_packet_slots() >= needed {
+                return true;
+            }
+
+            let notified = self.bulk_available.notified();
+            if self.bulk.is_closed() {
+                return false;
+            }
+            if self.bulk_available_packet_slots() >= needed {
+                return true;
+            }
+
+            let _timer = crate::pipeline_profile::Timer::start(
+                crate::pipeline_profile::Stage::TunToMeshBackpressureWait,
+            );
+            tokio::select! {
+                _ = notified => {}
+                _ = self.bulk.closed() => return false,
+            }
+        }
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl TunPipelineQueueRx {
+    fn bulk_backlog_packets(&self) -> usize {
+        self.bulk_queued_packets
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn has_bulk_backlog(&self) -> bool {
+        self.bulk_backlog_packets() > 0
+    }
+
+    fn bulk_backlog_capacity(&self) -> usize {
+        self.bulk_packet_capacity
+    }
+
     async fn recv(&mut self) -> Option<TunPipelineBatch> {
         loop {
-            if let Some(batch) = self.take_ready_priority_batch() {
-                return Some(batch);
-            }
-
-            if let Some(mut batch) = self.deferred_bulk.take() {
-                self.drain_ready_bulk_batches(&mut batch);
-                if let Some(priority) = self.coalesce_bulk_batches(&mut batch).await {
-                    self.deferred_bulk = Some(batch);
-                    return Some(priority);
-                }
-                return Some(batch);
+            match self.priority.try_recv() {
+                Ok(batch) => return Some(batch),
+                Err(mpsc::error::TryRecvError::Empty) => {}
+                Err(mpsc::error::TryRecvError::Disconnected) => self.priority_closed = true,
             }
 
             if self.priority_closed && self.bulk_closed {
@@ -140,22 +233,15 @@ impl TunPipelineQueueRx {
                 biased;
                 batch = self.priority.recv(), if !self.priority_closed => {
                     match batch {
-                        Some(mut batch) => {
-                            self.drain_ready_priority_batches(&mut batch);
-                            return Some(batch);
-                        }
+                        Some(batch) => return Some(batch),
                         None => self.priority_closed = true,
                     }
                 }
                 batch = self.bulk.recv(), if !self.bulk_closed => {
                     match batch {
-                        Some(mut batch) => {
+                        Some(batch) => {
                             release_tun_bulk_packet_slots(&self.bulk_queued_packets, batch.len());
-                            self.drain_ready_bulk_batches(&mut batch);
-                            if let Some(priority) = self.coalesce_bulk_batches(&mut batch).await {
-                                self.deferred_bulk = Some(batch);
-                                return Some(priority);
-                            }
+                            self.bulk_available.notify_waiters();
                             return Some(batch);
                         }
                         None => self.bulk_closed = true,
@@ -163,109 +249,6 @@ impl TunPipelineQueueRx {
                 }
             }
         }
-    }
-
-    fn take_ready_priority_batch(&mut self) -> Option<TunPipelineBatch> {
-        match self.priority.try_recv() {
-            Ok(mut batch) => {
-                self.drain_ready_priority_batches(&mut batch);
-                Some(batch)
-            }
-            Err(mpsc::error::TryRecvError::Empty) => None,
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.priority_closed = true;
-                None
-            }
-        }
-    }
-
-    fn drain_ready_priority_batches(&mut self, batch: &mut TunPipelineBatch) {
-        while batch.len() < FIPS_MESH_PRIORITY_SEND_BURST {
-            match self.priority.try_recv() {
-                Ok(mut next) => batch.append(&mut next),
-                Err(mpsc::error::TryRecvError::Empty) => return,
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    self.priority_closed = true;
-                    return;
-                }
-            }
-        }
-    }
-
-    fn drain_ready_bulk_batches(&mut self, batch: &mut TunPipelineBatch) {
-        while batch.len() < FIPS_MESH_BULK_SEND_BURST {
-            match self.bulk.try_recv() {
-                Ok(mut next) => {
-                    release_tun_bulk_packet_slots(&self.bulk_queued_packets, next.len());
-                    batch.append(&mut next);
-                }
-                Err(mpsc::error::TryRecvError::Empty) => return,
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    self.bulk_closed = true;
-                    return;
-                }
-            }
-        }
-    }
-
-    async fn coalesce_bulk_batches(
-        &mut self,
-        batch: &mut TunPipelineBatch,
-    ) -> Option<TunPipelineBatch> {
-        if self.bulk_coalesce_delay.is_zero()
-            || batch.len() >= FIPS_MESH_BULK_SEND_BURST
-            || self.bulk_closed
-        {
-            return None;
-        }
-
-        let deadline = tokio::time::Instant::now() + self.bulk_coalesce_delay;
-        loop {
-            self.drain_ready_bulk_batches(batch);
-            if batch.len() >= FIPS_MESH_BULK_SEND_BURST || self.bulk_closed {
-                return None;
-            }
-            if let Some(priority) = self.take_ready_priority_batch() {
-                return Some(priority);
-            }
-
-            tokio::select! {
-                biased;
-                priority = self.priority.recv(), if !self.priority_closed => {
-                    match priority {
-                        Some(mut priority) => {
-                            self.drain_ready_priority_batches(&mut priority);
-                            return Some(priority);
-                        }
-                        None => self.priority_closed = true,
-                    }
-                }
-                bulk = self.bulk.recv(), if !self.bulk_closed => {
-                    match bulk {
-                        Some(mut next) => {
-                            release_tun_bulk_packet_slots(
-                                &self.bulk_queued_packets,
-                                next.len(),
-                            );
-                            batch.append(&mut next);
-                        }
-                        None => {
-                            self.bulk_closed = true;
-                            return None;
-                        }
-                    }
-                }
-                _ = tokio::time::sleep_until(deadline) => {
-                    self.drain_ready_bulk_batches(batch);
-                    return None;
-                }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn set_bulk_coalesce_delay_for_tests(&mut self, delay: std::time::Duration) {
-        self.bulk_coalesce_delay = delay;
     }
 }
 
@@ -602,7 +585,7 @@ fn fips_nostr_discovery_policy_from_env() -> NostrDiscoveryPolicy {
         .ok()
         .as_deref()
         .and_then(parse_fips_nostr_discovery_policy)
-        .unwrap_or(NostrDiscoveryPolicy::Open)
+        .unwrap_or(NostrDiscoveryPolicy::ConfiguredOnly)
 }
 
 fn fips_nostr_discovery_policy_from_app(app: &AppConfig) -> NostrDiscoveryPolicy {
