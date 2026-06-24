@@ -465,6 +465,8 @@ public sealed class NativeParticipantState
     public bool IsNetworkDns { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public string SelectionKey => string.IsNullOrWhiteSpace(PubkeyHex) ? Npub : PubkeyHex;
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsNetworkDns { get; set; }
     public string DisplayName => FirstNonEmpty(
         MagicDnsName,
         Alias,

@@ -822,7 +822,7 @@ mod tests {
         let member = Keys::generate().public_key().to_hex();
         let roster = NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![member.clone()],
+            devices: vec![member.clone()],
             admins: vec![admin.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at: 123,
@@ -836,7 +836,7 @@ mod tests {
 
         assert_eq!(decoded.dns_servers, vec!["10.44.1.100", "10.44.1.200"]);
         assert_eq!(decoded.network_name, roster.network_name);
-        assert_eq!(decoded.participants, roster.participants);
+        assert_eq!(decoded.devices, roster.devices);
         assert_eq!(decoded.admins, roster.admins);
     }
 
@@ -846,7 +846,7 @@ mod tests {
         let member = Keys::generate().public_key().to_hex();
         let roster = NetworkRoster {
             network_name: "Home".to_string(),
-            participants: vec![member],
+            devices: vec![member],
             admins: vec![admin.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at: 123,
@@ -1020,6 +1020,8 @@ mod tests {
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))
                 .collect(),
             signed_at: 123,
+            dns_servers: Vec::new(),
+            dns_strict: false,
         };
         let frame = FipsControlFrame::Roster {
             network_id: "mesh".to_string(),

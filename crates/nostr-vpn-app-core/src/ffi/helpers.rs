@@ -524,3 +524,30 @@ fn shell_quote(value: &str) -> String {
 fn applescript_quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
+
+impl NativeAppRuntime {
+    fn active_network_dns_servers(&self) -> Vec<String> {
+        self.config
+            .networks
+            .iter()
+            .find(|n| n.enabled)
+            .map(|n| n.dns_servers.clone())
+            .unwrap_or_default()
+    }
+
+    fn dns_override_active(&self) -> bool {
+        self.vpn_active
+            && self
+                .config
+                .networks
+                .iter()
+                .find(|n| n.enabled)
+                .is_some_and(|n| !n.dns_servers.is_empty())
+    }
+
+    fn active_network_dns_strict(&self) -> bool {
+        self.config
+            .active_network_opt()
+            .is_some_and(|n| !n.dns_servers.is_empty() && n.dns_strict)
+    }
+}

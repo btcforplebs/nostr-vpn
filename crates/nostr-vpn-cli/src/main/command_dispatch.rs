@@ -570,6 +570,12 @@ async fn run_command(command: Command) -> Result<()> {
         Command::RemoveAdmin(args) => {
             update_active_network_roster(args, RosterEditAction::RemoveAdmin).await?;
         }
+        Command::SetNetworkDns(args) => {
+            set_network_dns(args).await?;
+        }
+        Command::ClearNetworkDns(args) => {
+            clear_network_dns(args).await?;
+        }
         Command::Ping(args) => {
             let config_path = args.config.unwrap_or_else(default_config_path);
             let (app, network_id) =

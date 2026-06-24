@@ -92,6 +92,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),            dns_strict: false,
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = Arc::new(RwLock::new(FipsMeshRuntime::with_local_routes(
@@ -132,6 +133,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),            dns_strict: false,
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
@@ -254,6 +256,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),            dns_strict: false,
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -325,6 +328,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),            dns_strict: false,
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -461,6 +465,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            dns_servers: Vec::new(),            dns_strict: false,
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,

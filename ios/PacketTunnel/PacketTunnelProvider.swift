@@ -4,8 +4,8 @@ import Darwin
 import os
 
 private let appGroupIdentifier = "group.to.loge.nvpn"
-private let defaultMobileMtu = 1150
 private let pktLog = Logger(subsystem: "to.loge.nvpn.PacketTunnel", category: "tunnel")
+private let defaultMobileMtu = 1150
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
     private static let nextPacketPollTimeoutMs: UInt32 = 100
@@ -130,8 +130,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 dns.allowFailover = false
             }
             settings.dnsSettings = dns
-            pktLog.log(
-                "nvpn-pkt: dns servers=\(dnsConfig.servers, privacy: .public) match=\(dnsConfig.matchDomains, privacy: .public) failover=false strict=\(parsedConfig.dnsStrict, privacy: .public)"
+            NSLog(
+                "nvpn-pkt: dns servers=\(dnsConfig.servers) match=\(dnsConfig.matchDomains) failover=false strict=\(parsedConfig.dnsStrict)"
             )
         }
 
@@ -188,16 +188,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         from servers: [String],
         magicDnsServer: String
     ) -> (servers: [String], matchDomains: [String], allowFailover: Bool) {
-        // Route all DNS through the FIPS tunnel's MagicDNS resolver first.
-        // The Rust code handles .fips/.nvpn queries directly and forwards
-        // everything else to the appropriate upstream (roster DNS when
-        // dns_strict is on, public resolvers otherwise). Placing fd00::53
-        // first prevents roster DNS servers from racing and returning
-        // NXDOMAIN for .fips queries before the FIPS resolver can answer.
-        var normalized: [String] = ["fd00::53"]
-        normalized.append(contentsOf: servers
+        var normalized = servers
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0 != "fd00::53" })
+            .filter { !$0.isEmpty }
+        normalized.append("fd00::53")
         return (normalized, [""], false)
     }
 
