@@ -207,6 +207,7 @@ impl MobileTunnel {
                 &config.dns_forwarders,
                 &config.dns_servers,
                 &config.magic_dns_server,
+                config.dns_strict,
             );
             tokio::spawn(async move {
                 let mut outbound_count: u32 = 0;

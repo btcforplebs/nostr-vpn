@@ -365,6 +365,7 @@
             &platform_dns,
             &tunnel_dns,
             nostr_vpn_core::MESH_MAGIC_DNS_SERVER,
+            false,
         );
 
         assert_eq!(

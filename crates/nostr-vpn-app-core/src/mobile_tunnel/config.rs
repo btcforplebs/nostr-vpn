@@ -105,6 +105,10 @@ pub(crate) struct MobileTunnelConfig {
     /// silently fails even though TCP transits the tunnel.
     #[serde(default)]
     pub(crate) dns_servers: Vec<String>,
+    /// When true, use ONLY admin-configured network DNS with zero fallback.
+    /// Prevents MagicDNS from falling back to public resolvers (1.1.1.1, 9.9.9.9).
+    #[serde(default)]
+    pub(crate) dns_strict: bool,
     /// Resolvers the in-tunnel `MagicDNS` responder uses for non-.nvpn
     /// queries. Android injects the active network DNS before starting
     /// the native tunnel; other mobile hosts use public fallback DNS.
@@ -268,6 +272,20 @@ impl MobileTunnelConfig {
             } else {
                 (None, Vec::new(), Vec::new())
             };
+
+        // Apply network DNS when no exit is configured (global nameservers)
+        // Priority: WireGuard upstream DNS > peer exit DNS > network DNS > empty
+        let dns_strict = if wireguard_exit.is_some() || selected_peer_exit {
+            false  // Exit nodes don't use strict mode
+        } else if let Some(network) = app.active_network_opt() {
+            if !network.dns_servers.is_empty() {
+                dns_servers = network.dns_servers.clone();
+            }
+            network.dns_strict
+        } else {
+            false
+        };
+
         let magic_dns_server = if app.magic_dns_suffix.trim().is_empty() {
             String::new()
         } else {
@@ -313,6 +331,7 @@ impl MobileTunnelConfig {
             nostr_discovery_enabled: app.fips_nostr_discovery_enabled,
             excluded_routes,
             dns_servers,
+            dns_strict,
             dns_forwarders: Vec::new(),
             magic_dns_server,
             wireguard_exit,

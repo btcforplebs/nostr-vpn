@@ -55,6 +55,8 @@ impl AppConfig {
         aliases: HashMap<String, String>,
         signed_at: u64,
         signed_by: &str,
+        dns_servers: Vec<String>,
+        dns_strict: bool,
     ) -> Result<bool> {
         let normalized_network_id = normalize_runtime_network_id(network_id);
         if normalized_network_id.is_empty() {
@@ -143,6 +145,8 @@ impl AppConfig {
         }
         network.shared_roster_updated_at = signed_at;
         network.shared_roster_signed_by = normalized_signed_by;
+        network.dns_servers = dns_servers;
+        network.dns_strict = dns_strict;
         network.outbound_join_request = if own_join_completed {
             None
         } else {
@@ -200,6 +204,8 @@ impl AppConfig {
             roster.aliases,
             roster.signed_at,
             &signed_by,
+            roster.dns_servers,
+            roster.dns_strict,
         )
     }
 

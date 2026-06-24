@@ -137,9 +137,10 @@ fn mobile_magic_dns_forwarders(
     configured: &[String],
     tunnel_dns_servers: &[String],
     magic_dns_server: &str,
+    dns_strict: bool,
 ) -> Vec<SocketAddr> {
     let mut seen = HashSet::new();
-    tunnel_dns_servers
+    let forwarders = tunnel_dns_servers
         .iter()
         .filter(|server| server.trim() != magic_dns_server.trim())
         .filter_map(|server| parse_dns_forwarder(server))
@@ -147,7 +148,15 @@ fn mobile_magic_dns_forwarders(
             configured
                 .iter()
                 .filter_map(|server| parse_dns_forwarder(server)),
-        )
+        );
+
+    // When dns_strict=true, stop here (no public DNS fallback)
+    if dns_strict {
+        return forwarders.filter(|server| seen.insert(*server)).collect();
+    }
+
+    // When dns_strict=false, add public DNS as fallback
+    forwarders
         .chain(
             MOBILE_MAGIC_DNS_FORWARDERS
                 .iter()
@@ -246,6 +255,7 @@ fn empty_config() -> MobileTunnelConfig {
         nostr_discovery_enabled: true,
         excluded_routes: Vec::new(),
         dns_servers: Vec::new(),
+        dns_strict: false,
         dns_forwarders: Vec::new(),
         magic_dns_server: String::new(),
         wireguard_exit: None,
