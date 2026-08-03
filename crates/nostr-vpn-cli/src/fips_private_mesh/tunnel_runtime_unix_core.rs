@@ -809,7 +809,11 @@ impl FipsPrivateTunnelRuntime {
     }
 
     pub(crate) async fn rebind_network_transports(&self) -> Result<usize> {
-        self.mesh.rebind_network_transports().await
+        // Re-pin to the same underlay the endpoint was bound to, so a handoff
+        // rebind does not silently unpin an interface-scoped transport.
+        self.mesh
+            .rebind_network_transports(self.config.underlay_interface.clone())
+            .await
     }
 
     pub(crate) async fn ping_peers(&self, network_id: &str, now: u64) -> Result<usize> {
