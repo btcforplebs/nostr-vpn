@@ -341,6 +341,7 @@ impl FipsPrivateTunnelConfig {
             endpoint_peers,
             route_targets,
             secure_dns_requested: !app.internet_source.is_direct(),
+            network_dns: app.network_dns_nameserver_ipv4(),
             public_paid_exit_waiting_for_admission: false,
             magic_dns_records: build_magic_dns_records(app),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -446,6 +447,7 @@ impl FipsPrivateTunnelConfig {
 
     fn secure_dns_required(&self) -> bool {
         self.secure_dns_requested
+            || self.network_dns.is_some()
             || self.fips_host_enabled()
             || (self.wireguard_exit.enabled && self.wireguard_exit.configured())
             || self
@@ -469,6 +471,14 @@ impl FipsPrivateTunnelConfig {
         &self,
         wireguard_active: bool,
     ) -> Result<ExitDnsResolverConfig> {
+        // Admin network policy outranks this device's own exit DNS preference,
+        // and it applies on a Direct connection where `secure_dns_requested` is
+        // false, so this branch has to come first.
+        if let Some(nameserver) = self.network_dns {
+            return Ok(ExitDnsResolverConfig::ThroughExit {
+                servers: vec![IpAddr::V4(nameserver)],
+            });
+        }
         if !self.secure_dns_requested {
             return ExitDnsConfig::default().resolver_config(None);
         }

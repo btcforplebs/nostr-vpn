@@ -386,12 +386,30 @@ impl ConnectMagicDnsRuntime {
     }
 }
 
-fn secure_exit_dns_required(app: &AppConfig) -> bool {
-    !app.internet_source.is_direct()
+/// Whether `SecureDnsRuntime` owns system DNS on this device, which is also
+/// exactly when the suffix-only `ConnectMagicDnsRuntime` must stand down. The
+/// two bind the same local port and install conflicting resolver state, so
+/// every start/stop decision has to route through this one predicate.
+pub(crate) fn global_system_dns_required(app: &AppConfig) -> bool {
+    !app.internet_source.is_direct() || app.network_dns_nameserver_ipv4().is_some()
+}
+
+/// Reconcile the suffix-only resolver after the roster or config changed: stand
+/// it down when `SecureDnsRuntime` now owns system DNS, otherwise refresh its
+/// records so newly added peers resolve without a restart.
+pub(crate) fn sync_split_magic_dns(
+    runtime: &mut Option<ConnectMagicDnsRuntime>,
+    app: &AppConfig,
+) {
+    if global_system_dns_required(app) {
+        runtime.take();
+    } else if let Some(active) = runtime.as_ref() {
+        active.refresh_records(app);
+    }
 }
 
 fn start_split_magic_dns(app: &AppConfig) -> Option<ConnectMagicDnsRuntime> {
-    if secure_exit_dns_required(app) {
+    if global_system_dns_required(app) {
         None
     } else {
         ConnectMagicDnsRuntime::start(app)

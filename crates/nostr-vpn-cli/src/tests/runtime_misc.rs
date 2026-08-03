@@ -14,7 +14,7 @@ fn daemon_vpn_requires_remote_participants_to_be_active() {
 #[test]
 fn split_magic_dns_yields_port_53_to_secure_dns_for_every_exit_source() {
     let mut app = AppConfig::generated();
-    assert!(!secure_exit_dns_required(&app));
+    assert!(!global_system_dns_required(&app));
     for source in [
         InternetSource::PrivateVpn,
         InternetSource::PaidAutomatic,
@@ -22,7 +22,7 @@ fn split_magic_dns_yields_port_53_to_secure_dns_for_every_exit_source() {
         InternetSource::WireGuard,
     ] {
         app.set_internet_source(source);
-        assert!(secure_exit_dns_required(&app), "source={source:?}");
+        assert!(global_system_dns_required(&app), "source={source:?}");
     }
 }
 

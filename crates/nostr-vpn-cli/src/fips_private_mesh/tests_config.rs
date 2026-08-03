@@ -1,4 +1,5 @@
     include!("tests_config/tunnel.rs");
+    include!("tests_config/network_dns.rs");
     include!("tests_config/tunnel_listener.rs");
     include!("tests_config/endpoint_policy.rs");
     include!("tests_config/route_admission.rs");
