@@ -73,6 +73,7 @@ info:
     @echo "  just e2e-fips-routed-udp"
     @echo "  just e2e-join-request"
     @echo "  just e2e-roster-admin"
+    @echo "  just e2e-network-dns"
     @echo "  just e2e-desktop-roster-join"
     @echo "  just e2e-device-roster"
     @echo "  just e2e-wireguard-exit"
@@ -282,6 +283,9 @@ e2e-join-request:
 
 e2e-roster-admin:
     ./scripts/e2e-roster-admin-docker.sh
+
+e2e-network-dns:
+    ./scripts/e2e-network-dns-docker.sh
 
 e2e-wireguard-exit:
     ./scripts/e2e-wireguard-exit-docker.sh

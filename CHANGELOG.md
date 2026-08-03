@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Network-wide DNS override. A network admin picks one roster device as the
+  network nameserver with `nvpn set --network-dns-node <npub>`, and
+  `--network-dns-override` forces every member device to resolve through it
+  instead of its local network's DNS: the self-hosted Pi-hole case, which also
+  blocks local DNS hijacking. The selection rides the admin-signed roster, so
+  members pick it up without reconnecting. Reported by `nvpn status` under
+  `network_dns`. Desktop reuses the system-DNS takeover already used for exit
+  nodes; iOS and Android route all DNS, including known public resolvers and
+  IPv6, into the tunnel.
+  - Resolution **fails closed** while the override is on and the nameserver is
+    unreachable or no longer on the roster; falling back to local DNS would
+    defeat the point.
+  - The nameserver device itself is excluded: it already runs a resolver on
+    port 53.
+  - Roster tags are additive, so members on older builds ignore the setting.
+    **Upgrade every admin before enabling it**: an admin on an older build
+    re-signing the roster drops the tags and clears the setting network-wide.
+
 ## 4.1.18 - 2026-10-05
 
 ### Release notes
