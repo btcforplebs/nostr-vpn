@@ -144,14 +144,9 @@
             network_id: "test".to_string(),
             join_secret: "join-secret".to_string(),
             devices: vec![peer.to_string()],
-            removed_devices: Vec::new(),
             admins: vec![own.clone()],
             listen_for_join_requests: true,
-            join_request_admin: String::new(),
-            outbound_join_request: None,
-            inbound_join_requests: Vec::new(),
-            shared_roster_updated_at: 0,
-            shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = new_mobile_mesh(FipsMeshRuntime::with_local_routes(
@@ -185,14 +180,9 @@
             network_id: "test".to_string(),
             join_secret: "join-secret".to_string(),
             devices: vec![peer.to_string()],
-            removed_devices: Vec::new(),
             admins: vec![own.clone()],
             listen_for_join_requests: true,
-            join_request_admin: String::new(),
-            outbound_join_request: None,
-            inbound_join_requests: Vec::new(),
-            shared_roster_updated_at: 0,
-            shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
@@ -309,14 +299,9 @@
             network_id: "test".to_string(),
             join_secret: "join-secret".to_string(),
             devices: vec![peer.to_string()],
-            removed_devices: Vec::new(),
             admins: vec![own.clone()],
             listen_for_join_requests: true,
-            join_request_admin: String::new(),
-            outbound_join_request: None,
-            inbound_join_requests: Vec::new(),
-            shared_roster_updated_at: 0,
-            shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -381,14 +366,9 @@
             network_id: "test".to_string(),
             join_secret: "join-secret".to_string(),
             devices: vec![own.clone()],
-            removed_devices: Vec::new(),
             admins: vec![own],
             listen_for_join_requests: true,
-            join_request_admin: String::new(),
-            outbound_join_request: None,
-            inbound_join_requests: Vec::new(),
-            shared_roster_updated_at: 0,
-            shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -522,14 +502,9 @@
             devices: std::iter::once(own_pubkey.clone())
                 .chain((0..3).map(|_| Keys::generate().public_key().to_hex()))
                 .collect(),
-            removed_devices: Vec::new(),
             admins: vec![own_pubkey],
             listen_for_join_requests: false,
-            join_request_admin: String::new(),
-            outbound_join_request: None,
-            inbound_join_requests: Vec::new(),
-            shared_roster_updated_at: 0,
-            shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.ensure_defaults();
         let mut config = MobileTunnelConfig::from_app(&app).expect("mobile config");
@@ -582,14 +557,9 @@
             network_id: "test".to_string(),
             join_secret: "join-secret".to_string(),
             devices: vec![peer.to_string()],
-            removed_devices: Vec::new(),
             admins: vec![own.clone()],
             listen_for_join_requests: true,
-            join_request_admin: String::new(),
-            outbound_join_request: None,
-            inbound_join_requests: Vec::new(),
-            shared_roster_updated_at: 0,
-            shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -612,6 +582,7 @@
                 admins: vec![own],
                 aliases: HashMap::new(),
                 signed_at: unix_timestamp(),
+                ..Default::default()
             },
             &app.nostr_keys().expect("admin keys"),
         )

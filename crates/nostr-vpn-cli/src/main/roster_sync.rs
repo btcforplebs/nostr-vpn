@@ -95,6 +95,8 @@ pub(crate) fn shared_roster_publish_allowed(
 
 fn network_roster_from_shared(shared: &SharedNetworkRoster) -> NetworkRoster {
     NetworkRoster {
+        dns_node: shared.dns_node.clone(),
+        dns_override: shared.dns_override,
         network_name: shared.name.clone(),
         devices: shared.devices.clone(),
         admins: shared.admins.clone(),

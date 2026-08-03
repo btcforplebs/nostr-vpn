@@ -218,6 +218,7 @@ fn apply_verified_admin_signed_shared_roster_applies_newer_admin_event_name() {
         admins: vec![current_admin_hex],
         aliases: std::collections::HashMap::new(),
         signed_at: 1_726_000_001,
+        ..Default::default()
     };
     let signed = SignedRoster::sign("mesh-home", roster, &current_admin).expect("sign roster");
 
@@ -434,6 +435,7 @@ fn apply_verified_admin_signed_shared_roster_rejects_tampered_event() {
         admins: vec![current_admin_hex],
         aliases: std::collections::HashMap::new(),
         signed_at: 1_726_000_000,
+        ..Default::default()
     };
     let signed = SignedRoster::sign("mesh-home", roster, &current_admin).expect("sign roster");
     let mut event = signed.event.clone();
@@ -473,6 +475,7 @@ fn apply_verified_admin_signed_shared_roster_ignores_non_admin_author() {
         admins: vec![known_admin_hex, outsider_hex],
         aliases: std::collections::HashMap::new(),
         signed_at: 1_726_000_000,
+        ..Default::default()
     };
     let signed = SignedRoster::sign("mesh-home", roster, &outsider).expect("sign roster");
     let changed = config
@@ -515,4 +518,84 @@ fn apply_admin_signed_shared_roster_clears_data_peers_when_own_key_is_removed() 
     assert!(changed);
     assert!(config.networks[0].devices.is_empty());
     assert_eq!(config.networks[0].admins, vec![current_admin_hex]);
+}
+
+/// The whole point of the feature: an admin's nameserver choice must land in a
+/// *member's* local config, not just in the admin's outgoing roster.
+#[test]
+fn apply_verified_admin_signed_shared_roster_applies_the_network_dns_selection() {
+    let own = Keys::generate();
+    let admin = Keys::generate();
+    let pihole = Keys::generate();
+    let own_hex = own.public_key().to_hex();
+    let admin_hex = admin.public_key().to_hex();
+    let pihole_hex = pihole.public_key().to_hex();
+
+    let mut config = AppConfig::generated();
+    config.nostr.secret_key = own.secret_key().to_secret_hex();
+    config.nostr.public_key = own_hex.clone();
+    config.networks[0].network_id = "mesh-home".to_string();
+    config.networks[0].admins = vec![admin_hex.clone()];
+    config.networks[0].devices = vec![own_hex.clone(), pihole_hex.clone()];
+    config.networks[0].shared_roster_updated_at = 1_726_000_000;
+    config.networks[0].shared_roster_signed_by = admin_hex.clone();
+    config.ensure_defaults();
+
+    assert!(config.networks[0].dns_node.is_empty());
+
+    let roster = NetworkRoster {
+        dns_node: pihole_hex.clone(),
+        dns_override: true,
+        network_name: "Home Mesh".to_string(),
+        devices: vec![own_hex, pihole_hex.clone()],
+        admins: vec![admin_hex],
+        aliases: std::collections::HashMap::new(),
+        signed_at: 1_726_000_001,
+    };
+    let signed = SignedRoster::sign("mesh-home", roster, &admin).expect("sign roster");
+
+    let changed = config
+        .apply_verified_admin_signed_shared_roster(&signed)
+        .expect("apply roster carrying a DNS selection");
+
+    assert!(changed);
+    assert_eq!(config.networks[0].dns_node, pihole_hex);
+    assert!(config.networks[0].dns_override);
+}
+
+#[test]
+fn apply_verified_admin_signed_shared_roster_drops_a_dns_node_that_is_not_a_member() {
+    let own = Keys::generate();
+    let admin = Keys::generate();
+    let stranger = Keys::generate().public_key().to_hex();
+    let own_hex = own.public_key().to_hex();
+    let admin_hex = admin.public_key().to_hex();
+
+    let mut config = AppConfig::generated();
+    config.nostr.secret_key = own.secret_key().to_secret_hex();
+    config.nostr.public_key = own_hex.clone();
+    config.networks[0].network_id = "mesh-home".to_string();
+    config.networks[0].admins = vec![admin_hex.clone()];
+    config.networks[0].devices = vec![own_hex.clone()];
+    config.networks[0].shared_roster_updated_at = 1_726_000_000;
+    config.networks[0].shared_roster_signed_by = admin_hex.clone();
+    config.ensure_defaults();
+
+    let roster = NetworkRoster {
+        dns_node: stranger,
+        dns_override: true,
+        network_name: "Home Mesh".to_string(),
+        devices: vec![own_hex],
+        admins: vec![admin_hex],
+        aliases: std::collections::HashMap::new(),
+        signed_at: 1_726_000_001,
+    };
+    let signed = SignedRoster::sign("mesh-home", roster, &admin).expect("sign roster");
+
+    config
+        .apply_verified_admin_signed_shared_roster(&signed)
+        .expect("apply roster naming a non-member nameserver");
+
+    assert!(config.networks[0].dns_node.is_empty());
+    assert!(!config.networks[0].dns_override);
 }

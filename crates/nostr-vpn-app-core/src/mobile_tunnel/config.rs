@@ -247,6 +247,8 @@ fn mobile_admin_signed_roster(app: &AppConfig) -> Result<Option<SignedRoster>> {
     SignedRoster::sign(
         shared.network_id,
         NetworkRoster {
+            dns_node: shared.dns_node,
+            dns_override: shared.dns_override,
             network_name: shared.name,
             devices: shared.devices,
             admins: shared.admins,

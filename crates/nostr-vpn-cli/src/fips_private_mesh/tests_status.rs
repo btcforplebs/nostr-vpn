@@ -526,6 +526,7 @@
                 admins: Vec::new(),
                 aliases: HashMap::new(),
                 signed_at: 42,
+                ..Default::default()
             },
             signed_roster: None,
         };
@@ -546,6 +547,7 @@
                 admins: vec![admin.public_key().to_hex()],
                 aliases: HashMap::new(),
                 signed_at: 42,
+                ..Default::default()
             },
             &admin,
         )

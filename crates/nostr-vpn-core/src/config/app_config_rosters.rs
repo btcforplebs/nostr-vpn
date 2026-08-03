@@ -49,6 +49,8 @@ impl AppConfig {
             devices,
             admins,
             aliases,
+            dns_node: network.dns_node.clone(),
+            dns_override: network.dns_override,
             updated_at: network.shared_roster_updated_at,
             signed_by: network.shared_roster_signed_by.clone(),
         })
@@ -64,6 +66,8 @@ impl AppConfig {
             devices,
             admins,
             aliases,
+            dns_node,
+            dns_override,
             signed_at,
             signed_by,
         } = update;
@@ -154,6 +158,18 @@ impl AppConfig {
 
         network.devices = devices;
         network.admins = admins;
+        // The admin's nameserver choice only counts while that device is still
+        // on the roster and has not been tombstoned locally.
+        let dns_node = normalize_nostr_pubkey(&dns_node).unwrap_or_default();
+        network.dns_node = if !dns_node.is_empty()
+            && !removed_devices.contains(&dns_node)
+            && network_has_member(network, &dns_node, own_pubkey.as_deref())
+        {
+            dns_node
+        } else {
+            String::new()
+        };
+        network.dns_override = dns_override && !network.dns_node.is_empty();
         if !network_name.trim().is_empty() {
             network.name = network_name.trim().to_string();
         }
@@ -233,11 +249,26 @@ impl AppConfig {
             devices: roster.devices,
             admins: roster.admins,
             aliases: roster.aliases,
+            dns_node: roster.dns_node,
+            dns_override: roster.dns_override,
             signed_at: roster.signed_at,
             signed_by,
         })
     }
 
+}
+
+/// Whether `pubkey` belongs to `network`.
+///
+/// A device's locally stored `devices` list does **not** include itself — own
+/// membership is only added when building the shared roster — so a check
+/// against `devices`/`admins` alone reports "not a member" for this very
+/// device. That silently cleared the network nameserver on the nameserver
+/// device itself.
+fn network_has_member(network: &NetworkConfig, pubkey: &str, own_pubkey: Option<&str>) -> bool {
+    network.devices.iter().any(|device| device == pubkey)
+        || network.admins.iter().any(|admin| admin == pubkey)
+        || own_pubkey == Some(pubkey)
 }
 
 fn local_identity_was_confirmed(network: &NetworkConfig, own_pubkey: &str) -> bool {

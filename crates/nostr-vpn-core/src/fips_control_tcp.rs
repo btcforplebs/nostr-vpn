@@ -642,6 +642,7 @@ mod tests {
                 admins: vec![admin.public_key().to_hex()],
                 aliases: HashMap::new(),
                 signed_at: 42,
+                ..Default::default()
             },
             &admin,
         )

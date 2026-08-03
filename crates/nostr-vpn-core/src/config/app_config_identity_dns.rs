@@ -125,6 +125,51 @@ impl AppConfig {
         }
     }
 
+    /// Mesh address of the network nameserver this device should resolve
+    /// through, or `None` when the override does not apply here.
+    ///
+    /// See [`network_has_member`] for why this cannot just check `devices`.
+    ///
+    /// Returns `None` on the nameserver device itself. That device already runs
+    /// the resolver on port 53, so installing our own stub there would collide
+    /// with it and take the tunnel down with it, and forwarding to our own mesh
+    /// address would loop.
+    pub fn network_dns_nameserver_ipv4(&self) -> Option<Ipv4Addr> {
+        let network = self.active_network_opt()?;
+        if !network.dns_override || network.dns_node.is_empty() {
+            return None;
+        }
+        if self.own_nostr_pubkey_hex().ok().as_deref() == Some(network.dns_node.as_str()) {
+            return None;
+        }
+        if !network_has_member(network, &network.dns_node, self.own_nostr_pubkey_hex().ok().as_deref())
+        {
+            return None;
+        }
+
+        let tunnel_ip = derive_mesh_tunnel_ip(&self.effective_network_id(), &network.dns_node)?;
+        tunnel_ip
+            .split('/')
+            .next()
+            .and_then(|address| address.parse::<Ipv4Addr>().ok())
+    }
+
+    /// Drop a network nameserver that is no longer a member of its network.
+    /// Mirrors [`Self::normalize_selected_exit_node`] for the per-network setting.
+    fn normalize_network_dns_nodes(&mut self) {
+        let own_pubkey = self.own_nostr_pubkey_hex().ok();
+        for network in &mut self.networks {
+            if network.dns_node.is_empty() {
+                network.dns_override = false;
+                continue;
+            }
+            if !network_has_member(network, &network.dns_node, own_pubkey.as_deref()) {
+                network.dns_node.clear();
+                network.dns_override = false;
+            }
+        }
+    }
+
     pub fn self_magic_dns_label(&self) -> Option<String> {
         let own_pubkey_hex = self.own_nostr_pubkey_hex().ok()?;
         self.peer_alias(&own_pubkey_hex)

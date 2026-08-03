@@ -55,3 +55,5 @@ mod exit_dns;
 mod magic_dns;
 #[path = "config_tests/network.rs"]
 mod network;
+#[path = "config_tests/network_dns.rs"]
+mod network_dns;
