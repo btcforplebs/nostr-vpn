@@ -137,6 +137,14 @@ impl NativeAppRuntime {
             enabled: network.enabled,
             network_id: normalize_runtime_network_id(&network.network_id),
             local_is_admin: self.config.is_network_admin(&network.id, own_pubkey_hex),
+            dns_node_npub: if network.dns_node.is_empty() {
+                String::new()
+            } else {
+                npub_for_pubkey_hex(&network.dns_node)
+            },
+            dns_override: network.dns_override,
+            local_is_dns_node: !network.dns_node.is_empty()
+                && network.dns_node == own_pubkey_hex,
             join_requests_enabled: network.listen_for_join_requests,
             join_request_admin_npub: if network.join_request_admin.is_empty() {
                 String::new()

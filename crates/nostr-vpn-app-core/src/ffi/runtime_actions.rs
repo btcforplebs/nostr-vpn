@@ -137,6 +137,15 @@ impl NativeAppRuntime {
                 self.config.set_network_enabled(&network_id, enabled)?;
                 self.save_reload_and_refresh()
             }
+            NativeAppAction::SetNetworkDns {
+                network_id,
+                npub,
+                dns_override,
+            } => {
+                self.config
+                    .set_network_dns(&network_id, &npub, dns_override)?;
+                self.save_reload_and_refresh()
+            }
             NativeAppAction::SetNetworkJoinRequestsEnabled {
                 network_id,
                 enabled,
