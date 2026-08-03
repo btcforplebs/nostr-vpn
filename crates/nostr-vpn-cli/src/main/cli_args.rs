@@ -579,6 +579,14 @@ struct SetArgs {
     exit_dns_through_exit_servers: Option<String>,
     #[arg(long)]
     autoconnect: Option<bool>,
+    /// Roster device (npub or hex) that serves DNS for this network. Admin
+    /// only. Pass an empty value to clear it.
+    #[arg(long)]
+    network_dns_node: Option<String>,
+    /// Force every device on this network to resolve through the network DNS
+    /// device instead of its local network's DNS. Admin only.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    network_dns_override: Option<bool>,
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     join_requests_enabled: Option<bool>,
     #[arg(
