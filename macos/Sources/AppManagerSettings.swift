@@ -166,6 +166,13 @@ extension AppManager {
         dispatch(.renameNetwork(networkId: networkId, name: name), status: "Renaming network")
     }
 
+    func setNetworkDns(networkId: String, npub: String, dnsOverride: Bool) {
+        dispatch(
+            .setNetworkDns(networkId: networkId, npub: npub, dnsOverride: dnsOverride),
+            status: npub.isEmpty ? "Clearing network DNS" : "Saving network DNS"
+        )
+    }
+
     func setNetworkMeshId(networkId: String, meshId: String) {
         dispatch(.setNetworkMeshId(networkId: networkId, meshId: meshId), status: "Saving mesh ID")
     }

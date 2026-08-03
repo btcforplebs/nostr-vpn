@@ -321,6 +321,81 @@ extension RootView {
         }
     }
 
+    /// Admin picks one mesh device to serve DNS for everyone, then decides
+    /// whether that is advisory or enforced. Mirrors `nvpn set
+    /// --network-dns-node` / `--network-dns-override`.
+    @ViewBuilder
+    private func networkDnsRows(_ network: NativeNetworkState) -> some View {
+        GridRow {
+            label("Network DNS")
+            Picker("", selection: networkDnsNodeBinding(network)) {
+                Text("Off").tag("")
+                ForEach(network.participants, id: \.npub) { participant in
+                    Text(deviceName(participant)).tag(participant.npub)
+                }
+            }
+            .labelsHidden()
+            .disabled(!network.localIsAdmin || manager.actionInFlight)
+            if network.localIsDnsNode {
+                Text("this device")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        if !network.dnsNodeNpub.isEmpty {
+            GridRow {
+                label("")
+                Toggle("Override local DNS", isOn: networkDnsOverrideBinding(network))
+                    .disabled(!network.localIsAdmin || manager.actionInFlight)
+                    .gridCellColumns(2)
+            }
+            GridRow {
+                label("")
+                Text(networkDnsHint(network))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .gridCellColumns(2)
+            }
+        }
+    }
+
+    private func networkDnsHint(_ network: NativeNetworkState) -> String {
+        if !network.dnsOverride {
+            return "Selected, but not enforced. Devices keep using their local DNS."
+        }
+        if network.localIsDnsNode {
+            return "This device serves the network's DNS, so it keeps its own resolver settings."
+        }
+        return "All DNS on this network resolves through the selected device. "
+            + "If it goes offline, lookups fail rather than falling back to the local network."
+    }
+
+    private func networkDnsNodeBinding(_ network: NativeNetworkState) -> Binding<String> {
+        Binding(
+            get: { network.dnsNodeNpub },
+            set: { npub in
+                manager.setNetworkDns(
+                    networkId: network.id,
+                    npub: npub,
+                    dnsOverride: npub.isEmpty ? false : network.dnsOverride
+                )
+            }
+        )
+    }
+
+    private func networkDnsOverrideBinding(_ network: NativeNetworkState) -> Binding<Bool> {
+        Binding(
+            get: { network.dnsOverride },
+            set: { enabled in
+                manager.setNetworkDns(
+                    networkId: network.id,
+                    npub: network.dnsNodeNpub,
+                    dnsOverride: enabled
+                )
+            }
+        )
+    }
+
     var networkSettings: some View {
         surface {
             HStack {
@@ -357,6 +432,7 @@ extension RootView {
                             .textSelection(.enabled)
                         copyButton(value: network.networkId, copied: .meshId, systemImage: "doc.on.doc")
                     }
+                    networkDnsRows(network)
                     GridRow {
                         label("")
                         Button(role: .destructive) {
