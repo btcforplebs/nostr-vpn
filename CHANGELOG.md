@@ -4,7 +4,35 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Network-wide DNS override. A network admin picks one roster device as the
+  network nameserver with `nvpn set --network-dns-node <npub>`, and
+  `--network-dns-override` forces every member device to resolve through it
+  instead of its local network's DNS, which is the self-hosted Pi-hole case and
+  also blocks local DNS hijacking. The selection rides the existing
+  admin-signed roster, so members pick it up without reconnecting. Reported by
+  `nvpn status` under `network_dns`. Requires no new privileges and reuses the
+  system-DNS takeover already used for exit nodes, so MagicDNS `.nvpn` names
+  keep resolving locally.
+  - Resolution **fails closed** while the override is on and the nameserver
+    device is unreachable; falling back to local DNS would defeat the point.
+    `nvpn status` reports `reachable` so this is diagnosable.
+  - The nameserver device itself is excluded: it already runs a resolver on
+    port 53, so it keeps its own DNS configuration.
+  - Roster tags are additive, so members on older builds ignore the setting.
+    **Upgrade every admin before enabling it** — an admin on an older build
+    re-signing the roster drops the tags and clears the setting network-wide.
+
 ### Fixed
+
+- Restore system DNS during daemon startup repair. A daemon killed uncleanly
+  while it owned system DNS left macOS resolver files and Windows NRPT rules
+  pointing at a stub that was no longer listening, breaking all name resolution
+  until they were removed by hand.
+- Bump `fips-core`/`fips-endpoint` to 0.4.53 and pass the configured underlay
+  interface to `rebind_network_transports`, so the workspace builds again and a
+  handoff rebind does not unpin an interface-scoped transport.
 
 - Release the iOS UI process's shared Cashu wallet and SQLite locks before
   suspension, then reopen the native core on foreground, preventing
