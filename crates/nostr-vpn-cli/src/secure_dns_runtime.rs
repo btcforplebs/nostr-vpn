@@ -425,11 +425,11 @@ impl SystemDnsGuard {
             let _ = (interface, interface_index);
             let resolver_configs = [
                 (
-                    PathBuf::from("/etc/resolver/nvpn-secure-dns"),
+                    PathBuf::from(MACOS_MANAGED_RESOLVER_PATHS[0]),
                     macos_secure_dns_resolver_config(),
                 ),
                 (
-                    PathBuf::from("/etc/resolver/nvpn"),
+                    PathBuf::from(MACOS_MANAGED_RESOLVER_PATHS[1]),
                     macos_magic_dns_resolver_config(),
                 ),
             ];
@@ -479,6 +479,46 @@ impl SystemDnsGuard {
             }
         }
     }
+}
+
+/// Every resolver file this daemon owns on macOS. `SystemDnsGuard` installs
+/// these and removes them on drop; startup repair clears them after a crash.
+#[cfg(target_os = "macos")]
+pub(crate) const MACOS_MANAGED_RESOLVER_PATHS: [&str; 2] =
+    ["/etc/resolver/nvpn-secure-dns", "/etc/resolver/nvpn"];
+
+/// Clear system DNS state left behind by a daemon that exited uncleanly.
+///
+/// `SystemDnsGuard` reverts on drop, but a SIGKILL, panic, or power loss skips
+/// that and strands the OS pointing at a local stub that is no longer
+/// listening, which breaks *all* name resolution until it is cleared by hand.
+/// The daemon calls this during startup repair so a crashed run self-heals.
+///
+/// Linux is deliberately not handled: `resolvectl` state dies with the link, and
+/// the container `/etc/resolv.conf` path cannot be restored without the
+/// pre-capture baseline, which does not survive the crash either.
+pub(crate) fn revert_stale_system_dns() {
+    #[cfg(target_os = "macos")]
+    for resolver_path in MACOS_MANAGED_RESOLVER_PATHS {
+        let _ = std::fs::remove_file(resolver_path);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = run_windows_powershell(&windows_nrpt_cleanup_script());
+    }
+}
+
+/// Remove our NRPT rules without needing the tunnel interface index, which is
+/// gone by the time startup repair runs.
+#[cfg(any(target_os = "windows", test))]
+fn windows_nrpt_cleanup_script() -> String {
+    concat!(
+        "$displayName = 'nostr-vpn secure DNS'\n",
+        "$comment = 'nostr-vpn authenticated DNS-over-HTTPS stub'\n",
+        "Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $displayName -or $_.Comment -eq $comment } | ForEach-Object { $_ | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue | Out-Null }\n",
+        "Clear-DnsClientCache -ErrorAction SilentlyContinue\n",
+    )
+    .to_string()
 }
 
 #[cfg(target_os = "macos")]
@@ -689,6 +729,20 @@ mod tests {
         let cleanup = windows_secure_dns_uninstall_script(42);
         assert!(cleanup.contains("-InterfaceIndex 42"));
         assert!(cleanup.contains("-ResetServerAddresses"));
+    }
+
+    /// Startup repair runs after the tunnel interface is already gone, so the
+    /// crash cleanup has to match our rules by name rather than by index.
+    #[test]
+    fn windows_crash_cleanup_removes_our_nrpt_rules_without_an_interface_index() {
+        let script = windows_nrpt_cleanup_script();
+
+        assert!(script.contains("'nostr-vpn secure DNS'"));
+        assert!(script.contains("Remove-DnsClientNrptRule"));
+        assert!(
+            !script.contains("-InterfaceIndex"),
+            "the interface is gone by the time repair runs"
+        );
     }
 
     #[test]

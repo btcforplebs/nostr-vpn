@@ -146,6 +146,12 @@ pub(crate) fn repair_saved_network_state(config_path: &Path) -> Result<bool> {
     #[cfg(test)]
     crate::TEST_REPAIR_SAVED_NETWORK_STATE_CALLS.fetch_add(1, Ordering::Relaxed);
 
+    // Routes and firewall state are not the only thing an unclean exit strands:
+    // a daemon that owned system DNS leaves the OS resolving through a stub that
+    // is no longer listening. Clear that first, so a crashed run cannot leave the
+    // machine with no working DNS at all.
+    crate::secure_dns_runtime::revert_stale_system_dns();
+
     #[cfg(target_os = "macos")]
     {
         let path = daemon_network_cleanup_file_path(config_path);
