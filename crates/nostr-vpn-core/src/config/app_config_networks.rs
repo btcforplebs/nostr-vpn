@@ -381,6 +381,10 @@ impl AppConfig {
 
     /// Point a network at one of its own members as the network nameserver.
     /// Pass an empty `dns_node` to clear the selection.
+    ///
+    /// Admin-only, enforced here rather than at each caller: a non-admin's
+    /// roster is rejected by every peer anyway, so failing loudly beats
+    /// writing a setting that would never take effect.
     pub fn set_network_dns(
         &mut self,
         network_id: &str,
@@ -397,6 +401,14 @@ impl AppConfig {
             let network = self
                 .network_by_id_mut(network_id)
                 .ok_or_else(|| anyhow::anyhow!("network not found"))?;
+            if own_pubkey
+                .as_deref()
+                .is_none_or(|own| !network.admins.iter().any(|admin| admin == own))
+            {
+                return Err(anyhow::anyhow!(
+                    "only a network admin can change the network DNS settings"
+                ));
+            }
             if !normalized.is_empty()
                 && !network_has_member(network, &normalized, own_pubkey.as_deref())
             {

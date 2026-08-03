@@ -601,12 +601,6 @@ async fn run_command(command: Command) -> Result<()> {
                     .ok_or_else(|| anyhow!("activate a network before changing network DNS"))?
                     .id
                     .clone();
-                let own_pubkey = app.own_nostr_pubkey_hex()?;
-                if !app.is_network_admin(&network_id, &own_pubkey) {
-                    return Err(anyhow!(
-                        "only a network admin can change the network DNS settings"
-                    ));
-                }
                 // Either flag may be set on its own, so carry the other one over
                 // rather than resetting it.
                 let (current_node, current_override) = app
