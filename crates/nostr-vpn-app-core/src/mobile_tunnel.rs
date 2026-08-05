@@ -80,4 +80,5 @@ mod tests {
     include!("mobile_tunnel/tests_runtime_future_presence.rs");
     include!("mobile_tunnel/tests_paid_route.rs");
     include!("mobile_tunnel/tests_config.rs");
+    include!("mobile_tunnel/tests_network_dns.rs");
 }
