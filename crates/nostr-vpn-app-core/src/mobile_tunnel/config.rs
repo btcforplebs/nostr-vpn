@@ -165,6 +165,13 @@ pub(crate) struct MobileTunnelConfig {
     /// `MagicDNS` requires nvpn to own DNS resolution.
     #[serde(default)]
     pub(crate) magic_dns_server: String,
+    /// Mesh address of the network's nameserver when the admin has turned the
+    /// network DNS override on, empty otherwise. Mirrors `network_dns` on the
+    /// daemon's `FipsPrivateTunnelConfig`: without it, a mobile device is a
+    /// full roster member that silently ignores the network's DNS policy.
+    /// Already `None` on the nameserver itself, so it never points at us.
+    #[serde(default)]
+    pub(crate) network_dns: String,
     /// Shared Exit DNS policy. Existing configs deserialize to Automatic.
     #[serde(default)]
     pub(crate) exit_dns: ExitDnsConfig,
@@ -297,6 +304,14 @@ fn serialized_mobile_internet_source(app: &AppConfig) -> Option<String> {
 fn mobile_exit_dns_resolver_config(
     config: &MobileTunnelConfig,
 ) -> Result<ExitDnsResolverConfig> {
+    // Admin network policy outranks this device's own exit DNS preference, and
+    // it applies with no exit node at all, so this branch comes first — same
+    // precedence the daemon uses in FipsPrivateTunnelConfig.
+    if let Some(nameserver) = parse_ipv4(&config.network_dns) {
+        return Ok(ExitDnsResolverConfig::ThroughExit {
+            servers: vec![IpAddr::V4(nameserver)],
+        });
+    }
     let exit_active = config.wireguard_exit.is_some()
         || config
             .route_targets
@@ -463,8 +478,14 @@ impl MobileTunnelConfig {
             } else {
                 (None, Vec::new())
             };
+        // The network DNS override is enforced by NATing in-tunnel DNS to the
+        // nameserver, so it needs the local responder even with no exit node
+        // and MagicDNS turned off — otherwise the OS installs no in-tunnel
+        // resolver and the override is silently ignored.
+        let network_dns = app.network_dns_nameserver_ipv4();
         let local_dns_required = wireguard_exit.is_some()
             || selected_peer_exit
+            || network_dns.is_some()
             || !app.magic_dns_suffix.trim().is_empty();
         let (dns_servers, magic_dns_server) = if local_dns_required {
             let server = nostr_vpn_core::MESH_MAGIC_DNS_SERVER.to_string();
@@ -512,6 +533,9 @@ impl MobileTunnelConfig {
             excluded_routes,
             dns_servers,
             magic_dns_server,
+            network_dns: network_dns
+                .map(|nameserver| nameserver.to_string())
+                .unwrap_or_default(),
             exit_dns: app.exit_dns.clone(),
             wireguard_exit,
             join_requests_enabled: app.join_requests_enabled(),
