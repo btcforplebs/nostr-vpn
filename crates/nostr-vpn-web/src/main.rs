@@ -22,8 +22,9 @@ mod ui_types;
 
 use crate::ui_types::{
     AliasRequest, EndpointHintsRequest, ImportJoinRequest, JoinRequestAction, ManualNetworkRequest,
-    NameRequest, NearbyPeerRequest, NetworkEnabledRequest, NetworkIdRequest, NetworkMeshRequest,
-    NetworkNameRequest, NetworkPeerRequest, ParticipantRequest, QrMatrixRequest, QrMatrixResponse,
+    NameRequest, NearbyPeerRequest, NetworkDnsRequest, NetworkEnabledRequest, NetworkIdRequest,
+    NetworkMeshRequest, NetworkNameRequest, NetworkPeerRequest, ParticipantRequest, QrMatrixRequest,
+    QrMatrixResponse,
 };
 
 const NVPN_BIN_ENV: &str = "NVPN_CLI_PATH";
@@ -130,6 +131,7 @@ async fn main() -> Result<()> {
         .route("/api/set_network_mesh_id", post(set_network_mesh_id))
         .route("/api/remove_network", post(remove_network))
         .route("/api/set_network_enabled", post(set_network_enabled))
+        .route("/api/set_network_dns", post(set_network_dns))
         .route(
             "/api/set_network_join_requests_enabled",
             post(set_network_join_requests_enabled),
@@ -316,6 +318,20 @@ async fn set_network_enabled(
         NativeAppAction::SetNetworkEnabled {
             network_id: request.network_id,
             enabled: request.enabled,
+        },
+    )
+}
+
+async fn set_network_dns(
+    State(state): State<ServerState>,
+    Json(request): Json<NetworkDnsRequest>,
+) -> ApiResult<UiStateResponse> {
+    dispatch(
+        &state,
+        NativeAppAction::SetNetworkDns {
+            network_id: request.network_id,
+            npub: request.npub,
+            dns_override: request.dns_override,
         },
     )
 }

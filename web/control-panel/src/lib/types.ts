@@ -79,6 +79,9 @@ export type NetworkView = {
   enabled: boolean;
   networkId: string;
   localIsAdmin: boolean;
+  dnsNodeNpub: string;
+  dnsOverride: boolean;
+  localIsDnsNode: boolean;
   adminNpubs: string[];
   joinRequestsEnabled: boolean;
   joinRequestAdminNpub: string;

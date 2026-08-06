@@ -57,6 +57,14 @@ pub(crate) struct NetworkPeerRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct NetworkDnsRequest {
+    pub network_id: String,
+    pub npub: String,
+    pub dns_override: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ImportJoinRequest {
     pub request: String,
 }

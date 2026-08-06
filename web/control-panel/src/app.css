@@ -874,6 +874,7 @@ code {
 .issue-row,
 .network-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1086,6 +1087,17 @@ input.invalid {
   gap: 10px;
   flex: 1;
   min-width: 0;
+}
+
+.network-dns {
+  flex-basis: 100%;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.network-dns > label > span .badge {
+  margin-left: 6px;
 }
 
 .qr-frame {
