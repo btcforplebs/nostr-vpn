@@ -150,7 +150,7 @@ pub(crate) fn repair_saved_network_state(config_path: &Path) -> Result<bool> {
     // a daemon that owned system DNS leaves the OS resolving through a stub that
     // is no longer listening. Clear that first, so a crashed run cannot leave the
     // machine with no working DNS at all.
-    crate::secure_dns_runtime::revert_stale_system_dns();
+    crate::secure_dns_runtime::revert_stale_system_dns(config_path);
 
     #[cfg(target_os = "macos")]
     {

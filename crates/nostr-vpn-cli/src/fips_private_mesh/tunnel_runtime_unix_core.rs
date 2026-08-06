@@ -220,6 +220,8 @@ impl FipsPrivateTunnelRuntime {
                         .fips_host
                         .as_ref()
                         .map(|_| Arc::clone(self.mesh.endpoint())),
+                    config.network_dns,
+                    secure_dns_config_path(config),
                 )
                 .await?,
             );
@@ -938,4 +940,15 @@ impl FipsPrivateTunnelRuntime {
         }
         events
     }
+}
+
+/// Where the daemon may persist DNS restore state. Derived from the store path
+/// the rest of the runtime already threads through, and `None` when that is
+/// unset so a default-constructed config can never make us write into the
+/// process's working directory.
+fn secure_dns_config_path(config: &FipsPrivateTunnelConfig) -> Option<std::path::PathBuf> {
+    let path = &config.control_pubsub_store_path;
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|_| path.clone())
 }

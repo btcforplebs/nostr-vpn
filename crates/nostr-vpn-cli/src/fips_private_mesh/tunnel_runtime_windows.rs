@@ -46,6 +46,11 @@ impl FipsPrivateTunnelRuntime {
                     config.magic_dns_records.clone(),
                     config.exit_dns_resolver_config(false)?,
                     None,
+                    // Windows applies DNS through NRPT policy, which already
+                    // covers every lookup; only macOS needs the primary
+                    // resolver rewritten.
+                    None,
+                    None,
                 )
                 .await?,
             )
@@ -147,6 +152,11 @@ impl FipsPrivateTunnelRuntime {
                     Some(self.interface_index),
                     config.magic_dns_records.clone(),
                     config.exit_dns_resolver_config(false)?,
+                    None,
+                    // Windows applies DNS through NRPT policy, which already
+                    // covers every lookup; only macOS needs the primary
+                    // resolver rewritten.
+                    None,
                     None,
                 )
                 .await?,

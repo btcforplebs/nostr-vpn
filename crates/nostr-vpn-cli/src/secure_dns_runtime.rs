@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 #[cfg(target_os = "macos")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::process::Command;
 use std::sync::{Arc, RwLock};
@@ -49,6 +49,8 @@ impl SecureDnsRuntime {
         records: HashMap<String, Ipv4Addr>,
         resolver_config: ExitDnsResolverConfig,
         fips_endpoint: FipsDnsEndpoint,
+        network_dns: Option<Ipv4Addr>,
+        config_path: Option<PathBuf>,
     ) -> Result<Self> {
         let udp = Arc::new(
             tokio::net::UdpSocket::bind(SECURE_DNS_BIND)
@@ -72,7 +74,12 @@ impl SecureDnsRuntime {
             Arc::clone(&records),
             fips_endpoint,
         ));
-        let system_dns = match SystemDnsGuard::install(interface, interface_index) {
+        let system_dns = match SystemDnsGuard::install(
+            interface,
+            interface_index,
+            network_dns,
+            config_path.as_deref(),
+        ) {
             Ok(guard) => guard,
             Err(error) => {
                 udp_task.abort();
@@ -355,6 +362,10 @@ struct SystemDnsGuard {
     linux: LinuxDnsRestore,
     #[cfg(target_os = "macos")]
     resolver_paths: Vec<PathBuf>,
+    /// Set only when the network DNS override took over the primary resolver,
+    /// which is the one case where /etc/resolver files are not enough.
+    #[cfg(target_os = "macos")]
+    primary_dns: Option<(crate::macos_primary_dns::PrimaryDnsRestoreState, PathBuf)>,
     #[cfg(target_os = "windows")]
     interface_index: u32,
 }
@@ -380,7 +391,13 @@ fn read_linux_resolv_conf(path: &std::path::Path) -> Result<Vec<u8>> {
 }
 
 impl SystemDnsGuard {
-    fn install(interface: &str, interface_index: Option<u32>) -> Result<Self> {
+    fn install(
+        interface: &str,
+        interface_index: Option<u32>,
+        network_dns: Option<Ipv4Addr>,
+        config_path: Option<&Path>,
+    ) -> Result<Self> {
+        let _ = (network_dns, config_path);
         #[cfg(target_os = "linux")]
         {
             let _ = interface_index;
@@ -448,7 +465,31 @@ impl SystemDnsGuard {
                 }
                 resolver_paths.push(resolver_path);
             }
-            return Ok(Self { resolver_paths });
+
+            // /etc/resolver files are supplemental on macOS: a `domain .` entry
+            // is loaded as a domain-less resolver the OS never consults for
+            // ordinary lookups, so the override would report success while
+            // every app kept using the local router's DNS. The network's
+            // nameserver is a real resolver on port 53, so point the services
+            // straight at it instead of at our stub.
+            let primary_dns = match (network_dns, config_path) {
+                (Some(nameserver), Some(config_path)) => {
+                    match crate::macos_primary_dns::apply(&[nameserver.to_string()], config_path) {
+                        Ok(state) => Some((state, config_path.to_path_buf())),
+                        Err(error) => {
+                            for installed_path in &resolver_paths {
+                                let _ = std::fs::remove_file(installed_path);
+                            }
+                            return Err(error).context("failed to apply network DNS on macOS");
+                        }
+                    }
+                }
+                _ => None,
+            };
+            return Ok(Self {
+                resolver_paths,
+                primary_dns,
+            });
         }
 
         #[cfg(target_os = "windows")]
@@ -497,10 +538,14 @@ pub(crate) const MACOS_MANAGED_RESOLVER_PATHS: [&str; 2] =
 /// Linux is deliberately not handled: `resolvectl` state dies with the link, and
 /// the container `/etc/resolv.conf` path cannot be restored without the
 /// pre-capture baseline, which does not survive the crash either.
-pub(crate) fn revert_stale_system_dns() {
+pub(crate) fn revert_stale_system_dns(config_path: &Path) {
+    let _ = config_path;
     #[cfg(target_os = "macos")]
-    for resolver_path in MACOS_MANAGED_RESOLVER_PATHS {
-        let _ = std::fs::remove_file(resolver_path);
+    {
+        crate::macos_primary_dns::restore_stale(config_path);
+        for resolver_path in MACOS_MANAGED_RESOLVER_PATHS {
+            let _ = std::fs::remove_file(resolver_path);
+        }
     }
     #[cfg(target_os = "windows")]
     {
@@ -551,6 +596,9 @@ impl Drop for SystemDnsGuard {
         }
         #[cfg(target_os = "macos")]
         {
+            if let Some((state, config_path)) = &self.primary_dns {
+                crate::macos_primary_dns::restore(state, config_path);
+            }
             for resolver_path in &self.resolver_paths {
                 let _ = std::fs::remove_file(resolver_path);
             }

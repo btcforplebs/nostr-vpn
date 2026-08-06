@@ -12,6 +12,8 @@ mod linux_network;
 #[cfg(any(target_os = "macos", test))]
 mod macos_network;
 #[cfg(any(target_os = "macos", test))]
+mod macos_primary_dns;
+#[cfg(any(target_os = "macos", test))]
 mod macos_service;
 mod network_signaling;
 mod pairing_qr;
