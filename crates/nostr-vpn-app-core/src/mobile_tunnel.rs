@@ -71,6 +71,7 @@ include!("mobile_tunnel/endpoint_control.rs");
 include!("mobile_tunnel/runtime_state.rs");
 include!("mobile_tunnel/endpoint_config.rs");
 include!("mobile_tunnel/magic_dns.rs");
+include!("mobile_tunnel/dns_sinkhole.rs");
 #[cfg(feature = "paid-exit")]
 include!("mobile_tunnel/paid_exit_offer.rs");
 
@@ -88,5 +89,6 @@ mod tests {
     include!("mobile_tunnel/tests_runtime_future_presence.rs");
     include!("mobile_tunnel/tests_paid_route.rs");
     include!("mobile_tunnel/tests_config.rs");
+    include!("mobile_tunnel/tests_dns_sinkhole.rs");
     include!("mobile_tunnel/tests_network_dns.rs");
 }

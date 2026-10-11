@@ -712,6 +712,7 @@
                         &mut secure_dns,
                         Some(dns_server),
                         None,
+                        false,
                         vec![dns_packet, doh_packet],
                     ),
                 )
