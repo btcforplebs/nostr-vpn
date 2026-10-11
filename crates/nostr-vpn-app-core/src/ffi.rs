@@ -12,6 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use nostr_vpn_core::config::PaidExitSellerEgress;
 use nostr_vpn_core::config::{
     AppConfig, ExitDnsMode, ExitDohProvider, FiatCurrency, InternetSource, NetworkConfig,
+    NetworkDnsRoute,
     NostrPubsubMode, PendingInboundJoinRequest, PendingOutboundJoinRequest, derive_mesh_tunnel_ip,
     maybe_autoconfigure_node, normalize_advertised_route, normalize_magic_dns_label,
     normalize_nostr_pubkey, normalize_relay_urls, normalize_runtime_network_id,
@@ -261,6 +262,20 @@ struct ExitNodeUiStatus {
     text: String,
 }
 
+/// One line telling the user where their lookups go under the network DNS
+/// override. Empty when the override is off. `blocked` means lookups are
+/// failing on purpose and the line should read as an alert.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct NetworkDnsUiStatus {
+    blocked: bool,
+    text: String,
+}
+
+/// How long a forwarded lookup may go unanswered before the nameserver is
+/// reported as not answering. Past one ordinary resolver timeout, so a single
+/// lost packet on a busy network does not raise the alarm.
+const NETWORK_DNS_UNANSWERED_ALERT_SECS: u64 = 6;
+
 include!("ffi/runtime_lifecycle.rs");
 include!("ffi/runtime_paid_exit.rs");
 include!("ffi/runtime_actions.rs");
@@ -274,6 +289,7 @@ mod tests {
     include!("ffi/tests_core.rs");
     include!("ffi/tests_wallet_history.rs");
     include!("ffi/tests_network.rs");
+    include!("ffi/tests_network_dns_status.rs");
     include!("ffi/tests_network_join_actions.rs");
     include!("ffi/tests_service.rs");
     include!("ffi/tests_service_wireguard.rs");

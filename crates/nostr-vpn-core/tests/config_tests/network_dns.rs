@@ -40,8 +40,9 @@ fn set_network_dns_clears_the_selection_and_the_override() {
     );
 }
 
+/// Removing the box must not quietly hand every member back to local DNS.
 #[test]
-fn removing_the_dns_device_clears_the_network_dns_selection() {
+fn removing_the_dns_device_clears_the_selection_and_fails_closed() {
     let own = Keys::generate();
     let pihole = Keys::generate().public_key().to_hex();
     let mut config = AppConfig::generated();
@@ -57,9 +58,11 @@ fn removing_the_dns_device_clears_the_network_dns_selection() {
     config
         .remove_device_from_network(&network_id, &pihole)
         .expect("remove the nameserver device");
+    activate_first_network(&mut config);
 
     assert!(config.networks[0].dns_node.is_empty());
-    assert!(!config.networks[0].dns_override);
+    assert!(config.networks[0].dns_override);
+    assert_eq!(config.network_dns_route(), NetworkDnsRoute::Unavailable);
 }
 
 fn network_dns_fixture(dns_override: bool) -> (AppConfig, String, String) {
@@ -128,8 +131,42 @@ fn ensure_defaults_drops_a_network_dns_node_that_left_the_roster() {
     config.ensure_defaults();
 
     assert!(config.networks[0].dns_node.is_empty());
-    assert!(!config.networks[0].dns_override);
+    assert!(config.networks[0].dns_override);
     assert!(config.network_dns_nameserver_ipv4().is_none());
+    assert_eq!(config.network_dns_route(), NetworkDnsRoute::Unavailable);
+}
+
+#[test]
+fn network_dns_route_names_each_state() {
+    let (config, _own, pihole) = network_dns_fixture(true);
+    let expected = derive_mesh_tunnel_ip(&config.effective_network_id(), &pihole)
+        .expect("derive nameserver tunnel ip");
+    let NetworkDnsRoute::Nameserver(nameserver) = config.network_dns_route() else {
+        panic!("a member nameserver must be forwarded to");
+    };
+    assert_eq!(format!("{nameserver}/32"), expected);
+
+    let (config, _own, _pihole) = network_dns_fixture(false);
+    assert_eq!(config.network_dns_route(), NetworkDnsRoute::Off);
+
+    let (mut config, own, _pihole) = network_dns_fixture(true);
+    let network_id = config.networks[0].id.clone();
+    config
+        .set_network_dns(&network_id, &own, true)
+        .expect("point the network at this device");
+    assert_eq!(config.network_dns_route(), NetworkDnsRoute::ServesNetwork);
+}
+
+/// A device can drop the nameserver locally without the admin's roster
+/// changing: a tombstone in `removed_devices`, or a roster that no longer
+/// lists it. Both must fail closed, not fall back to local DNS.
+#[test]
+fn network_dns_route_is_unavailable_for_a_nameserver_that_is_not_a_member() {
+    let (mut config, own, _pihole) = network_dns_fixture(true);
+    config.networks[0].devices = vec![own];
+
+    assert!(config.networks[0].dns_override);
+    assert_eq!(config.network_dns_route(), NetworkDnsRoute::Unavailable);
 }
 
 /// Guards every "re-sign the roster from local config" site. The previous

@@ -5,13 +5,13 @@ use std::fs::OpenOptions;
 use std::io::Write;
 #[cfg(test)]
 use std::net::UdpSocket;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 #[cfg(target_os = "android")]
 use std::os::raw::c_int;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex, RwLock,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, Mutex, OnceLock, RwLock,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,7 +23,8 @@ use fips_endpoint::{
 };
 use nostr_sdk::prelude::PublicKey;
 use nostr_vpn_core::config::{
-    AppConfig, ExitDnsConfig, ExitDnsResolverConfig, MESH_TUNNEL_IPV4_CIDR, WireGuardExitConfig,
+    AppConfig, ExitDnsConfig, ExitDnsResolverConfig, MESH_TUNNEL_IPV4_CIDR, NetworkDnsRoute,
+    WireGuardExitConfig,
     derive_mesh_tunnel_ip, effective_fips_nostr_relays, maybe_autoconfigure_node,
     normalize_fips_transport_address, normalize_nostr_pubkey, normalize_runtime_network_id,
     split_peer_transport_addr,

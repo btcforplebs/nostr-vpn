@@ -707,7 +707,7 @@ impl MobileSecureDnsDispatch {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn dispatch_mobile_outbound_packets(
     endpoint: &FipsEndpoint,
     mesh: &MobileMesh,
@@ -731,7 +731,12 @@ async fn dispatch_mobile_outbound_packets(
         // The network DNS override routes public resolvers into the tunnel so
         // nothing can resolve around the network nameserver. Refuse them before
         // any mesh or exit routing can carry them out.
-        if dns_sinkhole {
+        // Plain DNS to a sinkholed resolver is redirected to the nameserver
+        // rather than refused; see `redirect_public_resolver_query`.
+        let redirected = dns_sinkhole
+            && exit_dns_nat
+                .is_some_and(|nat| nat.redirect_public_resolver_query(&mut packet).is_some());
+        if dns_sinkhole && !redirected {
             match dns_sinkhole_verdict(&packet) {
                 DnsSinkholeVerdict::Pass => {}
                 DnsSinkholeVerdict::Drop => continue,

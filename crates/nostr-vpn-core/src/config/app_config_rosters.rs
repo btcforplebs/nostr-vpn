@@ -166,7 +166,8 @@ impl AppConfig {
         network.devices = devices;
         network.admins = admins;
         // The admin's nameserver choice only counts while that device is still
-        // on the roster and has not been tombstoned locally.
+        // on the roster and has not been tombstoned locally. The override does
+        // not depend on it: an override with no usable nameserver fails closed.
         let dns_node = normalize_nostr_pubkey(&dns_node).unwrap_or_default();
         network.dns_node = if !dns_node.is_empty()
             && !removed_devices.contains(&dns_node)
@@ -176,7 +177,7 @@ impl AppConfig {
         } else {
             String::new()
         };
-        network.dns_override = dns_override && !network.dns_node.is_empty();
+        network.dns_override = dns_override;
         if !network_name.trim().is_empty() {
             network.name = network_name.trim().to_string();
         }

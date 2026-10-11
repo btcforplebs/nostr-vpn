@@ -371,6 +371,7 @@ mod tests {
         assert!(!decoded.dns_override);
     }
 
+    /// The nameserver goes, the override stays: members fail closed on it.
     #[test]
     fn signed_roster_drops_a_dns_node_that_left_the_roster() {
         let admin = Keys::generate();
@@ -383,11 +384,11 @@ mod tests {
         let decoded = signed.roster().expect("decode roster");
 
         assert!(decoded.dns_node.is_empty());
-        assert!(!decoded.dns_override);
+        assert!(decoded.dns_override);
     }
 
     #[test]
-    fn signed_roster_keeps_override_off_without_a_dns_node() {
+    fn signed_roster_keeps_the_override_without_a_dns_node() {
         let admin = Keys::generate();
         let member = Keys::generate().public_key().to_hex();
         let mut roster = dns_roster(String::new(), true, vec![member]);
@@ -397,7 +398,7 @@ mod tests {
         let decoded = signed.roster().expect("decode roster");
 
         assert!(decoded.dns_node.is_empty());
-        assert!(!decoded.dns_override);
+        assert!(decoded.dns_override);
     }
 
     /// A bad nameserver value must not stop membership changes from publishing.
@@ -413,6 +414,6 @@ mod tests {
 
         assert_eq!(decoded.devices, vec![member]);
         assert!(decoded.dns_node.is_empty());
-        assert!(!decoded.dns_override);
+        assert!(decoded.dns_override);
     }
 }
