@@ -164,6 +164,11 @@
             config.local_address_ipv6, MOBILE_SINKHOLE_LOCAL_IPV6,
             "IPv6 resolver routes need an IPv6 address on the tun"
         );
+        assert!(
+            config.mtu >= 1280,
+            "Linux refuses IPv6 on an interface below 1280, got {}",
+            config.mtu
+        );
     }
 
     #[test]
@@ -177,6 +182,7 @@
             config.route_targets
         );
         assert!(config.local_address_ipv6.is_empty());
+        assert_eq!(config.mtu, nostr_vpn_core::MESH_TUNNEL_MTU, "no IPv6 on the tun, no MTU change");
     }
 
     /// Runs one outbound batch through the real dispatcher with a `WireGuard` exit
@@ -440,6 +446,10 @@
         nat.flows.lock().unwrap().entries.len()
     }
 
+    fn stub_query(client_port: u16, query_id: u16) -> Vec<u8> {
+        dns_udp_v4(parse_ipv4(nostr_vpn_core::MESH_MAGIC_DNS_SERVER).unwrap(), client_port, query_id)
+    }
+
     /// Box off answers nothing, and any app can spray UDP/53 at 8.8.8.8: the
     /// table must stay bounded for as long as the tunnel is up.
     #[test]
@@ -449,26 +459,33 @@
         for index in 0..10_000_u32 {
             let port = 20_000 + u16::try_from(index % 40_000).unwrap();
             let mut query = dns_udp_v4(Ipv4Addr::new(8, 8, 8, 8), port, u16::try_from(index % 65_536).unwrap());
-            assert!(nat.redirect_public_resolver_query_at(&mut query, now).is_some());
+            nat.redirect_public_resolver_query_at(&mut query, now);
+        }
+        assert_eq!(flow_count(&nat), MOBILE_DNS_REDIRECT_CAPACITY);
+        for index in 0..10_000_u16 {
+            let mut query = stub_query(30_000 + index, index);
+            nat.rewrite_query(&mut query);
         }
         assert_eq!(flow_count(&nat), MOBILE_DNS_FLOW_CAPACITY);
     }
 
-    /// Tron's probe: one socket issuing 1024 queries used to evict another
+    /// Tron's 15: one socket issuing 2048 queries used to evict another
     /// app's pending lookup, whose answer then matched nothing while the
     /// status line stayed green.
     #[test]
-    fn a_full_table_evicts_the_sprayers_flows_not_another_apps() {
+    fn one_socket_cannot_take_more_than_its_share() {
         let nameserver = Ipv4Addr::new(10, 44, 0, 53);
         let nat = nameserver_nat(nameserver);
         let now = Instant::now();
         let mut victim = dns_udp_v4(Ipv4Addr::new(1, 1, 1, 1), 41_000, 0xbeef);
         nat.redirect_public_resolver_query_at(&mut victim, now).unwrap();
-        for query_id in 0..2048_u16 {
-            let mut spray = dns_udp_v4(Ipv4Addr::new(8, 8, 8, 8), 50_000, query_id);
-            assert!(nat.redirect_public_resolver_query_at(&mut spray, now).is_some());
-        }
-        assert_eq!(flow_count(&nat), MOBILE_DNS_FLOW_CAPACITY);
+        let admitted = (0..2048_u16)
+            .filter(|query_id| {
+                let mut spray = dns_udp_v4(Ipv4Addr::new(8, 8, 8, 8), 50_000, *query_id);
+                nat.redirect_public_resolver_query_at(&mut spray, now).is_some()
+            })
+            .count();
+        assert_eq!(admitted, MOBILE_DNS_FLOWS_PER_PORT);
 
         let mut answer = dns_answer_v4(nameserver, 41_000, 0xbeef);
         assert!(
@@ -476,6 +493,54 @@
             "the other app's lookup survives the spray"
         );
         assert_eq!(&answer[12..16], &[1, 1, 1, 1]);
+    }
+
+    /// Tron's 17: one flow per port on low port numbers used to make a real
+    /// app with several lookups in flight the preferred eviction victim. Now
+    /// nothing live is evicted, and the stub keeps room for the system
+    /// resolver whatever the redirect path is doing.
+    #[test]
+    fn a_many_port_spray_never_evicts_live_lookups_or_starves_the_stub() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let nat = nameserver_nat(nameserver);
+        let now = Instant::now();
+        for query_id in 0..4_u16 {
+            let mut lookup = dns_udp_v4(Ipv4Addr::new(1, 1, 1, 1), 45_000, query_id);
+            nat.redirect_public_resolver_query_at(&mut lookup, now).unwrap();
+        }
+        for port in 1025..1025 + 4096_u16 {
+            let mut spray = dns_udp_v4(Ipv4Addr::new(8, 8, 8, 8), port, 7);
+            nat.redirect_public_resolver_query_at(&mut spray, now);
+        }
+        for query_id in 0..4_u16 {
+            let mut answer = dns_answer_v4(nameserver, 45_000, query_id);
+            assert!(
+                nat.rewrite_response_at(&mut answer, now + Duration::from_secs(2)),
+                "lookup {query_id} was evicted"
+            );
+        }
+        let mut system = stub_query(46_000, 0x5150);
+        assert!(nat.rewrite_query(&mut system).is_some(), "the stub still has room");
+    }
+
+    /// Even a spray through the stub, which looks exactly like the system
+    /// resolver, fills the table and then gets refused; it never pushes out a
+    /// lookup that is already waiting for its answer.
+    #[test]
+    fn a_full_table_refuses_newcomers_instead_of_evicting() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let nat = nameserver_nat(nameserver);
+        let mut waiting = stub_query(45_000, 0x0bad);
+        assert!(nat.rewrite_query(&mut waiting).is_some());
+        let admitted = (0..4096_u16)
+            .filter(|index| {
+                let mut spray = stub_query(1025 + index, 7);
+                nat.rewrite_query(&mut spray).is_some()
+            })
+            .count();
+        assert_eq!(admitted, MOBILE_DNS_FLOW_CAPACITY - 1);
+        let mut answer = dns_answer_v4(nameserver, 45_000, 0x0bad);
+        assert!(nat.rewrite_response(&mut answer), "the waiting lookup was evicted");
     }
 
     #[test]

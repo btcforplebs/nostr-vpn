@@ -34,6 +34,16 @@ enum MobileDnsFlowOrigin {
     V6 { resolver: Ipv6Addr, client: Ipv6Addr },
 }
 
+impl MobileDnsFlowOrigin {
+    /// Sent straight to a public resolver rather than to the stub.
+    fn is_redirect(self) -> bool {
+        match self {
+            Self::V4(resolver) => is_dns_sinkhole_address(IpAddr::V4(resolver)),
+            Self::V6 { .. } => true,
+        }
+    }
+}
+
 struct MobileDnsFlowEntry {
     origin: MobileDnsFlowOrigin,
     last_seen: Instant,
@@ -44,6 +54,10 @@ struct MobileDnsFlowEntry {
 /// Bounded: a nameserver that is off answers nothing, and any app can spray
 /// UDP/53 at a listed resolver, so entries must expire on their own.
 const MOBILE_DNS_FLOW_CAPACITY: usize = 1024;
+/// One socket's share. A resolver pipelines a handful of lookups per socket.
+const MOBILE_DNS_FLOWS_PER_PORT: usize = 32;
+/// Redirected queries never take the half of the table the stub relies on.
+const MOBILE_DNS_REDIRECT_CAPACITY: usize = MOBILE_DNS_FLOW_CAPACITY / 2;
 /// Resolvers retry long before this; an unanswered UDP flow is dead by then.
 const MOBILE_DNS_UDP_FLOW_TTL: Duration = Duration::from_secs(15);
 const MOBILE_DNS_TCP_FLOW_IDLE: Duration = Duration::from_secs(60);
@@ -110,10 +124,8 @@ impl MobileDnsFlowTable {
         if self.entries.len() >= MOBILE_DNS_FLOW_CAPACITY {
             self.sweep(now);
         }
-        if self.entries.len() >= MOBILE_DNS_FLOW_CAPACITY
-            && let Some(victim) = self.eviction_victim()
-        {
-            self.entries.remove(&victim);
+        if !self.admits(&flow, origin, now) {
+            return false;
         }
         self.entries.insert(
             flow,
@@ -126,24 +138,45 @@ impl MobileDnsFlowTable {
         true
     }
 
-    /// The oldest flow of the client port holding the most flows. Evicting the
-    /// oldest flow overall would let one socket spraying queries push every
-    /// other app's pending lookup out, silently; this way the sprayer only
-    /// evicts its own.
-    fn eviction_victim(&self) -> Option<MobileWireGuardDnsFlow> {
-        let mut per_port: HashMap<u16, usize> = HashMap::new();
-        for flow in self.entries.keys() {
-            *per_port.entry(flow.client_port).or_default() += 1;
+    /// Admission, not eviction: a live flow is never pushed out to make room,
+    /// because its answer would then match nothing while every other flow
+    /// keeps getting answered and the status line stays green. Instead a full
+    /// table refuses the newcomer, one client port may hold only its share,
+    /// and queries redirected from hard-coded resolvers (which any app can
+    /// send from as many ports as it likes) may fill only part of the table,
+    /// so the system resolver's lookups through the stub always have room.
+    fn admits(
+        &self,
+        flow: &MobileWireGuardDnsFlow,
+        origin: MobileDnsFlowOrigin,
+        now: Instant,
+    ) -> bool {
+        if self.entries.len() >= MOBILE_DNS_FLOW_CAPACITY {
+            return false;
         }
-        let busiest = per_port
-            .into_iter()
-            .max_by_key(|(port, count)| (*count, *port))
-            .map(|(port, _)| port)?;
-        self.entries
+        let same_port = self
+            .entries
             .iter()
-            .filter(|(flow, _)| flow.client_port == busiest)
-            .min_by_key(|(_, entry)| entry.last_seen)
-            .map(|(flow, _)| *flow)
+            .filter(|(held, entry)| {
+                held.client_port == flow.client_port && !Self::expired(held, entry, now)
+            })
+            .count();
+        if same_port >= MOBILE_DNS_FLOWS_PER_PORT {
+            return false;
+        }
+        if origin.is_redirect() {
+            let redirected = self
+                .entries
+                .iter()
+                .filter(|(held, entry)| {
+                    entry.origin.is_redirect() && !Self::expired(held, entry, now)
+                })
+                .count();
+            if redirected >= MOBILE_DNS_REDIRECT_CAPACITY {
+                return false;
+            }
+        }
+        true
     }
 
     /// The origin for an answer. A UDP answer consumes its flow, so a
