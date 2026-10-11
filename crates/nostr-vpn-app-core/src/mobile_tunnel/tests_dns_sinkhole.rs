@@ -144,6 +144,10 @@
                 "{route} must enter the tunnel while the override is on"
             );
         }
+        assert_eq!(
+            config.local_address_ipv6, MOBILE_SINKHOLE_LOCAL_IPV6,
+            "IPv6 resolver routes need an IPv6 address on the tun"
+        );
     }
 
     #[test]
@@ -156,6 +160,7 @@
             "a device without the override must reach public resolvers directly, got {:?}",
             config.route_targets
         );
+        assert!(config.local_address_ipv6.is_empty());
     }
 
     /// Runs one outbound batch through the real dispatcher with a WireGuard exit

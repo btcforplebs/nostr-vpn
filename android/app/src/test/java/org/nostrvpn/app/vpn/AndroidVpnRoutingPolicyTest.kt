@@ -203,4 +203,31 @@ class AndroidVpnRoutingPolicyTest {
         usable = routeReady && !captivePortal,
         transportPreference = transportPreference,
     )
+
+    @Test
+    fun networkDnsOverrideInstallsVpnDnsInSplitMode() {
+        val override = JSONObject(
+            """{"routeTargets":["10.44.0.0/16","8.8.8.8/32"],"dnsMatchDomains":[""]}""",
+        )
+        val routes = AndroidVpnRoutingPolicy.routeTargets(override)
+        assertTrue(AndroidVpnRoutingPolicy.requiresBypass(routes))
+        assertTrue(AndroidVpnRoutingPolicy.ownsAllDns(override))
+        assertTrue(AndroidVpnRoutingPolicy.installsVpnDns(routes, ownsAllDns = true))
+    }
+
+    @Test
+    fun magicDnsSuffixAloneKeepsDeviceResolverInSplitMode() {
+        val split = JSONObject(
+            """{"routeTargets":["10.44.0.0/16"],"dnsMatchDomains":["nvpn"]}""",
+        )
+        val routes = AndroidVpnRoutingPolicy.routeTargets(split)
+        assertFalse(AndroidVpnRoutingPolicy.ownsAllDns(split))
+        assertFalse(AndroidVpnRoutingPolicy.ownsAllDns(JSONObject("{}")))
+        assertFalse(
+            AndroidVpnRoutingPolicy.installsVpnDns(
+                routes,
+                AndroidVpnRoutingPolicy.ownsAllDns(split),
+            ),
+        )
+    }
 }

@@ -39,8 +39,20 @@ internal object AndroidVpnRoutingPolicy {
     fun supportsAlwaysOn(routeTargets: List<String>): Boolean =
         !requiresBypass(routeTargets)
 
-    fun installsVpnDns(routeTargets: List<String>): Boolean =
-        !requiresBypass(routeTargets)
+    // The network DNS override is the one split-tunnel case that must own
+    // every lookup: the stub forwards to the network's nameserver over the
+    // mesh, so it can resolve ordinary Internet names. Rust signals it (and an
+    // exit) with an empty match domain, meaning "all domains".
+    fun installsVpnDns(routeTargets: List<String>, ownsAllDns: Boolean = false): Boolean =
+        ownsAllDns || !requiresBypass(routeTargets)
+
+    fun ownsAllDns(config: JSONObject): Boolean {
+        val domains = config.optJSONArray("dnsMatchDomains") ?: return false
+        for (index in 0 until domains.length()) {
+            if (domains.optString(index, "x").trim().isEmpty()) return true
+        }
+        return false
+    }
 
     fun hasDefaultRoute(config: JSONObject): Boolean =
         routeTargets(config).any { route ->
