@@ -32,6 +32,7 @@
                 admins: vec![admin.public_key().to_hex()],
                 aliases: HashMap::new(),
                 signed_at: 2,
+                ..Default::default()
             },
             &admin,
         )

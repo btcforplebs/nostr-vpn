@@ -8,7 +8,7 @@ use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, PublicKey, Tag, Timest
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkRoster {
     #[serde(default)]
     pub network_name: String,
@@ -18,6 +18,14 @@ pub struct NetworkRoster {
     pub admins: Vec<String>,
     #[serde(default)]
     pub aliases: HashMap<String, String>,
+    /// Roster member whose mesh tunnel IP serves as the network nameserver.
+    /// Empty when the admin has not selected one.
+    #[serde(default)]
+    pub dns_node: String,
+    /// Force every member to resolve through `dns_node` instead of its local
+    /// network's DNS.
+    #[serde(default)]
+    pub dns_override: bool,
     #[serde(default)]
     pub signed_at: u64,
 }
@@ -174,6 +182,15 @@ fn signed_roster_tags(network_id: &str, roster: &NetworkRoster) -> Result<Vec<Ta
         }
     }
 
+    // Skipped rather than propagated as an error: an unparseable nameserver
+    // must not stop the roster from publishing membership and admin changes.
+    if let Ok(dns_node) = normalize_roster_pubkey(roster.dns_node.trim(), "dns node") {
+        tags.push(roster_tag(&["dns-node", &dns_node])?);
+        if roster.dns_override {
+            tags.push(roster_tag(&["dns-override", "1"])?);
+        }
+    }
+
     Ok(tags)
 }
 
@@ -185,6 +202,8 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
     let mut devices = Vec::new();
     let mut admins = Vec::new();
     let mut aliases = HashMap::new();
+    let mut dns_node = String::new();
+    let mut dns_override = false;
 
     for tag in tags {
         let parts = tag.as_slice();
@@ -223,6 +242,14 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
                     }
                 }
             }
+            "dns-node" => {
+                if let Some(value) = parts.get(1) {
+                    dns_node = normalize_roster_pubkey(value, "dns node").unwrap_or_default();
+                }
+            }
+            "dns-override" => {
+                dns_override |= parts.get(1).is_some_and(|value| value == "1");
+            }
             _ => {}
         }
     }
@@ -239,6 +266,15 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
     admins.sort();
     admins.dedup();
 
+    // A nameserver that is no longer on the roster must not keep serving the
+    // network, so drop the selection rather than trusting a stale tag.
+    if !dns_node.is_empty() && !devices.contains(&dns_node) && !admins.contains(&dns_node) {
+        dns_node.clear();
+    }
+    if dns_node.is_empty() {
+        dns_override = false;
+    }
+
     let network_id = network_id
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("signed roster event is missing network identifier"))?;
@@ -249,6 +285,8 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
             devices,
             admins,
             aliases,
+            dns_node,
+            dns_override,
             signed_at,
         },
     ))
@@ -511,6 +549,7 @@ pub fn signed_roster_control_frame(signed_roster: SignedRoster) -> FipsControlFr
         admins: Vec::new(),
         aliases: HashMap::new(),
         signed_at: signed_roster.signed_at(),
+        ..Default::default()
     });
     FipsControlFrame::Roster {
         network_id,
@@ -538,22 +577,6 @@ pub fn peer_capabilities_control_frame(
     FipsControlFrame::Capabilities {
         network_id: network_id.into(),
         capabilities,
-    }
-}
-
-pub fn network_roster_from_shared(
-    network_name: String,
-    devices: Vec<String>,
-    admins: Vec<String>,
-    aliases: HashMap<String, String>,
-    signed_at: u64,
-) -> NetworkRoster {
-    NetworkRoster {
-        network_name,
-        devices,
-        admins,
-        aliases,
-        signed_at,
     }
 }
 
