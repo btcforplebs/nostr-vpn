@@ -487,7 +487,8 @@ pub struct NetworkConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub dns_node: String,
     /// Force every member to resolve through `dns_node` instead of its local
-    /// network's DNS.
+    /// network's DNS. Stays on when `dns_node` is empty or gone, and members
+    /// then fail closed rather than resolve locally.
     #[serde(default, skip_serializing_if = "is_false")]
     pub dns_override: bool,
     #[serde(
@@ -537,6 +538,20 @@ pub struct EnabledNetworkMesh {
     pub name: String,
     pub network_id: String,
     pub devices: Vec<String>,
+}
+
+/// How a device resolves under its network's DNS override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkDnsRoute {
+    /// No override: the device keeps its own DNS policy.
+    Off,
+    /// Forward every lookup to this nameserver's mesh address.
+    Nameserver(Ipv4Addr),
+    /// This device is the nameserver and already runs the resolver.
+    ServesNetwork,
+    /// The override is on but names no usable nameserver. Lookups must fail
+    /// rather than fall back to local DNS.
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

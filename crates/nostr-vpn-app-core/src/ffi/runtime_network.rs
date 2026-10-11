@@ -148,6 +148,52 @@ impl NativeAppRuntime {
         }
     }
 
+    fn network_dns_ui_status(
+        &self,
+        vpn_active: bool,
+        daemon_state: Option<&DaemonRuntimeState>,
+        network: &NetworkConfig,
+    ) -> NetworkDnsUiStatus {
+        let name = || exit_node_display_name(&self.config, network, &network.dns_node);
+        match self.config.network_dns_route() {
+            NetworkDnsRoute::Off => NetworkDnsUiStatus::default(),
+            NetworkDnsRoute::ServesNetwork => NetworkDnsUiStatus {
+                blocked: false,
+                text: "DNS: This device serves the network".to_string(),
+            },
+            NetworkDnsRoute::Unavailable if vpn_active => NetworkDnsUiStatus {
+                blocked: true,
+                text: "DNS: No network nameserver. Lookups are blocked.".to_string(),
+            },
+            NetworkDnsRoute::Unavailable => NetworkDnsUiStatus {
+                blocked: true,
+                text: "DNS: No network nameserver. Lookups will be blocked.".to_string(),
+            },
+            NetworkDnsRoute::Nameserver(_) if !vpn_active => NetworkDnsUiStatus {
+                blocked: false,
+                text: format!("DNS: {} when connected", name()),
+            },
+            NetworkDnsRoute::Nameserver(_) => {
+                let unanswered_since =
+                    daemon_state.map_or(0, |state| state.network_dns_unanswered_since);
+                let not_answering = unanswered_since != 0
+                    && unix_timestamp().saturating_sub(unanswered_since)
+                        >= NETWORK_DNS_UNANSWERED_ALERT_SECS;
+                if not_answering {
+                    NetworkDnsUiStatus {
+                        blocked: true,
+                        text: format!("DNS: {} isn't answering. Lookups are blocked.", name()),
+                    }
+                } else {
+                    NetworkDnsUiStatus {
+                        blocked: false,
+                        text: format!("DNS: {}", name()),
+                    }
+                }
+            }
+        }
+    }
+
     fn network_state(
         &self,
         network: &NetworkConfig,

@@ -22,7 +22,13 @@ struct MobileExitDnsNat {
     local_dns_server: Ipv4Addr,
     servers: Vec<Ipv4Addr>,
     next_server: AtomicUsize,
-    flows: Mutex<HashSet<MobileWireGuardDnsFlow>>,
+    /// Each translated flow and the address its client sent the query to, so
+    /// the answer comes back from where the client expects it.
+    flows: Mutex<HashMap<MobileWireGuardDnsFlow, Ipv4Addr>>,
+    /// Unix time of the oldest query sent since the last answer, 0 when every
+    /// query so far has been answered. A box that is off or unreachable never
+    /// answers, so this is how status tells "connected" from "resolving".
+    unanswered_since: AtomicU64,
 }
 
 impl MobileExitDnsNat {
@@ -31,27 +37,61 @@ impl MobileExitDnsNat {
             local_dns_server,
             servers,
             next_server: AtomicUsize::new(0),
-            flows: Mutex::new(HashSet::new()),
+            flows: Mutex::new(HashMap::new()),
+            unanswered_since: AtomicU64::new(0),
         })
     }
 
     fn rewrite_query(&self, packet: &mut [u8]) -> Option<Ipv4Addr> {
-        let (source, destination, source_port, destination_port, protocol) =
-            ipv4_transport_endpoints(packet)?;
-        let _ = source;
+        let (_, destination, _, destination_port, _) = ipv4_transport_endpoints(packet)?;
         if destination != self.local_dns_server || destination_port != 53 {
             return None;
         }
+        self.translate_query(packet, destination)
+    }
+
+    /// Plain DNS sent straight to a sinkholed public resolver, redirected to
+    /// the network nameserver instead of refused. Plenty of apps hard-code
+    /// `8.8.8.8:53` as a fallback; dropping it costs them a full timeout per
+    /// lookup, while redirecting keeps them working and lands the query in
+    /// the nameserver's log. Encrypted DNS cannot be redirected this way, so
+    /// 443/853 still get refused by the sinkhole.
+    fn redirect_public_resolver_query(&self, packet: &mut [u8]) -> Option<Ipv4Addr> {
+        let (_, destination, _, destination_port, protocol) = ipv4_transport_endpoints(packet)?;
+        if destination_port != 53
+            || !matches!(protocol, 6 | 17)
+            || !is_dns_sinkhole_address(IpAddr::V4(destination))
+        {
+            return None;
+        }
+        self.translate_query(packet, destination)
+    }
+
+    fn translate_query(&self, packet: &mut [u8], destination: Ipv4Addr) -> Option<Ipv4Addr> {
+        let (_, _, source_port, _, protocol) = ipv4_transport_endpoints(packet)?;
         let index = self.next_server.fetch_add(1, Ordering::Relaxed) % self.servers.len();
         let server = self.servers[index];
-        self.flows.lock().ok()?.insert(MobileWireGuardDnsFlow {
-            server,
-            protocol,
-            client_port: source_port,
-        });
-        rewrite_ipv4_destination(packet, self.local_dns_server, server);
+        self.flows.lock().ok()?.insert(
+            MobileWireGuardDnsFlow {
+                server,
+                protocol,
+                client_port: source_port,
+            },
+            destination,
+        );
+        rewrite_ipv4_destination(packet, destination, server);
         nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(packet);
+        let _ = self.unanswered_since.compare_exchange(
+            0,
+            unix_timestamp(),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
         Some(server)
+    }
+
+    fn unanswered_since(&self) -> u64 {
+        self.unanswered_since.load(Ordering::Relaxed)
     }
 
     fn rewrite_response(&self, packet: &mut [u8]) -> bool {
@@ -68,17 +108,18 @@ impl MobileExitDnsNat {
             protocol,
             client_port: destination_port,
         };
-        let matched = self.flows.lock().is_ok_and(|mut flows| {
+        let original = self.flows.lock().ok().and_then(|mut flows| {
             if protocol == 17 {
                 flows.remove(&flow)
             } else {
-                flows.contains(&flow)
+                flows.get(&flow).copied()
             }
         });
-        if !matched {
+        let Some(original) = original else {
             return false;
-        }
-        rewrite_ipv4_source(packet, source, self.local_dns_server);
+        };
+        self.unanswered_since.store(0, Ordering::Relaxed);
+        rewrite_ipv4_source(packet, source, original);
         nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(packet);
         true
     }
@@ -308,6 +349,7 @@ fn empty_config() -> MobileTunnelConfig {
         dns_servers: Vec::new(),
         magic_dns_server: String::new(),
         network_dns: String::new(),
+        network_dns_unavailable: false,
         dns_match_domains: Vec::new(),
         exit_dns: ExitDnsConfig::default(),
         wireguard_exit: None,

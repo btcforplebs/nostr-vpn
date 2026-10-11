@@ -479,6 +479,10 @@ pub struct NativeAppState {
     pub exit_node_blocked: bool,
     pub exit_node_needs_attention: bool,
     pub exit_node_status_text: String,
+    /// Where lookups go under the network DNS override; empty when it is off.
+    pub network_dns_status_text: String,
+    /// Lookups are failing closed: no nameserver, or it stopped answering.
+    pub network_dns_blocked: bool,
     pub exit_dns_mode: String,
     pub exit_dns_doh_provider: String,
     pub exit_dns_custom_doh_url: String,

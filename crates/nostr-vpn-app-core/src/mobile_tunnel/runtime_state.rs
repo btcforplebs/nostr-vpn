@@ -177,6 +177,7 @@ fn mobile_runtime_state_path(config_path: &Path) -> Option<PathBuf> {
 struct MobileRuntimeDiagnostics<'a> {
     pubsub: Option<&'a ControlPubsubClient>,
     secure_dns: Option<&'a SecureDnsResolver>,
+    network_dns_nat: Option<&'a MobileExitDnsNat>,
     wireguard_handshake:
         Option<&'a nostr_vpn_core::wg_upstream::WgUpstreamHandshakeObserver>,
 }
@@ -222,6 +223,9 @@ async fn persist_mobile_runtime_state(
         state.secure_dns_successes = counters.successes;
         state.secure_dns_failures = counters.failures;
     }
+    state.network_dns_unanswered_since = diagnostics
+        .network_dns_nat
+        .map_or(0, MobileExitDnsNat::unanswered_since);
     state.wireguard_exit_ready = diagnostics.wireguard_handshake.is_some_and(
         nostr_vpn_core::wg_upstream::WgUpstreamHandshakeObserver::has_completed_handshake,
     );

@@ -23,7 +23,8 @@ pub struct NetworkRoster {
     #[serde(default)]
     pub dns_node: String,
     /// Force every member to resolve through `dns_node` instead of its local
-    /// network's DNS.
+    /// network's DNS. Stays on when `dns_node` is empty or gone, and members
+    /// then fail closed rather than resolve locally.
     #[serde(default)]
     pub dns_override: bool,
     #[serde(default)]
@@ -186,9 +187,11 @@ fn signed_roster_tags(network_id: &str, roster: &NetworkRoster) -> Result<Vec<Ta
     // must not stop the roster from publishing membership and admin changes.
     if let Ok(dns_node) = normalize_roster_pubkey(roster.dns_node.trim(), "dns node") {
         tags.push(roster_tag(&["dns-node", &dns_node])?);
-        if roster.dns_override {
-            tags.push(roster_tag(&["dns-override", "1"])?);
-        }
+    }
+    // Published even with no nameserver: members fail closed on it instead of
+    // quietly dropping back to their local network's DNS.
+    if roster.dns_override {
+        tags.push(roster_tag(&["dns-override", "1"])?);
     }
 
     Ok(tags)
@@ -267,12 +270,10 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
     admins.dedup();
 
     // A nameserver that is no longer on the roster must not keep serving the
-    // network, so drop the selection rather than trusting a stale tag.
+    // network, so drop the selection rather than trusting a stale tag. The
+    // override stays: with no nameserver it fails closed.
     if !dns_node.is_empty() && !devices.contains(&dns_node) && !admins.contains(&dns_node) {
         dns_node.clear();
-    }
-    if dns_node.is_empty() {
-        dns_override = false;
     }
 
     let network_id = network_id

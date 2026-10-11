@@ -104,24 +104,59 @@ const DNS_SINKHOLE_ADDRESSES: &[&str] = &[
 /// it, so it never needs to be reachable from anywhere.
 const MOBILE_SINKHOLE_LOCAL_IPV6: &str = "fd6e:7670:6e00::1/128";
 
-fn dns_sinkhole_addresses() -> impl Iterator<Item = IpAddr> {
-    DNS_SINKHOLE_ADDRESSES
-        .iter()
-        .filter_map(|address| address.parse::<IpAddr>().ok())
+/// RFC 6052 well-known NAT64 prefix, `64:ff9b::/96`. On an IPv6-only carrier
+/// with DNS64, an app that looks up `dns.google` gets `64:ff9b::808:808`, and
+/// iOS synthesizes the same address for a hard-coded IPv4 literal, so each
+/// listed IPv4 resolver is also sinkholed at its synthesized address.
+///
+/// Only the per-resolver /128s are routed, never the /96: routing the prefix
+/// would pull every IPv4-literal connection on a 464XLAT carrier into the
+/// tunnel. Network-specific prefixes (RFC 6146 NSPs, RFC 8215 local-use) are
+/// not covered; they differ per carrier.
+const NAT64_WELL_KNOWN_PREFIX: [u8; 12] = [0, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0];
+
+fn nat64_synthesized(address: Ipv4Addr) -> Ipv6Addr {
+    let mut octets = [0u8; 16];
+    octets[..12].copy_from_slice(&NAT64_WELL_KNOWN_PREFIX);
+    octets[12..].copy_from_slice(&address.octets());
+    Ipv6Addr::from(octets)
+}
+
+/// Every destination the sinkhole refuses: the listed addresses plus the
+/// NAT64 synthesis of each listed IPv4 one. Routes and refusals both read
+/// this one set, so they cannot drift apart.
+fn dns_sinkhole_destinations() -> &'static HashSet<IpAddr> {
+    static DESTINATIONS: OnceLock<HashSet<IpAddr>> = OnceLock::new();
+    DESTINATIONS.get_or_init(|| {
+        let listed = DNS_SINKHOLE_ADDRESSES
+            .iter()
+            .filter_map(|address| address.parse::<IpAddr>().ok());
+        let mut destinations = HashSet::new();
+        for address in listed {
+            destinations.insert(address);
+            if let IpAddr::V4(address) = address {
+                destinations.insert(IpAddr::V6(nat64_synthesized(address)));
+            }
+        }
+        destinations
+    })
 }
 
 /// Host routes that pull every sinkholed resolver into the tunnel.
 fn dns_sinkhole_route_targets() -> Vec<String> {
-    dns_sinkhole_addresses()
+    let mut routes = dns_sinkhole_destinations()
+        .iter()
         .map(|address| match address {
             IpAddr::V4(address) => format!("{address}/32"),
             IpAddr::V6(address) => format!("{address}/128"),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    routes.sort();
+    routes
 }
 
 fn is_dns_sinkhole_address(address: IpAddr) -> bool {
-    dns_sinkhole_addresses().any(|sinkholed| sinkholed == address)
+    dns_sinkhole_destinations().contains(&address)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -140,7 +175,7 @@ enum DnsSinkholeVerdict {
 ///
 /// TCP gets a reset so the client gives up on that resolver at once and falls
 /// back to the system resolver, instead of waiting out a connect timeout. Other
-/// protocols (DoQ, QUIC DoH, plain UDP/53) are dropped; their clients retry
+/// protocols (`DoQ`, QUIC `DoH`, plain UDP/53) are dropped; their clients retry
 /// over TCP or fall back on their own timers.
 fn dns_sinkhole_verdict(packet: &[u8]) -> DnsSinkholeVerdict {
     let Some(destination) = packet_destination(packet) else {
@@ -159,7 +194,7 @@ fn packet_destination(packet: &[u8]) -> Option<IpAddr> {
         ))),
         6 if packet.len() >= 40 => {
             let octets = <[u8; 16]>::try_from(&packet[24..40]).ok()?;
-            Some(IpAddr::V6(std::net::Ipv6Addr::from(octets)))
+            Some(IpAddr::V6(Ipv6Addr::from(octets)))
         }
         _ => None,
     }
@@ -206,7 +241,7 @@ fn tcp_reset_for(packet: &[u8]) -> Option<Vec<u8>> {
     let (reset_seq, reset_ack, reset_flags) = if flags & TCP_ACK != 0 {
         (ack, 0, TCP_RST)
     } else {
-        let consumed = (segment.len() - data_offset) as u32
+        let consumed = u32::try_from(segment.len() - data_offset).ok()?
             + u32::from(flags & TCP_SYN != 0)
             + u32::from(flags & TCP_FIN != 0);
         (0, seq.wrapping_add(consumed), TCP_RST | TCP_ACK)

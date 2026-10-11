@@ -2,7 +2,7 @@ use std::fs;
 
 use nostr_sdk::prelude::{Keys, ToBech32};
 use nostr_vpn_core::config::{
-    AppConfig, DEFAULT_FIPS_BOOTSTRAP_PEERS, DEFAULT_RELAYS, NetworkConfig,
+    AppConfig, DEFAULT_FIPS_BOOTSTRAP_PEERS, DEFAULT_RELAYS, NetworkConfig, NetworkDnsRoute,
     default_fips_bootstrap_peers, default_node_name_for_hostname_or_pubkey,
     default_node_name_for_pubkey, default_node_name_from_hostname, derive_mesh_tunnel_ip,
     maybe_autoconfigure_node, needs_endpoint_autoconfig, needs_tunnel_ip_autoconfig,
