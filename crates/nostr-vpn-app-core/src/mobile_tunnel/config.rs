@@ -1,19 +1,4 @@
 const DEFAULT_MOBILE_MTU: u16 = nostr_vpn_core::MESH_TUNNEL_MTU;
-/// RFC 8200 §5. Linux, so Android, refuses IPv6 on an interface below it.
-const IPV6_MINIMUM_MTU: u16 = 1280;
-
-/// The sinkhole puts an IPv6 address on the tun, which needs the IPv6
-/// minimum: below it Android's tun cannot take the address, and the IPv6
-/// resolver routes and NAT64 refusals would be inert. Same trade as the
-/// desktop FIPS host tunnel; FIPS answers oversize mesh packets with
-/// packet-too-big, so senders step down.
-fn mobile_tunnel_mtu(ipv6_sinkhole: bool) -> u16 {
-    if ipv6_sinkhole {
-        DEFAULT_MOBILE_MTU.max(IPV6_MINIMUM_MTU)
-    } else {
-        DEFAULT_MOBILE_MTU
-    }
-}
 const TUNNEL_CHANNEL_CAPACITY: usize = 1024;
 #[cfg(test)]
 const FIPS_NOSTR_DISCOVERY_APP: &str = "fips-overlay-v1";
@@ -679,7 +664,7 @@ impl MobileTunnelConfig {
             },
             advertised_endpoint: app.node.endpoint.trim().to_string(),
             listen_port: app.node.listen_port,
-            mtu: mobile_tunnel_mtu(network_dns_enforced),
+            mtu: DEFAULT_MOBILE_MTU,
             peers,
             peer_hints: mobile_static_peer_hints(app),
             bootstrap_peers: mobile_bootstrap_peer_hints(app),

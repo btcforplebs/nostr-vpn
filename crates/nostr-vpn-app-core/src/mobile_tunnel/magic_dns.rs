@@ -31,7 +31,10 @@ struct MobileWireGuardDnsFlow {
 enum MobileDnsFlowOrigin {
     V4(Ipv4Addr),
     /// An IPv6 resolver, reached through the IPv4 path to the nameserver.
-    V6 { resolver: Ipv6Addr, client: Ipv6Addr },
+    V6 {
+        resolver: Ipv6Addr,
+        client: Ipv6Addr,
+    },
 }
 
 impl MobileDnsFlowOrigin {
@@ -54,8 +57,13 @@ struct MobileDnsFlowEntry {
 /// Bounded: a nameserver that is off answers nothing, and any app can spray
 /// UDP/53 at a listed resolver, so entries must expire on their own.
 const MOBILE_DNS_FLOW_CAPACITY: usize = 1024;
-/// One socket's share. A resolver pipelines a handful of lookups per socket.
+/// Most one socket may hold. A resolver pipelines a handful of lookups.
 const MOBILE_DNS_FLOWS_PER_PORT: usize = 32;
+/// What every port may hold however full the table is: an A and an AAAA.
+const MOBILE_DNS_FLOWS_PER_PORT_FLOOR: usize = 2;
+/// Kept for ports still under their floor. Flows past a port's floor share
+/// only the rest, so filling the table takes hundreds of sockets, not 32.
+const MOBILE_DNS_NEWCOMER_RESERVE: usize = MOBILE_DNS_FLOW_CAPACITY / 2;
 /// Redirected queries never take the half of the table the stub relies on.
 const MOBILE_DNS_REDIRECT_CAPACITY: usize = MOBILE_DNS_FLOW_CAPACITY / 2;
 /// Resolvers retry long before this; an unanswered UDP flow is dead by then.
@@ -63,9 +71,17 @@ const MOBILE_DNS_UDP_FLOW_TTL: Duration = Duration::from_secs(15);
 const MOBILE_DNS_TCP_FLOW_IDLE: Duration = Duration::from_secs(60);
 const MOBILE_DNS_TCP_FLOW_CLOSING: Duration = Duration::from_secs(5);
 const MOBILE_DNS_FLOW_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
+/// A refused query may sweep early, but no more often than this: a sweep is a
+/// full scan, and a sprayer would otherwise buy one with every packet.
+const MOBILE_DNS_FLOW_PRESSURE_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Flows plus the counts admission needs, kept in step on every insert and
+/// removal so admitting a flow never scans the table. Expired flows still
+/// count until the next sweep, at most a second late under pressure.
 struct MobileDnsFlowTable {
     entries: HashMap<MobileWireGuardDnsFlow, MobileDnsFlowEntry>,
+    per_port: HashMap<u16, usize>,
+    redirected: usize,
     last_sweep: Instant,
 }
 
@@ -73,6 +89,8 @@ impl MobileDnsFlowTable {
     fn new(now: Instant) -> Self {
         Self {
             entries: HashMap::new(),
+            per_port: HashMap::new(),
+            redirected: 0,
             last_sweep: now,
         }
     }
@@ -86,9 +104,77 @@ impl MobileDnsFlowTable {
         now.saturating_duration_since(entry.last_seen) >= lifetime
     }
 
+    fn count_in(
+        per_port: &mut HashMap<u16, usize>,
+        redirected: &mut usize,
+        port: u16,
+        origin: MobileDnsFlowOrigin,
+    ) {
+        *per_port.entry(port).or_default() += 1;
+        if origin.is_redirect() {
+            *redirected += 1;
+        }
+    }
+
+    fn count_out(
+        per_port: &mut HashMap<u16, usize>,
+        redirected: &mut usize,
+        port: u16,
+        origin: MobileDnsFlowOrigin,
+    ) {
+        if let Some(count) = per_port.get_mut(&port) {
+            *count -= 1;
+            if *count == 0 {
+                per_port.remove(&port);
+            }
+        }
+        if origin.is_redirect() {
+            *redirected -= 1;
+        }
+    }
+
+    fn insert(&mut self, flow: MobileWireGuardDnsFlow, entry: MobileDnsFlowEntry) {
+        Self::count_in(
+            &mut self.per_port,
+            &mut self.redirected,
+            flow.client_port,
+            entry.origin,
+        );
+        if let Some(old) = self.entries.insert(flow, entry) {
+            Self::count_out(
+                &mut self.per_port,
+                &mut self.redirected,
+                flow.client_port,
+                old.origin,
+            );
+        }
+    }
+
+    fn remove(&mut self, flow: &MobileWireGuardDnsFlow) {
+        if let Some(old) = self.entries.remove(flow) {
+            Self::count_out(
+                &mut self.per_port,
+                &mut self.redirected,
+                flow.client_port,
+                old.origin,
+            );
+        }
+    }
+
     fn sweep(&mut self, now: Instant) {
-        self.entries
-            .retain(|flow, entry| !Self::expired(flow, entry, now));
+        let Self {
+            entries,
+            per_port,
+            redirected,
+            ..
+        } = self;
+        entries.retain(|flow, entry| {
+            let keep = !Self::expired(flow, entry, now);
+            if !keep {
+                Self::count_out(per_port, redirected, flow.client_port, entry.origin);
+            }
+            keep
+        });
         self.last_sweep = now;
     }
 
@@ -106,28 +192,39 @@ impl MobileDnsFlowTable {
             self.sweep(now);
         }
         if let Some(entry) = self.entries.get_mut(&flow) {
-            if entry.origin == origin || Self::expired(&flow, entry, now) {
-                entry.origin = origin;
-                entry.last_seen = now;
-                entry.closing |= tcp_flags & TCP_FIN != 0;
-                if tcp_flags & TCP_RST != 0 {
-                    self.entries.remove(&flow);
-                }
-                return true;
+            if entry.origin != origin && !Self::expired(&flow, entry, now) {
+                return false;
             }
-            return false;
+            let closing = entry.closing || tcp_flags & TCP_FIN != 0;
+            if tcp_flags & TCP_RST != 0 {
+                self.remove(&flow);
+            } else {
+                // Through insert, so a changed origin moves the redirect count.
+                self.insert(
+                    flow,
+                    MobileDnsFlowEntry {
+                        origin,
+                        last_seen: now,
+                        closing,
+                    },
+                );
+            }
+            return true;
         }
         if tcp_flags & TCP_RST != 0 {
             // Nothing to tear down; still translate so the server sees it.
             return true;
         }
-        if self.entries.len() >= MOBILE_DNS_FLOW_CAPACITY {
+        if !self.admits(flow.client_port, origin)
+            && now.saturating_duration_since(self.last_sweep)
+                >= MOBILE_DNS_FLOW_PRESSURE_SWEEP_INTERVAL
+        {
             self.sweep(now);
         }
-        if !self.admits(&flow, origin, now) {
+        if !self.admits(flow.client_port, origin) {
             return false;
         }
-        self.entries.insert(
+        self.insert(
             flow,
             MobileDnsFlowEntry {
                 origin,
@@ -141,42 +238,51 @@ impl MobileDnsFlowTable {
     /// Admission, not eviction: a live flow is never pushed out to make room,
     /// because its answer would then match nothing while every other flow
     /// keeps getting answered and the status line stays green. Instead a full
-    /// table refuses the newcomer, one client port may hold only its share,
-    /// and queries redirected from hard-coded resolvers (which any app can
-    /// send from as many ports as it likes) may fill only part of the table,
-    /// so the system resolver's lookups through the stub always have room.
-    fn admits(
+    /// table refuses the newcomer, and the room it has is shared out:
+    /// - every port may hold its floor (an A and an AAAA) until the table is
+    ///   full, but flows past the floor stop once half the table is used, so
+    ///   the other half is always there for ports that hold almost nothing.
+    ///   A share that shrinks with contention would not do this: nothing is
+    ///   evicted, so it cannot give back room already held;
+    /// - no port holds more than 32;
+    /// - queries redirected from hard-coded resolvers (which any app can send
+    ///   from as many ports as it likes) may fill only half the table, so the
+    ///   system resolver's lookups through the stub always have room.
+    fn admits(&self, client_port: u16, origin: MobileDnsFlowOrigin) -> bool {
+        let total = self.entries.len();
+        if total >= MOBILE_DNS_FLOW_CAPACITY {
+            return false;
+        }
+        if origin.is_redirect() && self.redirected >= MOBILE_DNS_REDIRECT_CAPACITY {
+            return false;
+        }
+        let held = self.per_port.get(&client_port).copied().unwrap_or(0);
+        if held < MOBILE_DNS_FLOWS_PER_PORT_FLOOR {
+            return true;
+        }
+        held < MOBILE_DNS_FLOWS_PER_PORT
+            && total < MOBILE_DNS_FLOW_CAPACITY - MOBILE_DNS_NEWCOMER_RESERVE
+    }
+
+    /// The server a TCP stream from this port to this resolver already uses:
+    /// its follow-up segments must reach the same nameserver.
+    fn tcp_stream_server(
         &self,
-        flow: &MobileWireGuardDnsFlow,
+        servers: &[Ipv4Addr],
+        client_port: u16,
         origin: MobileDnsFlowOrigin,
-        now: Instant,
-    ) -> bool {
-        if self.entries.len() >= MOBILE_DNS_FLOW_CAPACITY {
-            return false;
-        }
-        let same_port = self
-            .entries
-            .iter()
-            .filter(|(held, entry)| {
-                held.client_port == flow.client_port && !Self::expired(held, entry, now)
-            })
-            .count();
-        if same_port >= MOBILE_DNS_FLOWS_PER_PORT {
-            return false;
-        }
-        if origin.is_redirect() {
-            let redirected = self
-                .entries
-                .iter()
-                .filter(|(held, entry)| {
-                    entry.origin.is_redirect() && !Self::expired(held, entry, now)
-                })
-                .count();
-            if redirected >= MOBILE_DNS_REDIRECT_CAPACITY {
-                return false;
-            }
-        }
-        true
+    ) -> Option<Ipv4Addr> {
+        servers.iter().copied().find(|server| {
+            let flow = MobileWireGuardDnsFlow {
+                server: *server,
+                protocol: 6,
+                client_port,
+                query_id: 0,
+            };
+            self.entries
+                .get(&flow)
+                .is_some_and(|entry| entry.origin == origin)
+        })
     }
 
     /// The origin for an answer. A UDP answer consumes its flow, so a
@@ -189,7 +295,7 @@ impl MobileDnsFlowTable {
     ) -> Option<MobileDnsFlowOrigin> {
         let entry = self.entries.get_mut(flow)?;
         if Self::expired(flow, entry, now) {
-            self.entries.remove(flow);
+            self.remove(flow);
             return None;
         }
         let origin = entry.origin;
@@ -197,7 +303,7 @@ impl MobileDnsFlowTable {
             entry.last_seen = now;
             entry.closing |= tcp_flags & TCP_FIN != 0;
         } else {
-            self.entries.remove(flow);
+            self.remove(flow);
         }
         Some(origin)
     }
@@ -345,15 +451,11 @@ impl MobileExitDnsNat {
         // query rotates.
         let server = (protocol == 6)
             .then(|| {
-                flows
-                    .entries
-                    .iter()
-                    .find(|(flow, entry)| {
-                        flow.protocol == 6
-                            && flow.client_port == source_port
-                            && entry.origin == MobileDnsFlowOrigin::V4(destination)
-                    })
-                    .map(|(flow, _)| flow.server)
+                flows.tcp_stream_server(
+                    &self.servers,
+                    source_port,
+                    MobileDnsFlowOrigin::V4(destination),
+                )
             })
             .flatten()
             .unwrap_or_else(|| self.pick_server());
@@ -642,15 +744,7 @@ async fn mobile_magic_dns_response_packet(
     secure_dns: Option<&dyn SecureDnsLookup>,
     magic_dns_server: Ipv4Addr,
 ) -> Option<Vec<u8>> {
-    match mobile_dns_packet_action(
-        packet,
-        app_config,
-        secure_dns,
-        magic_dns_server,
-        false,
-    )
-    .await?
-    {
+    match mobile_dns_packet_action(packet, app_config, secure_dns, magic_dns_server, false).await? {
         MobileDnsPacketAction::Respond(response) => Some(response),
         MobileDnsPacketAction::ForwardViaExit => None,
     }

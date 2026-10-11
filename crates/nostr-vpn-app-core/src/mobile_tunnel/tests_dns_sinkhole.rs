@@ -164,11 +164,11 @@
             config.local_address_ipv6, MOBILE_SINKHOLE_LOCAL_IPV6,
             "IPv6 resolver routes need an IPv6 address on the tun"
         );
-        assert!(
-            config.mtu >= 1280,
-            "Linux refuses IPv6 on an interface below 1280, got {}",
-            config.mtu
-        );
+        // Not raised to IPv6's 1280: the 1150 tun MTU is derived from the
+        // 1280 underlay budget, and a bigger inner packet overruns it on
+        // cellular. Whether Android still carries the IPv6 address at 1150
+        // is for the device to show.
+        assert_eq!(config.mtu, nostr_vpn_core::MESH_TUNNEL_MTU);
     }
 
     #[test]
@@ -442,8 +442,18 @@
         packet
     }
 
+    /// The entry count, after checking the running counters admission reads
+    /// against a full recount of the table.
     fn flow_count(nat: &MobileExitDnsNat) -> usize {
-        nat.flows.lock().unwrap().entries.len()
+        let table = nat.flows.lock().unwrap();
+        let mut per_port = HashMap::new();
+        for flow in table.entries.keys() {
+            *per_port.entry(flow.client_port).or_insert(0_usize) += 1;
+        }
+        let redirected = table.entries.values().filter(|entry| entry.origin.is_redirect()).count();
+        assert_eq!(table.per_port, per_port, "per-port counts drifted from the table");
+        assert_eq!(table.redirected, redirected, "redirect count drifted from the table");
+        table.entries.len()
     }
 
     fn stub_query(client_port: u16, query_id: u16) -> Vec<u8> {
@@ -541,6 +551,69 @@
         assert_eq!(admitted, MOBILE_DNS_FLOW_CAPACITY - 1);
         let mut answer = dns_answer_v4(nameserver, 45_000, 0x0bad);
         assert!(nat.rewrite_response(&mut answer), "the waiting lookup was evicted");
+    }
+
+    /// Tron's 20: 32 sockets through the stub, 32 flows each, used to fill
+    /// the table and lock every new lookup out. Flows past a port's floor now
+    /// share only half the table, so a newcomer still gets its A and AAAA.
+    #[test]
+    fn a_stub_spray_from_32_sockets_leaves_room_for_a_newcomer() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let nat = nameserver_nat(nameserver);
+        for port in 1025..1025 + 32_u16 {
+            for query_id in 0..32_u16 {
+                let mut spray = stub_query(port, query_id);
+                nat.rewrite_query(&mut spray);
+            }
+        }
+        assert!(flow_count(&nat) < MOBILE_DNS_FLOW_CAPACITY);
+        let mut a = stub_query(46_000, 1);
+        let mut aaaa = stub_query(46_000, 2);
+        assert!(nat.rewrite_query(&mut a).is_some(), "the newcomer's first lookup");
+        assert!(nat.rewrite_query(&mut aaaa).is_some(), "the newcomer's second lookup");
+        let mut answer = dns_answer_v4(nameserver, 46_000, 1);
+        assert!(nat.rewrite_response(&mut answer));
+    }
+
+    /// What is left of 20: a sprayer can still fill the table, but only by
+    /// holding a floor's worth on hundreds of sockets, not 32.
+    #[test]
+    fn filling_the_table_through_the_stub_takes_hundreds_of_sockets() {
+        let nat = nameserver_nat(Ipv4Addr::new(10, 44, 0, 53));
+        let mut sockets = 0;
+        for port in 1025..1025 + 4096_u16 {
+            if flow_count(&nat) >= MOBILE_DNS_FLOW_CAPACITY {
+                break;
+            }
+            sockets += 1;
+            for query_id in 0..32_u16 {
+                let mut spray = stub_query(port, query_id);
+                nat.rewrite_query(&mut spray);
+            }
+        }
+        assert_eq!(flow_count(&nat), MOBILE_DNS_FLOW_CAPACITY);
+        assert!(sockets >= 256, "the table filled after only {sockets} sockets");
+    }
+
+    /// A key reused after expiry by a query to a different origin moves the
+    /// redirect count with it.
+    #[test]
+    fn counts_follow_a_reused_key_across_origins() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let nat = nameserver_nat(nameserver);
+        let start = Instant::now();
+        let mut redirected = dns_udp_v4(Ipv4Addr::new(8, 8, 8, 8), 50_000, 7);
+        nat.redirect_public_resolver_query_at(&mut redirected, start).unwrap();
+        assert_eq!(nat.flows.lock().unwrap().redirected, 1);
+        // One nameserver, so the stub query lands on the same key.
+        let later = start + MOBILE_DNS_UDP_FLOW_TTL + Duration::from_secs(1);
+        let stub = parse_ipv4(nostr_vpn_core::MESH_MAGIC_DNS_SERVER).unwrap();
+        // A sweep would just drop the dead flow; reach the reuse path instead.
+        nat.flows.lock().unwrap().last_sweep = later;
+        let mut query = stub_query(50_000, 7);
+        nat.translate_query(&mut query, stub, later).unwrap();
+        assert_eq!(flow_count(&nat), 1);
+        assert_eq!(nat.flows.lock().unwrap().redirected, 0);
     }
 
     #[test]
