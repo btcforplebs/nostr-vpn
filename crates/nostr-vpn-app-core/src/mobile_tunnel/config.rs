@@ -116,6 +116,11 @@ pub(crate) struct MobileTunnelConfig {
     #[serde(default)]
     pub(crate) join_secret: String,
     pub(crate) local_address: String,
+    /// IPv6 address for the tun, set only when IPv6 routes must enter it (the
+    /// DNS sinkhole's /128s). Both mobile platforms need an IPv6 address on
+    /// the interface before they will route any IPv6 into it.
+    #[serde(default)]
+    pub(crate) local_address_ipv6: String,
     #[serde(default)]
     pub(crate) advertised_endpoint: String,
     #[serde(default)]
@@ -612,6 +617,11 @@ impl MobileTunnelConfig {
                 .active_network_opt()
                 .map_or_else(String::new, |network| network.join_secret.clone()),
             local_address,
+            local_address_ipv6: if network_dns.is_some() {
+                MOBILE_SINKHOLE_LOCAL_IPV6.to_string()
+            } else {
+                String::new()
+            },
             advertised_endpoint: app.node.endpoint.trim().to_string(),
             listen_port: app.node.listen_port,
             mtu: DEFAULT_MOBILE_MTU,

@@ -99,6 +99,11 @@ const DNS_SINKHOLE_ADDRESSES: &[&str] = &[
     "2a01:4f8:1c0c:8274::1",
 ];
 
+/// Unique-local address for the tun while IPv6 sinkhole routes are installed.
+/// It only ever sources packets the sinkhole refuses, and resets come back to
+/// it, so it never needs to be reachable from anywhere.
+const MOBILE_SINKHOLE_LOCAL_IPV6: &str = "fd6e:7670:6e00::1/128";
+
 fn dns_sinkhole_addresses() -> impl Iterator<Item = IpAddr> {
     DNS_SINKHOLE_ADDRESSES
         .iter()

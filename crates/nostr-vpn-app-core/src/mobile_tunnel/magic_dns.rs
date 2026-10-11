@@ -289,6 +289,7 @@ fn empty_config() -> MobileTunnelConfig {
         network_id: String::new(),
         join_secret: String::new(),
         local_address: String::new(),
+        local_address_ipv6: String::new(),
         advertised_endpoint: String::new(),
         listen_port: 0,
         mtu: DEFAULT_MOBILE_MTU,
