@@ -835,7 +835,9 @@
         );
         assert_eq!(&second[16..20], &profile_dns[1].octets());
 
-        let mut response = ipv4_udp_packet(profile_dns[1], mesh, 53, 53001, b"dns response");
+        // A real answer echoes the query's message ID.
+        let mut response =
+            ipv4_udp_packet(profile_dns[1], mesh, 53, 53001, &dns_query("example.net", 1));
         assert!(dns_nat.rewrite_response(&mut response));
         assert_eq!(&response[12..16], &local_dns.octets());
 

@@ -201,7 +201,8 @@ impl MobileTunnel {
         let dns_upstream = mobile_dns_upstream(&config)?;
         let exit_dns_nat = match (&dns_upstream, parse_ipv4(&config.magic_dns_server)) {
             (MobileDnsUpstream::Nat(servers), Some(local_dns_server)) => {
-                MobileExitDnsNat::new(local_dns_server, servers.clone()).map(Arc::new)
+                MobileExitDnsNat::new(local_dns_server, servers.clone())
+                    .map(|nat| Arc::new(nat.with_ipv4_source(mesh_ipv4)))
             }
             _ => None,
         };
