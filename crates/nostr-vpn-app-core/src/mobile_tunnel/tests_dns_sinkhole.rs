@@ -54,6 +54,14 @@
         folds_to_ones(&pseudo)
     }
 
+    fn udp_checksum_valid_v4(packet: &[u8]) -> bool {
+        let mut pseudo = Vec::new();
+        pseudo.extend_from_slice(&packet[12..20]);
+        pseudo.extend_from_slice(&[0, 17, packet[24], packet[25]]);
+        pseudo.extend_from_slice(&packet[20..]);
+        folds_to_ones(&pseudo)
+    }
+
     #[test]
     fn sinkhole_routes_cover_every_listed_address_in_both_families() {
         let routes = dns_sinkhole_route_targets();
@@ -446,6 +454,30 @@
         assert_eq!(flow_count(&nat), MOBILE_DNS_FLOW_CAPACITY);
     }
 
+    /// Tron's probe: one socket issuing 1024 queries used to evict another
+    /// app's pending lookup, whose answer then matched nothing while the
+    /// status line stayed green.
+    #[test]
+    fn a_full_table_evicts_the_sprayers_flows_not_another_apps() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let nat = nameserver_nat(nameserver);
+        let now = Instant::now();
+        let mut victim = dns_udp_v4(Ipv4Addr::new(1, 1, 1, 1), 41_000, 0xbeef);
+        nat.redirect_public_resolver_query_at(&mut victim, now).unwrap();
+        for query_id in 0..2048_u16 {
+            let mut spray = dns_udp_v4(Ipv4Addr::new(8, 8, 8, 8), 50_000, query_id);
+            assert!(nat.redirect_public_resolver_query_at(&mut spray, now).is_some());
+        }
+        assert_eq!(flow_count(&nat), MOBILE_DNS_FLOW_CAPACITY);
+
+        let mut answer = dns_answer_v4(nameserver, 41_000, 0xbeef);
+        assert!(
+            nat.rewrite_response_at(&mut answer, now + Duration::from_secs(2)),
+            "the other app's lookup survives the spray"
+        );
+        assert_eq!(&answer[12..16], &[1, 1, 1, 1]);
+    }
+
     #[test]
     fn unanswered_udp_flows_expire() {
         let nameserver = Ipv4Addr::new(10, 44, 0, 53);
@@ -584,6 +616,58 @@
             assert_eq!(&answer[42..44], &51_000u16.to_be_bytes());
             assert!(udp_checksum_valid_v6(&answer));
         }
+    }
+
+    fn dns_query_with_edns(query_id: u16, udp_size: u16) -> Vec<u8> {
+        let mut message = query_id.to_be_bytes().to_vec();
+        message.extend_from_slice(&[1, 0, 0, 1, 0, 0, 0, 0, 0, 1]);
+        message.extend_from_slice(&[7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0]);
+        message.extend_from_slice(&[0, 16, 0, 1]);
+        message.extend_from_slice(&[0, 0, 41]);
+        message.extend_from_slice(&udp_size.to_be_bytes());
+        message.extend_from_slice(&[0, 0, 0x80, 0, 0, 0]);
+        message
+    }
+
+    /// Tron's 16: an answer that fits the tun as IPv4 is 20 bytes too big
+    /// once rebuilt as IPv6. The query asks for no more than fits, and an
+    /// answer that is too big anyway comes back truncated with TC set.
+    #[test]
+    fn ipv6_redirected_answers_never_outgrow_the_tun_mtu() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let mtu = 1150_u16;
+        let nat = nameserver_nat(nameserver)
+            .with_ipv4_source(Some(CLIENT_V4))
+            .with_mtu(mtu);
+        let google = "2001:4860:4860::8888".parse::<std::net::Ipv6Addr>().unwrap();
+        let client: std::net::Ipv6Addr = "fd00::2".parse().unwrap();
+
+        let mut query =
+            build_ipv6_udp_packet(client, google, 52_000, 53, &dns_query_with_edns(0x5151, 4096))
+                .unwrap();
+        nat.redirect_public_resolver_query(&mut query).unwrap();
+        let edns_size = &query[query.len() - 8..query.len() - 6];
+        assert_eq!(edns_size, &(mtu - 48).to_be_bytes(), "EDNS size clamped to what fits as IPv6");
+        assert!(udp_checksum_valid_v4(&query), "checksum covers the clamped size");
+
+        // Exactly the tun MTU as IPv4: 1150 - 28 bytes of DNS.
+        let mut big = dns_query_with_edns(0x5151, 4096);
+        big[2] = 0x81;
+        big.resize(usize::from(mtu) - 28, 0);
+        let mut answer = build_ipv4_udp_packet(nameserver, CLIENT_V4, 53, 52_000, &big).unwrap();
+        assert_eq!(answer.len(), usize::from(mtu));
+        assert!(nat.rewrite_response(&mut answer));
+        assert!(answer.len() <= usize::from(mtu), "rebuilt answer is {} bytes", answer.len());
+        assert_ne!(answer[48 + 2] & 0x02, 0, "TC tells the client the answer was cut");
+        assert_eq!(&answer[48 + 4..48 + 6], &[0, 1], "the question is kept");
+        assert_eq!(&answer[48 + 6..48 + 12], &[0; 6], "no partial records");
+        assert!(udp_checksum_valid_v6(&answer));
+
+        let mut small = build_ipv6_udp_packet(client, google, 52_001, 53, &dns_query_with_id(9)).unwrap();
+        nat.redirect_public_resolver_query(&mut small).unwrap();
+        let mut ordinary = dns_answer_v4(nameserver, 52_001, 9);
+        assert!(nat.rewrite_response(&mut ordinary));
+        assert_eq!(ordinary[48 + 2] & 0x02, 0, "an answer that fits is untouched");
     }
 
     #[test]
