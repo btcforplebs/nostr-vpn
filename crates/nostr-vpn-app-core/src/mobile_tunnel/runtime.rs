@@ -325,6 +325,7 @@ impl MobileTunnel {
             let app_config_for_dns = Arc::clone(&app_config);
             let outbound_exit_dns_nat = exit_dns_nat.clone();
             let mut secure_dns_dispatch = secure_dns_dispatch;
+            let dns_sinkhole = !config.network_dns.is_empty();
             tokio::spawn(async move {
                 while let Some(packets) = outbound_rx.recv().await {
                     if !dispatch_mobile_outbound_packets(
@@ -339,6 +340,7 @@ impl MobileTunnel {
                         &mut secure_dns_dispatch,
                         magic_dns_server,
                         outbound_exit_dns_nat.as_deref(),
+                        dns_sinkhole,
                         packets,
                     )
                     .await

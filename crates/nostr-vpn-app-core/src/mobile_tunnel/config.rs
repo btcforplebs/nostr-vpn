@@ -495,6 +495,10 @@ impl MobileTunnelConfig {
         };
         if let Some(nameserver) = network_dns {
             route_targets.push(format!("{nameserver}/32"));
+            // Pull the well-known public resolvers into the tunnel too, where
+            // the sinkhole refuses them: an app doing DoH/DoT to a hard-coded
+            // address would otherwise resolve around the nameserver.
+            route_targets.extend(dns_sinkhole_route_targets());
         }
         let internet_source = serialized_mobile_internet_source(app);
         preserve_mobile_pending_exit_default_routes(

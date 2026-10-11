@@ -720,6 +720,7 @@ async fn dispatch_mobile_outbound_packets(
     secure_dns: &mut Option<MobileSecureDnsDispatch>,
     magic_dns_server: Option<Ipv4Addr>,
     exit_dns_nat: Option<&MobileExitDnsNat>,
+    dns_sinkhole: bool,
     packets: Vec<Vec<u8>>,
 ) -> bool {
     let mut pending_run = None;
@@ -727,6 +728,20 @@ async fn dispatch_mobile_outbound_packets(
     let mut pending_wg_packets = Vec::new();
     let mesh = mesh.read().ok().map(|mesh| Arc::clone(&*mesh));
     for mut packet in packets {
+        // The network DNS override routes public resolvers into the tunnel so
+        // nothing can resolve around the network nameserver. Refuse them before
+        // any mesh or exit routing can carry them out.
+        if dns_sinkhole {
+            match dns_sinkhole_verdict(&packet) {
+                DnsSinkholeVerdict::Pass => {}
+                DnsSinkholeVerdict::Drop => continue,
+                DnsSinkholeVerdict::Reply(reset) => {
+                    pending_dns_responses.push(reset);
+                    continue;
+                }
+            }
+        }
+
         // With the Android app UID captured, reqwest's DoH connection returns
         // through this same TUN. Resolve off-loop so its TCP packets can reach
         // WG. The tunnel-owned JoinSet bounds work, aborts it on tunnel stop,
