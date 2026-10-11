@@ -401,3 +401,216 @@
         assert!(!config.network_dns_unavailable);
         assert_eq!(mobile_dns_upstream(&config).expect("dns upstream"), MobileDnsUpstream::SecureDns);
     }
+
+    const CLIENT_V4: Ipv4Addr = Ipv4Addr::new(100, 64, 0, 2);
+
+    fn dns_udp_v4(destination: Ipv4Addr, client_port: u16, query_id: u16) -> Vec<u8> {
+        build_ipv4_udp_packet(CLIENT_V4, destination, client_port, 53, &dns_query_with_id(query_id))
+            .expect("query packet")
+    }
+
+    fn dns_answer_v4(server: Ipv4Addr, client_port: u16, query_id: u16) -> Vec<u8> {
+        build_ipv4_udp_packet(server, CLIENT_V4, 53, client_port, &dns_query_with_id(query_id))
+            .expect("answer packet")
+    }
+
+    fn dns_query_with_id(query_id: u16) -> Vec<u8> {
+        let mut message = query_id.to_be_bytes().to_vec();
+        message.extend_from_slice(&[1, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+        message
+    }
+
+    fn dns_tcp_v4(destination: Ipv4Addr, source: Ipv4Addr, sport: u16, dport: u16, flags: u8) -> Vec<u8> {
+        let mut packet = tcp_packet_v4(destination, flags, 1, 0, &[]);
+        packet[12..16].copy_from_slice(&source.octets());
+        packet[20..22].copy_from_slice(&sport.to_be_bytes());
+        packet[22..24].copy_from_slice(&dport.to_be_bytes());
+        packet
+    }
+
+    fn flow_count(nat: &MobileExitDnsNat) -> usize {
+        nat.flows.lock().unwrap().entries.len()
+    }
+
+    /// Box off answers nothing, and any app can spray UDP/53 at 8.8.8.8: the
+    /// table must stay bounded for as long as the tunnel is up.
+    #[test]
+    fn unanswered_redirects_never_grow_the_flow_table_past_its_cap() {
+        let nat = nameserver_nat(Ipv4Addr::new(10, 44, 0, 53));
+        let now = Instant::now();
+        for index in 0..10_000_u32 {
+            let port = 20_000 + u16::try_from(index % 40_000).unwrap();
+            let mut query = dns_udp_v4(Ipv4Addr::new(8, 8, 8, 8), port, u16::try_from(index % 65_536).unwrap());
+            assert!(nat.redirect_public_resolver_query_at(&mut query, now).is_some());
+        }
+        assert_eq!(flow_count(&nat), MOBILE_DNS_FLOW_CAPACITY);
+    }
+
+    #[test]
+    fn unanswered_udp_flows_expire() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let nat = nameserver_nat(nameserver);
+        let start = Instant::now();
+        let mut query = dns_udp_v4(Ipv4Addr::new(8, 8, 8, 8), 50_000, 7);
+        nat.redirect_public_resolver_query_at(&mut query, start).unwrap();
+
+        let later = start + MOBILE_DNS_UDP_FLOW_TTL + Duration::from_secs(1);
+        let mut late_answer = dns_answer_v4(nameserver, 50_000, 7);
+        assert!(!nat.rewrite_response_at(&mut late_answer, later), "a dead flow is not revived");
+
+        let mut other = dns_udp_v4(Ipv4Addr::new(8, 8, 8, 8), 50_001, 8);
+        nat.redirect_public_resolver_query_at(&mut other, start).unwrap();
+        let mut trigger = dns_udp_v4(Ipv4Addr::new(8, 8, 8, 8), 50_002, 9);
+        nat.redirect_public_resolver_query_at(&mut trigger, later).unwrap();
+        assert_eq!(flow_count(&nat), 1, "the sweep drops expired flows on its own");
+    }
+
+    /// Tron's probe: 8.8.8.8 then 1.1.1.1 from one port used to overwrite each
+    /// other, and the single answer came back as 1.1.1.1.
+    #[test]
+    fn answers_go_back_to_the_resolver_each_query_was_sent_to() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let nat = nameserver_nat(nameserver);
+        let google = Ipv4Addr::new(8, 8, 8, 8);
+        let cloudflare = Ipv4Addr::new(1, 1, 1, 1);
+        let mut first = dns_udp_v4(google, 55_000, 0x1111);
+        let mut second = dns_udp_v4(cloudflare, 55_000, 0x2222);
+        nat.redirect_public_resolver_query(&mut first).unwrap();
+        nat.redirect_public_resolver_query(&mut second).unwrap();
+
+        let mut answer_first = dns_answer_v4(nameserver, 55_000, 0x1111);
+        let mut answer_second = dns_answer_v4(nameserver, 55_000, 0x2222);
+        assert!(nat.rewrite_response(&mut answer_first));
+        assert!(nat.rewrite_response(&mut answer_second));
+        assert_eq!(&answer_first[12..16], &google.octets());
+        assert_eq!(&answer_second[12..16], &cloudflare.octets());
+
+        let mut duplicate = dns_answer_v4(nameserver, 55_000, 0x1111);
+        assert!(!nat.rewrite_response(&mut duplicate), "a UDP answer consumes its flow");
+    }
+
+    #[test]
+    fn a_colliding_query_is_refused_rather_than_cross_wired() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let nat = nameserver_nat(nameserver);
+        let mut first = dns_udp_v4(Ipv4Addr::new(8, 8, 8, 8), 55_000, 0x1111);
+        let mut clash = dns_udp_v4(Ipv4Addr::new(1, 1, 1, 1), 55_000, 0x1111);
+        nat.redirect_public_resolver_query(&mut first).unwrap();
+        assert_eq!(nat.redirect_public_resolver_query(&mut clash), None);
+
+        let mut answer = dns_answer_v4(nameserver, 55_000, 0x1111);
+        assert!(nat.rewrite_response(&mut answer));
+        assert_eq!(&answer[12..16], &[8, 8, 8, 8], "the first query still owns its answer");
+    }
+
+    #[test]
+    fn tcp_flows_close_on_reset_and_after_fin() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let nat = nameserver_nat(nameserver);
+        let google = Ipv4Addr::new(8, 8, 8, 8);
+        let start = Instant::now();
+
+        let mut syn = dns_tcp_v4(google, CLIENT_V4, 40_000, 53, TCP_SYN);
+        nat.redirect_public_resolver_query_at(&mut syn, start).unwrap();
+        let mut reset = dns_tcp_v4(CLIENT_V4, nameserver, 53, 40_000, TCP_RST);
+        assert!(nat.rewrite_response_at(&mut reset, start));
+        assert_eq!(flow_count(&nat), 0, "a reset ends the stream");
+        let mut stale = dns_tcp_v4(CLIENT_V4, nameserver, 53, 40_000, TCP_ACK);
+        assert!(!nat.rewrite_response_at(&mut stale, start), "a stale duplicate matches nothing");
+
+        let mut syn = dns_tcp_v4(google, CLIENT_V4, 40_001, 53, TCP_SYN);
+        nat.redirect_public_resolver_query_at(&mut syn, start).unwrap();
+        let mut fin = dns_tcp_v4(CLIENT_V4, nameserver, 53, 40_001, TCP_FIN | TCP_ACK);
+        assert!(nat.rewrite_response_at(&mut fin, start));
+        let mut last_ack = dns_tcp_v4(google, CLIENT_V4, 40_001, 53, TCP_ACK);
+        let after_grace = start + MOBILE_DNS_TCP_FLOW_CLOSING + Duration::from_secs(1);
+        let mut late = dns_tcp_v4(CLIENT_V4, nameserver, 53, 40_001, TCP_ACK);
+        assert!(nat.redirect_public_resolver_query_at(&mut last_ack, start).is_some());
+        assert!(!nat.rewrite_response_at(&mut late, after_grace), "FIN leaves only a short grace");
+    }
+
+    #[test]
+    fn a_second_tcp_stream_on_the_same_port_is_refused() {
+        let nat = nameserver_nat(Ipv4Addr::new(10, 44, 0, 53));
+        let mut first = dns_tcp_v4(Ipv4Addr::new(8, 8, 8, 8), CLIENT_V4, 40_000, 53, TCP_SYN);
+        let mut second = dns_tcp_v4(Ipv4Addr::new(1, 1, 1, 1), CLIENT_V4, 40_000, 53, TCP_SYN);
+        assert!(nat.redirect_public_resolver_query(&mut first).is_some());
+        assert_eq!(nat.redirect_public_resolver_query(&mut second), None);
+    }
+
+    fn dns_udp_v6(destination: std::net::Ipv6Addr, client_port: u16, query_id: u16) -> Vec<u8> {
+        build_ipv6_udp_packet(
+            "fd00::2".parse().unwrap(),
+            destination,
+            client_port,
+            53,
+            &dns_query_with_id(query_id),
+        )
+        .expect("ipv6 query")
+    }
+
+    fn udp_checksum_valid_v6(packet: &[u8]) -> bool {
+        let mut pseudo = Vec::new();
+        pseudo.extend_from_slice(&packet[8..40]);
+        pseudo.extend_from_slice(&[0, 0, packet[4], packet[5], 0, 0, 0, 17]);
+        pseudo.extend_from_slice(&packet[40..]);
+        folds_to_ones(&pseudo)
+    }
+
+    /// Tron's probe: UDP/53 to `2001:4860:4860::8888` was dropped, so on an
+    /// IPv6 carrier a hard-coded resolver cost a timeout and never reached
+    /// the nameserver.
+    #[test]
+    fn plain_dns_to_an_ipv6_resolver_is_redirected_and_answered_over_ipv6() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let nat = nameserver_nat(nameserver).with_ipv4_source(Some(CLIENT_V4));
+        for resolver in [
+            "2001:4860:4860::8888".parse::<std::net::Ipv6Addr>().unwrap(),
+            nat64(Ipv4Addr::new(8, 8, 8, 8)),
+        ] {
+            let mut query = dns_udp_v6(resolver, 51_000, 0x4242);
+            assert_eq!(nat.redirect_public_resolver_query(&mut query), Some(nameserver));
+            assert_eq!(query[0] >> 4, 4, "carried to the nameserver over IPv4");
+            assert_eq!(&query[12..16], &CLIENT_V4.octets());
+            assert_eq!(&query[16..20], &nameserver.octets());
+            assert_eq!(&query[28..30], &0x4242_u16.to_be_bytes());
+
+            let mut answer = dns_answer_v4(nameserver, 51_000, 0x4242);
+            assert!(nat.rewrite_response(&mut answer));
+            assert_eq!(answer[0] >> 4, 6, "the answer goes back as IPv6");
+            assert_eq!(&answer[8..24], &resolver.octets(), "from the resolver it asked");
+            assert_eq!(&answer[24..40], &"fd00::2".parse::<std::net::Ipv6Addr>().unwrap().octets());
+            assert_eq!(&answer[40..42], &53u16.to_be_bytes());
+            assert_eq!(&answer[42..44], &51_000u16.to_be_bytes());
+            assert!(udp_checksum_valid_v6(&answer));
+        }
+    }
+
+    #[test]
+    fn ipv6_redirect_needs_a_tunnel_ipv4_and_a_listed_resolver() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let google = "2001:4860:4860::8888".parse::<std::net::Ipv6Addr>().unwrap();
+        let mut query = dns_udp_v6(google, 51_000, 1);
+        assert_eq!(nameserver_nat(nameserver).redirect_public_resolver_query(&mut query), None);
+
+        let nat = nameserver_nat(nameserver).with_ipv4_source(Some(CLIENT_V4));
+        let mut unlisted = dns_udp_v6("2a02:6b8::feed:0ff".parse().unwrap(), 51_000, 1);
+        assert_eq!(nat.redirect_public_resolver_query(&mut unlisted), None);
+        let mut dot = dns_udp_v6(google, 51_000, 1);
+        dot[42..44].copy_from_slice(&853u16.to_be_bytes());
+        assert_eq!(nat.redirect_public_resolver_query(&mut dot), None);
+    }
+
+    #[test]
+    fn dispatcher_redirects_ipv6_plain_dns_to_the_nameserver() {
+        let nameserver = Ipv4Addr::new(10, 44, 0, 53);
+        let nat = nameserver_nat(nameserver).with_ipv4_source(Some(CLIENT_V4));
+        let google = "2001:4860:4860::8888".parse::<std::net::Ipv6Addr>().unwrap();
+        let plain = dns_udp_v6(google, 51_000, 9);
+
+        let (to_exit, to_tun) = dispatch_through_exit_with_nat(true, Some(&nat), vec![plain]);
+
+        assert_eq!(to_exit.len(), 1, "the IPv6 query is forwarded, not dropped");
+        assert_eq!(&to_exit[0][16..20], &nameserver.octets());
+        assert!(to_tun.is_empty());
+    }
