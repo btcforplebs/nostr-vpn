@@ -125,6 +125,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
         }
 
+        // Set only while IPv6 routes must enter the tun (the network DNS
+        // override's resolver sinkhole). iOS routes no IPv6 into a tunnel
+        // without IPv6 settings, so those resolvers would stay reachable.
+        if let localIpv6 = parseIPv6CIDR(parsedConfig.localAddressIpv6) {
+            let ipv6 = NEIPv6Settings(
+                addresses: [localIpv6.address],
+                networkPrefixLengths: [NSNumber(value: localIpv6.prefix)]
+            )
+            ipv6.includedRoutes = parsedConfig.routeTargets.compactMap(ipv6Route)
+            settings.ipv6Settings = ipv6
+            NSLog(
+                "nvpn-pkt: ipv6 addr=\(localIpv6.address)/\(localIpv6.prefix) "
+                    + "included=\(ipv6.includedRoutes?.count ?? 0)"
+            )
+        }
+
         // The Rust tunnel owns DNS whenever an exit is active. It answers
         // MagicDNS locally and sends public queries only through authenticated
         // DNS-over-HTTPS. Never allow iOS to fall back to underlay DNS.
@@ -133,6 +149,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             magicDnsServer: parsedConfig.magicDnsServer,
             matchDomains: parsedConfig.dnsMatchDomains
         )
+        // An empty match domain means the tunnel owns every lookup (exit or
+        // network DNS override). Coming up without a resolver would show the
+        // VPN as connected while iOS resolves through the carrier: fail closed.
+        if dnsConfig.servers.isEmpty && dnsConfig.matchDomains.contains("") {
+            NSLog("nvpn-pkt: refusing to start: tunnel must own DNS but has no DNS server")
+            stopRustTunnel(generation: startGeneration)
+            completionHandler(PacketTunnelError.startFailed)
+            return
+        }
         if !dnsConfig.servers.isEmpty {
             let dns = NEDNSSettings(servers: dnsConfig.servers)
             dns.matchDomains = dnsConfig.matchDomains
@@ -648,6 +673,7 @@ private enum PacketTunnelError: LocalizedError {
 
 private struct MobileTunnelConfig {
     let localAddress: String
+    let localAddressIpv6: String
     let routeTargets: [String]
     let excludedRoutes: [String]
     let dnsServers: [String]
@@ -661,6 +687,7 @@ private struct MobileTunnelConfig {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             localAddress = "10.44.0.1/32"
+            localAddressIpv6 = ""
             routeTargets = []
             excludedRoutes = []
             dnsServers = []
@@ -672,6 +699,7 @@ private struct MobileTunnelConfig {
         }
         let error = object["error"] as? String ?? ""
         localAddress = object["localAddress"] as? String ?? "10.44.0.1/32"
+        localAddressIpv6 = object["localAddressIpv6"] as? String ?? ""
         routeTargets = object["routeTargets"] as? [String] ?? []
         excludedRoutes = object["excludedRoutes"] as? [String] ?? []
         dnsServers = object["dnsServers"] as? [String] ?? []
@@ -684,7 +712,7 @@ private struct MobileTunnelConfig {
 
 private func parseIPv4CIDR(_ value: String) -> (address: String, mask: String)? {
     let parts = value.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
-    guard let address = parts.first.map(String.init), !address.isEmpty else {
+    guard let address = parts.first.map(String.init), !address.isEmpty, !address.contains(":") else {
         return nil
     }
     let prefix = parts.count == 2 ? Int(parts[1]) ?? 32 : 32
@@ -705,6 +733,32 @@ private func ipv4Route(_ value: String) -> NEIPv4Route? {
         return NEIPv4Route.default()
     }
     return NEIPv4Route(destinationAddress: parsed.address, subnetMask: parsed.mask)
+}
+
+private func parseIPv6CIDR(_ value: String) -> (address: String, prefix: Int)? {
+    let parts = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        .split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+    guard let address = parts.first.map(String.init), address.contains(":") else {
+        return nil
+    }
+    let prefix = parts.count == 2 ? Int(parts[1]) ?? 128 : 128
+    guard (0...128).contains(prefix) else {
+        return nil
+    }
+    return (address, prefix)
+}
+
+private func ipv6Route(_ value: String) -> NEIPv6Route? {
+    guard let parsed = parseIPv6CIDR(value) else {
+        return nil
+    }
+    if parsed.prefix == 0 {
+        return NEIPv6Route.default()
+    }
+    return NEIPv6Route(
+        destinationAddress: parsed.address,
+        networkPrefixLength: NSNumber(value: parsed.prefix)
+    )
 }
 
 private func consumeCString(_ pointer: UnsafeMutablePointer<CChar>?) -> String {
