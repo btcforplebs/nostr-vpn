@@ -43,6 +43,7 @@
                 admins: vec![admin.clone()],
                 aliases: HashMap::new(),
                 signed_at: unix_timestamp(),
+                ..Default::default()
             },
             &admin_keys,
         )
@@ -88,6 +89,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         // Isolate the admin-listener behavior from the built-in bootstrap nodes,
         // which would otherwise populate config.peers as fallback transit.

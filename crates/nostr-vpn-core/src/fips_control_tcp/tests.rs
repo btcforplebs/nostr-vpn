@@ -17,6 +17,7 @@ fn test_join_roster() -> (JoinRosterControl, String) {
             admins: vec![admin.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at: 42,
+            ..Default::default()
         },
         &admin,
     )

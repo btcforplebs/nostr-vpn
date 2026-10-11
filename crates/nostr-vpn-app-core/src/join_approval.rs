@@ -40,6 +40,8 @@ pub fn prepare_join_approval(
     let signed_roster = SignedRoster::sign(
         shared.network_id.clone(),
         NetworkRoster {
+            dns_node: shared.dns_node.clone(),
+            dns_override: shared.dns_override,
             network_name: shared.name.clone(),
             devices: shared.devices.clone(),
             admins: shared.admins.clone(),
@@ -253,6 +255,8 @@ mod tests {
         let regenerated = SignedRoster::sign(
             shared.network_id,
             NetworkRoster {
+                dns_node: shared.dns_node,
+                dns_override: shared.dns_override,
                 network_name: shared.name,
                 devices: shared.devices,
                 admins: shared.admins,

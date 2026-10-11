@@ -33,6 +33,7 @@ fn signed_roster_persistence_avoids_preexisting_temporary_symlinks() {
             admins: vec![admin.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at: 1,
+            ..Default::default()
         },
         &admin,
     )

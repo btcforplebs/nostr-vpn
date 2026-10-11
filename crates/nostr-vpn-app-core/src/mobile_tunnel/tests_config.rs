@@ -253,6 +253,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = new_mobile_mesh(FipsMeshRuntime::with_local_routes(
@@ -295,6 +296,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
         let mesh = FipsMeshRuntime::with_local_routes(config.peers.clone(), vec![]);
@@ -420,6 +422,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -521,6 +524,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -664,6 +668,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.ensure_defaults();
         let mut config = MobileTunnelConfig::from_app(&app).expect("mobile config");
@@ -706,6 +711,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.ensure_defaults();
         let mut config = MobileTunnelConfig::from_app(&app).expect("mobile config");
@@ -778,6 +784,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.wireguard_exit = WireGuardExitConfig {
             enabled: true,
@@ -800,6 +807,7 @@
                 admins: vec![own],
                 aliases: HashMap::new(),
                 signed_at: unix_timestamp(),
+                ..Default::default()
             },
             &app.nostr_keys().expect("admin keys"),
         )

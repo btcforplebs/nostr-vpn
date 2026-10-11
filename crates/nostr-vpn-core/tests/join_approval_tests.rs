@@ -43,6 +43,7 @@ fn signed_roster(joiner: &AppConfig, signer: &Keys, signed_at: u64) -> JoinRoste
             admins: vec![signer.public_key().to_hex()],
             aliases: HashMap::from([(signer.public_key().to_hex(), "home-exit".to_string())]),
             signed_at,
+            ..Default::default()
         },
         signer,
     )
@@ -143,6 +144,7 @@ fn self_signed_admin_roster_with_the_wrong_request_secret_is_rejected() {
             admins: vec![attacker.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at: SIGNED_AT,
+            ..Default::default()
         },
         &attacker,
     )
@@ -169,6 +171,7 @@ fn roster_with_the_wrong_request_secret_is_rejected() {
             admins: vec![signer.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at: SIGNED_AT,
+            ..Default::default()
         },
         &signer,
     )
@@ -201,6 +204,7 @@ fn roster_signer_must_be_listed_as_an_admin() {
             admins: vec![other_admin.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at: SIGNED_AT,
+            ..Default::default()
         },
         &signer,
     )
