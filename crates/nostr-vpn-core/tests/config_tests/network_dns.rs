@@ -206,3 +206,27 @@ fn the_nameserver_device_keeps_the_selection_even_though_its_roster_omits_itself
         "it still must not point its own resolver stub at itself"
     );
 }
+
+/// Enforced in core rather than at each caller, so the CLI and every app shell
+/// get the same answer.
+#[test]
+fn set_network_dns_rejects_a_non_admin() {
+    let own = Keys::generate();
+    let admin = Keys::generate().public_key().to_hex();
+    let pihole = Keys::generate().public_key().to_hex();
+
+    let mut config = AppConfig::generated();
+    activate_first_network(&mut config);
+    config.nostr.secret_key = own.secret_key().to_secret_hex();
+    config.nostr.public_key = own.public_key().to_hex();
+    let network_id = config.networks[0].id.clone();
+    config.networks[0].admins = vec![admin];
+    config.networks[0].devices = vec![pihole.clone()];
+
+    let error = config
+        .set_network_dns(&network_id, &pihole, true)
+        .expect_err("a non-admin must not set the network nameserver");
+
+    assert!(error.to_string().contains("only a network admin"));
+    assert!(config.networks[0].dns_node.is_empty());
+}
