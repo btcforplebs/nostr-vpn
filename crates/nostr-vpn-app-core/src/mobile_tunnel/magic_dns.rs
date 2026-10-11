@@ -111,13 +111,9 @@ impl MobileDnsFlowTable {
             self.sweep(now);
         }
         if self.entries.len() >= MOBILE_DNS_FLOW_CAPACITY
-            && let Some(oldest) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.last_seen)
-                .map(|(flow, _)| *flow)
+            && let Some(victim) = self.eviction_victim()
         {
-            self.entries.remove(&oldest);
+            self.entries.remove(&victim);
         }
         self.entries.insert(
             flow,
@@ -128,6 +124,26 @@ impl MobileDnsFlowTable {
             },
         );
         true
+    }
+
+    /// The oldest flow of the client port holding the most flows. Evicting the
+    /// oldest flow overall would let one socket spraying queries push every
+    /// other app's pending lookup out, silently; this way the sprayer only
+    /// evicts its own.
+    fn eviction_victim(&self) -> Option<MobileWireGuardDnsFlow> {
+        let mut per_port: HashMap<u16, usize> = HashMap::new();
+        for flow in self.entries.keys() {
+            *per_port.entry(flow.client_port).or_default() += 1;
+        }
+        let busiest = per_port
+            .into_iter()
+            .max_by_key(|(port, count)| (*count, *port))
+            .map(|(port, _)| port)?;
+        self.entries
+            .iter()
+            .filter(|(flow, _)| flow.client_port == busiest)
+            .min_by_key(|(_, entry)| entry.last_seen)
+            .map(|(flow, _)| *flow)
     }
 
     /// The origin for an answer. A UDP answer consumes its flow, so a
@@ -162,6 +178,9 @@ struct MobileExitDnsNat {
     /// the nameserver over IPv4. Without it IPv6 resolvers are refused, not
     /// redirected.
     ipv4_source: Option<Ipv4Addr>,
+    /// The largest DNS message that still fits the tun MTU once rebuilt as
+    /// IPv6 (40-byte header against IPv4's 20, plus 8 for UDP).
+    ipv6_answer_budget: u16,
     flows: Mutex<MobileDnsFlowTable>,
     /// Unix time of the oldest query sent since the last answer, 0 when every
     /// query so far has been answered. A box that is off or unreachable never
@@ -176,6 +195,7 @@ impl MobileExitDnsNat {
             servers,
             next_server: AtomicUsize::new(0),
             ipv4_source: None,
+            ipv6_answer_budget: ipv6_dns_answer_budget(DEFAULT_MOBILE_MTU),
             flows: Mutex::new(MobileDnsFlowTable::new(Instant::now())),
             unanswered_since: AtomicU64::new(0),
         })
@@ -183,6 +203,11 @@ impl MobileExitDnsNat {
 
     fn with_ipv4_source(mut self, ipv4_source: Option<Ipv4Addr>) -> Self {
         self.ipv4_source = ipv4_source;
+        self
+    }
+
+    fn with_mtu(mut self, mtu: u16) -> Self {
+        self.ipv6_answer_budget = ipv6_dns_answer_budget(mtu);
         self
     }
 
@@ -245,7 +270,12 @@ impl MobileExitDnsNat {
         if !self.flows.lock().ok()?.record(flow, origin, 0, now) {
             return None;
         }
-        let translated = build_ipv4_udp_packet(source_v4, server, client_port, 53, payload)?;
+        // The answer grows by 20 bytes on the way back. Asking the nameserver
+        // for no more than fits makes it truncate (TC) instead of sending an
+        // answer the tun would have to drop.
+        let mut payload = payload.to_vec();
+        clamp_edns_udp_size(&mut payload, self.ipv6_answer_budget);
+        let translated = build_ipv4_udp_packet(source_v4, server, client_port, 53, &payload)?;
         *packet = translated;
         self.mark_unanswered();
         Some(server)
@@ -364,8 +394,12 @@ impl MobileExitDnsNat {
                 let Some(payload) = packet.get(header_len + 8..total_len) else {
                     return false;
                 };
+                // Backstop for a nameserver that ignores the clamped EDNS size
+                // or a query that had none: a truncated answer the client can
+                // act on beats one the tun drops.
+                let payload = truncate_dns_answer(payload, self.ipv6_answer_budget);
                 let Some(translated) =
-                    build_ipv6_udp_packet(resolver, client, 53, destination_port, payload)
+                    build_ipv6_udp_packet(resolver, client, 53, destination_port, &payload)
                 else {
                     return false;
                 };
@@ -374,6 +408,79 @@ impl MobileExitDnsNat {
             }
         }
     }
+}
+
+fn ipv6_dns_answer_budget(mtu: u16) -> u16 {
+    mtu.saturating_sub(40 + 8).max(512)
+}
+
+/// Offset just past the domain name starting at `offset`.
+fn skip_dns_name(message: &[u8], mut offset: usize) -> Option<usize> {
+    loop {
+        let length = *message.get(offset)?;
+        match length & 0xc0 {
+            0xc0 => return Some(offset + 2).filter(|end| *end <= message.len()),
+            0x00 if length == 0 => return Some(offset + 1),
+            0x00 => offset += 1 + usize::from(length),
+            _ => return None,
+        }
+    }
+}
+
+/// Offset just past the question section.
+fn dns_questions_end(message: &[u8]) -> Option<usize> {
+    let questions = u16::from_be_bytes([*message.get(4)?, *message.get(5)?]);
+    let mut offset = 12;
+    for _ in 0..questions {
+        offset = skip_dns_name(message, offset)? + 4;
+    }
+    (offset <= message.len()).then_some(offset)
+}
+
+/// Lower the EDNS0 UDP payload size the query advertises to `budget`. A query
+/// with no OPT record already caps answers at 512 bytes.
+fn clamp_edns_udp_size(message: &mut [u8], budget: u16) {
+    let Some(mut offset) = dns_questions_end(message) else {
+        return;
+    };
+    let count = |at: usize| u16::from_be_bytes([message[at], message[at + 1]]);
+    let records = u32::from(count(6)) + u32::from(count(8)) + u32::from(count(10));
+    for _ in 0..records {
+        let Some(name_end) = skip_dns_name(message, offset) else {
+            return;
+        };
+        let Some(fixed) = message.get(name_end..name_end + 10) else {
+            return;
+        };
+        let record_type = u16::from_be_bytes([fixed[0], fixed[1]]);
+        let rdata_len = usize::from(u16::from_be_bytes([fixed[8], fixed[9]]));
+        if record_type == 41 {
+            let size = u16::from_be_bytes([fixed[2], fixed[3]]);
+            if size > budget {
+                message[name_end + 2..name_end + 4].copy_from_slice(&budget.to_be_bytes());
+            }
+            return;
+        }
+        offset = name_end + 10 + rdata_len;
+    }
+}
+
+/// `answer` unchanged when it fits `budget`; otherwise its header and question
+/// with TC set and no records, the standard "too big for UDP" reply.
+fn truncate_dns_answer(answer: &[u8], budget: u16) -> std::borrow::Cow<'_, [u8]> {
+    if answer.len() <= usize::from(budget) {
+        return std::borrow::Cow::Borrowed(answer);
+    }
+    let keep = dns_questions_end(answer)
+        .filter(|end| *end <= usize::from(budget))
+        .unwrap_or(12);
+    let mut truncated = answer[..keep].to_vec();
+    truncated[2] |= 0x02;
+    if keep == 12 {
+        truncated[4..6].fill(0);
+    }
+    truncated[6..12].fill(0);
+    std::borrow::Cow::Owned(truncated)
 }
 
 /// The DNS message ID that pairs a UDP answer with its query. TCP streams
