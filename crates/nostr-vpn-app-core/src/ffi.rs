@@ -12,11 +12,11 @@ use anyhow::{Context, Result, anyhow};
 use nostr_vpn_core::config::PaidExitSellerEgress;
 use nostr_vpn_core::config::{
     AppConfig, ExitDnsMode, ExitDohProvider, FiatCurrency, InternetSource, NetworkConfig,
-    NetworkDnsRoute,
-    NostrPubsubMode, PendingInboundJoinRequest, PendingOutboundJoinRequest, derive_mesh_tunnel_ip,
-    maybe_autoconfigure_node, normalize_advertised_route, normalize_magic_dns_label,
-    normalize_nostr_pubkey, normalize_relay_urls, normalize_runtime_network_id,
-    npub_for_pubkey_hex, parse_wireguard_exit_config, wireguard_exit_config_text,
+    NetworkDnsRoute, NostrPubsubMode, PendingInboundJoinRequest, PendingOutboundJoinRequest,
+    derive_mesh_tunnel_ip, maybe_autoconfigure_node, normalize_advertised_route,
+    normalize_magic_dns_label, normalize_nostr_pubkey, normalize_relay_urls,
+    normalize_runtime_network_id, npub_for_pubkey_hex, parse_wireguard_exit_config,
+    wireguard_exit_config_text,
 };
 use nostr_vpn_core::diagnostics::ProbeStatus;
 #[cfg(feature = "paid-exit")]

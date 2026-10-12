@@ -61,12 +61,21 @@ pub struct NativeInboundJoinRequestState {
 
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct NativeNetworkState {
     pub id: String,
     pub name: String,
     pub enabled: bool,
     pub network_id: String,
     pub local_is_admin: bool,
+    /// Roster device serving DNS for this network, empty when unset.
+    pub dns_node_npub: String,
+    /// Whether members are forced to resolve through `dns_node_npub`.
+    pub dns_override: bool,
+    /// True on the device that serves the network's DNS. It keeps its own
+    /// resolver configuration, so the UI should say so rather than imply the
+    /// override is applied locally.
+    pub local_is_dns_node: bool,
     pub join_requests_enabled: bool,
     pub join_request_admin_npub: String,
     pub admin_npubs: Vec<String>,
