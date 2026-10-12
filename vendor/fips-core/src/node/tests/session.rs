@@ -37,6 +37,7 @@ mod purge_idle;
 mod rekey_coordinate_recovery;
 mod rekey_routed;
 mod remote_restart;
+mod surviving_initiator_restart;
 mod resend_rekey_large;
 mod retransmit_harness;
 mod rotation_restart;
