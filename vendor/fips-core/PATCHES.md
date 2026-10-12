@@ -3,8 +3,9 @@
 This directory is the crates.io release of nvpn-fips-core 0.4.94, byte for
 byte,
 plus the patch below. `git diff <vendor commit> -- vendor/fips-core` shows
-exactly what changed. Drop this directory and the `[patch.crates-io]` entry
-once upstream ships an equivalent fix.
+exactly what changed. Once upstream ships an equivalent fix, drop this
+directory and both `[patch.crates-io] nvpn-fips-core` entries: the root
+`Cargo.toml` and `linux/Cargo.toml` (then refresh both `Cargo.lock` files).
 
 ## 1. Answer a restarted peer's SessionSetup after the settle window
 
