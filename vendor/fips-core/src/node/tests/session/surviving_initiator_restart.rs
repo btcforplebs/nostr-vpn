@@ -83,7 +83,20 @@ async fn surviving_initiator_scenario(past_settle_window: bool) {
 
     if past_settle_window {
         assert!(answered, "surviving initiator must answer a restarted peer's fresh setup after the settle window");
+        assert!(!survivor.is_rekey_initiator(), "survivor answers as responder, it does not start its own rekey");
         wait_for_session_established(&mut nodes, 1, &survivor_addr, Duration::from_secs(10), "restarted responder fresh session").await;
+        for _ in 0..20 {
+            if process_available_packets(&mut nodes).await == 0 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        let restarted_epoch = nodes[1].node.startup_epoch;
+        let survivor = nodes[0].node.get_session(&restarted_addr).unwrap();
+        assert!(
+            survivor.established_remote_epoch_matches(Some(restarted_epoch)),
+            "survivor must end on the restarted peer's new session, not the stale one"
+        );
+        assert!(!survivor.has_rekey_in_progress());
     } else {
         assert!(!answered, "inside the settle window a setup from the same peer is treated as a late simultaneous msg1");
         assert!(survivor.handshake_payload().is_some());
