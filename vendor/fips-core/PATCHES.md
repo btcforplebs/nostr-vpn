@@ -1,6 +1,7 @@
-# Local patches to fips-core 0.4.53
+# Local patches to nvpn-fips-core 0.4.94
 
-This directory is the crates.io release of fips-core 0.4.53, byte for byte,
+This directory is the crates.io release of nvpn-fips-core 0.4.94, byte for
+byte,
 plus the patch below. `git diff <vendor commit> -- vendor/fips-core` shows
 exactly what changed. Drop this directory and the `[patch.crates-io]` entry
 once upstream ships an equivalent fix.
@@ -30,8 +31,9 @@ Tests: `src/node/tests/session/surviving_initiator_restart.rs`
   on the peer's new epoch (fails without the fix)
 - inside the window, the setup is still dropped (the upstream rule holds)
 
-The same guard is unchanged in nvpn-fips-core 0.4.83, and the
-past-the-window test fails there too.
+First written against fips-core 0.4.53 (nvpn 4.1.4). The guard is
+unchanged in nvpn-fips-core 0.4.83 and 0.4.94, and the patch applies to
+0.4.94 without edits.
 
 ## Known, not fixed here
 
