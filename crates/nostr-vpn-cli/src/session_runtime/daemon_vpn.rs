@@ -622,7 +622,7 @@ pub(crate) async fn daemon_vpn(args: DaemonArgs) -> Result<()> {
                                         network_id = reload.network_id;
                                         expected_peers = reload.expected_peers;
                                         own_pubkey = reload.own_pubkey;
-                                        if secure_exit_dns_required(&app) {
+                                        if global_system_dns_required(&app) {
                                             magic_dns_runtime.take();
                                         }
                                         if let Some(rt) = magic_dns_runtime.as_ref() {
