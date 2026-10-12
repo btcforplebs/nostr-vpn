@@ -1,0 +1,486 @@
+use crate::dataplane::DataplaneLiveTurnIo;
+use crate::discovery::is_punch_packet;
+use crate::node::wire::{
+    COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
+};
+use crate::node::{AuthenticatedFmpReceiveFacts, LocalSessionPayload, Node};
+use crate::transport::ReceivedPacket;
+use crate::{NodeAddr, PeerIdentity};
+use tracing::{debug, trace, warn};
+
+use super::{RxLoopDataplaneIo, RxLoopDataplaneTurnLimits};
+
+impl Node {
+    pub(in crate::node) async fn flush_pending_root_traffic(&mut self) -> bool {
+        let Some(root) = self.pending_root_traffic else {
+            return false;
+        };
+        if self.config.node.routing.mode != crate::config::RoutingMode::Tree
+            || self.tree_state.root() != &root
+            || !self.pending_session_traffic.has_traffic_for(&root)
+            || !self.dataplane_has_fsp_owner(&root)
+            || !self.dataplane_application_route_ready(&root)
+        {
+            self.pending_root_traffic = None;
+            return false;
+        }
+
+        // Keep the root and unvisited queue node-owned across cancellation.
+        // One step shares the existing fast-maintenance time limit; failure
+        // leaves ordinary maintenance responsible instead of spinning Notify.
+        let result = tokio::time::timeout(
+            super::budget::RX_LOOP_FAST_MAINTENANCE_TIMEOUT,
+            self.flush_one_pending_packet(&root),
+        )
+        .await;
+        match result {
+            Ok(true) if self.pending_session_traffic.has_traffic_for(&root) => {
+                self.dataplane.readiness_notify().notify_one();
+                true
+            }
+            Ok(progress) => {
+                self.pending_root_traffic = None;
+                progress
+            }
+            Err(_) => false,
+        }
+    }
+
+    pub(in crate::node) async fn drain_dataplane_turn_with_firsts(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+        firsts: crate::dataplane::DataplaneLiveTurnFirsts,
+        limits: RxLoopDataplaneTurnLimits,
+    ) -> crate::dataplane::DataplaneLiveNodeTurn {
+        let direct_fsp_sources = self.dataplane_direct_fsp_sources_for_rx_turn();
+        let turn = self
+            .dataplane
+            .pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_batch(
+                &mut *io.packet_rx,
+                firsts,
+                limits.packet,
+                direct_fsp_sources,
+                self.has_deferred_session_forwards(),
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut *io.endpoint_data_rx,
+                    endpoint_limit: limits.endpoint,
+                    tun_outbound_rx: &mut *io.tun_outbound_rx,
+                    tun_limit: limits.tun,
+                    endpoint_tx: io.endpoint_tx,
+                    transports: &self.transports,
+                    crypto_limit: limits.crypto,
+                    transport_send_batch_packets: self.dataplane_transport_send_batch_packets,
+                },
+            )
+            .await;
+        self.observe_dataplane_turn(&turn);
+        turn
+    }
+
+    pub(in crate::node) async fn drain_dataplane_completion_turn(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+        crypto_limit: usize,
+    ) -> crate::dataplane::DataplaneLiveNodeTurn {
+        let turn = self
+            .dataplane
+            .pump_completion_output_turn_with_transport_batch(
+                self.has_deferred_session_forwards(),
+                DataplaneLiveTurnIo {
+                    endpoint_data_rx: &mut *io.endpoint_data_rx,
+                    endpoint_limit: 0,
+                    tun_outbound_rx: &mut *io.tun_outbound_rx,
+                    tun_limit: 0,
+                    endpoint_tx: io.endpoint_tx,
+                    transports: &self.transports,
+                    crypto_limit,
+                    transport_send_batch_packets: self.dataplane_transport_send_batch_packets,
+                },
+            )
+            .await;
+        self.observe_dataplane_turn(&turn);
+        turn
+    }
+
+    pub(in crate::node) async fn process_dataplane_control_ingress(
+        &mut self,
+        turn: &mut crate::dataplane::DataplaneLiveNodeTurn,
+    ) -> usize {
+        let mut processed = 0usize;
+        self.collect_deferred_session_forward_terminals(turn);
+        processed = processed.saturating_add(self.finish_completed_session_forwards().await);
+        let fmp_crypto_failures: Vec<_> = turn
+            .drops()
+            .iter()
+            .filter_map(Self::dataplane_fmp_crypto_failure)
+            .collect();
+        for (source_addr, counter, authenticated_highest) in fmp_crypto_failures {
+            if self
+                .handle_dataplane_fmp_decrypt_failure(&source_addr, counter, authenticated_highest)
+                .await
+            {
+                processed += 1;
+            }
+        }
+        for receipt in turn.take_fmp_ingress_receipts() {
+            if self.record_dataplane_fmp_ingress_receipt(&receipt) {
+                processed += 1;
+            }
+        }
+        processed = processed.saturating_add(
+            self.handle_dataplane_fmp_link_ingress_batch(turn.take_fmp_link_ingress())
+                .await,
+        );
+        let current_root = *self.tree_state().my_coords().root_id();
+        for warmup in turn.take_fsp_coord_warmups() {
+            let now_ms = Self::now_ms();
+            warmup.apply_to(self.coord_cache_mut(), &current_root, now_ms);
+            processed += 1;
+        }
+        let fsp_crypto_failures: Vec<_> = turn
+            .drops()
+            .iter()
+            .filter_map(Self::dataplane_fsp_crypto_failure)
+            .collect();
+        for (source_addr, counter, received_k_bit) in fsp_crypto_failures {
+            if self
+                .handle_dataplane_fsp_decrypt_failure(source_addr, counter, received_k_bit)
+                .await
+            {
+                processed += 1;
+            }
+        }
+        for ingress in turn.take_fsp_local_session_ingress() {
+            if self.process_dataplane_local_session_ingress(ingress).await {
+                processed += 1;
+            }
+        }
+        processed = processed.saturating_add(
+            self.process_dataplane_authenticated_ingress(turn.take_fsp_authenticated_ingress())
+                .await,
+        );
+        for control in turn.take_fmp_control_ingress() {
+            if self.process_dataplane_fmp_control_ingress(control).await {
+                processed += 1;
+            }
+        }
+        for drop in turn.tun_outbound_drops() {
+            if self.process_dataplane_tun_outbound_drop(drop) {
+                processed += 1;
+            }
+        }
+        for packet in self.dataplane.take_deferred_tun_packets() {
+            self.handle_dataplane_deferred_tun_packet(packet).await;
+            processed += 1;
+        }
+        for batch in self.dataplane.take_deferred_endpoint_data_batches() {
+            self.handle_endpoint_data_batch_no_established_flush(batch)
+                .await;
+            processed += 1;
+        }
+        processed
+    }
+
+    fn dataplane_fmp_crypto_failure(
+        drop: &crate::dataplane::PacketDrop,
+    ) -> Option<(NodeAddr, u64, u64)> {
+        if drop.owner().protocol() != crate::dataplane::PacketProtocol::Fmp
+            || drop.reason() != crate::dataplane::PacketDropReason::CryptoFailed
+            || drop.crypto_failure() != Some(crate::dataplane::CryptoFailureKind::Open)
+        {
+            return None;
+        }
+        Some((
+            drop.owner().node_addr(),
+            drop.counter()?,
+            drop.authenticated_counter_highest().unwrap_or(0),
+        ))
+    }
+
+    fn dataplane_fsp_crypto_failure(
+        drop: &crate::dataplane::PacketDrop,
+    ) -> Option<(NodeAddr, u64, bool)> {
+        if drop.owner().protocol() != crate::dataplane::PacketProtocol::Fsp
+            || drop.reason() != crate::dataplane::PacketDropReason::CryptoFailed
+            || drop.crypto_failure() != Some(crate::dataplane::CryptoFailureKind::Open)
+        {
+            return None;
+        }
+        let received_k_bit =
+            drop.wire_flags().unwrap_or(0) & crate::node::session_wire::FSP_FLAG_K != 0;
+        Some((drop.owner().node_addr(), drop.counter()?, received_k_bit))
+    }
+
+    async fn process_dataplane_local_session_ingress(
+        &mut self,
+        ingress: crate::dataplane::DataplaneFspLocalSessionIngress,
+    ) -> bool {
+        let (source_addr, previous_hop_addr, _ce_flag, _path_mtu, payload) = ingress.into_parts();
+        let delivery = LocalSessionPayload::new(source_addr, previous_hop_addr, payload.as_slice());
+        // Session control is infrequent. Keep its large debug future off the
+        // dataplane turn's poll frame so a normal Tokio worker stack is ample.
+        Box::pin(self.handle_session_payload(delivery)).await;
+        true
+    }
+
+    async fn process_dataplane_fmp_control_ingress(
+        &mut self,
+        control: crate::dataplane::DataplaneFmpControlIngress,
+    ) -> bool {
+        let packet = control.into_packet();
+        if self.handle_local_key_hint(&packet).await {
+            return true;
+        }
+        if is_punch_packet(packet.data.as_slice()) {
+            trace!(
+                transport_id = %packet.transport_id,
+                remote_addr = %packet.remote_addr,
+                bytes = packet.data.len(),
+                "Dropping stray punch probe/ack from dataplane control ingress"
+            );
+            return false;
+        }
+        if packet.data.len() < COMMON_PREFIX_SIZE {
+            return false;
+        }
+
+        let Some(prefix) = CommonPrefix::parse(packet.data.as_slice()) else {
+            return false;
+        };
+        if prefix.version != FMP_VERSION {
+            self.record_dataplane_fmp_protocol_mismatch(&packet, prefix.version, prefix.phase);
+            return false;
+        }
+
+        match prefix.phase {
+            PHASE_MSG1 => {
+                // Heap-isolate the large handshake futures from the nested
+                // dataplane turn frame on finite Tokio worker stacks.
+                Box::pin(self.handle_msg1(packet)).await;
+                true
+            }
+            PHASE_MSG2 => {
+                Box::pin(self.handle_msg2(packet)).await;
+                true
+            }
+            PHASE_ESTABLISHED => Box::pin(self.confirm_pending_handshake(packet)).await,
+            _ => {
+                debug!(
+                    phase = prefix.phase,
+                    transport_id = %packet.transport_id,
+                    "Unknown dataplane FMP control phase, dropping"
+                );
+                false
+            }
+        }
+    }
+
+    fn record_dataplane_fmp_protocol_mismatch(
+        &mut self,
+        packet: &ReceivedPacket,
+        version: u8,
+        phase: u8,
+    ) {
+        debug!(
+            version,
+            transport_id = %packet.transport_id,
+            "Unknown dataplane FMP version, dropping"
+        );
+
+        let looks_like_fmp_phase = matches!(phase, PHASE_ESTABLISHED | PHASE_MSG1 | PHASE_MSG2);
+        if looks_like_fmp_phase
+            && self.bootstrap_transports.contains(&packet.transport_id)
+            && let Some(npub) = self.bootstrap_transports.peer_npub(&packet.transport_id)
+            && let Some(handle) = self.nostr_discovery_handle()
+        {
+            let now_ms = Self::now_ms();
+            let cooldown_secs = handle.protocol_mismatch_cooldown_secs();
+            if handle.record_protocol_mismatch(npub, now_ms) {
+                warn!(
+                    peer_npub = %npub,
+                    transport_id = %packet.transport_id,
+                    peer_version = version,
+                    our_version = FMP_VERSION,
+                    cooldown_secs,
+                    "Nostr-discovered peer speaks a different FMP version; suppressing retraversal"
+                );
+            }
+        }
+    }
+
+    fn record_dataplane_fmp_ingress_receipt(
+        &mut self,
+        receipt: &crate::dataplane::DataplaneFmpIngressReceipt,
+    ) -> bool {
+        let fmp = AuthenticatedFmpReceiveFacts::from_dataplane_receipt(receipt);
+        self.record_authenticated_fmp_receive_facts(fmp, Some(receipt.source_addr()));
+        true
+    }
+
+    pub(in crate::node) fn process_dataplane_tun_outbound_drop(
+        &mut self,
+        drop: &crate::dataplane::DataplaneTunOutboundDrop,
+    ) -> bool {
+        if drop.packet().is_empty() {
+            return false;
+        }
+        match drop.reason() {
+            crate::dataplane::DataplaneTunOutboundDropReason::MtuExceeded { mtu } => {
+                self.send_icmpv6_packet_too_big(drop.packet(), mtu);
+                true
+            }
+            crate::dataplane::DataplaneTunOutboundDropReason::NoRoute => {
+                self.send_icmpv6_dest_unreachable(drop.packet());
+                true
+            }
+            crate::dataplane::DataplaneTunOutboundDropReason::InvalidPacket => false,
+        }
+    }
+
+    pub(in crate::node) fn dataplane_peer_identity(&self, addr: &NodeAddr) -> Option<PeerIdentity> {
+        if let Some(identity) = self
+            .sessions
+            .get(addr)
+            .and_then(|entry| entry.remote_identity())
+        {
+            return Some(identity);
+        }
+        if let Some(identity) = self.peers.get(addr).map(|peer| *peer.identity()) {
+            return Some(identity);
+        }
+        self.identity_cache
+            .iter()
+            .find_map(|(cached_addr, pubkey, _)| {
+                (cached_addr == addr).then(|| PeerIdentity::from_pubkey_full(*pubkey))
+            })
+    }
+
+    pub(super) fn dataplane_packet_activity(
+        turn: &crate::dataplane::DataplaneLiveNodeTurn,
+    ) -> usize {
+        let summary = turn.summary();
+        summary
+            .raw_ingress_dropped()
+            .saturating_add(summary.inbound_admitted())
+            .saturating_add(summary.inbound_dropped())
+            .saturating_add(turn.fmp_control_ingress().len())
+            .saturating_add(turn.fmp_link_ingress().len())
+            .saturating_add(turn.fsp_coord_warmups().len())
+            .saturating_add(turn.fsp_local_session_ingress().len())
+            .saturating_add(turn.endpoint_data_packet_count())
+            .saturating_add(turn.fsp_session_ingress_count())
+            .saturating_add(turn.deferred_endpoint_data_batches_count())
+            .saturating_add(turn.tun_deferred_packets())
+    }
+
+    pub(super) fn dataplane_raw_ingress_activity(
+        turn: &crate::dataplane::DataplaneLiveNodeTurn,
+    ) -> usize {
+        let summary = turn.summary();
+        summary
+            .raw_ingress_dropped()
+            .saturating_add(summary.inbound_admitted())
+            .saturating_add(summary.inbound_dropped())
+            .saturating_add(turn.fmp_control_ingress().len())
+    }
+
+    pub(super) fn dataplane_control_activity(
+        turn: &crate::dataplane::DataplaneLiveNodeTurn,
+    ) -> usize {
+        turn.fmp_control_ingress()
+            .len()
+            .saturating_add(turn.fmp_link_ingress().len())
+            .saturating_add(turn.fsp_coord_warmups().len())
+            .saturating_add(turn.fsp_local_session_ingress().len())
+    }
+
+    pub(in crate::node) fn observe_dataplane_turn(
+        &self,
+        turn: &crate::dataplane::DataplaneLiveNodeTurn,
+    ) {
+        if !turn.has_activity() {
+            return;
+        }
+
+        let summary = turn.summary();
+        if turn.has_failures() {
+            debug!(
+                node = %self.node_addr(),
+                raw_ingress_dropped = summary.raw_ingress_dropped(),
+                inbound_dropped = summary.inbound_dropped(),
+                outbound_dropped = summary.outbound_dropped(),
+                output_drops = turn.output_drops().len(),
+                fmp_control_ingress = turn.fmp_control_ingress().len(),
+                fsp_coord_warmups = turn.fsp_coord_warmups().len(),
+                fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
+                endpoint_data_packets = turn.endpoint_data_packet_count(),
+                endpoint_data_batches = turn.endpoint_data_batch_count(),
+                fsp_session_ingress = turn.fsp_session_ingress_count(),
+                raw_ingress_drops = turn.raw_ingress_drops().len(),
+                tun_outbound_drops = turn.tun_outbound_drops().len(),
+                endpoint_data_drops = turn.endpoint_data_drops().len(),
+                tun_deferred_packets = turn.tun_deferred_packets(),
+                packet_drops = turn.drops().len(),
+                transport_dropped = turn.transport_dropped(),
+                "dataplane turn reported drops"
+            );
+            for drop in turn.raw_ingress_drops() {
+                debug!(
+                    node = %self.node_addr(),
+                    protocol = ?drop.protocol(),
+                    transport_id = ?drop.transport_id(),
+                    remote_addr = ?drop.remote_addr(),
+                    payload_len = drop.payload_len(),
+                    fmp_receiver_idx = ?drop.fmp_receiver_idx(),
+                    reason = ?drop.reason(),
+                    "dataplane raw ingress dropped"
+                );
+            }
+            for drop in turn.endpoint_data_drops() {
+                debug!(
+                    node = %self.node_addr(),
+                    dest_addr = ?drop.dest_addr(),
+                    payload_len = drop.payload_len(),
+                    reason = ?drop.reason(),
+                    "dataplane endpoint data batch dropped"
+                );
+            }
+            for drop in turn.drops() {
+                debug!(
+                    node = %self.node_addr(),
+                    owner = ?drop.owner(),
+                    counter = ?drop.counter(),
+                    reason = ?drop.reason(),
+                    crypto_failure = ?drop.crypto_failure(),
+                    wire_flags = ?drop.wire_flags(),
+                    authenticated_counter_highest = ?drop.authenticated_counter_highest(),
+                    fmp_current_k_bit = ?self.peers.get(&drop.owner().node_addr()).map(|peer| peer.current_k_bit()),
+                    fmp_our_index = ?self.peers.get(&drop.owner().node_addr()).and_then(|peer| peer.our_index()),
+                    fmp_pending_our_index = ?self.peers.get(&drop.owner().node_addr()).and_then(|peer| peer.pending_our_index()),
+                    fmp_pending_key_false = self.dataplane.fmp_owner_has_pending_receive_epoch(&drop.owner().node_addr(), false),
+                    fmp_pending_key_true = self.dataplane.fmp_owner_has_pending_receive_epoch(&drop.owner().node_addr(), true),
+                    "dataplane packet dropped"
+                );
+            }
+            return;
+        }
+
+        trace!(
+            node = %self.node_addr(),
+            inbound_admitted = summary.inbound_admitted(),
+            outbound_admitted = summary.outbound_admitted(),
+            outputs_sent = summary.outputs_sent(),
+            transport_sent = turn.transport_sent(),
+            endpoint_deferred = turn.deferred_endpoint_data_batches_count(),
+            tun_deferred = turn.tun_deferred_packets(),
+            fmp_control_ingress = turn.fmp_control_ingress().len(),
+            fmp_link_ingress = turn.fmp_link_ingress().len(),
+            fsp_coord_warmups = turn.fsp_coord_warmups().len(),
+            fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
+            endpoint_data_packets = turn.endpoint_data_packet_count(),
+            endpoint_data_batches = turn.endpoint_data_batch_count(),
+            fsp_session_ingress = turn.fsp_session_ingress_count(),
+            "dataplane turn completed"
+        );
+    }
+}

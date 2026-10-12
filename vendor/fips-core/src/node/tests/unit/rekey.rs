@@ -1,0 +1,555 @@
+use super::*;
+
+#[test]
+fn full_fmp_replacement_after_odd_rekey_resets_flag_and_preserves_drain() {
+    let node = make_node();
+    let remote = Identity::generate();
+    let mut peer = make_active_test_peer(
+        &node,
+        &remote,
+        TransportId::new(1),
+        LinkId::new(1),
+        TransportAddr::from_string("127.0.0.1:7000"),
+        SessionIndex::new(1),
+        SessionIndex::new(2),
+    );
+    let (rotated, mut old_remote) =
+        make_test_fmp_session_pair(&node.identity, &remote, [1; 8], [2; 8]);
+    peer.set_pending_session(rotated, SessionIndex::new(3), SessionIndex::new(4), true);
+    assert!(peer.cutover_to_new_session().is_some());
+    assert!(peer.current_k_bit());
+    let pending = make_test_fmp_session(&node.identity, &remote, [1; 8], [2; 8]);
+    peer.set_pending_session(pending, SessionIndex::new(7), SessionIndex::new(8), true);
+    assert!(peer.pending_rekey_cutover_due(Duration::ZERO));
+    peer.set_handshake_msg2(vec![2], 1_000);
+
+    let (replacement, mut new_remote) =
+        make_test_fmp_session_pair(&node.identity, &remote, [1; 8], [2; 8]);
+    assert_eq!(
+        peer.replace_session(replacement, SessionIndex::new(5), SessionIndex::new(6)),
+        Some(SessionIndex::new(3))
+    );
+    assert!(
+        !peer.current_k_bit(),
+        "a full Noise handshake starts at the initial flag"
+    );
+    assert_eq!(peer.previous_k_bit(), Some(true));
+    assert_eq!(peer.previous_our_index(), Some(SessionIndex::new(3)));
+    assert!(peer.pending_new_session().is_none());
+    assert_eq!(peer.pending_our_index(), None);
+    assert!(!peer.pending_rekey_cutover_due(Duration::ZERO));
+    assert!(peer.handshake_msg2().is_none());
+    assert!(peer.handshake_msg2_generated_at().is_none());
+    let old_frame = old_remote.encrypt(b"draining").unwrap();
+    assert_eq!(
+        peer.previous_session_mut()
+            .unwrap()
+            .decrypt(&old_frame)
+            .unwrap(),
+        b"draining"
+    );
+    let new_frame = new_remote.encrypt(b"current").unwrap();
+    assert_eq!(
+        peer.noise_session_mut()
+            .unwrap()
+            .decrypt(&new_frame)
+            .unwrap(),
+        b"current"
+    );
+    peer.complete_drain();
+    assert_eq!(peer.previous_k_bit(), None);
+}
+
+#[tokio::test]
+async fn fmp_rekey_responder_pending_session_does_not_time_cutover() {
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:5000");
+    let old_our_index = SessionIndex::new(10);
+    let old_their_index = SessionIndex::new(20);
+    let pending_our_index = SessionIndex::new(11);
+    let pending_their_index = SessionIndex::new(21);
+
+    let current_session = make_test_fmp_session(&node.identity, &peer_full, [0x01; 8], [0x02; 8]);
+    let pending_session = make_test_fmp_session(&node.identity, &peer_full, [0x03; 8], [0x04; 8]);
+    let mut active_peer = ActivePeer::with_session(
+        peer_identity,
+        link_id,
+        1_000,
+        ActivePeerSession {
+            session: current_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id,
+            current_addr: remote_addr,
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x02; 8]),
+        },
+    );
+    active_peer.set_pending_session(
+        pending_session,
+        pending_our_index,
+        pending_their_index,
+        false,
+    );
+
+    node.peers.insert(peer_node_addr, active_peer);
+    node.peers
+        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.peers
+        .insert_session_index((transport_id, pending_our_index.as_u32()), peer_node_addr);
+
+    node.check_rekey().await;
+
+    let active_peer = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active_peer.our_index(), Some(old_our_index));
+    assert_eq!(active_peer.their_index(), Some(old_their_index));
+    assert!(active_peer.pending_new_session().is_some());
+    assert!(
+        !active_peer.pending_rekey_initiator(),
+        "FMP responder must wait for peer K-bit instead of cutting over on its own tick"
+    );
+}
+
+#[tokio::test]
+async fn fmp_rekey_msg1_zero_retries_retains_initial_reply_window() {
+    let mut node = make_node();
+    node.config.node.rate_limit.handshake_max_resends = 0;
+
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:5000");
+    let old_our_index = SessionIndex::new(10);
+    let old_their_index = SessionIndex::new(20);
+    let rekey_our_index = SessionIndex::new(11);
+
+    let mut active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        transport_id,
+        link_id,
+        remote_addr,
+        old_our_index,
+        old_their_index,
+    );
+    arm_test_fmp_rekey(&mut active_peer, rekey_our_index);
+    active_peer.set_msg1_next_resend(1_000);
+    node.pending_outbound
+        .insert((transport_id, rekey_our_index.as_u32()), link_id);
+    node.peers.insert(peer_node_addr, active_peer);
+
+    node.resend_pending_rekeys(999).await;
+    assert!(node.get_peer(&peer_node_addr).unwrap().rekey_in_progress());
+    assert!(
+        node.pending_outbound
+            .contains_key(&(transport_id, rekey_our_index.as_u32()))
+    );
+    node.resend_pending_rekeys(1_000).await;
+
+    let active_peer = node.get_peer(&peer_node_addr).unwrap();
+    assert!(!active_peer.rekey_in_progress());
+    assert!(active_peer.rekey_msg1().is_none());
+    assert_eq!(active_peer.rekey_our_index(), None);
+    assert!(
+        !node
+            .pending_outbound
+            .contains_key(&(transport_id, rekey_our_index.as_u32())),
+        "abandoned FMP rekey must remove pending_outbound dispatch state"
+    );
+}
+
+#[cfg(feature = "sim-transport")]
+#[tokio::test]
+async fn failed_initial_fmp_rekey_send_rolls_back_dispatch_and_index() {
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let link_id = node.allocate_link_id();
+    let remote_addr = TransportAddr::from_string("peer");
+    let current_our_index = node.index_allocator.allocate().unwrap();
+    let current_their_index = SessionIndex::new(20);
+    let active = make_active_test_peer(
+        &node,
+        &peer_full,
+        transport_id,
+        link_id,
+        remote_addr.clone(),
+        current_our_index,
+        current_their_index,
+    );
+    node.peers
+        .insert_with_current_session_index(peer_node_addr, active);
+    node.links.insert(
+        link_id,
+        Link::connectionless(
+            link_id,
+            transport_id,
+            remote_addr,
+            LinkDirection::Outbound,
+            Duration::from_millis(1),
+        ),
+    );
+    assert!(node.sync_dataplane_fmp_owner(&peer_node_addr));
+
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    node.transports.insert(
+        transport_id,
+        TransportHandle::Sim(crate::SimTransport::new(
+            transport_id,
+            None,
+            crate::config::SimTransportConfig {
+                network: Some("unstarted-rekey-send".to_string()),
+                addr: Some("local".to_string()),
+                ..Default::default()
+            },
+            packet_tx,
+        )),
+    );
+
+    assert!(!node.initiate_rekey(&peer_node_addr).await);
+    let peer = node.get_peer(&peer_node_addr).unwrap();
+    assert!(!peer.rekey_in_progress());
+    assert_eq!(peer.rekey_our_index(), None);
+    assert!(node.pending_outbound.is_empty());
+    assert_eq!(node.index_allocator.count(), 1);
+    assert!(
+        node.peers
+            .contains_session_index(&(transport_id, current_our_index.as_u32()))
+    );
+    assert!(node.dataplane_has_fmp_owner(&peer_node_addr));
+}
+
+#[tokio::test]
+async fn fmp_rekey_msg1_resend_records_count_and_backoff() {
+    let mut node = make_node();
+    node.config.node.rate_limit.handshake_resend_interval_ms = 10;
+    node.config.node.rate_limit.handshake_resend_backoff = 2.0;
+    node.config.node.rate_limit.handshake_max_resends = 5;
+
+    let transport_id = TransportId::new(1);
+    let (packet_tx, _packet_rx) = packet_channel(64);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("rekey-resend-test".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let link_id = LinkId::new(1);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:9");
+    let old_our_index = SessionIndex::new(10);
+    let old_their_index = SessionIndex::new(20);
+    let rekey_our_index = SessionIndex::new(11);
+
+    let mut active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        transport_id,
+        link_id,
+        remote_addr,
+        old_our_index,
+        old_their_index,
+    );
+    arm_test_fmp_rekey(&mut active_peer, rekey_our_index);
+    node.peers.insert(peer_node_addr, active_peer);
+
+    node.resend_pending_rekeys(100).await;
+
+    let active_peer = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active_peer.rekey_msg1_resend_count(), 1);
+    assert!(!active_peer.needs_msg1_resend(119));
+    assert!(active_peer.needs_msg1_resend(120));
+
+    let mut transport = node.transports.remove(&transport_id).unwrap();
+    transport.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn link_dead_heartbeat_suppressed_while_fmp_rekey_has_budget() {
+    let mut node = make_node();
+    node.config.node.link_dead_timeout_secs = 0;
+    node.config.node.rate_limit.handshake_max_resends = 5;
+
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:5000");
+    let old_our_index = SessionIndex::new(10);
+    let old_their_index = SessionIndex::new(20);
+    let rekey_our_index = SessionIndex::new(11);
+
+    let mut active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        transport_id,
+        link_id,
+        remote_addr,
+        old_our_index,
+        old_their_index,
+    );
+    arm_test_fmp_rekey(&mut active_peer, rekey_our_index);
+    node.peers.insert(peer_node_addr, active_peer);
+
+    node.check_link_heartbeats().await;
+
+    let active_peer = node.get_peer(&peer_node_addr).unwrap();
+    assert!(
+        active_peer.is_healthy(),
+        "link-dead cleanup must not stale a peer with an in-flight FMP rekey"
+    );
+}
+
+#[tokio::test]
+async fn fmp_rekey_local_send_errors_exhaust_budget_and_allow_peer_cleanup() {
+    assert_fmp_rekey_retry_budget(true).await;
+}
+
+#[tokio::test]
+async fn fmp_rekey_packet_loss_exhausts_same_budget_and_allows_peer_cleanup() {
+    assert_fmp_rekey_retry_budget(false).await;
+}
+
+async fn assert_fmp_rekey_retry_budget(stop_before_retry: bool) {
+    let mut node = make_node();
+    node.config.node.link_dead_timeout_secs = 0;
+    node.config.node.rate_limit.handshake_resend_interval_ms = 1_000;
+    node.config.node.rate_limit.handshake_resend_backoff = 2.0;
+    node.config.node.rate_limit.handshake_max_resends = 5;
+
+    // A bound receiver accepts packets locally but never answers the rekey.
+    let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let remote_addr = TransportAddr::from_string(&receiver.local_addr().unwrap().to_string());
+    let transport_id = TransportId::new(1);
+    let transport = make_udp_transport_with_mtu(1, 1_400).await;
+    let TransportHandle::Udp(udp) = &transport else {
+        unreachable!("test helper constructs UDP")
+    };
+    let stats = udp.stats().clone();
+    node.transports.insert(transport_id, transport);
+
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let link_id = node.allocate_link_id();
+    let current_index = node.index_allocator.allocate().unwrap();
+    let active = make_active_test_peer(
+        &node,
+        &peer_full,
+        transport_id,
+        link_id,
+        remote_addr.clone(),
+        current_index,
+        SessionIndex::new(20),
+    );
+    node.peers
+        .insert_with_current_session_index(peer_addr, active);
+    node.links.insert(
+        link_id,
+        Link::connectionless(
+            link_id,
+            transport_id,
+            remote_addr,
+            LinkDirection::Outbound,
+            Duration::from_millis(1),
+        ),
+    );
+    assert!(node.sync_dataplane_fmp_owner(&peer_addr));
+    assert!(node.initiate_rekey(&peer_addr).await);
+    assert_eq!(stats.snapshot().packets_sent, 1);
+    assert_eq!(node.index_allocator.count(), 2);
+    let peer = node.peers.get_mut(&peer_addr).unwrap();
+    let rekey_index = peer.rekey_our_index().unwrap();
+    let msg1_bytes = peer.rekey_msg1().unwrap().len() as u64;
+    // Only the retry clock is controlled; handshake and sends use production code.
+    let retry_start = Node::now_ms();
+    peer.set_msg1_next_resend(retry_start + 1_000);
+    assert!(
+        node.pending_outbound
+            .contains_key(&(transport_id, rekey_index.as_u32()))
+    );
+    if stop_before_retry {
+        node.transports
+            .get_mut(&transport_id)
+            .unwrap()
+            .stop()
+            .await
+            .unwrap();
+    }
+
+    for (index, due_ms) in [1_000, 3_000, 7_000, 15_000, 31_000]
+        .into_iter()
+        .enumerate()
+    {
+        let due_ms = retry_start + due_ms;
+        // Expired liveness still permits the original, finite rekey grace.
+        node.check_link_heartbeats().await;
+        assert!(node.get_peer(&peer_addr).unwrap().is_healthy());
+        node.resend_pending_rekeys(due_ms - 1).await;
+        let peer = node.get_peer(&peer_addr).unwrap();
+        assert_eq!(peer.rekey_msg1_resend_count(), index as u32);
+        assert!(peer.needs_msg1_resend(due_ms));
+
+        let before = stats.snapshot();
+        node.resend_pending_rekeys(due_ms).await;
+        let peer = node.get_peer(&peer_addr).unwrap();
+        assert_eq!(peer.rekey_msg1_resend_count(), index as u32 + 1);
+        assert!(!peer.needs_msg1_resend(due_ms));
+        let after = stats.snapshot();
+        let sent = u64::from(!stop_before_retry);
+        assert_eq!(after.packets_sent - before.packets_sent, sent);
+        assert_eq!(after.bytes_sent - before.bytes_sent, sent * msg1_bytes);
+    }
+
+    // Production checks liveness before retransmissions. The final attempt
+    // still owns its reply window even if the local transport has failed.
+    node.check_link_heartbeats().await;
+    assert!(node.get_peer(&peer_addr).unwrap().is_healthy());
+    let before_cleanup = stats.snapshot();
+    node.resend_pending_rekeys(retry_start + 62_999).await;
+    let peer = node.get_peer(&peer_addr).unwrap();
+    assert!(peer.rekey_in_progress());
+    assert_eq!(peer.rekey_msg1_resend_count(), 5);
+    assert_eq!(node.index_allocator.count(), 2);
+    assert!(!peer.needs_msg1_resend(retry_start + 62_999));
+    assert!(peer.needs_msg1_resend(retry_start + 63_000));
+    if stop_before_retry {
+        // Expire the controlled retry clock before the heartbeat tick.
+        node.get_peer_mut(&peer_addr)
+            .unwrap()
+            .set_msg1_next_resend(Node::now_ms());
+    } else {
+        node.resend_pending_rekeys(retry_start + 63_000).await;
+        assert!(!node.get_peer(&peer_addr).unwrap().rekey_in_progress());
+        assert!(node.pending_outbound.is_empty());
+        assert_eq!(node.index_allocator.count(), 1);
+    }
+    node.check_link_heartbeats().await;
+    assert!(node.get_peer(&peer_addr).is_none());
+    assert_eq!(stats.snapshot().packets_sent, before_cleanup.packets_sent);
+    assert!(node.pending_outbound.is_empty());
+    assert_eq!(node.index_allocator.count(), 0);
+    assert!(
+        !node
+            .peers
+            .contains_session_index(&(transport_id, current_index.as_u32()))
+    );
+    assert!(
+        !node
+            .peers
+            .contains_session_index(&(transport_id, rekey_index.as_u32()))
+    );
+    assert!(!node.links.contains_key(&link_id));
+    assert!(!node.dataplane_has_fmp_owner(&peer_addr));
+    node.resend_pending_rekeys(retry_start + 63_000).await;
+    if !stop_before_retry {
+        node.transports
+            .get_mut(&transport_id)
+            .unwrap()
+            .stop()
+            .await
+            .unwrap();
+    }
+}
+
+/// `deregister_session_index` is used both when a peer is going away
+/// and during rekey drain. Retiring an old receiver index must not
+/// remove the active peer or its newer receiver index.
+#[test]
+fn test_deregister_session_index_preserves_peer_on_rekey_drain() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+
+    // Set up a peer with an established session at index_old.
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let node_addr = *identity.node_addr();
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2000).unwrap();
+    let index_old = node
+        .get_peer(&node_addr)
+        .unwrap()
+        .our_index()
+        .unwrap()
+        .as_u32();
+
+    // Pre-register a "new" index for the peer (as happens during a
+    // rekey: msg1 receive pre-registers the new our_index in
+    // active peer registry session-index dispatch while the old index stays around until drain
+    // completes).
+    let index_new: u32 = 9999;
+    node.peers
+        .insert_session_index((transport_id, index_new), node_addr);
+
+    // Deregister the OLD index. This is the rekey-drain pattern:
+    // the peer is still present and the NEW index is still in active
+    // peer registry session-index dispatch.
+    node.deregister_session_index((transport_id, index_old));
+
+    assert!(
+        !node
+            .peers
+            .contains_session_index(&(transport_id, index_old)),
+        "old index must be evicted"
+    );
+    assert!(
+        node.peers
+            .contains_session_index(&(transport_id, index_new)),
+        "new index must survive the deregister"
+    );
+    assert!(
+        node.get_peer(&node_addr).is_some(),
+        "peer must still be present after rekey-drain deregistration"
+    );
+}
+
+#[test]
+fn inbound_payload_cannot_cancel_an_unanswered_recovery_handshake() {
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) =
+        make_completed_connection_for_identity(&mut node, link_id, transport_id, 1_000, &peer_full);
+    let node_addr = *identity.node_addr();
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+    node.mark_session_direct_path_degraded(node_addr, Node::now_ms());
+    let pending_index = SessionIndex::new(0x5050);
+    arm_test_fmp_rekey(node.get_peer_mut(&node_addr).unwrap(), pending_index);
+    node.pending_outbound
+        .insert((transport_id, pending_index.as_u32()), link_id);
+
+    // The old address may still deliver payload while the outbound route has
+    // changed. Its traffic cannot acknowledge the new Noise handshake.
+    assert!(!node.clear_session_direct_path_degraded(&node_addr));
+    let peer = node.get_peer(&node_addr).unwrap();
+    assert!(peer.rekey_in_progress());
+    assert_eq!(peer.rekey_our_index(), Some(pending_index));
+    assert!(peer.rekey_msg1().is_some());
+    assert_eq!(
+        node.pending_outbound
+            .get(&(transport_id, pending_index.as_u32())),
+        Some(&link_id)
+    );
+}

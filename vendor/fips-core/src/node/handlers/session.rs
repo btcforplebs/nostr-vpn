@@ -1,0 +1,27 @@
+//! End-to-end session message handlers.
+//!
+//! Handles locally-delivered session payloads from SessionDatagram envelopes.
+//! Dispatches based on FSP common prefix phase to specific handlers for
+//! SessionSetup (Noise XK msg1), SessionAck (msg2), SessionMsg3 (msg3),
+//! encrypted data, and error signals (CoordsRequired, PathBroken).
+
+include!("session/prelude_dispatch.rs");
+include!("session/receive_registry.rs");
+include!("session/node_receive.rs");
+include!("session/node_handshake.rs");
+include!("session/node_reports_errors.rs");
+include!("session/node_send.rs");
+include!("session/node_endpoint.rs");
+include!("session/node_datagram_tun.rs");
+
+include!("session/post_node.rs");
+
+#[cfg(test)]
+mod tests {
+    include!("session/tests/registry.rs");
+    include!("session/tests/receive_dispatch.rs");
+    include!("session/tests/receive_dispatch_tun.rs");
+    include!("session/tests/rekey_recovery.rs");
+    include!("session/tests/report_epoch.rs");
+    include!("session/tests/link_report_epoch.rs");
+}

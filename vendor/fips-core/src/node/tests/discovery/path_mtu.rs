@@ -1,0 +1,510 @@
+use super::*;
+
+#[tokio::test]
+async fn oversized_lookup_does_not_consume_request_id_at_target() {
+    let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+    let origin = *nodes[0].node.node_addr();
+    let target = *nodes[1].node.node_addr();
+    let mut request = LookupRequest::generate(
+        target,
+        origin,
+        nodes[0].node.tree_state().my_coords().clone(),
+        5,
+        1281,
+    );
+    let before = nodes[1].node.stats().discovery.req_target_is_us;
+    nodes[1]
+        .node
+        .handle_lookup_request(&origin, &request.encode()[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_target_is_us,
+        before,
+        "an undersized ingress must not produce a route response"
+    );
+    request.min_mtu = 1280;
+    nodes[1]
+        .node
+        .handle_lookup_request(&origin, &request.encode()[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_target_is_us,
+        before + 1,
+        "rejected ingress must not consume dedup ownership"
+    );
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn oversized_lookup_does_not_leave_a_narrow_transit_link() {
+    let mut nodes =
+        spanning_tree::run_tree_test_with_mtus(&[4096, 1280, 4096], &[(0, 1), (1, 2)]).await;
+    let origin = *nodes[0].node.node_addr();
+    let transit = *nodes[1].node.node_addr();
+    let target = *nodes[2].node.node_addr();
+    let request = LookupRequest::generate(
+        target,
+        origin,
+        nodes[0].node.tree_state().my_coords().clone(),
+        5,
+        2912,
+    );
+    let before = nodes[2].node.stats().discovery.req_received;
+    // Exercise the forwarding path independently of ingress admission.
+    nodes[1].node.forward_lookup_request(&origin, request).await;
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        process_available_packets(&mut nodes).await;
+    }
+    assert_eq!(
+        nodes[2].node.stats().discovery.req_received,
+        before,
+        "transit {transit} must not qualify its 1280-byte egress for a 2912-byte record"
+    );
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_response_path_mtu_two_node() {
+    // Two-node topology: node0 — node1
+    // Node0 initiates lookup for node1. node1 is the target and generates
+    // the response: send_lookup_response folds in node1's own outgoing-link
+    // MTU before sending, so path_mtu reflects the target-edge link
+    // constraint (the test transport MTU, 1280) even with no transit hops.
+    // Without that target-edge fold, a 2-node lookup would leave path_mtu
+    // at u16::MAX since no transit min-fold runs — that's the gap closed
+    // alongside the configured-peer seed in the B3 follow-up.
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+
+    let node1_addr = *nodes[1].node.node_addr();
+
+    nodes[0].node.initiate_lookup(&node1_addr, 5).await;
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    assert!(
+        nodes[0].node.coord_cache().contains(&node1_addr, now_ms),
+        "Node 0 should have cached node 1's route"
+    );
+
+    let entry = nodes[0].node.coord_cache().get_entry(&node1_addr).unwrap();
+    let path_mtu = entry
+        .path_mtu()
+        .expect("path_mtu should be set from discovery");
+    assert_eq!(
+        path_mtu, 1280,
+        "Two-node path_mtu should be the target-edge link MTU (1280 in tests)"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_apply_outgoing_link_mtu_to_response_unknown_peer_noop() {
+    // When next_hop is not a directly-connected peer (no entry in
+    // self.peers), apply_outgoing_link_mtu_to_response is a no-op and the
+    // response's path_mtu is left unchanged. Pins the early-return path.
+    let node = make_node();
+    let unknown = make_node_addr(0x99);
+
+    let coords = TreeCoordinate::from_addrs(vec![unknown, make_node_addr(0)]).unwrap();
+    let identity = Identity::generate();
+    let proof_data = LookupResponse::proof_bytes(1, &unknown, &coords);
+    let proof = identity.sign(&proof_data);
+    let mut response = LookupResponse::new(1, unknown, coords, proof);
+    response.path_mtu = 1500;
+
+    node.apply_outgoing_link_mtu_to_response(&mut response, &unknown);
+    assert_eq!(
+        response.path_mtu, 1500,
+        "Unknown next_hop must leave path_mtu untouched"
+    );
+}
+
+#[tokio::test]
+async fn test_response_path_mtu_three_node_chain() {
+    // Topology: node0 — node1 — node2
+    // Node0 initiates lookup for node2. The response travels node2→node1→node0.
+    // Node1 is a transit node and applies path_mtu = min(u16::MAX, link_mtu).
+    // With test transport MTU of 1280, the final path_mtu at node0 should be 1280.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+
+    let node2_addr = *nodes[2].node.node_addr();
+    let node2_pubkey = nodes[2].node.identity().pubkey_full();
+
+    nodes[0].node.register_identity(node2_addr, node2_pubkey);
+
+    nodes[0].node.initiate_lookup(&node2_addr, 8).await;
+
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    assert!(
+        nodes[0].node.coord_cache().contains(&node2_addr, now_ms),
+        "Node 0 should have cached node 2's route"
+    );
+
+    // Node1 is transit and applies min(u16::MAX, 1280) = 1280
+    let entry = nodes[0].node.coord_cache().get_entry(&node2_addr).unwrap();
+    let path_mtu = entry
+        .path_mtu()
+        .expect("path_mtu should be set from discovery");
+    assert_eq!(
+        path_mtu, 1280,
+        "Three-node chain path_mtu should reflect transit node's transport MTU (1280)"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+// ============================================================================
+// Unit Tests — Cache Entry path_mtu
+// ============================================================================
+
+#[tokio::test]
+async fn test_cache_entry_path_mtu_stored() {
+    // Verify that insert_with_path_mtu stores the path_mtu in the cache entry
+    let mut node = make_node();
+    let target = make_node_addr(0xBB);
+
+    let coords = TreeCoordinate::from_addrs(vec![target, make_node_addr(0)]).unwrap();
+
+    let now_ms = 1000u64;
+    node.coord_cache_mut()
+        .insert_with_path_mtu(target, coords, now_ms, 1280);
+
+    let entry = node.coord_cache().get_entry(&target).unwrap();
+    assert_eq!(entry.path_mtu(), Some(1280));
+}
+
+#[tokio::test]
+async fn test_cache_entry_no_path_mtu_from_regular_insert() {
+    // Verify that regular insert() does not set path_mtu
+    let mut node = make_node();
+    let target = make_node_addr(0xBB);
+
+    let coords = TreeCoordinate::from_addrs(vec![target, make_node_addr(0)]).unwrap();
+
+    let now_ms = 1000u64;
+    node.coord_cache_mut().insert(target, coords, now_ms);
+
+    let entry = node.coord_cache().get_entry(&target).unwrap();
+    assert_eq!(entry.path_mtu(), None);
+}
+
+// ============================================================================
+// Unit Tests — LookupRequest min_mtu field
+// ============================================================================
+
+#[tokio::test]
+async fn test_request_min_mtu_preserved_through_encode_decode() {
+    // Verify min_mtu survives encode/decode in the handler test context
+    let target = make_node_addr(0xBB);
+    let origin = make_node_addr(0xCC);
+    let coords = TreeCoordinate::from_addrs(vec![origin, make_node_addr(0)]).unwrap();
+
+    let request = LookupRequest::new(100, target, origin, coords, 5, 1386);
+    let encoded = request.encode();
+    let decoded = LookupRequest::decode(&encoded[1..]).unwrap();
+    assert_eq!(decoded.min_mtu, 1386);
+}
+
+// ============================================================================
+// Unit Tests — LookupResponse path_mtu in originator handling
+// ============================================================================
+
+#[tokio::test]
+async fn test_originator_stores_path_mtu_in_cache() {
+    // Verify that the originator stores path_mtu from the response in coord_cache
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = *node.tree_state().root();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+
+    node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 800);
+
+    let proof_data = LookupResponse::proof_bytes(800, &target, &coords);
+    let proof = target_identity.sign(&proof_data);
+
+    let mut response = LookupResponse::new(800, target, coords.clone(), proof);
+    // Simulate transit having reduced path_mtu
+    response.path_mtu = 1280;
+
+    let payload = &response.encode()[1..];
+
+    node.handle_lookup_response(&from, payload).await;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    assert!(node.coord_cache().contains(&target, now_ms));
+
+    let entry = node.coord_cache().get_entry(&target).unwrap();
+    assert_eq!(
+        entry.path_mtu(),
+        Some(1280),
+        "Originator should store path_mtu from LookupResponse in cache"
+    );
+}
+
+#[tokio::test]
+async fn test_originator_path_mtu_expires_at_coordinate_ttl() {
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let target_fips = crate::FipsAddress::from_node_addr(&target);
+    let coords = TreeCoordinate::from_addrs(vec![target, *node.tree_state().root()]).unwrap();
+
+    node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 803);
+    let proof_data = LookupResponse::proof_bytes(803, &target, &coords);
+    let mut response = LookupResponse::new(803, target, coords, target_identity.sign(&proof_data));
+    response.path_mtu = 1280;
+
+    node.handle_lookup_response(&from, &response.encode()[1..])
+        .await;
+
+    let entry = node
+        .path_mtu_lookup_entry(&target_fips)
+        .expect("verified lookup should populate the TUN path-MTU cache");
+    let learned_ms = entry
+        .learned_ms
+        .expect("the discovery carrier must stamp an expiry origin");
+    let ttl_ms = node.config().node.cache.coord_ttl_secs * 1000;
+    assert!(ttl_ms > 0);
+
+    node.purge_expired_path_mtu(learned_ms + ttl_ms - 1);
+    assert_eq!(node.path_mtu_lookup_get(&target_fips), Some(1280));
+
+    node.purge_expired_path_mtu(learned_ms + ttl_ms);
+    assert_eq!(
+        node.path_mtu_lookup_get(&target_fips),
+        None,
+        "a discovery-only clamp must not survive its coordinate route"
+    );
+}
+
+#[tokio::test]
+async fn test_originator_lookup_response_keeps_tighter_path_mtu() {
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = *node.tree_state().root();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let target_fips = crate::FipsAddress::from_node_addr(&target);
+
+    node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 801);
+    node.coord_cache_mut().insert_verified_with_path_mtu(
+        target,
+        coords.clone(),
+        Node::now_ms(),
+        1280,
+    );
+    node.path_mtu_lookup_insert(target_fips, 1280);
+
+    let proof_data = LookupResponse::proof_bytes(801, &target, &coords);
+    let proof = target_identity.sign(&proof_data);
+    let mut response = LookupResponse::new(801, target, coords, proof);
+    response.path_mtu = 1500;
+
+    node.handle_lookup_response(&from, &response.encode()[1..])
+        .await;
+
+    assert_eq!(
+        node.path_mtu_lookup_get(&target_fips),
+        Some(1280),
+        "LookupResponse must not loosen the TUN path-MTU clamp"
+    );
+    assert_eq!(
+        node.coord_cache().get_entry(&target).unwrap().path_mtu(),
+        Some(1280),
+        "LookupResponse must not loosen the coordinate cache path MTU"
+    );
+}
+
+#[tokio::test]
+async fn sub_floor_lookup_mtu_is_ignored_while_signed_coordinates_are_kept() {
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let coords = TreeCoordinate::from_addrs(vec![target, *node.tree_state().root()]).unwrap();
+    let target_fips = crate::FipsAddress::from_node_addr(&target);
+    node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 802);
+    let proof_data = LookupResponse::proof_bytes(802, &target, &coords);
+    let mut response = LookupResponse::new(
+        802,
+        target,
+        coords.clone(),
+        target_identity.sign(&proof_data),
+    );
+    response.path_mtu = 0;
+
+    node.handle_lookup_response(&from, &response.encode()[1..])
+        .await;
+
+    assert_eq!(
+        node.coord_cache().get(&target, Node::now_ms()),
+        Some(&coords)
+    );
+    assert_eq!(
+        node.coord_cache().get_entry(&target).unwrap().path_mtu(),
+        None
+    );
+    assert_eq!(
+        node.coord_cache().get_entry(&target).unwrap().source(),
+        crate::cache::CoordSource::Verified
+    );
+    assert_eq!(node.path_mtu_lookup_get(&target_fips), None);
+    assert_eq!(node.stats().errors.lookup_resp_mtu_below_floor, 1);
+}
+
+#[tokio::test]
+async fn qualified_lookup_retries_when_target_connects_after_no_peer() {
+    let mut nodes = spanning_tree::run_tree_test_with_mtus(&[4096, 4096, 4096], &[(0, 1)]).await;
+    let origin = *nodes[0].node.node_addr();
+    let target = *nodes[2].node.node_addr();
+    let request = LookupRequest::generate(
+        target,
+        origin,
+        nodes[0].node.tree_state().my_coords().clone(),
+        5,
+        2912,
+    );
+    let encoded = request.encode();
+    let no_peer_before = nodes[1].node.stats().discovery.req_no_tree_peer;
+    nodes[1]
+        .node
+        .handle_lookup_request(&origin, &encoded[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_no_tree_peer,
+        no_peer_before + 1
+    );
+    assert!(
+        !nodes[1]
+            .node
+            .recent_requests
+            .contains_key(&request.request_id),
+        "a lookup with no send or deferred work must not poison its same-ID retry"
+    );
+
+    // The target now joins the same seed over a real authenticated link.
+    spanning_tree::initiate_handshake(&mut nodes, 1, 2).await;
+    spanning_tree::drain_all_packets(&mut nodes, false).await;
+    assert!(
+        nodes[1]
+            .node
+            .get_peer(&target)
+            .is_some_and(|peer| peer.can_send())
+    );
+    let target_before = nodes[2].node.stats().discovery.req_target_is_us;
+    nodes[1]
+        .node
+        .handle_lookup_request(&origin, &encoded[1..])
+        .await;
+    assert!(
+        nodes[1]
+            .node
+            .recent_requests
+            .contains_key(&request.request_id)
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while nodes[2].node.stats().discovery.req_target_is_us == target_before {
+            process_available_packets(&mut nodes).await;
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the unchanged retry must reach the newly connected target");
+
+    let duplicates_before = nodes[1].node.stats().discovery.req_duplicate;
+    nodes[1]
+        .node
+        .handle_lookup_request(&origin, &encoded[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_duplicate,
+        duplicates_before + 1
+    );
+    assert!(
+        nodes[1]
+            .node
+            .recent_requests
+            .contains_key(&request.request_id)
+    );
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn failed_direct_lookup_keeps_dedup_without_a_fallback() {
+    let mut nodes =
+        spanning_tree::run_tree_test_with_mtus(&[4096, 4096, 4096], &[(0, 1), (1, 2)]).await;
+    let from = *nodes[0].node.node_addr();
+    let target = *nodes[2].node.node_addr();
+    // Origin is unsigned input. Claiming the target as origin excludes it from
+    // the ordinary forwarding plan but cannot bypass direct-target probing.
+    let request = LookupRequest::generate(target, target, TreeCoordinate::root(target), 5, 2912);
+    nodes[1].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[1].node.tree_state_mut().remove_peer(&target);
+    nodes[1].node.tree_state_mut().become_root();
+    nodes[1]
+        .node
+        .dataplane
+        .unregister_owner(crate::dataplane::OwnerId::fmp_node(target));
+    let encoded = request.encode();
+    let no_peer_before = nodes[1].node.stats().discovery.req_no_tree_peer;
+    nodes[1]
+        .node
+        .handle_lookup_request(&from, &encoded[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_no_tree_peer,
+        no_peer_before + 1
+    );
+    assert!(
+        nodes[1]
+            .node
+            .recent_requests
+            .contains_key(&request.request_id),
+        "an attempted send must keep dedup even when its receipt failed"
+    );
+    let duplicates_before = nodes[1].node.stats().discovery.req_duplicate;
+    nodes[1]
+        .node
+        .handle_lookup_request(&from, &encoded[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_duplicate,
+        duplicates_before + 1
+    );
+    cleanup_nodes(&mut nodes).await;
+}

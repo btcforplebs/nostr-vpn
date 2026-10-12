@@ -1,0 +1,791 @@
+use super::*;
+
+#[test]
+fn test_rekey_disabled_peer_still_responds_without_replacing_live_session() {
+    run_large_stack_async_test("fips-disabled-rekey-responder", || async {
+        rekey_disabled_peer_still_responds_without_replacing_live_session().await;
+    });
+}
+
+async fn rekey_disabled_peer_still_responds_without_replacing_live_session() {
+    let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let initiator_addr = *nodes[0].node.node_addr();
+    let responder_addr = *nodes[1].node.node_addr();
+    let responder_pubkey = nodes[1].node.identity().pubkey_full();
+    nodes[0]
+        .node
+        .initiate_session(responder_addr, responder_pubkey)
+        .await
+        .expect("initial session should start");
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &responder_addr,
+        Duration::from_secs(10),
+        "disabled-rekey fixture initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &initiator_addr,
+        Duration::from_secs(10),
+        "disabled-rekey fixture responder",
+    )
+    .await;
+    drain_to_quiescence(&mut nodes).await;
+    settle_session_handshake_retransmits(&mut nodes, 0, &responder_addr, 1, &initiator_addr);
+
+    nodes[1].node.config.node.rekey.enabled = false;
+    assert!(
+        nodes[0].node.initiate_session_rekey(&responder_addr).await,
+        "enabled peer should initiate the rekey"
+    );
+
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &initiator_addr,
+        "disabled peer responder handshake",
+        |entry| {
+            entry.is_established()
+                && entry.has_rekey_in_progress()
+                && !entry.is_rekey_handshake_initiator()
+        },
+    )
+    .await;
+    wait_for_session_state_for_node(
+        &mut nodes,
+        0,
+        &responder_addr,
+        "enabled peer completed initiator epoch",
+        |entry| entry.is_established() && entry.pending_new_session().is_some(),
+    )
+    .await;
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &initiator_addr,
+        "disabled peer completed responder epoch",
+        |entry| entry.is_established() && entry.pending_new_session().is_some(),
+    )
+    .await;
+
+    let responder = nodes[1]
+        .node
+        .get_session(&initiator_addr)
+        .expect("responder live session retained");
+    assert!(responder.is_established());
+    assert!(responder.pending_new_session().is_some());
+    assert!(!responder.pending_rekey_initiator());
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[test]
+fn test_established_initiator_resends_final_msg3_until_responder_establishes() {
+    run_large_stack_async_test("fips-established-msg3-resend", || async {
+        established_initiator_resends_final_msg3_until_responder_establishes().await;
+    });
+}
+
+#[test]
+fn test_established_initiator_answers_late_ack_after_resend_budget() {
+    run_large_stack_async_test("fips-established-msg3-late-ack", || async {
+        established_initiator_answers_late_ack_after_resend_budget().await;
+    });
+}
+
+#[path = "late_ack_completion.rs"]
+mod late_ack_completion;
+
+async fn established_initiator_answers_late_ack_after_resend_budget() {
+    late_ack_completion::exercise(false).await;
+}
+
+async fn established_initiator_resends_final_msg3_until_responder_establishes() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    nodes[0]
+        .node
+        .config
+        .node
+        .rate_limit
+        .handshake_resend_interval_ms = 5;
+    nodes[0].node.config.node.rate_limit.handshake_max_resends = 3;
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node1_pubkey = nodes[1].node.identity().pubkey_full();
+
+    nodes[0]
+        .node
+        .initiate_session(node1_addr, node1_pubkey)
+        .await
+        .expect("session initiation should start");
+
+    late_ack_completion::wait_state(&mut nodes[1], &node0_addr, false).await;
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .is_awaiting_msg3()
+    );
+
+    late_ack_completion::wait_state(&mut nodes[0], &node1_addr, true).await;
+    let initiator_entry = nodes[0].node.get_session(&node1_addr).unwrap();
+    assert!(initiator_entry.is_established());
+    assert!(
+        initiator_entry.handshake_payload().is_some(),
+        "initiator should retain final msg3 for loss recovery"
+    );
+
+    let msg3 = initiator_entry.handshake_payload().unwrap().to_vec();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    late_ack_completion::drop_msg3(&mut nodes[1], &node0_addr, &msg3).await;
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .is_awaiting_msg3(),
+        "responder should still be waiting after the dropped msg3"
+    );
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let now_ms = Node::now_ms();
+    nodes[0]
+        .node
+        .resend_pending_session_handshakes(now_ms)
+        .await;
+
+    late_ack_completion::wait_state(&mut nodes[1], &node0_addr, true).await;
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .is_established(),
+        "responder should establish from the resent SessionMsg3"
+    );
+
+    let mut node0_endpoint = nodes[0]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("initiator endpoint data I/O should attach");
+    let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    send_endpoint_data_via_dataplane(
+        &mut nodes[1].node,
+        node0_identity,
+        b"responder-proof".to_vec(),
+    )
+    .await
+    .expect("responder should send endpoint data after establishment");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node0_endpoint.event_rx,
+        Duration::from_secs(10),
+        "initiator responder-proof endpoint data",
+    )
+    .await;
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), node1_addr);
+    assert_eq!(message.payload.as_slice(), &b"responder-proof"[..]);
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .handshake_payload()
+            .is_none(),
+        "authentic responder traffic should clear the retained final msg3"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[test]
+fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_session() {
+    run_large_stack_async_test("fips-rekey-msg3-resend", || async {
+        rekey_initiator_resends_final_msg3_until_responder_has_pending_session().await;
+    });
+}
+
+async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    nodes[0]
+        .node
+        .config
+        .node
+        .rate_limit
+        .handshake_resend_interval_ms = 5;
+    nodes[0].node.config.node.rate_limit.handshake_max_resends = 10;
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node1_pubkey = nodes[1].node.identity().pubkey_full();
+
+    nodes[0]
+        .node
+        .initiate_session(node1_addr, node1_pubkey)
+        .await
+        .expect("initial session should start");
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "initial rekey msg3 fixture initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &node0_addr,
+        Duration::from_secs(10),
+        "initial rekey msg3 fixture responder",
+    )
+    .await;
+    drain_to_quiescence(&mut nodes).await;
+    settle_session_handshake_retransmits(&mut nodes, 0, &node1_addr, 1, &node0_addr);
+
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .is_established()
+    );
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .is_established()
+    );
+
+    assert!(
+        nodes[0].node.initiate_session_rekey(&node1_addr).await,
+        "rekey should start"
+    );
+
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &node0_addr,
+        "rekey msg1 responder state",
+        |entry| entry.has_rekey_in_progress() && !entry.is_rekey_initiator(),
+    )
+    .await;
+    wait_for_session_state_for_node(
+        &mut nodes,
+        0,
+        &node1_addr,
+        "rekey msg2 initiator state",
+        |entry| entry.pending_new_session().is_some(),
+    )
+    .await;
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .pending_new_session()
+            .is_some(),
+        "initiator should have a pending new session"
+    );
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .rekey_msg3_payload()
+            .is_some(),
+        "initiator must retain rekey msg3 for resend"
+    );
+
+    let msg3 = nodes[0]
+        .node
+        .get_session(&node1_addr)
+        .unwrap()
+        .rekey_msg3_payload()
+        .unwrap()
+        .to_vec();
+    late_ack_completion::drop_msg3(&mut nodes[1], &node0_addr, &msg3).await;
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .pending_new_session()
+            .is_none(),
+        "responder should not have the new session before msg3 is resent"
+    );
+
+    let mut node0_endpoint = nodes[0]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("initiator endpoint data I/O should attach");
+    let mut node1_endpoint = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("responder endpoint data I/O should attach");
+    let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+
+    nodes[0]
+        .node
+        .sessions
+        .get_mut(&node1_addr)
+        .expect("initiator pending rekey session")
+        .set_rekey_completed_ms(Node::now_ms().saturating_sub(10_000));
+    nodes[0].node.check_session_rekey().await;
+    assert!(
+        nodes[0].node.get_session(&node1_addr).is_some_and(|entry| {
+            !entry.current_k_bit() && entry.pending_new_session().is_some()
+        }),
+        "a due rekey must not move application traffic before the responder authenticates the pending epoch"
+    );
+
+    send_endpoint_data_via_dataplane(
+        &mut nodes[0].node,
+        node1_identity,
+        b"old-session-initiator-proof".to_vec(),
+    )
+    .await
+    .expect("initiator old session should remain usable while msg3 is missing");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node1_endpoint.event_rx,
+        Duration::from_secs(10),
+        "responder old-session initiator proof endpoint data",
+    )
+    .await;
+    assert_eq!(
+        expect_single_endpoint_data_event(event).payload.as_slice(),
+        &b"old-session-initiator-proof"[..]
+    );
+
+    send_endpoint_data_via_dataplane(
+        &mut nodes[1].node,
+        node0_identity,
+        b"old-session-proof".to_vec(),
+    )
+    .await
+    .expect("old session should carry endpoint data while rekey msg3 is pending");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node0_endpoint.event_rx,
+        Duration::from_secs(10),
+        "initiator old-session-proof endpoint data",
+    )
+    .await;
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), node1_addr);
+    assert_eq!(message.payload.as_slice(), &b"old-session-proof"[..]);
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .rekey_msg3_payload()
+            .is_some(),
+        "old-session traffic must not clear retained rekey msg3"
+    );
+    let resend_count_before = nodes[0]
+        .node
+        .get_session(&node1_addr)
+        .unwrap()
+        .rekey_msg3_resend_count();
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let now_ms = Node::now_ms();
+    nodes[0].node.resend_pending_session_msg3(now_ms).await;
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .rekey_msg3_resend_count()
+            > resend_count_before,
+        "rekey msg3 resend should be recorded"
+    );
+
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &node0_addr,
+        "replacement rekey msg3 responder state",
+        |entry| entry.pending_new_session().is_some(),
+    )
+    .await;
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .pending_new_session()
+            .is_some(),
+        "responder should store the pending rekey session after resent msg3"
+    );
+
+    let cutover_started = tokio::time::Instant::now();
+    nodes[0]
+        .node
+        .sessions
+        .get_mut(&node1_addr)
+        .expect("initiator pending rekey session")
+        .set_rekey_completed_ms(Node::now_ms().saturating_sub(10_000));
+    nodes[0].node.check_session_rekey().await;
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &node0_addr,
+        "responder authenticated pending epoch",
+        |entry| entry.current_k_bit() && entry.pending_new_session().is_none(),
+    )
+    .await;
+    assert!(
+        cutover_started.elapsed() < Duration::from_secs(5),
+        "the authenticated pending-epoch probe must reach the responder promptly"
+    );
+    assert!(
+        nodes[0].node.get_session(&node1_addr).is_some_and(|entry| {
+            !entry.current_k_bit() && entry.pending_new_session().is_some()
+        }),
+        "the initiator must retain its proven epoch until the responder sends authenticated pending-epoch traffic"
+    );
+
+    send_endpoint_data_via_dataplane(
+        &mut nodes[1].node,
+        node0_identity,
+        b"new-epoch-responder-proof".to_vec(),
+    )
+    .await
+    .expect("responder should reply over the authenticated new FSP epoch");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node0_endpoint.event_rx,
+        Duration::from_secs(10),
+        "initiator new-epoch responder proof",
+    )
+    .await;
+    assert_eq!(
+        expect_single_endpoint_data_event(event).payload.as_slice(),
+        &b"new-epoch-responder-proof"[..]
+    );
+    assert!(
+        nodes[0].node.get_session(&node1_addr).is_some_and(|entry| {
+            entry.current_k_bit() && entry.pending_new_session().is_none()
+        }),
+        "authenticated responder traffic should promote the initiator"
+    );
+
+    send_endpoint_data_via_dataplane(
+        &mut nodes[0].node,
+        node1_identity,
+        b"new-epoch-initiator-proof".to_vec(),
+    )
+    .await
+    .expect("initiator should send over the new FSP epoch");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node1_endpoint.event_rx,
+        Duration::from_secs(10),
+        "responder new-epoch initiator proof",
+    )
+    .await;
+    assert_eq!(
+        expect_single_endpoint_data_event(event).payload.as_slice(),
+        &b"new-epoch-initiator-proof"[..]
+    );
+    assert!(
+        nodes[1].node.get_session(&node0_addr).is_some_and(|entry| {
+            entry.current_k_bit() && entry.pending_new_session().is_none()
+        }),
+        "authenticated new-epoch traffic should cut the responder over"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[test]
+fn test_rekey_initiator_accepts_ack_after_final_setup_retry() {
+    run_large_stack_async_test("fips-rekey-msg1-resend", || async {
+        rekey_initiator_accepts_ack_after_final_setup_retry().await;
+    });
+}
+
+async fn rekey_initiator_accepts_ack_after_final_setup_retry() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    nodes[0]
+        .node
+        .config
+        .node
+        .rate_limit
+        .handshake_resend_interval_ms = 1_000;
+    nodes[0].node.config.node.rate_limit.handshake_max_resends = 1;
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node1_pubkey = nodes[1].node.identity().pubkey_full();
+
+    nodes[0]
+        .node
+        .initiate_session(node1_addr, node1_pubkey)
+        .await
+        .expect("initial session should start");
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &node0_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture responder",
+    )
+    .await;
+    drain_to_quiescence(&mut nodes).await;
+    settle_session_handshake_retransmits(&mut nodes, 0, &node1_addr, 1, &node0_addr);
+
+    assert!(
+        nodes[0].node.initiate_session_rekey(&node1_addr).await,
+        "rekey should start"
+    );
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .handshake_payload()
+            .is_some(),
+        "initiator must retain rekey msg1 for resend"
+    );
+
+    let dropped = wait_drop_queued_packets_for_node(&mut nodes[1]).await;
+    assert!(dropped > 0, "fixture should drop the first rekey msg1");
+
+    let retry_at = nodes[0]
+        .node
+        .get_session(&node1_addr)
+        .unwrap()
+        .next_resend_at_ms();
+    nodes[0]
+        .node
+        .resend_pending_session_handshakes(retry_at)
+        .await;
+    let entry = nodes[0].node.get_session(&node1_addr).unwrap();
+    assert_eq!(entry.resend_count(), 1);
+    let reply_deadline = entry.next_resend_at_ms();
+    // Maintenance can run while the final retry's encrypted reply is in flight.
+    nodes[0]
+        .node
+        .resend_pending_session_handshakes(reply_deadline - 1)
+        .await;
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .has_rekey_in_progress(),
+        "final rekey retry must retain its handshake through the reply window"
+    );
+
+    wait_for_session_state_for_node(
+        &mut nodes,
+        1,
+        &node0_addr,
+        "replacement rekey msg1 responder state",
+        |entry| entry.has_rekey_in_progress() && !entry.is_rekey_initiator(),
+    )
+    .await;
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .has_rekey_in_progress(),
+        "responder should process the resent rekey msg1"
+    );
+    assert!(
+        !nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .is_rekey_initiator(),
+        "responder side should not become a competing initiator"
+    );
+
+    wait_for_session_state_for_node(
+        &mut nodes,
+        0,
+        &node1_addr,
+        "replacement rekey msg2 initiator state",
+        |entry| entry.pending_new_session().is_some(),
+    )
+    .await;
+    let entry = nodes[0].node.get_session(&node1_addr).unwrap();
+    assert!(
+        entry.pending_new_session().is_some(),
+        "initiator should complete XK after resent msg1"
+    );
+    assert!(
+        entry.handshake_payload().is_none(),
+        "rekey msg1 resend payload should clear once msg2 arrives"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[test]
+fn test_rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
+    run_large_stack_async_test("fips-rekey-msg1-exhaustion", || async {
+        rekey_msg1_exhaustion_allows_peer_msg1_to_converge().await;
+    });
+}
+
+async fn rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node1_pubkey = nodes[1].node.identity().pubkey_full();
+
+    nodes[0]
+        .node
+        .initiate_session(node1_addr, node1_pubkey)
+        .await
+        .expect("initial session should start");
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &node0_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture responder",
+    )
+    .await;
+
+    let smaller = if nodes[0].node.node_addr() < nodes[1].node.node_addr() {
+        0
+    } else {
+        1
+    };
+    let larger = 1 - smaller;
+    let smaller_addr = *nodes[smaller].node.node_addr();
+    let larger_addr = *nodes[larger].node.node_addr();
+
+    nodes[smaller]
+        .node
+        .config
+        .node
+        .rate_limit
+        .handshake_max_resends = 0;
+    assert!(
+        nodes[smaller]
+            .node
+            .initiate_session_rekey(&larger_addr)
+            .await,
+        "smaller side should start local rekey"
+    );
+    assert!(
+        nodes[smaller]
+            .node
+            .get_session(&larger_addr)
+            .unwrap()
+            .handshake_payload()
+            .is_some(),
+        "local rekey msg1 should be retained before exhaustion"
+    );
+
+    let dropped = wait_drop_queued_packets_for_node(&mut nodes[larger]).await;
+    assert!(dropped > 0, "fixture should drop smaller side's rekey msg1");
+
+    let reply_deadline = nodes[smaller]
+        .node
+        .get_session(&larger_addr)
+        .unwrap()
+        .next_resend_at_ms();
+    nodes[smaller]
+        .node
+        .resend_pending_session_handshakes(reply_deadline - 1)
+        .await;
+    assert!(
+        nodes[smaller]
+            .node
+            .get_session(&larger_addr)
+            .unwrap()
+            .has_rekey_in_progress(),
+        "zero retries still permits the initial handshake's reply window"
+    );
+    nodes[smaller]
+        .node
+        .resend_pending_session_handshakes(reply_deadline)
+        .await;
+    let entry = nodes[smaller].node.get_session(&larger_addr).unwrap();
+    assert!(
+        !entry.has_rekey_in_progress(),
+        "exhausted local rekey should be abandoned"
+    );
+    assert!(
+        entry.handshake_payload().is_none(),
+        "abandoning local rekey must clear stale msg1 payload"
+    );
+
+    assert!(
+        nodes[larger]
+            .node
+            .initiate_session_rekey(&smaller_addr)
+            .await,
+        "larger side should be able to start its own fresh rekey"
+    );
+    let count = wait_process_packets_for_node(&mut nodes, smaller).await;
+    assert!(
+        count > 0,
+        "smaller side should process peer msg1 after abandoning stale local rekey"
+    );
+    let entry = nodes[smaller].node.get_session(&larger_addr).unwrap();
+    assert!(
+        entry.has_rekey_in_progress(),
+        "smaller side should now be the rekey responder"
+    );
+    assert!(
+        !entry.is_rekey_initiator(),
+        "stale tiebreak winner must not keep dropping peer msg1"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+include!("resend_rekey_large_mesh.rs");

@@ -1,0 +1,115 @@
+//! One discovery preference after losing a recently used application neighbor.
+use super::*;
+use std::time::Duration;
+
+impl Node {
+    pub(in crate::node) fn remove_link_dead_discovered_peer(
+        &mut self,
+        peer: &NodeAddr,
+        now_ms: u64,
+        dead_timeout: Duration,
+    ) {
+        let qualified = self.neighbor_reconnection_qualifies(peer, now_ms, dead_timeout);
+        // An upgraded carrier can authenticate before its first data packet
+        // arrives. The initiator already closes its old WSS connection then;
+        // evict that dead adjacency without deleting the FSP keys it still
+        // uses on the authenticated replacement. A requested dial alone, an
+        // expired handshake, or a different process epoch is not continuity.
+        let preserve_end_to_end = self.peers.get(peer).is_some_and(|active| {
+            self.peers.connection_values().any(|candidate| {
+                candidate.is_complete()
+                    && candidate.has_session()
+                    && candidate
+                        .expected_identity()
+                        .is_some_and(|identity| identity.node_addr() == peer)
+                    && matches!(
+                        (active.remote_epoch(), candidate.remote_epoch()),
+                        (Some(old), Some(new)) if old == new
+                    )
+                    && (candidate.transport_id() != active.transport_id()
+                        || candidate.source_addr() != active.current_addr())
+                    && !candidate.is_timed_out(
+                        now_ms,
+                        self.config
+                            .node
+                            .rate_limit
+                            .handshake_timeout_secs
+                            .saturating_mul(1000),
+                    )
+            })
+        });
+        self.remove_active_peer_inner(peer, preserve_end_to_end);
+        if qualified {
+            self.remember_neighbor_reconnection(*peer, now_ms);
+        }
+    }
+
+    pub(super) fn neighbor_reconnection_qualifies(
+        &self,
+        peer: &NodeAddr,
+        now_ms: u64,
+        dead_timeout: Duration,
+    ) -> bool {
+        self.max_peers > 0
+            && self
+                .config
+                .node
+                .neighbor_rotation
+                .as_ref()
+                .is_some_and(|rotation| {
+                    let dead_ms = u64::try_from(dead_timeout.as_millis()).unwrap_or(u64::MAX);
+                    let lookback_ms =
+                        dead_ms.saturating_add(rotation.idle_secs.saturating_mul(1000));
+                    self.peers.get(peer).is_some_and(|active| {
+                        !self.is_configured_peer_identity(active.identity())
+                            && (active.has_recent_transit_demand(now_ms, lookback_ms)
+                                || now_ms
+                                    .checked_sub(active.authenticated_at())
+                                    .and_then(|age| age.checked_sub(1))
+                                    .is_some_and(|age| {
+                                        // Retained FSP history must be newer than this
+                                        // adjacency's admission, including at millisecond
+                                        // boundaries. It does not prove wire delivery.
+                                        self.peer_has_recent_local_application_data(
+                                            peer,
+                                            now_ms,
+                                            lookback_ms.min(age),
+                                        )
+                                    }))
+                    })
+                })
+    }
+
+    /// The caller qualified the old owner before normal cleanup removed it.
+    pub(super) fn remember_neighbor_reconnection(&mut self, peer: NodeAddr, now_ms: u64) {
+        // Waiting behind other admissions must not spend this one preference.
+        // Retain only identity and remembrance time within the existing peer cap;
+        // a started outbound attempt consumes it and keeps its normal deadline.
+        self.neighbor_rotation.lost_neighbors.insert(peer, now_ms);
+        tracing::debug!(node = %self.node_addr(), %peer, remembered_ms = now_ms,
+            "Remembered recently used neighbor for reconnection");
+        self.prune_neighbor_reconnections();
+    }
+
+    pub(in crate::node) fn forget_neighbor_reconnection(&mut self, peer: &NodeAddr) {
+        if let Some(remembered_ms) = self.neighbor_rotation.lost_neighbors.remove(peer) {
+            tracing::debug!(node = %self.node_addr(), %peer, remembered_ms,
+                "Consumed neighbor reconnection preference");
+        }
+    }
+
+    pub(in crate::node) fn prune_neighbor_reconnections(&mut self) {
+        let history = &mut self.neighbor_rotation.lost_neighbors;
+        while history.len() > self.max_peers {
+            let oldest = *history
+                .iter()
+                .min_by_key(|(identity, remembered_ms)| (**remembered_ms, **identity))
+                .unwrap()
+                .0;
+            history.remove(&oldest);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

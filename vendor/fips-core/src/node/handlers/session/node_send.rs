@@ -1,0 +1,444 @@
+/// Share of the bounded table available to unauthenticated responder state.
+const HALF_OPEN_SHARE_DIVISOR: usize = 2;
+
+impl Node {
+    // === Session Initiation (Send Path) ===
+
+    /// Decide whether creating a session for `addr` may grow the table.
+    ///
+    /// Existing entries are always admitted so duplicate handshakes, live
+    /// sessions, and rekeys continue to make progress at the limit.
+    pub(in crate::node) fn admit_new_session(&mut self, addr: &NodeAddr) -> bool {
+        let max_sessions = self.config.node.limits.max_sessions;
+        if max_sessions == 0 || self.sessions.contains_key(addr) {
+            return true;
+        }
+
+        if self.sessions.len() >= max_sessions {
+            debug!(
+                peer = %self.peer_display_name(addr),
+                sessions = self.sessions.len(),
+                max_sessions,
+                "Session table full, refusing new session"
+            );
+            self.stats_mut().sessions.table_full += 1;
+            return false;
+        }
+
+        let half_open_share = (max_sessions / HALF_OPEN_SHARE_DIVISOR).max(1);
+        if self.sessions.len() >= half_open_share {
+            let half_open = self
+                .sessions
+                .values()
+                .filter(|entry| entry.is_awaiting_msg3())
+                .count();
+            if half_open >= half_open_share {
+                debug!(
+                    peer = %self.peer_display_name(addr),
+                    half_open,
+                    half_open_share,
+                    "Half-open session share exhausted, refusing new session"
+                );
+                self.stats_mut().sessions.half_open_full += 1;
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Initiate an end-to-end session with a remote node.
+    ///
+    /// Creates a Noise XK handshake as initiator, wraps msg1 in a
+    /// SessionSetup, encapsulates in a SessionDatagram, and routes
+    /// toward the destination.
+    pub(in crate::node) async fn initiate_session(
+        &mut self,
+        dest_addr: NodeAddr,
+        dest_pubkey: PublicKey,
+    ) -> Result<(), NodeError> {
+        if self.sessions.should_skip_session_initiation(&dest_addr) {
+            return Ok(());
+        }
+        if !self.admit_new_session(&dest_addr) {
+            return Err(NodeError::MaxSessionsExceeded {
+                max: self.config.node.limits.max_sessions,
+            });
+        }
+
+        // Create Noise XK initiator handshake
+        let our_keypair = self.identity.keypair();
+        let mut handshake = HandshakeState::new_xk_initiator(our_keypair, dest_pubkey);
+        handshake.set_local_epoch(self.startup_epoch);
+        let msg1 = handshake
+            .write_xk_message_1()
+            .map_err(|e| NodeError::SendFailed {
+                node_addr: dest_addr,
+                reason: format!("Noise XK msg1 generation failed: {}", e),
+            })?;
+
+        // Build SessionSetup with coordinates
+        let our_coords = self.tree_state.my_coords().clone();
+        let dest_coords = self.get_dest_coords(&dest_addr);
+        let setup = SessionSetup::new(our_coords, dest_coords)
+            .with_flags(SessionFlags::new().with_direct_fsp_transport())
+            .with_handshake(msg1);
+        let setup_payload = setup.encode();
+
+        // Wrap in SessionDatagram
+        let my_addr = *self.node_addr();
+        let mut datagram = SessionDatagram::new(my_addr, dest_addr, setup_payload.clone())
+            .with_ttl(self.config.node.session.default_ttl);
+
+        // A definitive routing refusal has not emitted anything yet.
+        let runtime_route = self.resolve_session_datagram_runtime_route(&mut datagram)?;
+
+        // Register destination identity for TUN → session routing
+        self.register_identity(dest_addr, dest_pubkey);
+
+        // Retain the exact Noise generation before yielding to a send. A
+        // canceled or uncertain completion does not withdraw an emitted msg1.
+        let now_ms = Self::now_ms();
+        let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+        self.sessions.install_initiating_session(
+            dest_addr,
+            dest_pubkey,
+            handshake,
+            setup_payload,
+            now_ms,
+            resend_interval,
+        );
+
+        self.send_session_datagram_on_runtime_route(&datagram, runtime_route)
+            .await?;
+
+        debug!(dest = %self.peer_display_name(&dest_addr), "Session initiation started");
+        Ok(())
+    }
+
+    pub(in crate::node) async fn handle_endpoint_data_batch_no_established_flush(
+        &mut self,
+        batch: NodeEndpointDataBatch,
+    ) {
+        let (remote, payloads, _, enqueued_at_ms) = batch.into_parts();
+        self.queue_dataplane_unrouted_endpoint_batch(
+            remote,
+            payloads,
+            enqueued_at_ms,
+        )
+        .await;
+    }
+
+    pub(in crate::node) async fn handle_endpoint_control(
+        &mut self,
+        command: NodeEndpointControlCommand,
+    ) -> Option<NetworkRebindRequest> {
+        match command {
+            NodeEndpointControlCommand::SetSourceRoute {
+                destination,
+                next_hop,
+                response_tx,
+            } => {
+                let result = self.set_endpoint_source_route(destination, next_hop);
+                let _ = response_tx.send(result);
+            }
+            NodeEndpointControlCommand::SourceRouteQuality {
+                destination,
+                feedback_window_ms,
+                response_tx,
+            } => {
+                let quality = self.endpoint_source_route_quality(destination, feedback_window_ms);
+                let _ = response_tx.send(quality);
+            }
+            NodeEndpointControlCommand::ResolveNextHop {
+                destination,
+                previous_hop,
+                response_tx,
+            } => {
+                if !self.register_endpoint_identity(
+                    *destination.node_addr(),
+                    destination.pubkey_full(),
+                ) {
+                    let _ = response_tx.send(None);
+                    return None;
+                }
+                let destination = *destination.node_addr();
+                let next = match previous_hop {
+                    Some(previous) => match self.plan_transit_next_hop(&destination, &previous) {
+                        crate::node::route_impl::TransitNextHopPlan::Route(next) => {
+                            self.peers.get(&next).map(|p| *p.identity())
+                        }
+                        _ => None,
+                    },
+                    None => self.find_next_hop(&destination).map(|p| *p.identity()),
+                };
+                if next.is_none() && destination != *self.node_addr() {
+                    self.maybe_initiate_route_query_lookup(&destination).await;
+                }
+                let _ = response_tx.send(next);
+            }
+            NodeEndpointControlCommand::UpdatePeers { peers, response_tx } => {
+                let result = self.update_peers(peers).await;
+                let _ = response_tx.send(result);
+            }
+            NodeEndpointControlCommand::RefreshPeerPaths { npubs, response_tx } => {
+                let result = self.refresh_peer_paths(npubs).await;
+                let _ = response_tx.send(result);
+            }
+            NodeEndpointControlCommand::RebindNetworkTransports {
+                bind_interface,
+                response_tx,
+            } => {
+                return Some(NetworkRebindRequest::new(bind_interface, response_tx));
+            }
+            NodeEndpointControlCommand::RegisterIdentity {
+                identity,
+                response_tx,
+            } => {
+                let registered =
+                    self.register_dns_identity(*identity.node_addr(), identity.pubkey_full());
+                let _ = response_tx.send(registered);
+            }
+            NodeEndpointControlCommand::RegisterService {
+                port,
+                sender,
+                capability,
+                response_tx,
+            } => {
+                let registered = self.endpoint_services.register(port, sender);
+                if registered && let Some(capability) = capability {
+                    self.register_local_instance_capability(capability);
+                }
+                let _ = response_tx.send(registered);
+            }
+            NodeEndpointControlCommand::IngestNostrEvent { event, response_tx } => {
+                let accepted = if let Some(discovery) = self.nostr_discovery_handle() {
+                    discovery.ingest_advert_event(&event).await.cached()
+                        || discovery.process_rating_fact_event(&event).await
+                } else {
+                    false
+                };
+                let _ = response_tx.send(accepted);
+            }
+            NodeEndpointControlCommand::PeerSnapshot { response_tx } => {
+                let snapshot_now = Instant::now();
+                let nostr_failure_state: std::collections::HashMap<String, _> = self
+                    .nostr_discovery_handle()
+                    .map(|discovery| {
+                        discovery
+                            .failure_state_snapshot()
+                            .into_iter()
+                            .map(|state| (state.npub.clone(), state))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // Preserve the first matching session for each carrier without
+                // rescanning the entire session table for every peer.
+                let mut outbound_routes = std::collections::HashMap::new();
+                for (dest_addr, _) in self.sessions.iter() {
+                    if let Some(next_hop) = self
+                        .dataplane
+                        .fsp_owner_activity(dest_addr)
+                        .and_then(|activity| activity.last_outbound_next_hop())
+                    {
+                        outbound_routes
+                            .entry(next_hop)
+                            .or_insert(if *dest_addr == next_hop {
+                                "direct"
+                            } else {
+                                "fallback"
+                            });
+                    }
+                }
+                let mut peers = self
+                    .peers()
+                    .map(|peer| {
+                        let link_id = peer.link_id();
+                        let retry_state = self.retry_pending.get(peer.node_addr());
+                        let npub = peer.npub();
+                        let nostr_state = nostr_failure_state.get(&npub);
+                        let nostr_traversal_cooldown_until_ms =
+                            nostr_state.and_then(|state| state.cooldown_until_ms);
+                        let transport_type = self.get_link(&link_id).and_then(|link| {
+                            self.get_transport(&link.transport_id())
+                                .map(|handle| handle.transport_type().name.to_string())
+                        });
+                        let stats = peer.link_stats();
+                        let direct_probe_pending = retry_state.is_some();
+                        let last_outbound_route = outbound_routes
+                            .get(peer.node_addr())
+                            .map(|route| (*route).to_string());
+                        let srtt = self
+                            .dataplane
+                            .fmp_link_metrics(peer.node_addr(), snapshot_now)
+                            .and_then(|metrics| {
+                                metrics
+                                    .srtt_ms
+                                    .map(|value| (value.round() as u64, metrics.srtt_age_ms))
+                            });
+                        let connected = peer.can_send()
+                            && stats.time_since_recv(Self::now_ms())
+                                <= self.session_direct_path_exclusive_trust_timeout_ms();
+                        NodeEndpointPeer {
+                            npub,
+                            node_addr: *peer.node_addr(),
+                            connected,
+                            transport_addr: peer.current_addr().map(|addr| addr.to_string()),
+                            transport_type,
+                            link_id: link_id.as_u64(),
+                            srtt_ms: srtt.map(|(value, _)| value),
+                            srtt_age_ms: srtt.and_then(|(_, age)| age),
+                            packets_sent: stats.packets_sent,
+                            packets_recv: stats.packets_recv,
+                            bytes_sent: stats.bytes_sent,
+                            bytes_recv: stats.bytes_recv,
+                            rekey_in_progress: peer.rekey_in_progress(),
+                            rekey_draining: peer.is_draining(),
+                            current_k_bit: Some(peer.current_k_bit()),
+                            last_outbound_route,
+                            direct_probe_pending,
+                            direct_probe_after_ms: retry_state.map(|state| state.retry_after_ms),
+                            direct_probe_retry_count: retry_state
+                                .map_or(0, |state| state.retry_count),
+                            direct_probe_auto_reconnect: retry_state
+                                .is_some_and(|state| state.reconnect),
+                            direct_probe_expires_at_ms: retry_state
+                                .and_then(|state| state.expires_at_ms),
+                            nostr_traversal_consecutive_failures: nostr_state
+                                .map_or(0, |state| state.consecutive_failures),
+                            nostr_traversal_in_cooldown: nostr_traversal_cooldown_until_ms
+                                .is_some(),
+                            nostr_traversal_cooldown_until_ms,
+                            nostr_traversal_last_observed_skew_ms: nostr_state
+                                .and_then(|state| state.last_observed_skew_ms),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                for (node_addr, retry_state) in self.retry_pending.iter() {
+                    if self.peers.contains_key(node_addr)
+                        || !self
+                            .config
+                            .peers
+                            .iter()
+                            .any(|peer| peer.npub == retry_state.peer_config.npub)
+                    {
+                        continue;
+                    }
+
+                    let npub = retry_state.peer_config.npub.clone();
+                    let nostr_state = nostr_failure_state.get(&npub);
+                    let nostr_traversal_cooldown_until_ms =
+                        nostr_state.and_then(|state| state.cooldown_until_ms);
+                    peers.push(NodeEndpointPeer {
+                        npub,
+                        node_addr: *node_addr,
+                        connected: false,
+                        transport_addr: None,
+                        transport_type: None,
+                        link_id: 0,
+                        srtt_ms: None,
+                        srtt_age_ms: None,
+                        packets_sent: 0,
+                        packets_recv: 0,
+                        bytes_sent: 0,
+                        bytes_recv: 0,
+                        rekey_in_progress: false,
+                        rekey_draining: false,
+                        current_k_bit: None,
+                        last_outbound_route: None,
+                        direct_probe_pending: true,
+                        direct_probe_after_ms: Some(retry_state.retry_after_ms),
+                        direct_probe_retry_count: retry_state.retry_count,
+                        direct_probe_auto_reconnect: retry_state.reconnect,
+                        direct_probe_expires_at_ms: retry_state.expires_at_ms,
+                        nostr_traversal_consecutive_failures: nostr_state
+                            .map_or(0, |state| state.consecutive_failures),
+                        nostr_traversal_in_cooldown: nostr_traversal_cooldown_until_ms.is_some(),
+                        nostr_traversal_cooldown_until_ms,
+                        nostr_traversal_last_observed_skew_ms: nostr_state
+                            .and_then(|state| state.last_observed_skew_ms),
+                    });
+                }
+
+                let _ = response_tx.send(peers);
+            }
+            NodeEndpointControlCommand::PeerRatingEvents { scope, response_tx } => {
+                let result = crate::control::queries::peer_rating_events(self, &scope)
+                    .map_err(NodeError::Discovery);
+                let _ = response_tx.send(result);
+            }
+            NodeEndpointControlCommand::LocalAdvertSnapshot { response_tx } => {
+                let endpoints = if let Some(discovery) = self.nostr_discovery_handle() {
+                    discovery.local_advert_endpoints().await
+                } else {
+                    Vec::new()
+                };
+                let _ = response_tx.send(endpoints);
+            }
+            NodeEndpointControlCommand::BoundUdpListenAddrs { response_tx } => {
+                let mut addrs = self
+                    .transports
+                    .iter()
+                    .filter(|(id, handle)| {
+                        !self.is_local_rendezvous_transport(id)
+                            && handle.is_operational()
+                            && handle.transport_type().name == "udp"
+                            && handle.accept_connections()
+                    })
+                    .filter_map(|(_, handle)| handle.local_addr())
+                    .collect::<Vec<_>>();
+                addrs.sort_unstable();
+                addrs.dedup();
+                let _ = response_tx.send(addrs);
+            }
+            NodeEndpointControlCommand::LocalNostrDiscoveryAdvertEvent { response_tx } => {
+                let result = if let Some(discovery) = self.nostr_discovery_handle() {
+                    discovery
+                        .local_advert_event()
+                        .await
+                        .map_err(|error| NodeError::Discovery(error.to_string()))
+                } else {
+                    Err(NodeError::Discovery(
+                        "Nostr discovery is not running".to_string(),
+                    ))
+                };
+                let _ = response_tx.send(result);
+            }
+            NodeEndpointControlCommand::RelaySnapshot { response_tx } => {
+                let relays = if let Some(discovery) = self.nostr_discovery_handle() {
+                    discovery
+                        .relay_statuses()
+                        .await
+                        .into_iter()
+                        .map(|relay| NodeEndpointRelayStatus {
+                            url: relay.url,
+                            status: relay.status,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let _ = response_tx.send(relays);
+            }
+            NodeEndpointControlCommand::UpdateRelays {
+                advert_relays,
+                response_tx,
+            } => {
+                let result = if let Some(discovery) = self.nostr_discovery_handle() {
+                    discovery
+                        .update_relays(advert_relays)
+                        .await
+                        .map_err(|error| NodeError::Discovery(error.to_string()))
+                } else {
+                    Err(NodeError::Discovery(
+                        "Nostr discovery is not running".to_string(),
+                    ))
+                };
+                let _ = response_tx.send(result);
+            }
+        }
+        None
+    }
+
+}

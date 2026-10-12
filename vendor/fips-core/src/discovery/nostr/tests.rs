@@ -1,0 +1,989 @@
+use nostr::prelude::{EventBuilder, Kind, Tag, TagKind, Timestamp};
+
+use super::runtime::{NostrDiscovery, VerifiedEvent, suppress_responder_for_own_initiator};
+use super::signal::{
+    FRESHNESS_SKEW_TOLERANCE_MS, FreshnessOutcome, TraversalSignalTiming, create_traversal_answer,
+    create_traversal_offer, estimate_clock_skew, validate_offer_freshness,
+    validate_traversal_answer_for_offer,
+};
+use super::stun::{
+    compatible_stun_targets, parse_stun_binding_success, parse_stun_url, perform_stun_any,
+};
+use super::traversal::{
+    PunchStrategy, SourceRank, build_punch_packet, now_ms, parse_punch_packet, plan_punch_targets,
+    planned_remote_endpoints, rank_punch_source, run_punch_attempt, session_hash,
+};
+use super::types::TraversalAddressObservation;
+use super::{
+    ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, OverlayAdvert, OverlayEndpointAdvert,
+    OverlayTransportKind, PunchHint, PunchPacketKind, TraversalAddress,
+};
+use crate::NodeAddr;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NatType {
+    RestrictedCone,
+    PortRestricted,
+    Symmetric,
+}
+
+fn addr(ip: &str, port: u16) -> TraversalAddress {
+    TraversalAddress {
+        protocol: "udp".to_string(),
+        ip: ip.to_string(),
+        port,
+    }
+}
+
+fn observed(
+    reflexive_address: Option<TraversalAddress>,
+    local_addresses: Vec<TraversalAddress>,
+    stun_server: Option<&str>,
+) -> TraversalAddressObservation {
+    TraversalAddressObservation {
+        reflexive_address,
+        local_addresses,
+        stun_server: stun_server.map(str::to_string),
+    }
+}
+
+fn can_reach(local_nat: NatType, remote_nat: NatType) -> bool {
+    if local_nat == NatType::Symmetric || remote_nat == NatType::Symmetric {
+        return false;
+    }
+    !(local_nat == NatType::PortRestricted && remote_nat == NatType::PortRestricted)
+}
+
+fn node_addr(first_byte: u8) -> NodeAddr {
+    let mut bytes = [0u8; 16];
+    bytes[0] = first_byte;
+    NodeAddr::from_bytes(bytes)
+}
+
+fn signed_overlay_advert_event(created_at_secs: u64, expiration_secs: Option<u64>) -> nostr::Event {
+    signed_overlay_advert_event_from(&nostr::Keys::generate(), created_at_secs, expiration_secs)
+}
+
+fn signed_overlay_advert_event_from(
+    keys: &nostr::Keys,
+    created_at_secs: u64,
+    expiration_secs: Option<u64>,
+) -> nostr::Event {
+    let content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"8.8.8.8:443"}]}"#;
+    let mut builder = EventBuilder::new(Kind::Custom(ADVERT_KIND), content)
+        .custom_created_at(Timestamp::from(created_at_secs));
+    if let Some(expiration_secs) = expiration_secs {
+        builder = builder.tags([Tag::expiration(Timestamp::from(expiration_secs))]);
+    }
+    builder.sign_with_keys(keys).unwrap()
+}
+
+fn signed_overlay_advert_event_for_app(app: &str) -> nostr::Event {
+    let keys = nostr::Keys::generate();
+    let content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"8.8.8.8:443"}]}"#;
+    EventBuilder::new(Kind::Custom(ADVERT_KIND), content)
+        .tags([
+            Tag::identifier(app),
+            Tag::custom(TagKind::custom("protocol"), [app.to_string()]),
+        ])
+        .sign_with_keys(&keys)
+        .unwrap()
+}
+
+#[test]
+fn serializes_direct_overlay_advert_without_nat_metadata() {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Tcp,
+                addr: "203.0.113.10:443".to_string(),
+            },
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Tor,
+                addr: "exampleonion.onion:1234".to_string(),
+            },
+        ],
+        stun_servers: None,
+    };
+
+    let json = serde_json::to_string(&advert).unwrap();
+    assert!(json.contains("\"endpoints\""));
+    assert!(!json.contains("\"signalRelays\""));
+    assert!(!json.contains("\"stunServers\""));
+}
+
+#[test]
+fn responder_suppression_election_keeps_smaller_initiator() {
+    let smaller = node_addr(0x01);
+    let larger = node_addr(0x02);
+
+    assert!(suppress_responder_for_own_initiator(
+        &smaller, &larger, true
+    ));
+    assert!(!suppress_responder_for_own_initiator(
+        &larger, &smaller, true
+    ));
+    assert!(!suppress_responder_for_own_initiator(
+        &smaller, &larger, false
+    ));
+    assert!(!suppress_responder_for_own_initiator(
+        &larger, &smaller, false
+    ));
+    assert!(!suppress_responder_for_own_initiator(
+        &smaller, &smaller, true
+    ));
+}
+
+#[test]
+fn serializes_and_validates_webrtc_overlay_advert() {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::WebRtc,
+            addr: "02".to_string() + &"11".repeat(32),
+        }],
+        stun_servers: Some(vec!["stun:stun.example.org:3478".to_string()]),
+    };
+
+    let json = serde_json::to_string(&advert).unwrap();
+    assert!(json.contains("\"transport\":\"webrtc\""));
+
+    let sanitized = NostrDiscovery::validate_overlay_advert(advert).unwrap();
+    assert_eq!(sanitized.endpoints.len(), 1);
+    assert_eq!(
+        sanitized.endpoints[0].transport,
+        OverlayTransportKind::WebRtc
+    );
+    assert_eq!(sanitized.stun_servers, None);
+}
+
+#[test]
+fn serializes_and_validates_websocket_overlay_advert() {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::WebSocket,
+            addr: "wss://seed.example/fips".into(),
+        }],
+        stun_servers: None,
+    };
+
+    let json = serde_json::to_string(&advert).unwrap();
+    assert!(json.contains("\"transport\":\"websocket\""));
+
+    let sanitized = NostrDiscovery::validate_overlay_advert(advert).unwrap();
+    assert_eq!(
+        sanitized.endpoints[0].transport,
+        OverlayTransportKind::WebSocket
+    );
+}
+
+#[test]
+fn serializes_nat_overlay_advert_with_metadata() {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Udp,
+            addr: "nat".to_string(),
+        }],
+        stun_servers: Some(vec!["stun:stun.example.org:3478".to_string()]),
+    };
+
+    let json = serde_json::to_string(&advert).unwrap();
+    assert!(!json.contains("\"signalRelays\""));
+    assert!(json.contains("\"stunServers\""));
+}
+
+#[test]
+fn rejects_invalid_overlay_adverts() {
+    let missing_nat_metadata = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Udp,
+            addr: "nat".to_string(),
+        }],
+        stun_servers: None,
+    };
+    assert!(NostrDiscovery::validate_overlay_advert(missing_nat_metadata).is_err());
+
+    let wrong_identifier = OverlayAdvert {
+        identifier: "not-fips-overlay".to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Tcp,
+            addr: "203.0.113.10:443".to_string(),
+        }],
+        stun_servers: None,
+    };
+    assert!(NostrDiscovery::validate_overlay_advert(wrong_identifier).is_err());
+}
+
+#[test]
+fn validate_overlay_advert_filters_unroutable_direct_endpoints() {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Udp,
+                addr: "10.44.236.44:51820".to_string(),
+            },
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Tcp,
+                addr: "192.168.1.20:443".to_string(),
+            },
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Udp,
+                addr: "nat".to_string(),
+            },
+        ],
+        stun_servers: Some(vec!["stun:stun.example.org:3478".to_string()]),
+    };
+
+    let sanitized = NostrDiscovery::validate_overlay_advert(advert).unwrap();
+    assert_eq!(sanitized.endpoints.len(), 1);
+    assert_eq!(sanitized.endpoints[0].transport, OverlayTransportKind::Udp);
+    assert_eq!(sanitized.endpoints[0].addr, "nat");
+}
+
+#[test]
+fn validate_overlay_advert_rejects_only_unroutable_direct_endpoints() {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Udp,
+            addr: "10.44.236.44:51820".to_string(),
+        }],
+        stun_servers: None,
+    };
+
+    assert!(NostrDiscovery::validate_overlay_advert(advert).is_err());
+}
+
+#[test]
+fn parses_only_signed_overlay_advert_events() {
+    let event = signed_overlay_advert_event_for_app("fips-test");
+    let event = VerifiedEvent::try_from(&event).expect("signed advert should verify");
+
+    let advert = NostrDiscovery::parse_overlay_advert_event(event, "fips-test")
+        .expect("signed advert should parse");
+
+    assert_eq!(advert.identifier, ADVERT_IDENTIFIER);
+    assert_eq!(advert.endpoints.len(), 1);
+}
+
+#[test]
+fn advert_prefilter_accepts_only_matching_app_tags() {
+    let event = signed_overlay_advert_event_for_app("fips-test");
+    assert!(NostrDiscovery::advert_event_targets_app(
+        &event,
+        "fips-test"
+    ));
+    assert!(!NostrDiscovery::advert_event_targets_app(
+        &event,
+        "other-app"
+    ));
+
+    let missing_protocol = signed_overlay_advert_event(Timestamp::now().as_secs(), None);
+    assert!(!NostrDiscovery::advert_event_targets_app(
+        &missing_protocol,
+        "fips-test"
+    ));
+}
+
+#[test]
+fn rejects_tampered_overlay_advert_event_content() {
+    let mut event = signed_overlay_advert_event_for_app("fips-test");
+    event.content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"1.1.1.1:443"}]}"#.to_string();
+
+    let err = VerifiedEvent::try_from(&event)
+        .expect_err("tampered advert content must fail event verification");
+
+    assert!(err.to_string().contains("signature"), "{err}");
+}
+
+#[test]
+fn advert_freshness_rejects_expired_events() {
+    let now_secs = Timestamp::now().as_secs();
+    let event = signed_overlay_advert_event(now_secs, Some(now_secs.saturating_sub(1)));
+    let valid_until =
+        NostrDiscovery::compute_advert_valid_until_ms(&event, 600_000, now_secs * 1000);
+    assert!(valid_until.is_none());
+}
+
+#[test]
+fn advert_freshness_rejects_stale_created_at_without_expiration() {
+    let now_secs = Timestamp::now().as_secs();
+    let stale_created = now_secs.saturating_sub(10_000);
+    let event = signed_overlay_advert_event(stale_created, None);
+    let valid_until =
+        NostrDiscovery::compute_advert_valid_until_ms(&event, 600_000, now_secs * 1000);
+    assert!(valid_until.is_none());
+}
+
+#[test]
+fn advert_selection_ignores_foreign_authors_before_timestamp_ordering() {
+    let now_secs = Timestamp::now().as_secs();
+    let peer = nostr::Keys::generate();
+    let foreign = nostr::Keys::generate();
+    let events = [
+        signed_overlay_advert_event_from(&foreign, now_secs + 3_600, None),
+        signed_overlay_advert_event_from(&peer, now_secs.saturating_sub(10), None),
+    ];
+
+    let selected =
+        NostrDiscovery::newest_event_by_author(events.iter(), peer.public_key()).unwrap();
+    assert_eq!(selected.pubkey, peer.public_key());
+}
+
+#[test]
+fn advert_freshness_clamps_far_future_created_at() {
+    let now_secs = Timestamp::now().as_secs();
+    let event = signed_overlay_advert_event(now_secs + 3_600, None);
+    let valid_until =
+        NostrDiscovery::compute_advert_valid_until_ms(&event, 600_000, now_secs * 1000)
+            .expect("future advert is clamped rather than rejected");
+    assert_eq!(valid_until, (now_secs + 60) * 1000 + 600_000);
+}
+
+#[test]
+fn advert_freshness_uses_earliest_expiration_bound() {
+    let now_secs = Timestamp::now().as_secs();
+    let event = signed_overlay_advert_event(now_secs.saturating_sub(10), Some(now_secs + 30));
+    let valid_until =
+        NostrDiscovery::compute_advert_valid_until_ms(&event, 3_600_000, now_secs * 1000)
+            .expect("event should be fresh");
+    assert_eq!(valid_until, (now_secs + 30) * 1000);
+}
+
+#[test]
+fn parses_stun_urls() {
+    let parsed = parse_stun_url("stun:stun.l.google.com:19302").unwrap();
+    assert_eq!(parsed.host, "stun.l.google.com");
+    assert_eq!(parsed.port, 19302);
+}
+
+#[test]
+fn parses_ipv6_stun_urls() {
+    let parsed = parse_stun_url("stun:[2001:db8::10]:3478").unwrap();
+    assert_eq!(parsed.host, "[2001:db8::10]");
+    assert_eq!(parsed.port, 3478);
+}
+
+#[test]
+fn parses_ipv6_xor_mapped_address() {
+    let txn_id = [
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x10, 0x32, 0x54, 0x76,
+    ];
+    let addr = std::net::SocketAddr::new("2001:db8::1234".parse().unwrap(), 3478);
+    let port = addr.port() ^ 0x2112;
+
+    let mut attr = Vec::with_capacity(24);
+    attr.extend_from_slice(&0x0020u16.to_be_bytes());
+    attr.extend_from_slice(&20u16.to_be_bytes());
+    attr.push(0);
+    attr.push(0x02);
+    attr.extend_from_slice(&port.to_be_bytes());
+
+    let ipv6 = match addr.ip() {
+        std::net::IpAddr::V6(ip) => ip.octets(),
+        std::net::IpAddr::V4(_) => panic!("expected IPv6 test address"),
+    };
+    let cookie = 0x2112_a442u32.to_be_bytes();
+    for index in 0..16 {
+        let mask = if index < 4 {
+            cookie[index]
+        } else {
+            txn_id[index - 4]
+        };
+        attr.push(ipv6[index] ^ mask);
+    }
+
+    let mut packet = Vec::with_capacity(44);
+    packet.extend_from_slice(&0x0101u16.to_be_bytes());
+    packet.extend_from_slice(&(attr.len() as u16).to_be_bytes());
+    packet.extend_from_slice(&0x2112_a442u32.to_be_bytes());
+    packet.extend_from_slice(&txn_id);
+    packet.extend_from_slice(&attr);
+
+    assert_eq!(parse_stun_binding_success(&packet, &txn_id), Some(addr));
+}
+
+#[tokio::test]
+async fn stun_observation_uses_first_success_without_waiting_for_dead_first_server() {
+    let silent = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind silent STUN socket");
+    let silent_addr = silent.local_addr().expect("silent addr");
+    let responder = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind responder STUN socket");
+    let responder_addr = responder.local_addr().expect("responder addr");
+
+    tokio::spawn(async move {
+        let mut buf = [0u8; 2048];
+        let (len, src) = responder.recv_from(&mut buf).await.expect("recv STUN");
+        let txn_id: [u8; 12] = buf[8..20]
+            .try_into()
+            .expect("binding request should carry transaction id");
+        let src_ip = match src.ip() {
+            std::net::IpAddr::V4(ip) => ip,
+            std::net::IpAddr::V6(_) => panic!("test uses IPv4 sockets"),
+        };
+        let cookie = 0x2112_a442u32.to_be_bytes();
+        let mut response = Vec::new();
+        response.extend_from_slice(&0x0101u16.to_be_bytes());
+        response.extend_from_slice(&12u16.to_be_bytes());
+        response.extend_from_slice(&0x2112_a442u32.to_be_bytes());
+        response.extend_from_slice(&txn_id);
+        response.extend_from_slice(&0x0020u16.to_be_bytes());
+        response.extend_from_slice(&8u16.to_be_bytes());
+        response.push(0);
+        response.push(0x01);
+        response.extend_from_slice(&(src.port() ^ 0x2112).to_be_bytes());
+        for (octet, mask) in src_ip.octets().into_iter().zip(cookie) {
+            response.push(octet ^ mask);
+        }
+        assert!(len >= 20);
+        responder
+            .send_to(&response, src)
+            .await
+            .expect("send STUN response");
+    });
+
+    let client = std::net::UdpSocket::bind("0.0.0.0:0").expect("bind client");
+    client
+        .set_nonblocking(true)
+        .expect("tokio requires nonblocking socket");
+    let client_port = client.local_addr().expect("client addr").port();
+    let servers = vec![
+        format!("stun:{}", silent_addr),
+        format!("stun:{}", responder_addr),
+    ];
+
+    let started = std::time::Instant::now();
+    let (mapped, stun_server) =
+        perform_stun_any(&client, &servers, std::time::Duration::from_secs(2))
+            .await
+            .expect("second STUN server should answer");
+
+    assert_eq!(stun_server, format!("stun:{}", responder_addr));
+    assert_eq!(mapped.expect("mapped address").port(), client_port);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "parallel STUN should not wait for the silent first server"
+    );
+
+    drop(silent);
+}
+
+#[test]
+fn builds_and_parses_probe_packets() {
+    let packet = build_punch_packet(PunchPacketKind::Probe, 7, "sess-1");
+    let parsed = parse_punch_packet(&packet).unwrap();
+    assert_eq!(parsed.kind, PunchPacketKind::Probe);
+    assert_eq!(parsed.sequence, 7);
+    assert_eq!(parsed.session_hash, session_hash("sess-1"));
+}
+
+#[test]
+fn punch_sources_are_limited_to_planned_addresses_or_remapped_ports() {
+    let planned: std::net::SocketAddr = "198.51.100.20:63000".parse().unwrap();
+    let remapped: std::net::SocketAddr = "198.51.100.20:41000".parse().unwrap();
+    let unplanned: std::net::SocketAddr = "203.0.113.9:63000".parse().unwrap();
+
+    assert_eq!(rank_punch_source(planned, &[planned]), SourceRank::Planned);
+    assert_eq!(
+        rank_punch_source(remapped, &[planned]),
+        SourceRank::RemappedPort
+    );
+    assert_eq!(
+        rank_punch_source(unplanned, &[planned]),
+        SourceRank::Unplanned
+    );
+    assert_eq!(
+        rank_punch_source("[::ffff:198.51.100.20]:63000".parse().unwrap(), &[planned]),
+        SourceRank::Planned
+    );
+}
+
+// This test needs distinct loopback source IPs; only Linux treats all of
+// 127/8 as bindable without adding aliases.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn unplanned_punch_source_is_neither_adopted_nor_acked() {
+    let victim = std::net::UdpSocket::bind("127.0.0.3:0").expect("bind victim");
+    victim.set_nonblocking(true).unwrap();
+    let peer = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind planned peer");
+    peer.set_nonblocking(true).unwrap();
+    let spoofer = std::net::UdpSocket::bind("127.0.0.2:0").expect("bind spoofer");
+    spoofer.set_nonblocking(true).unwrap();
+    let session = "unplanned-source";
+
+    spoofer
+        .send_to(
+            &build_punch_packet(PunchPacketKind::Probe, 1, session),
+            victim.local_addr().unwrap(),
+        )
+        .expect("send spoofed probe");
+    let result = run_punch_attempt(
+        &victim,
+        session,
+        &[peer.local_addr().unwrap()],
+        PunchHint {
+            start_at_ms: 0,
+            interval_ms: 20,
+            duration_ms: 100,
+        },
+        std::time::Duration::from_millis(200),
+        0,
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(super::BootstrapError::PunchTimeout(_))
+    ));
+    let mut buf = [0u8; 24];
+    assert!(spoofer.recv_from(&mut buf).is_err(), "spoofer was acked");
+}
+
+#[tokio::test]
+async fn successful_punch_stops_delayed_probe_sender() {
+    let local = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind local socket");
+    local
+        .set_nonblocking(true)
+        .expect("tokio requires nonblocking socket");
+    let local_addr = local.local_addr().expect("local addr");
+    let remote = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind remote socket");
+    let remote_addr = remote.local_addr().expect("remote addr");
+    let session = "successful-punch";
+
+    remote
+        .send_to(
+            &build_punch_packet(PunchPacketKind::Probe, 7, session),
+            local_addr,
+        )
+        .await
+        .expect("send peer probe");
+    let observed = run_punch_attempt(
+        &local,
+        session,
+        &[remote_addr],
+        PunchHint {
+            start_at_ms: now_ms() + 60,
+            interval_ms: 20,
+            duration_ms: 1_000,
+        },
+        std::time::Duration::from_millis(500),
+        0,
+    )
+    .await
+    .expect("peer probe should complete punch");
+    assert_eq!(observed, remote_addr);
+
+    let mut buf = [0u8; 2048];
+    let (len, _) = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        remote.recv_from(&mut buf),
+    )
+    .await
+    .expect("ack timeout")
+    .expect("receive ack");
+    assert_eq!(
+        parse_punch_packet(&buf[..len]).expect("valid ack").kind,
+        PunchPacketKind::Ack
+    );
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(120),
+            remote.recv_from(&mut buf),
+        )
+        .await
+        .is_err(),
+        "probe sender outlived the successful local attempt"
+    );
+}
+
+#[test]
+fn stun_targets_keep_socket_family_when_dns_returns_ipv6_first() {
+    let local_addr: std::net::SocketAddr = "0.0.0.0:51820".parse().unwrap();
+    let ipv6_first: Vec<std::net::SocketAddr> = vec![
+        "[2001:4860:4864:5:8000::1]:19302".parse().unwrap(),
+        "74.125.250.129:19302".parse().unwrap(),
+    ];
+
+    let targets = compatible_stun_targets(local_addr, ipv6_first);
+
+    assert_eq!(
+        targets,
+        vec![
+            "74.125.250.129:19302"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+        ]
+    );
+}
+
+#[test]
+fn validates_offer_answer_pair() {
+    let offer = create_traversal_offer(
+        "sess-1".to_string(),
+        TraversalSignalTiming::new(1_700_000_000_000, 60_000),
+        "offer-1".to_string(),
+        "npub1client".to_string(),
+        "npub1server".to_string(),
+        observed(
+            Some(addr("203.0.113.10", 62000)),
+            vec![addr("192.168.1.10", 62000)],
+            Some("stun:example.org:3478"),
+        ),
+    );
+    let answer = create_traversal_answer(
+        &offer,
+        TraversalSignalTiming::new(1_700_000_000_500, 60_000),
+        "answer-1".to_string(),
+        "npub1server".to_string(),
+        observed(
+            Some(addr("198.51.100.20", 63000)),
+            vec![addr("192.168.1.20", 63000)],
+            Some("stun:example.org:3478"),
+        ),
+        Some(PunchHint {
+            start_at_ms: 1_700_000_002_000,
+            interval_ms: 200,
+            duration_ms: 10_000,
+        }),
+        Some(1_700_000_000_400),
+    );
+
+    assert!(
+        validate_traversal_answer_for_offer(
+            &offer,
+            &answer,
+            1_700_000_000_900,
+            60_000,
+            "npub1server",
+            "npub1client",
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn rejects_offer_with_mismatched_actual_sender() {
+    let offer = create_traversal_offer(
+        "sess-1".to_string(),
+        TraversalSignalTiming::new(1_700_000_000_000, 60_000),
+        "offer-1".to_string(),
+        "npub1claimed".to_string(),
+        "npub1server".to_string(),
+        observed(None, vec![addr("192.168.1.10", 62000)], None),
+    );
+
+    let result = validate_offer_freshness(
+        &offer,
+        1_700_000_000_100,
+        60_000,
+        "npub1actual",
+        "npub1server",
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn rejects_answer_with_mismatched_actual_sender() {
+    let offer = create_traversal_offer(
+        "sess-1".to_string(),
+        TraversalSignalTiming::new(1_700_000_000_000, 60_000),
+        "offer-1".to_string(),
+        "npub1client".to_string(),
+        "npub1server".to_string(),
+        observed(
+            Some(addr("203.0.113.10", 62000)),
+            vec![addr("192.168.1.10", 62000)],
+            Some("stun:example.org:3478"),
+        ),
+    );
+    let answer = create_traversal_answer(
+        &offer,
+        TraversalSignalTiming::new(1_700_000_000_500, 60_000),
+        "answer-1".to_string(),
+        "npub1server".to_string(),
+        observed(
+            Some(addr("198.51.100.20", 63000)),
+            vec![addr("192.168.1.20", 63000)],
+            Some("stun:example.org:3478"),
+        ),
+        Some(PunchHint {
+            start_at_ms: 1_700_000_002_000,
+            interval_ms: 200,
+            duration_ms: 10_000,
+        }),
+        Some(1_700_000_000_400),
+    );
+
+    let result = validate_traversal_answer_for_offer(
+        &offer,
+        &answer,
+        1_700_000_000_900,
+        60_000,
+        "npub1spoofed",
+        "npub1client",
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn plans_reflexive_targets_before_lan() {
+    let planned = plan_punch_targets(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[addr("192.168.1.20", 63000)],
+        Some(&addr("198.51.100.20", 63000)),
+        false,
+    );
+
+    assert_eq!(planned[0].strategy, PunchStrategy::Reflexive);
+    assert_eq!(planned[1].strategy, PunchStrategy::Lan);
+}
+
+#[test]
+fn plans_lan_targets_before_reflexive_when_preferred() {
+    let planned = plan_punch_targets(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[addr("192.168.1.20", 63000)],
+        Some(&addr("198.51.100.20", 63000)),
+        true,
+    );
+
+    assert_eq!(planned[0].strategy, PunchStrategy::Lan);
+    assert_eq!(planned[1].strategy, PunchStrategy::Reflexive);
+}
+
+#[test]
+fn simulated_lan_scenario_includes_lan_target_and_succeeds() {
+    let planned = plan_punch_targets(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[addr("192.168.1.20", 63000)],
+        Some(&addr("198.51.100.20", 63000)),
+        false,
+    );
+
+    assert!(
+        planned
+            .iter()
+            .any(|target| target.strategy == PunchStrategy::Lan)
+    );
+    assert!(can_reach(NatType::RestrictedCone, NatType::RestrictedCone));
+}
+
+#[test]
+fn simulated_symmetric_nat_scenario_requires_fallback() {
+    let planned = plan_punch_targets(
+        &[addr("10.0.0.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[addr("10.0.1.10", 63000)],
+        Some(&addr("198.51.100.20", 63000)),
+        false,
+    );
+
+    assert!(
+        planned
+            .iter()
+            .any(|target| target.strategy == PunchStrategy::Reflexive)
+    );
+    assert!(!can_reach(NatType::Symmetric, NatType::RestrictedCone));
+}
+
+#[test]
+fn planned_remote_endpoints_include_private_and_reflexive_paths() {
+    let endpoints = planned_remote_endpoints(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[addr("192.168.1.20", 63000)],
+        Some(&addr("198.51.100.20", 63000)),
+        true,
+    )
+    .expect("endpoint planning should succeed");
+
+    assert!(
+        endpoints
+            .remotes
+            .contains(&"192.168.1.20:63000".parse().unwrap())
+    );
+    assert!(
+        endpoints
+            .remotes
+            .contains(&"198.51.100.20:63000".parse().unwrap())
+    );
+    assert_eq!(endpoints.preferred_count, 1);
+}
+
+/// Cross-LAN private remote candidate must NOT appear in the planned set:
+/// pairing our public reflexive against a remote private host that lives
+/// on a different /24 is unrouteable and risks latching a slow overlay-
+/// relay path as `runtime_endpoint`. The public reflexive target and any
+/// same-LAN private target are still included.
+#[test]
+fn planned_remote_endpoints_skip_cross_lan_private_remote() {
+    let endpoints = planned_remote_endpoints(
+        // Our LAN: 192.168.1.0/24
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        // Their reported local candidates: a *different* private LAN.
+        // From our public reflexive these are unrouteable.
+        &[addr("192.168.178.91", 35576), addr("10.0.0.5", 35576)],
+        Some(&addr("198.51.100.20", 63000)),
+        false,
+    )
+    .expect("endpoint planning should succeed");
+
+    // Public reflexive ↔ public reflexive: always present.
+    assert!(
+        endpoints
+            .remotes
+            .contains(&"198.51.100.20:63000".parse().unwrap()),
+        "public reflexive target must be included"
+    );
+    // The cross-LAN private host candidates must be filtered out of the
+    // (our_reflexive ↔ remote_local) mixed pairing.
+    assert!(
+        !endpoints
+            .remotes
+            .contains(&"192.168.178.91:35576".parse().unwrap()),
+        "cross-LAN 192.168.178.91 must be filtered"
+    );
+    assert!(
+        !endpoints
+            .remotes
+            .contains(&"10.0.0.5:35576".parse().unwrap()),
+        "cross-LAN 10.0.0.5 must be filtered"
+    );
+}
+
+/// Same-LAN private remote candidates SHOULD remain — we still might need
+/// the (our_reflexive ↔ remote_local) mixed pairing when our local socket
+/// is wildcard-bound and not enumerated in `local_addresses`, or as a
+/// belt-and-braces alongside the same-LAN strategy.
+#[test]
+fn planned_remote_endpoints_keep_same_lan_private_remote() {
+    let endpoints = planned_remote_endpoints(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[addr("192.168.1.20", 35576)],
+        Some(&addr("198.51.100.20", 63000)),
+        false,
+    )
+    .expect("endpoint planning should succeed");
+
+    assert!(
+        endpoints
+            .remotes
+            .contains(&"192.168.1.20:35576".parse().unwrap()),
+        "same-LAN private remote must still be tried"
+    );
+}
+
+#[test]
+fn planned_remote_endpoints_reject_never_routable_and_zero_port_targets() {
+    let endpoints = planned_remote_endpoints(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[
+            addr("127.0.0.1", 63000),
+            addr("169.254.1.2", 63000),
+            addr("0.0.0.0", 63000),
+            addr("224.0.0.1", 63000),
+            addr("198.51.100.30", 0),
+        ],
+        Some(&addr("198.51.100.20", 63000)),
+        false,
+    )
+    .expect("invalid candidates should be discarded, not fail the offer");
+
+    assert_eq!(
+        endpoints.remotes,
+        vec![
+            "198.51.100.20:63000"
+                .parse::<std::net::SocketAddr>()
+                .unwrap(),
+        ]
+    );
+}
+
+#[test]
+fn planned_remote_endpoints_reject_ipv4_mapped_private_bypass() {
+    let endpoints = planned_remote_endpoints(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[addr("::ffff:10.0.0.5", 63000)],
+        Some(&addr("::ffff:127.0.0.1", 63000)),
+        false,
+    )
+    .expect("invalid mapped candidates should be discarded");
+
+    assert!(endpoints.remotes.is_empty());
+}
+
+#[test]
+fn planned_remote_endpoints_cap_peer_supplied_targets() {
+    let candidates = (1..=40)
+        .map(|last| addr(&format!("198.51.100.{last}"), 63000))
+        .collect::<Vec<_>>();
+    let endpoints = planned_remote_endpoints(
+        &[],
+        Some(&addr("203.0.113.10", 62000)),
+        &candidates,
+        None,
+        false,
+    )
+    .expect("oversized candidate lists should be bounded");
+
+    assert_eq!(endpoints.remotes.len(), 8);
+}
+
+#[test]
+fn private_reflexive_target_requires_a_lan_vantage_point() {
+    let public_vantage = planned_remote_endpoints(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[],
+        Some(&addr("10.0.0.5", 63000)),
+        false,
+    )
+    .expect("off-LAN reflexive address should be discarded");
+    assert!(public_vantage.remotes.is_empty());
+
+    let lan_vantage = planned_remote_endpoints(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("192.168.1.11", 62000)),
+        &[],
+        Some(&addr("192.168.1.20", 63000)),
+        false,
+    )
+    .expect("same-LAN reflexive address should remain usable");
+    assert_eq!(
+        lan_vantage.remotes,
+        vec![
+            "192.168.1.20:63000"
+                .parse::<std::net::SocketAddr>()
+                .unwrap(),
+        ]
+    );
+}
+
+include!("tests/freshness.rs");

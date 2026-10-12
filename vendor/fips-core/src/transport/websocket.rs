@@ -1,0 +1,721 @@
+//! Binary WebSocket physical transport.
+//!
+//! One binary WebSocket message carries one FIPS physical record. A tiny
+//! nonce-bound key-hint exchange precedes Noise IK when a client has only a
+//! seed URL; the hint is untrusted routing metadata and never bypasses FIPS
+//! identity authentication or ACLs.
+
+use super::tcp::stream::validate_stream_record;
+use super::{
+    ConnectionState, DiscoveredPeer, PacketBuffer, PacketTx, ReceivedPacket, Transport,
+    TransportAddr, TransportError, TransportId, TransportState, TransportType,
+};
+use crate::Identity;
+use crate::config::WebSocketConfig;
+use crate::dataplane::validate_direct_fsp_transport_fragment;
+use crate::discovery::local_udp::LocalKeyHint;
+use futures::{SinkExt, StreamExt};
+use rand::RngExt;
+use secp256k1::XOnlyPublicKey;
+use serde::Serialize;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{Semaphore, mpsc, oneshot, watch};
+use tokio::task::JoinHandle;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig as TungsteniteConfig;
+use tokio_tungstenite::tungstenite::{Bytes, Message};
+use tokio_tungstenite::{
+    WebSocketStream, accept_hdr_async_with_config, connect_async_tls_with_config,
+};
+use tracing::{debug, info};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Inbound,
+    Outbound,
+}
+
+struct Connection {
+    generation: u64,
+    pending_hint: Option<XOnlyPublicKey>,
+    tx: mpsc::Sender<Vec<u8>>,
+    // Dropping the pool entry also interrupts a writer blocked below its queue.
+    _close: oneshot::Sender<()>,
+}
+
+type ConnectionPool = Arc<StdMutex<HashMap<TransportAddr, Connection>>>;
+struct ConnectionStatus {
+    generation: u64,
+    state: ConnectionState,
+    _cancel: Option<oneshot::Sender<()>>,
+}
+
+type ConnectionStates = Arc<StdMutex<HashMap<TransportAddr, ConnectionStatus>>>;
+
+#[derive(Debug, Default)]
+struct WebSocketStats {
+    connections_opened: AtomicU64,
+    connections_closed: AtomicU64,
+    connections_rejected: AtomicU64,
+    reconnect_attempts: AtomicU64,
+    frames_sent: AtomicU64,
+    frames_received: AtomicU64,
+    bytes_sent: AtomicU64,
+    bytes_received: AtomicU64,
+    invalid_frames: AtomicU64,
+    send_queue_full: AtomicU64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WebSocketStatsSnapshot {
+    pub connections_opened: u64,
+    pub connections_closed: u64,
+    pub connections_rejected: u64,
+    pub reconnect_attempts: u64,
+    pub frames_sent: u64,
+    pub frames_received: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub invalid_frames: u64,
+    pub send_queue_full: u64,
+}
+
+impl WebSocketStats {
+    fn snapshot(&self) -> WebSocketStatsSnapshot {
+        let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
+        WebSocketStatsSnapshot {
+            connections_opened: load(&self.connections_opened),
+            connections_closed: load(&self.connections_closed),
+            connections_rejected: load(&self.connections_rejected),
+            reconnect_attempts: load(&self.reconnect_attempts),
+            frames_sent: load(&self.frames_sent),
+            frames_received: load(&self.frames_received),
+            bytes_sent: load(&self.bytes_sent),
+            bytes_received: load(&self.bytes_received),
+            invalid_frames: load(&self.invalid_frames),
+            send_queue_full: load(&self.send_queue_full),
+        }
+    }
+}
+
+struct ConnectionStatsGuard(Arc<WebSocketStats>);
+
+impl Drop for ConnectionStatsGuard {
+    fn drop(&mut self) {
+        self.0.connections_closed.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[derive(Clone)]
+struct Runtime {
+    transport_id: TransportId,
+    config: WebSocketConfig,
+    local_pubkey: [u8; 32],
+    packet_tx: PacketTx,
+    pool: ConnectionPool,
+    states: ConnectionStates,
+    running: Arc<AtomicBool>,
+    total_slots: Arc<Semaphore>,
+    inbound_slots: Arc<Semaphore>,
+    generation: Arc<AtomicU64>,
+    // Only explicit network changes advance this value; ordinary closes retain backoff.
+    network_rebind_generation: watch::Sender<u64>,
+    stats: Arc<WebSocketStats>,
+    tasks: Arc<StdMutex<Vec<JoinHandle<()>>>>,
+}
+
+impl Runtime {
+    // Pool operations never await or perform I/O. A synchronous lock lets node
+    // eviction close the current stream before a replacement can register.
+    fn connections(&self) -> MutexGuard<'_, HashMap<TransportAddr, Connection>> {
+        self.pool.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
+        let mut tasks = self.tasks.lock().unwrap_or_else(|error| error.into_inner());
+        // Registration and the running check share the shutdown drain's lock.
+        // A rejected future releases its socket and permits without being polled.
+        if !self.running.load(Ordering::Acquire) {
+            return;
+        }
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(tokio::spawn(future));
+    }
+
+    fn websocket_config(&self) -> TungsteniteConfig {
+        let mut config = TungsteniteConfig::default();
+        // Keep each read (including WouldBlock) bounded after a large frame.
+        config.read_buffer_size = 16 * 1024;
+        config.max_message_size = Some(self.config.max_frame_bytes());
+        config.max_frame_size = Some(self.config.max_frame_bytes());
+        config.max_write_buffer_size = self.config.max_frame_bytes().saturating_mul(2);
+        config.write_buffer_size = 0;
+        config
+    }
+
+    fn next_generation(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn statuses(&self) -> MutexGuard<'_, HashMap<TransportAddr, ConnectionStatus>> {
+        self.states
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn remove_connection(&self, addr: &TransportAddr, generation: Option<u64>) {
+        let mut pool = self.connections();
+        if generation.is_none_or(|generation| {
+            pool.get(addr)
+                .is_some_and(|connection| connection.generation == generation)
+        }) {
+            pool.remove(addr);
+            self.states
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(addr);
+        }
+    }
+}
+
+/// Generic WebSocket physical transport.
+pub struct WebSocketTransport {
+    transport_id: TransportId,
+    name: Option<String>,
+    config: WebSocketConfig,
+    state: TransportState,
+    local_addr: Option<SocketAddr>,
+    runtime: Runtime,
+    // Keep join ownership if a caller cancels stop_async before it finishes.
+    draining_tasks: Vec<JoinHandle<()>>,
+}
+
+impl WebSocketTransport {
+    pub fn new(
+        transport_id: TransportId,
+        name: Option<String>,
+        config: WebSocketConfig,
+        packet_tx: PacketTx,
+        identity: &Identity,
+    ) -> Self {
+        let max_connections = config.max_connections();
+        let max_inbound = config.max_inbound_connections();
+        let (network_rebind_generation, _) = watch::channel(0);
+        let runtime = Runtime {
+            transport_id,
+            config: config.clone(),
+            local_pubkey: identity.pubkey().serialize(),
+            packet_tx,
+            pool: Arc::new(StdMutex::new(HashMap::new())),
+            states: Arc::new(StdMutex::new(HashMap::new())),
+            running: Arc::new(AtomicBool::new(false)),
+            total_slots: Arc::new(Semaphore::new(max_connections)),
+            inbound_slots: Arc::new(Semaphore::new(max_inbound)),
+            generation: Arc::new(AtomicU64::new(1)),
+            network_rebind_generation,
+            stats: Arc::new(WebSocketStats::default()),
+            tasks: Arc::new(StdMutex::new(Vec::new())),
+        };
+        Self {
+            transport_id,
+            name,
+            config,
+            state: TransportState::Configured,
+            local_addr: None,
+            runtime,
+            draining_tasks: Vec::new(),
+        }
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        self.local_addr
+    }
+
+    pub fn public_url(&self) -> Option<&str> {
+        self.config.public_url.as_deref()
+    }
+
+    pub(crate) fn is_configured_seed_addr(&self, addr: &TransportAddr) -> bool {
+        addr.as_str().is_some_and(|candidate| {
+            self.config
+                .seed_urls
+                .iter()
+                .any(|seed_url| seed_url == candidate)
+        })
+    }
+
+    pub(crate) fn is_configured_adjacency(
+        &self,
+        addr: &TransportAddr,
+        handshake_is_initiator: bool,
+    ) -> bool {
+        if self.is_configured_seed_addr(addr) {
+            // The URL identifies the operator-configured physical dial even
+            // when simultaneous FIPS initiation makes this node the responder.
+            // Handshake role is not transport direction.
+            true
+        } else if !handshake_is_initiator {
+            // Accepting clients on a configured listener is an explicit
+            // operator choice; every promoted client has already completed
+            // the authenticated FIPS handshake.
+            self.config.bind_addr.is_some()
+        } else {
+            false
+        }
+    }
+
+    pub fn stats(&self) -> WebSocketStatsSnapshot {
+        self.runtime.stats.snapshot()
+    }
+
+    pub async fn start_async(&mut self) -> Result<(), TransportError> {
+        if !self.state.can_start() {
+            return Err(TransportError::AlreadyStarted);
+        }
+        self.config
+            .validate()
+            .map_err(TransportError::StartFailed)?;
+        self.state = TransportState::Starting;
+        self.runtime.running.store(true, Ordering::Release);
+
+        if let Some(bind_addr) = self.config.bind_addr.as_deref() {
+            let bind_addr = bind_addr
+                .parse::<SocketAddr>()
+                .map_err(|error| TransportError::StartFailed(error.to_string()))?;
+            let listener = TcpListener::bind(bind_addr)
+                .await
+                .map_err(|error| TransportError::bind_failed(bind_addr, error))?;
+            self.local_addr = Some(
+                listener
+                    .local_addr()
+                    .map_err(|error| TransportError::StartFailed(error.to_string()))?,
+            );
+            self.runtime
+                .spawn(run_accept_loop(self.runtime.clone(), listener));
+        }
+
+        for seed_url in self.config.seed_urls.clone() {
+            let addr = TransportAddr::from_string(&seed_url);
+            self.runtime
+                .spawn(run_seed_dialer(self.runtime.clone(), addr));
+        }
+
+        self.state = TransportState::Up;
+        info!(
+            transport_id = %self.transport_id,
+            local_addr = ?self.local_addr,
+            seeds = self.config.seed_urls.len(),
+            "WebSocket transport started"
+        );
+        Ok(())
+    }
+
+    pub async fn stop_async(&mut self) -> Result<(), TransportError> {
+        if !self.state.is_operational() {
+            return Err(TransportError::NotStarted);
+        }
+        self.runtime.running.store(false, Ordering::Release);
+        let tasks = {
+            let mut tasks = self
+                .runtime
+                .tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            std::mem::take(&mut *tasks)
+        };
+        self.draining_tasks.extend(tasks);
+        for task in &self.draining_tasks {
+            task.abort();
+        }
+        while let Some(task) = self.draining_tasks.last_mut() {
+            let _ = task.await;
+            self.draining_tasks.pop();
+        }
+        self.runtime.connections().clear();
+        self.runtime
+            .states
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.local_addr = None;
+        self.state = TransportState::Down;
+        Ok(())
+    }
+
+    pub async fn send_async(
+        &self,
+        addr: &TransportAddr,
+        data: &[u8],
+    ) -> Result<usize, TransportError> {
+        if !self.state.is_operational() {
+            return Err(TransportError::NotStarted);
+        }
+        if data.len() > self.config.max_frame_bytes() {
+            return Err(TransportError::MtuExceeded {
+                packet_size: data.len(),
+                mtu: self.config.max_frame_bytes().min(u16::MAX as usize) as u16,
+            });
+        }
+        validate_websocket_record(data).map_err(TransportError::SendFailed)?;
+        let tx = self
+            .runtime
+            .connections()
+            .get(addr)
+            .map(|connection| connection.tx.clone())
+            .ok_or(TransportError::NotStarted)?;
+        tx.try_send(data.to_vec()).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => {
+                self.runtime
+                    .stats
+                    .send_queue_full
+                    .fetch_add(1, Ordering::Relaxed);
+                TransportError::SendFailed("WebSocket send queue full".into())
+            }
+            mpsc::error::TrySendError::Closed(_) => {
+                TransportError::SendFailed("WebSocket connection closed".into())
+            }
+        })?;
+        Ok(data.len())
+    }
+
+    pub async fn connect_async(&self, addr: &TransportAddr) -> Result<(), TransportError> {
+        if !self.state.is_operational() {
+            return Err(TransportError::NotStarted);
+        }
+        let raw = addr
+            .as_str()
+            .ok_or_else(|| TransportError::InvalidAddress(addr.to_string()))?;
+        let candidate = WebSocketConfig {
+            seed_urls: vec![raw.to_owned()],
+            ..self.config.clone()
+        };
+        candidate
+            .validate()
+            .map_err(TransportError::InvalidAddress)?;
+        let attempt = match self.runtime.prepare_dial(addr) {
+            Ok(attempt) => attempt,
+            Err(TransportError::AlreadyStarted) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        self.runtime.spawn(run_one_shot_dial(
+            self.runtime.clone(),
+            addr.clone(),
+            attempt,
+        ));
+        Ok(())
+    }
+
+    pub fn connection_state_sync(&self, addr: &TransportAddr) -> ConnectionState {
+        if let Ok(pool) = self.runtime.pool.try_lock()
+            && pool.contains_key(addr)
+        {
+            return ConnectionState::Connected;
+        }
+        self.runtime
+            .states
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(addr)
+            .map(|status| status.state.clone())
+            .unwrap_or(ConnectionState::None)
+    }
+
+    pub async fn close_connection_async(&self, addr: &TransportAddr) {
+        self.runtime.remove_connection(addr, None);
+    }
+
+    /// Close the current connection from synchronous node-lifecycle paths.
+    pub fn close_connection_detached(&self, addr: &TransportAddr) {
+        self.runtime.remove_connection(addr, None);
+    }
+
+    /// Replace TCP-backed WebSocket streams after a confirmed network change.
+    ///
+    /// An established stream can remain locally "connected" long after its
+    /// source address or NAT mapping vanished. Dropping the connection senders
+    /// closes stale streams and wakes the existing seed dialers without
+    /// releasing and racing to reacquire a configured listener socket.
+    pub(crate) async fn restart_after_network_change(&mut self) -> Result<bool, TransportError> {
+        if !(self.state.is_operational() || self.state.can_start()) {
+            return Ok(false);
+        }
+        if self.state.is_operational() {
+            // Serialize the generation cutover with outbound pool insertion.
+            let mut pool = self.runtime.connections();
+            self.runtime
+                .network_rebind_generation
+                .send_modify(|generation| *generation = generation.wrapping_add(1));
+            pool.clear();
+            self.runtime
+                .states
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+            drop(pool);
+            return Ok(true);
+        }
+        let previous_state = self.state;
+        let previous_local_addr = self.local_addr;
+        match self.start_async().await {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                self.runtime.running.store(false, Ordering::Release);
+                self.local_addr = previous_local_addr;
+                self.state = previous_state;
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) async fn rollback_network_change_start(
+        &mut self,
+        previous_state: TransportState,
+    ) -> Result<(), TransportError> {
+        if self.state.is_operational() {
+            self.stop_async().await?;
+        }
+        self.state = previous_state;
+        Ok(())
+    }
+}
+
+impl Transport for WebSocketTransport {
+    fn transport_id(&self) -> TransportId {
+        self.transport_id
+    }
+
+    fn transport_type(&self) -> &TransportType {
+        &TransportType::WEBSOCKET
+    }
+
+    fn state(&self) -> TransportState {
+        self.state
+    }
+
+    fn mtu(&self) -> u16 {
+        self.config.mtu()
+    }
+
+    fn start(&mut self) -> Result<(), TransportError> {
+        Err(TransportError::NotSupported(
+            "use start_async() for WebSocket transport".into(),
+        ))
+    }
+
+    fn stop(&mut self) -> Result<(), TransportError> {
+        Err(TransportError::NotSupported(
+            "use stop_async() for WebSocket transport".into(),
+        ))
+    }
+
+    fn send(&self, _addr: &TransportAddr, _data: &[u8]) -> Result<(), TransportError> {
+        Err(TransportError::NotSupported(
+            "use send_async() for WebSocket transport".into(),
+        ))
+    }
+
+    fn discover(&self) -> Result<Vec<DiscoveredPeer>, TransportError> {
+        // At most one unconsumed hint belongs to each live connection. Closing
+        // or replacing that connection retires its discovery metadata too.
+        Ok(self
+            .runtime
+            .connections()
+            .iter_mut()
+            .filter_map(|(addr, connection)| {
+                connection.pending_hint.take().map(|pubkey| {
+                    DiscoveredPeer::with_hint(self.transport_id, addr.clone(), pubkey)
+                })
+            })
+            .collect())
+    }
+
+    fn auto_connect(&self) -> bool {
+        true
+    }
+
+    fn accept_connections(&self) -> bool {
+        self.config.accept_connections()
+    }
+}
+
+async fn run_accept_loop(runtime: Runtime, listener: TcpListener) {
+    while runtime.running.load(Ordering::Acquire) {
+        let Ok((stream, peer_addr)) = listener.accept().await else {
+            continue;
+        };
+        let Ok(inbound_permit) = runtime.inbound_slots.clone().try_acquire_owned() else {
+            runtime
+                .stats
+                .connections_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            continue;
+        };
+        let Ok(total_permit) = runtime.total_slots.clone().try_acquire_owned() else {
+            runtime
+                .stats
+                .connections_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            continue;
+        };
+        let accepted_runtime = runtime.clone();
+        let accepted_network_rebind_generation = *runtime.network_rebind_generation.borrow();
+        runtime.spawn(async move {
+            let _inbound_permit = inbound_permit;
+            let _total_permit = total_permit;
+            if let Err(error) = accept_connection(
+                accepted_runtime,
+                stream,
+                peer_addr,
+                accepted_network_rebind_generation,
+            )
+            .await
+            {
+                debug!(%peer_addr, %error, "WebSocket inbound connection ended");
+            }
+        });
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn accept_connection(
+    runtime: Runtime,
+    stream: TcpStream,
+    peer_addr: SocketAddr,
+    network_rebind_generation: u64,
+) -> Result<(), TransportError> {
+    let path = runtime.config.path().to_owned();
+    let callback = move |request: &Request, response: Response| {
+        if request.uri().path() == path {
+            Ok(response)
+        } else {
+            let mut error = ErrorResponse::new(Some("not found".into()));
+            *error.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::NOT_FOUND;
+            Err(error)
+        }
+    };
+    let websocket = tokio::time::timeout(
+        Duration::from_millis(runtime.config.connect_timeout_ms()),
+        accept_hdr_async_with_config(stream, callback, Some(runtime.websocket_config())),
+    )
+    .await
+    .map_err(|_| TransportError::Timeout)?
+    .map_err(|_| TransportError::ConnectionRefused)?;
+    let generation = runtime.next_generation();
+    let addr = TransportAddr::from_string(&format!("ws-peer://{peer_addr}/{generation}"));
+    run_connection(
+        runtime,
+        addr,
+        websocket,
+        generation,
+        Direction::Inbound,
+        false,
+        network_rebind_generation,
+    )
+    .await
+}
+
+async fn run_connection<S>(
+    runtime: Runtime,
+    addr: TransportAddr,
+    websocket: WebSocketStream<S>,
+    generation: u64,
+    direction: Direction,
+    request_key_hint: bool,
+    expected_network_rebind_generation: u64,
+) -> Result<(), TransportError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(runtime.config.max_send_queue());
+    let (close_tx, close_rx) = oneshot::channel();
+    {
+        let mut pool = runtime.connections();
+        // A handshake started on the previous underlay must not repopulate the cleared pool.
+        if *runtime.network_rebind_generation.borrow() != expected_network_rebind_generation {
+            return Err(TransportError::StartFailed(
+                "network changed during WebSocket handshake".into(),
+            ));
+        }
+        if pool.contains_key(&addr) {
+            return Err(TransportError::AlreadyStarted);
+        }
+        let mut statuses = runtime.statuses();
+        if direction == Direction::Outbound
+            && !statuses.get(&addr).is_some_and(|status| {
+                status.generation == generation && status.state == ConnectionState::Connecting
+            })
+        {
+            return Err(TransportError::StartFailed(
+                "WebSocket dial retired during handshake".into(),
+            ));
+        }
+        pool.insert(
+            addr.clone(),
+            Connection {
+                generation,
+                pending_hint: None,
+                tx,
+                _close: close_tx,
+            },
+        );
+        statuses.insert(
+            addr.clone(),
+            ConnectionStatus {
+                generation,
+                state: ConnectionState::Connected,
+                _cancel: None,
+            },
+        );
+    }
+    runtime
+        .stats
+        .connections_opened
+        .fetch_add(1, Ordering::Relaxed);
+    // Cancellation and early send failures also close the physical connection.
+    let _stats_guard = ConnectionStatsGuard(runtime.stats.clone());
+
+    let outcome = tokio::select! {
+        biased;
+        _ = close_rx => Ok(()),
+        result = connection::run(&runtime, &addr, websocket, rx, request_key_hint, generation) => result,
+    };
+    runtime.remove_connection(&addr, Some(generation));
+    debug!(
+        transport_id = %runtime.transport_id,
+        remote_addr = %addr,
+        ?direction,
+        "WebSocket physical connection closed"
+    );
+    outcome
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn validate_websocket_record(data: &[u8]) -> Result<(), String> {
+    if validate_direct_fsp_transport_fragment(data) {
+        return Ok(());
+    }
+    validate_stream_record(data).map_err(|error| format!("invalid FIPS physical record: {error}"))
+}
+
+mod connection;
+mod dial;
+use dial::{run_one_shot_dial, run_seed_dialer};
+mod tls;
+
+#[cfg(test)]
+mod tests;

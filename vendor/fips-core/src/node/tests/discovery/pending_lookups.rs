@@ -1,0 +1,689 @@
+use super::*;
+
+mod recovery_permission;
+
+#[tokio::test]
+async fn endpoint_route_queries_keep_bounded_discovery_without_queued_application_data() {
+    let mut config = Config::new();
+    config.node.discovery.attempt_timeouts_secs = vec![1, 1];
+    let mut node = Node::new(config).unwrap();
+    let destination = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let target = *destination.node_addr();
+    let now = Node::now_ms();
+    for _ in 0..3 {
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        node.handle_endpoint_control(crate::node::NodeEndpointControlCommand::ResolveNextHop {
+            destination,
+            previous_hop: None,
+            response_tx,
+        })
+        .await;
+        assert!(response_rx.await.unwrap().is_none());
+    }
+    assert!(
+        node.is_explicit_target_identity(&target),
+        "need the public key to verify discovery"
+    );
+    assert!(node.pending_lookups.contains_key(&target));
+    assert_eq!(
+        node.pending_lookup_deadline_ms(),
+        Some(node.pending_lookups.get(&target).unwrap().last_sent_ms + 1_000),
+        "a route query without a known carrier still schedules its bounded retry"
+    );
+    assert_eq!(node.stats().discovery.req_deduplicated, 2);
+    assert!(!node.pending_session_traffic.has_traffic_for(&target));
+    assert!(node.sessions.get(&target).is_none());
+    node.check_pending_lookups(now + 1_100).await;
+    node.check_pending_lookups(now + 2_200).await;
+    assert!(
+        !node.pending_lookups.contains_key(&target),
+        "queries retain the existing finite retry ladder"
+    );
+    assert_eq!(node.pending_lookup_deadline_ms(), None);
+}
+
+#[test]
+fn pending_discovery_lookup_queue_owns_dedup_and_capacity() {
+    let mut lookups = crate::node::handlers::discovery::PendingDiscoveryLookups::default();
+    let first = NodeAddr::from_bytes([1u8; 16]);
+    let second = NodeAddr::from_bytes([2u8; 16]);
+
+    assert!(lookups.admission_for(&first, 1).accepted());
+    assert!(lookups.insert_new(first, 123).is_none());
+    assert_eq!(lookups.len(), 1);
+    assert_eq!(
+        lookups.get(&first).map(|lookup| lookup.initiated_ms),
+        Some(123)
+    );
+    assert!(!lookups.is_path_recovery(&first));
+    assert!(lookups.mark_path_recovery(&first));
+    assert!(lookups.is_path_recovery(&first));
+    assert!(!lookups.mark_path_recovery(&first));
+
+    assert!(lookups.admission_for(&first, 1).deduplicated());
+    assert!(lookups.admission_for(&second, 1).queue_full());
+    assert!(lookups.remove(&first).is_some());
+    assert!(lookups.admission_for(&second, 1).accepted());
+}
+
+/// A zero-carrier probe without queued traffic remains immediately retryable.
+#[tokio::test]
+async fn reply_learned_zero_peer_lookup_does_not_backoff_destination() {
+    let mut node = make_node();
+    node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    let target = make_node_addr(0x45);
+
+    let baseline_initiated = node.stats().discovery.req_initiated;
+    node.maybe_initiate_lookup(&target).await;
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 1,
+        "the first attempt should still construct one lookup request"
+    );
+    assert!(
+        !node.pending_lookups.contains_key(&target),
+        "a zero-carrier lookup must not remain pending"
+    );
+    assert_eq!(node.pending_lookup_deadline_ms(), None);
+    assert!(
+        !node.discovery_backoff.is_suppressed(&target),
+        "no lookup was put on the wire, so the destination must stay retryable"
+    );
+
+    node.maybe_initiate_lookup(&target).await;
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 2,
+        "a later retry should not be suppressed by zero-carrier startup"
+    );
+}
+
+/// First-contact retries retain the default 1/2/4/8s ladder, then drain queued
+/// traffic, emit ICMPv6 unreachable, and suppress immediate offline retries.
+#[tokio::test]
+async fn test_check_pending_lookups_default_sequence_unreachable() {
+    for bloom_missing in [true, false] {
+        queued_first_contact_uses_bounded_lookup_ladder(bloom_missing).await;
+    }
+}
+
+async fn queued_first_contact_uses_bounded_lookup_ladder(bloom_missing: bool) {
+    use crate::bloom::BloomFilter;
+    use crate::peer::ActivePeer;
+    use crate::transport::LinkId;
+
+    let mut node = make_node();
+
+    // Default attempt_timeouts_secs is [1, 2, 4, 8]. Confirm so the test
+    // cannot silently drift if the default changes.
+    assert_eq!(
+        node.config.node.discovery.attempt_timeouts_secs,
+        vec![1, 2, 4, 8],
+        "test pins the [1,2,4,8] default; update the test if the default changes"
+    );
+
+    // Inject a TUN sender so `send_icmpv6_dest_unreachable` is observable.
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+    node.tun_tx = Some(tun_tx);
+
+    // Build a target identity (the unreachable destination).
+    let target_identity = Identity::generate();
+    let target_addr = *target_identity.node_addr();
+
+    // Build a tree-peer that:
+    //   - may not yet advertise the target in its inbound Bloom filter,
+    //   - declares us as its parent (so `is_tree_peer` returns true).
+    // The peer has no Noise session, so dataplane FMP-link output will
+    // fail at the wire-send step — but `initiate_lookup` already incremented
+    // `req_initiated` and the failure is logged at `debug!`. The state-
+    // machine bookkeeping we want to test runs to completion either way.
+    let peer_identity_full = Identity::generate();
+    let peer_addr = *peer_identity_full.node_addr();
+    let peer_identity = crate::PeerIdentity::from_pubkey(peer_identity_full.pubkey());
+    let mut peer = ActivePeer::new(peer_identity, LinkId::new(1), 0);
+    let mut bloom = BloomFilter::new();
+    if !bloom_missing {
+        bloom.insert(&target_addr);
+    }
+    peer.update_filter(bloom, 1, 0);
+    node.peers.insert(peer_addr, peer);
+
+    // Make the peer a tree-peer: install a peer declaration that names us
+    // as its parent. `is_tree_peer` checks both directions — the child
+    // direction (peer.parent_id == self.node_addr) is what we exercise.
+    let our_addr = *node.node_addr();
+    let peer_decl = crate::tree::ParentDeclaration::new(peer_addr, our_addr, 1, 0);
+    let peer_coords = TreeCoordinate::from_addrs(vec![peer_addr, our_addr]).unwrap();
+    node.tree_state_mut().update_peer(peer_decl, peer_coords);
+    assert!(node.is_tree_peer(&peer_addr), "peer must be a tree peer");
+
+    // Queue an IPv6 packet for the target so the final-timeout drop +
+    // ICMPv6 emission can be observed. Build a minimal valid IPv6 header
+    // with a non-multicast, non-unspecified source so
+    // `should_send_icmp_error` returns true.
+    let mut ipv6_pkt = vec![0u8; 40];
+    ipv6_pkt[0] = 0x60; // version 6
+    ipv6_pkt[6] = 17; // next_header = UDP (not ICMPv6)
+    ipv6_pkt[7] = 64; // hop limit
+    // src = fd00::1 (non-multicast, non-unspecified)
+    ipv6_pkt[8] = 0xfd;
+    ipv6_pkt[23] = 0x01;
+    // dst = target's IPv6 representation (not strictly required, just non-multicast)
+    let target_ipv6 = crate::FipsAddress::from_node_addr(&target_addr).to_ipv6();
+    ipv6_pkt[24..40].copy_from_slice(&target_ipv6.octets());
+    node.register_identity(target_addr, target_identity.pubkey_full());
+    node.handle_dataplane_deferred_tun_packet(ipv6_pkt).await;
+    assert!(node.sessions.get(&target_addr).is_none());
+    assert!(node.pending_session_traffic.has_traffic_for(&target_addr));
+    assert!(!node.discovery_backoff.is_suppressed(&target_addr));
+
+    // No route or carrier is ready yet. The first queued packet must still
+    // own a bounded retry, without requiring another application send.
+    let entry = node
+        .pending_lookups
+        .get_mut(&target_addr)
+        .expect("queued first contact must retain lookup ownership before Bloom/carrier readiness");
+    entry.initiated_ms = 0;
+    entry.last_sent_ms = 0;
+
+    let baseline_initiated = node.stats().discovery.req_initiated;
+    let baseline_timed_out = node.stats().discovery.resp_timed_out;
+
+    // --- t = 1100ms: first retry deadline (1*1000) ---
+    node.check_pending_lookups(1100).await;
+    {
+        let entry = node
+            .pending_lookups
+            .get(&target_addr)
+            .expect("still pending");
+        assert_eq!(entry.attempt, 2, "after retry #1, attempt should be 2");
+        assert_eq!(entry.last_sent_ms, 1100);
+    }
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 1,
+        "retry #1 must invoke initiate_lookup exactly once"
+    );
+
+    // --- t = 3100ms: second retry deadline (cumulative 1+2 = 3s) ---
+    node.check_pending_lookups(3100).await;
+    {
+        let entry = node
+            .pending_lookups
+            .get(&target_addr)
+            .expect("still pending");
+        assert_eq!(entry.attempt, 3, "after retry #2, attempt should be 3");
+        assert_eq!(entry.last_sent_ms, 3100);
+    }
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 2,
+        "retry #2 must invoke initiate_lookup exactly once more"
+    );
+
+    // --- t = 7100ms: third retry deadline (cumulative 1+2+4 = 7s) ---
+    node.check_pending_lookups(7100).await;
+    {
+        let entry = node
+            .pending_lookups
+            .get(&target_addr)
+            .expect("still pending");
+        assert_eq!(entry.attempt, 4, "after retry #3, attempt should be 4");
+        assert_eq!(entry.last_sent_ms, 7100);
+    }
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 3,
+        "retry #3 must invoke initiate_lookup exactly once more"
+    );
+
+    // --- Just-before-final: at t=15099ms the 8s window is not yet reached ---
+    node.check_pending_lookups(15_099).await;
+    assert!(
+        node.pending_lookups.contains_key(&target_addr),
+        "8s window not yet expired: pending_lookup must persist"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 3,
+        "no new attempt before final deadline"
+    );
+    assert_eq!(
+        node.stats().discovery.resp_timed_out,
+        baseline_timed_out,
+        "no timeout before final deadline"
+    );
+
+    // --- t = 15100ms: final deadline (cumulative 1+2+4+8 = 15s) ---
+    // Drain any TUN frames that may have leaked from earlier steps so the
+    // post-final-timeout drain observes only the unreachable-emission output.
+    while tun_rx.try_recv_packet().is_ok() {}
+
+    node.check_pending_lookups(15_100).await;
+
+    // Pending lookup is dropped.
+    assert!(
+        !node.pending_lookups.contains_key(&target_addr),
+        "final timeout must remove the pending_lookups entry"
+    );
+    // resp_timed_out counter ticked.
+    assert_eq!(
+        node.stats().discovery.resp_timed_out,
+        baseline_timed_out + 1,
+        "final timeout must increment discovery.resp_timed_out"
+    );
+    // No additional initiate_lookup on the timeout step.
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 3,
+        "the final-timeout step must NOT call initiate_lookup"
+    );
+    // Queued packet was drained from pending_tun_packets.
+    assert!(
+        node.pending_session_traffic
+            .tun_packets_for(&target_addr)
+            .is_none(),
+        "queued packets for the unreachable target must be drained"
+    );
+
+    // ICMPv6 Destination Unreachable was emitted to the TUN sender.
+    let icmp_frame = tun_rx
+        .try_recv_packet()
+        .map(|packet| packet.as_slice().to_vec())
+        .expect("ICMPv6 Destination Unreachable must be emitted on final timeout");
+    assert!(
+        icmp_frame.len() >= 48,
+        "ICMPv6 frame must be at least IPv6 header (40) + ICMPv6 header (8)"
+    );
+    assert_eq!(icmp_frame[0] >> 4, 6, "must be IPv6");
+    assert_eq!(icmp_frame[6], 58, "next_header must be IPPROTO_ICMPV6 (58)");
+    assert_eq!(icmp_frame[40], 1, "ICMPv6 type 1 = Destination Unreachable");
+
+    let baseline_suppressed = node.stats().discovery.req_backoff_suppressed;
+    node.maybe_initiate_lookup(&target_addr).await;
+    assert_eq!(
+        node.stats().discovery.req_backoff_suppressed,
+        baseline_suppressed + 1,
+        "an immediately repeated lookup for the same offline target must be backoff-suppressed"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 3,
+        "backoff suppression must not send another fresh LookupRequest"
+    );
+    assert!(
+        !node.pending_lookups.contains_key(&target_addr),
+        "backoff suppression must not re-open the pending lookup"
+    );
+}
+
+#[tokio::test]
+async fn lookup_timeout_preserves_endpoint_data_for_fsp_responder_awaiting_msg3() {
+    use crate::node::handlers::discovery::PendingLookup;
+    use crate::node::session::{EndToEndState, SessionEntry};
+
+    let mut node = make_node();
+    let target = Identity::generate();
+    let target_addr = *target.node_addr();
+    let responder = crate::noise::HandshakeState::new_xk_responder(node.identity().keypair());
+    node.sessions.insert(
+        target_addr,
+        SessionEntry::new(
+            target_addr,
+            node.identity().pubkey_full(),
+            EndToEndState::AwaitingMsg3(responder),
+            1_000,
+            false,
+        ),
+    );
+    node.pending_session_traffic
+        .push_endpoint_data_batch_with_enqueued_at_ms(
+            target_addr,
+            vec![
+                crate::node::EndpointDataPayload::from_service_datagram(
+                    7_370,
+                    7_370,
+                    b"tcp-syn".to_vec(),
+                )
+                .expect("pending service datagram"),
+            ],
+            usize::MAX,
+            usize::MAX,
+            1_000,
+        );
+    let mut lookup = PendingLookup::new(0);
+    lookup.attempt = node.config.node.discovery.attempt_timeouts_secs.len() as u8;
+    node.pending_lookups.insert(target_addr, lookup);
+    let baseline_timed_out = node.stats().discovery.resp_timed_out;
+
+    node.check_pending_lookups(8_000).await;
+
+    assert!(
+        !node.pending_lookups.contains_key(&target_addr),
+        "the exhausted lookup should stop while the FSP handshake continues"
+    );
+    assert_eq!(
+        node.pending_session_traffic
+            .endpoint_data_for(&target_addr)
+            .map(|queue| queue.len()),
+        Some(1),
+        "lookup exhaustion must not discard endpoint data owned by an active FSP handshake"
+    );
+    assert_eq!(
+        node.stats().discovery.resp_timed_out,
+        baseline_timed_out,
+        "an active authenticated-session handshake is not an unreachable destination"
+    );
+    assert!(
+        !node.discovery_backoff.is_suppressed(&target_addr),
+        "an active FSP handshake must not poison later discovery"
+    );
+}
+
+#[tokio::test]
+async fn established_session_keeps_path_recovery_lookup_and_endpoint_data() {
+    use crate::node::session::{EndToEndState, SessionEntry};
+    use crate::noise::HandshakeState;
+
+    let mut node = make_node();
+    let target = Identity::generate();
+    let target_addr = *target.node_addr();
+
+    let mut initiator =
+        HandshakeState::new_initiator(node.identity().keypair(), target.pubkey_full());
+    let mut responder = HandshakeState::new_responder(target.keypair());
+    initiator.set_local_epoch([1; 8]);
+    responder.set_local_epoch([2; 8]);
+    let msg1 = initiator.write_message_1().expect("session msg1");
+    responder.read_message_1(&msg1).expect("session read msg1");
+    let msg2 = responder.write_message_2().expect("session msg2");
+    initiator.read_message_2(&msg2).expect("session read msg2");
+    let session = initiator.into_session().expect("established session");
+    node.sessions.insert(
+        target_addr,
+        SessionEntry::new(
+            target_addr,
+            target.pubkey_full(),
+            EndToEndState::Established(session),
+            1_000,
+            false,
+        ),
+    );
+    // A PathBroken report can request recovery before new data is queued.
+    // Missing Bloom reachability is not an offline result for that session.
+    node.maybe_initiate_lookup(&target_addr).await;
+    assert!(!node.discovery_backoff.is_suppressed(&target_addr));
+    assert!(!node.pending_lookups.contains_key(&target_addr));
+    assert_eq!(node.stats().discovery.req_initiated, 0);
+
+    let unknown = *Identity::generate().node_addr();
+    node.maybe_initiate_lookup(&unknown).await;
+    assert!(node.discovery_backoff.is_suppressed(&unknown));
+    assert!(!node.pending_lookups.contains_key(&unknown));
+    assert_eq!(node.stats().discovery.req_initiated, 0);
+
+    node.pending_session_traffic
+        .push_endpoint_data_batch_with_enqueued_at_ms(
+            target_addr,
+            vec![
+                crate::node::EndpointDataPayload::from_service_datagram(
+                    7_370,
+                    7_370,
+                    b"tcp-syn".to_vec(),
+                )
+                .expect("pending service datagram"),
+            ],
+            usize::MAX,
+            usize::MAX,
+            1_000,
+        );
+    // Exercise lookup creation before Bloom reachability returns, not a
+    // manually inserted lookup that hides the recovery-admission boundary.
+    node.maybe_initiate_lookup(&target_addr).await;
+    assert!(!node.discovery_backoff.is_suppressed(&target_addr));
+    let lookup = node.pending_lookups.get_mut(&target_addr).expect(
+        "queued established traffic must retain a bounded lookup while reachability converges",
+    );
+    assert!(lookup.awaiting_first_request());
+    lookup.initiated_ms = 0;
+    lookup.last_sent_ms = 0;
+    let baseline_initiated = node.stats().discovery.req_initiated;
+    let baseline_timed_out = node.stats().discovery.resp_timed_out;
+
+    node.check_pending_lookups(1_100).await;
+
+    let lookup = node
+        .pending_lookups
+        .get(&target_addr)
+        .expect("established but broken path must keep recovery lookup active");
+    assert_eq!(lookup.attempt, 2, "path recovery must advance to retry two");
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 1,
+        "path recovery must send another lookup despite the established session"
+    );
+
+    let lookup = node
+        .pending_lookups
+        .get_mut(&target_addr)
+        .expect("recovery lookup");
+    lookup.attempt = node.config.node.discovery.attempt_timeouts_secs.len() as u8;
+    lookup.last_sent_ms = 0;
+    node.check_pending_lookups(8_000).await;
+
+    assert!(
+        !node.pending_lookups.contains_key(&target_addr),
+        "exhausted recovery lookup should leave the bounded pending set"
+    );
+    assert_eq!(
+        node.pending_session_traffic
+            .endpoint_data_for(&target_addr)
+            .map(|queue| queue.len()),
+        Some(1),
+        "an established FSP session must retain endpoint data after lookup exhaustion"
+    );
+    assert_eq!(
+        node.stats().discovery.resp_timed_out,
+        baseline_timed_out,
+        "an established authenticated session is not an unreachable destination"
+    );
+
+    let exhausted_requests = node.stats().discovery.req_initiated;
+    node.check_pending_lookups(20_000).await;
+    node.retry_pending_session_traffic().await;
+    assert!(!node.pending_lookups.contains_key(&target_addr));
+    assert_eq!(node.stats().discovery.req_initiated, exhausted_requests);
+
+    node.pending_session_traffic
+        .remove_destination(&target_addr);
+    for _ in 0..3 {
+        node.maybe_initiate_lookup(&target_addr).await;
+    }
+    assert!(
+        !node.pending_lookups.contains_key(&target_addr),
+        "an idle established session does not reserve a lookup without local demand"
+    );
+    assert!(!node.discovery_backoff.is_suppressed(&target_addr));
+    assert_eq!(node.stats().discovery.req_initiated, exhausted_requests);
+}
+
+#[test]
+fn first_contact_starts_when_reachability_arrives_before_retry_deadline() {
+    super::super::session::run_large_stack_async_test("first-contact-ready", || async {
+        use super::super::spanning_tree::{initiate_handshake, make_test_node};
+        let mut nodes = vec![make_test_node().await, make_test_node().await];
+        initiate_handshake(&mut nodes, 0, 1).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while nodes.iter().any(|n| n.node.peer_count() != 1) {
+                process_available_packets(&mut nodes).await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let source = *nodes[0].node.node_addr();
+        let transit = *nodes[1].node.node_addr();
+        let target = make_node_addr(0x91);
+        let declaration = crate::tree::ParentDeclaration::new(transit, source, 1, 0);
+        let coords = TreeCoordinate::from_addrs(vec![source, transit]).unwrap();
+        nodes[0].node.tree_state_mut().remove_peer(&transit);
+        assert!(
+            nodes[0]
+                .node
+                .tree_state_mut()
+                .update_peer(declaration, coords)
+        );
+        assert!(nodes[0].node.is_tree_peer(&transit));
+        nodes[0]
+            .node
+            .peers
+            .get_mut(&transit)
+            .unwrap()
+            .update_filter(crate::bloom::BloomFilter::new(), 0, Node::now_ms());
+        nodes[0]
+            .node
+            .pending_session_traffic
+            .push_tun_packet(target, vec![1], 4, 4, None);
+        nodes[0].node.maybe_initiate_lookup(&target).await;
+        let now = Node::now_ms();
+        let pending = nodes[0].node.pending_lookups.get_mut(&target).unwrap();
+        pending.attempt = 3;
+        pending.last_sent_ms = now;
+        assert!(
+            nodes[0]
+                .node
+                .pending_lookups
+                .last_origin_request_id(&target)
+                .is_none()
+        );
+        let mut filter = crate::bloom::BloomFilter::new();
+        filter.insert(&target);
+        let baseline = nodes[0].node.stats().discovery.req_initiated;
+        let announce = crate::protocol::FilterAnnounce::new(filter.clone(), 1);
+        let payload = announce.encode().unwrap();
+
+        // New reachability cannot revive an expired current attempt. Reuse
+        // this fixture's deterministic retry clock before the real wire check.
+        let timeout_ms = nodes[0].node.config.node.discovery.attempt_timeouts_secs[2] * 1000;
+        let expired = now - timeout_ms;
+        nodes[0]
+            .node
+            .pending_lookups
+            .get_mut(&target)
+            .unwrap()
+            .last_sent_ms = expired;
+        nodes[0]
+            .node
+            .handle_filter_announce(&transit, &payload[1..])
+            .await;
+        assert_eq!(nodes[0].node.stats().discovery.req_initiated, baseline);
+        let pending = nodes[0].node.pending_lookups.get(&target).unwrap();
+        assert!(
+            pending.awaiting_first_request(),
+            "expired attempt must remain unsent"
+        );
+        assert_eq!(pending.attempt, 3);
+        assert_eq!(pending.last_sent_ms, expired);
+        assert_eq!(
+            nodes[0].node.get_peer(&transit).unwrap().filter_sequence(),
+            1
+        );
+
+        // The same accepted filter is now a replay, even with a live attempt
+        // and queued demand. It cannot reach the wakeup helper.
+        nodes[0]
+            .node
+            .pending_lookups
+            .get_mut(&target)
+            .unwrap()
+            .last_sent_ms = now;
+        let stale = nodes[0].node.stats().bloom.stale;
+        nodes[0]
+            .node
+            .handle_filter_announce(&transit, &payload[1..])
+            .await;
+        assert_eq!(nodes[0].node.stats().bloom.stale, stale + 1);
+        assert_eq!(nodes[0].node.stats().discovery.req_initiated, baseline);
+        assert!(
+            nodes[0]
+                .node
+                .pending_lookups
+                .get(&target)
+                .unwrap()
+                .awaiting_first_request()
+        );
+
+        // Keep the original packet for the positive case, but remove local
+        // demand while a newer accepted filter arrives.
+        let held = nodes[0]
+            .node
+            .pending_session_traffic
+            .take_tun_packets(&target)
+            .unwrap();
+        assert!(
+            !nodes[0]
+                .node
+                .pending_session_traffic
+                .has_traffic_for(&target)
+        );
+        let announce = crate::protocol::FilterAnnounce::new(filter.clone(), 2);
+        nodes[0]
+            .node
+            .handle_filter_announce(&transit, &announce.encode().unwrap()[1..])
+            .await;
+        assert_eq!(
+            nodes[0].node.get_peer(&transit).unwrap().filter_sequence(),
+            2
+        );
+        assert_eq!(nodes[0].node.stats().discovery.req_initiated, baseline);
+        let pending = nodes[0].node.pending_lookups.get(&target).unwrap();
+        assert!(
+            pending.awaiting_first_request(),
+            "drained traffic must not wake a lookup"
+        );
+        assert_eq!(pending.attempt, 3);
+        assert_eq!(pending.last_sent_ms, now);
+        let (held, stale_packets) = held.into_fresh_packets(now, u64::MAX);
+        assert_eq!(stale_packets, 0);
+        nodes[0]
+            .node
+            .pending_session_traffic
+            .restore_tun_packets(target, held);
+
+        for sequence in [3, 4] {
+            let announce = crate::protocol::FilterAnnounce::new(filter.clone(), sequence);
+            nodes[0]
+                .node
+                .handle_filter_announce(&transit, &announce.encode().unwrap()[1..])
+                .await;
+            assert!(
+                nodes[0]
+                    .node
+                    .pending_lookups
+                    .last_origin_request_id(&target)
+                    .is_some(),
+                "new reachability must release the first lookup immediately"
+            );
+            assert_eq!(
+                nodes[0].node.stats().discovery.req_initiated,
+                baseline + 1,
+                "later filter updates must preserve the normal retry cadence"
+            );
+            let pending = nodes[0].node.pending_lookups.get(&target).unwrap();
+            assert_eq!(pending.attempt, 3);
+            assert_eq!(
+                pending.last_sent_ms, now,
+                "readiness must not extend the lookup deadline"
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while nodes[1].node.stats().discovery.req_received == 0 {
+                process_available_packets(&mut nodes).await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first lookup must cross the actual encrypted carrier");
+        cleanup_nodes(&mut nodes).await;
+    });
+}

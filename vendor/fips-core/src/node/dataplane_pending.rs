@@ -1,0 +1,540 @@
+impl Node {
+    fn take_deferred_pending_endpoint_payloads(
+        &mut self,
+        send_token: u64,
+    ) -> Vec<EndpointDataPayload> {
+        let mut unsent = Vec::new();
+        for batch in self.dataplane.take_deferred_endpoint_data_batches() {
+            if batch.send_token() == Some(send_token) {
+                let (_, mut payloads, _, _) = batch.into_parts();
+                unsent.append(&mut payloads);
+            } else {
+                self.requeue_deferred_endpoint_data_batch(batch);
+            }
+        }
+        unsent
+    }
+
+    fn requeue_deferred_dataplane_endpoint_batches(&mut self) {
+        // Deferred TUN ingress belongs to the normal control dispatcher. A
+        // cached endpoint/control send may run before that dispatcher reaches it.
+        for batch in self.dataplane.take_deferred_endpoint_data_batches() {
+            self.requeue_deferred_endpoint_data_batch(batch);
+        }
+    }
+
+    pub(in crate::node) fn sync_dataplane_fmp_owner(&mut self, node_addr: &NodeAddr) -> bool {
+        let Some(seed) = self.dataplane_fmp_owner_seed(node_addr) else {
+            self.mark_dataplane_direct_fsp_sources_dirty();
+            self.remove_dataplane_fmp_owner(node_addr);
+            self.refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(node_addr);
+            return false;
+        };
+
+        self.dataplane
+            .register_owner_if_missing(seed.owner, seed.config.clone());
+        let synced = self
+            .dataplane
+            .install_owner_fmp_session_routes(
+                seed.owner,
+                seed.config,
+                seed.keys,
+                seed.path,
+                seed.routes,
+            )
+            .is_ok();
+        if synced {
+            self.mark_dataplane_direct_fsp_sources_dirty();
+            self.refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(node_addr);
+            self.observe_dataplane_fmp_epoch(node_addr, "owner synchronized");
+        }
+        synced
+    }
+
+    fn observe_dataplane_fmp_epoch(&self, node_addr: &NodeAddr, reason: &'static str) {
+        if !tracing::enabled!(target: "fips_core::node::fmp_epoch", tracing::Level::DEBUG) {
+            return;
+        }
+        let Some(peer) = self.peers.get(node_addr) else {
+            return;
+        };
+        let send = self.dataplane.fmp_owner_send_context(node_addr);
+        debug!(
+            target: "fips_core::node::fmp_epoch",
+            node = %self.node_addr(),
+            peer = %node_addr,
+            reason,
+            generation = peer.session_generation(),
+            current_k_bit = peer.current_k_bit(),
+            our_index = ?peer.our_index(),
+            their_index = ?peer.their_index(),
+            pending_our_index = ?peer.pending_our_index(),
+            pending_their_index = ?peer.pending_their_index(),
+            previous_our_index = ?peer.previous_our_index(),
+            send_generation = ?send.as_ref().map(|context| context.generation()),
+            send_receiver_index = ?send.as_ref().map(|context| context.receiver_idx()),
+            send_flags = ?send.as_ref().map(|context| context.flags()),
+            pending_key_false = self.dataplane.fmp_owner_has_pending_receive_epoch(node_addr, false),
+            pending_key_true = self.dataplane.fmp_owner_has_pending_receive_epoch(node_addr, true),
+            "Observed FMP epoch ownership"
+        );
+    }
+
+    pub(in crate::node) fn remove_dataplane_fmp_owner(&mut self, node_addr: &NodeAddr) {
+        self.dataplane
+            .unregister_owner(OwnerId::fmp_node(*node_addr));
+    }
+
+    pub(in crate::node) fn dataplane_has_fmp_owner(&self, node_addr: &NodeAddr) -> bool {
+        self.dataplane.has_owner(OwnerId::fmp_node(*node_addr))
+    }
+
+    pub(in crate::node) fn refresh_dataplane_fsp_owner_routes(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> bool {
+        self.refresh_dataplane_fsp_owner_routes_via(node_addr, None)
+    }
+
+    pub(in crate::node) fn refresh_dataplane_fsp_owner_routes_retaining_current(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> bool {
+        let current_next_hop = self
+            .dataplane
+            .fsp_owner_next_hop(node_addr)
+            .filter(|next_hop| self.dataplane_has_fmp_owner(next_hop));
+        self.refresh_dataplane_fsp_owner_routes_via(node_addr, current_next_hop)
+    }
+
+    pub(in crate::node) fn refresh_dataplane_fsp_owner_routes_via(
+        &mut self,
+        node_addr: &NodeAddr,
+        preferred_next_hop: Option<NodeAddr>,
+    ) -> bool {
+        let owner = OwnerId::fsp_node(*node_addr);
+        let Some(send_context) = self.dataplane.fsp_owner_send_context(node_addr) else {
+            return false;
+        };
+        let update = self.dataplane_fsp_owner_routes(
+            node_addr,
+            send_context.generation(),
+            send_context.fsp_flags(),
+            send_context.inner_flags(),
+            preferred_next_hop,
+        );
+        let route_ready = update.wrap.is_some() || update.path.is_some();
+        let next_hop_ready = update.path.is_some()
+            || update
+                .next_hop
+                .is_some_and(|next_hop| self.dataplane_has_fmp_owner(&next_hop));
+        if !(route_ready && next_hop_ready || self.source_routes.contains_key(node_addr))
+            && self.dataplane_application_route_ready(node_addr)
+            && self
+                .dataplane
+                .fsp_owner_next_hop(node_addr)
+                .is_some_and(|next_hop| self.dataplane_has_fmp_owner(&next_hop))
+        {
+            return false;
+        }
+        let moved_to_transit = update.next_hop.is_some_and(|next_hop| {
+            next_hop != *node_addr && Some(next_hop) != self.dataplane.fsp_owner_next_hop(node_addr)
+        });
+        let direct_path_mtu = update.direct_path_mtu;
+        let refreshed = self
+            .dataplane
+            .replace_owner_fsp_routes(owner, update.routes, update.wrap, update.path)
+            .is_ok()
+            && route_ready
+            && next_hop_ready;
+        if refreshed && moved_to_transit {
+            let remaining = self.config.node.session.coords_warmup_packets;
+            let prefix = self.dataplane_fsp_coords_prefix(node_addr, remaining);
+            let _ = self
+                .dataplane
+                .set_owner_fsp_coords_warmup(owner, remaining, prefix);
+        }
+        if refreshed && let Some(path_mtu) = direct_path_mtu {
+            let _ = self.dataplane.seed_fsp_path_mtu(*node_addr, path_mtu);
+        }
+        refreshed
+    }
+
+    pub(in crate::node) fn follow_authenticated_fallback_ingress_for_session_reply(
+        &mut self,
+        source_addr: NodeAddr,
+        previous_hop_addr: NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        let current_next_hop = self.dataplane.fsp_owner_next_hop(&source_addr);
+        let failed_next_hops = self.learned_routes.failed_next_hops(&source_addr, now_ms);
+        if source_addr == previous_hop_addr
+            || failed_next_hops.contains(&previous_hop_addr)
+            || !self
+                .peers
+                .get(&previous_hop_addr)
+                .is_some_and(|peer| peer.can_send())
+            || !self.dataplane_has_fmp_owner(&previous_hop_addr)
+        {
+            return false;
+        }
+
+        let direct_validation_is_staged = current_next_hop == Some(source_addr)
+            && self
+                .session_direct_degradation
+                .has_pending_validation(&source_addr);
+        let validation_timeout_ms = self.session_direct_path_exclusive_trust_timeout_ms();
+        let fallback_matches_validation_inflight = self
+            .dataplane
+            .fsp_owner_activity(&source_addr)
+            .is_none_or(|activity| {
+                activity.last_outbound_next_hop().is_none_or(|next_hop| {
+                    next_hop == previous_hop_addr
+                        || (next_hop == source_addr
+                            && activity.has_recent_outbound_activity(now_ms, validation_timeout_ms))
+                })
+            });
+        if direct_validation_is_staged && fallback_matches_validation_inflight {
+            // A carrier recovery deliberately stages one bounded direct FSP
+            // payload before returning to the proven fallback. Application
+            // packets already in flight on that fallback can arrive after the
+            // route changes; letting the first one reclaim the owner means the
+            // direct payload is never tried under continuous traffic. Preserve
+            // the staged route until direct payload authenticates or its trust
+            // window expires. A genuinely different fallback may still take
+            // over immediately.
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                previous_hop = %self.peer_display_name(&previous_hop_addr),
+                "Keeping staged direct payload validation across in-flight fallback ingress"
+            );
+            return false;
+        }
+
+        if current_next_hop == Some(previous_hop_addr) {
+            // Authenticated application return on the selected fallback is
+            // continuing path proof. Renew the suppression window without
+            // replacing the dataplane owner; otherwise the hold expires under
+            // active traffic, direct control refresh briefly displaces the
+            // proven reply route, and the next fallback packet moves it back.
+            self.session_direct_degradation.mark_degraded(
+                source_addr,
+                now_ms,
+                SESSION_DIRECT_DEGRADED_HOLD_MS,
+            );
+            return false;
+        }
+
+        if let Some(current_fallback) = current_next_hop.filter(|hop| hop != &source_addr)
+            && self.session_direct_path_degradation_active(&source_addr, now_ms)
+            && self
+                .dataplane
+                .fsp_owner_activity(&source_addr)
+                .is_some_and(|activity| {
+                    activity.has_recent_data_return_from(
+                        &current_fallback,
+                        now_ms,
+                        self.session_direct_path_exclusive_trust_timeout_ms(),
+                    )
+                })
+            && self
+                .peers
+                .get(&current_fallback)
+                .is_some_and(|peer| peer.can_send())
+            && self.dataplane_has_fmp_owner(&current_fallback)
+        {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                current_fallback = %self.peer_display_name(&current_fallback),
+                alternate_ingress = %self.peer_display_name(&previous_hop_addr),
+                "Keeping active fallback reply affinity across alternate ingress"
+            );
+            return false;
+        }
+
+        self.session_direct_degradation.mark_degraded(
+            source_addr,
+            now_ms,
+            SESSION_DIRECT_DEGRADED_HOLD_MS,
+        );
+        self.refresh_dataplane_fsp_owner_routes_via(&source_addr, Some(previous_hop_addr))
+            && self.dataplane.fsp_owner_next_hop(&source_addr) == Some(previous_hop_addr)
+    }
+
+    pub(in crate::node) fn refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(
+        &mut self,
+        next_hop_addr: &NodeAddr,
+    ) -> usize {
+        let destinations = self.dataplane.fsp_owner_destinations();
+        let now_ms = Self::now_ms();
+        let mut refreshed = 0usize;
+        for dest in destinations {
+            let current_next_hop = self.dataplane.fsp_owner_next_hop(&dest);
+            let current_uses_next_hop = current_next_hop == Some(*next_hop_addr);
+            let current_owner_is_ready =
+                current_next_hop.is_some_and(|current| self.dataplane_has_fmp_owner(&current));
+            let current_direct_is_degraded = current_next_hop == Some(dest)
+                && self.session_direct_path_degradation_active(&dest, now_ms);
+            let current_route_is_ready = current_owner_is_ready && !current_direct_is_degraded;
+            if current_route_is_ready && !current_uses_next_hop {
+                continue;
+            }
+            let would_use_next_hop = self
+                .find_next_hop(&dest)
+                .is_some_and(|peer| peer.node_addr() == next_hop_addr);
+            if !(current_uses_next_hop || would_use_next_hop) {
+                continue;
+            }
+            let route_ready = if current_route_is_ready {
+                self.refresh_dataplane_fsp_owner_routes_retaining_current(&dest)
+            } else {
+                self.refresh_dataplane_fsp_owner_routes(&dest)
+            };
+            if route_ready || current_uses_next_hop {
+                refreshed = refreshed.saturating_add(1);
+            }
+        }
+        refreshed
+    }
+
+    pub(in crate::node) fn refresh_dataplane_fsp_owner_routes_with_coords_warmup(
+        &mut self,
+        node_addr: &NodeAddr,
+        coords_warmup_remaining: u8,
+    ) -> bool {
+        let owner = OwnerId::fsp_node(*node_addr);
+        let coords_prefix = self.dataplane_fsp_coords_prefix(node_addr, coords_warmup_remaining);
+        let warmup_applied = self
+            .dataplane
+            .set_owner_fsp_coords_warmup(owner, coords_warmup_remaining, coords_prefix)
+            .is_ok();
+        // Coordinates update the envelope, not the authenticated reply carrier.
+        // Replanning here can move reports onto an unrelated paid branch.
+        self.refresh_dataplane_fsp_owner_routes_retaining_current(node_addr) && warmup_applied
+    }
+
+    pub(in crate::node) fn apply_dataplane_fsp_path_mtu_signal(
+        &mut self,
+        node_addr: &NodeAddr,
+        path_mtu: u16,
+        now: std::time::Instant,
+    ) -> Result<
+        crate::dataplane::DataplaneFspPathMtuApplyResult,
+        crate::dataplane::DataplaneFspMmpSkip,
+    > {
+        let result = self
+            .dataplane
+            .apply_fsp_path_mtu_signal(*node_addr, path_mtu, now)?;
+        if matches!(
+            result,
+            crate::dataplane::DataplaneFspPathMtuApplyResult::Changed(_)
+        ) {
+            // Learning the carrier's size limit must not replace that carrier.
+            let _ = self.refresh_dataplane_fsp_owner_routes_retaining_current(node_addr);
+        }
+        Ok(result)
+    }
+
+    pub(in crate::node) fn set_dataplane_fsp_owner_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+        current_k_bit: bool,
+        previous_draining_k_bit: Option<bool>,
+    ) -> bool {
+        self.dataplane
+            .set_owner_fsp_epoch(
+                OwnerId::fsp_node(*node_addr),
+                current_k_bit,
+                previous_draining_k_bit,
+            )
+            .is_ok()
+    }
+
+    pub(in crate::node) fn install_dataplane_fsp_pending_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+        pending_k_bit: bool,
+        open: ring::aead::LessSafeKey,
+        seal: ring::aead::LessSafeKey,
+        send_counter_authority: crate::noise::SendCounterAuthority,
+    ) -> bool {
+        self.dataplane
+            .install_owner_fsp_pending_epoch(
+                OwnerId::fsp_node(*node_addr),
+                pending_k_bit,
+                std::sync::Arc::new(open),
+                std::sync::Arc::new(seal),
+                send_counter_authority,
+            )
+            .is_ok()
+    }
+
+    pub(in crate::node) fn install_dataplane_fmp_pending_receive_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+        pending_k_bit: bool,
+        open: ring::aead::LessSafeKey,
+    ) -> bool {
+        let Some(authority) = self
+            .peers
+            .get(node_addr)
+            .and_then(|peer| peer.pending_new_session())
+            .map(|session| session.send_counter_authority())
+        else {
+            return false;
+        };
+        let installed = self
+            .dataplane
+            .install_owner_fmp_pending_receive_epoch(
+                OwnerId::fmp_node(*node_addr),
+                pending_k_bit,
+                std::sync::Arc::new(open),
+                authority,
+            )
+            .is_ok();
+        if installed {
+            self.observe_dataplane_fmp_epoch(node_addr, "pending receive epoch installed");
+        }
+        installed
+    }
+
+    pub(in crate::node) fn clear_dataplane_fmp_pending_receive_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> bool {
+        self.dataplane
+            .clear_fmp_owner_pending_receive_epoch(node_addr)
+    }
+
+    pub(in crate::node) fn promote_dataplane_authenticated_pending_fmp_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+        received_k_bit: bool,
+    ) -> bool {
+        if self
+            .peers
+            .get(node_addr)
+            .is_none_or(|peer| peer.pending_new_session().is_none())
+            || !self
+                .dataplane
+                .confirm_fmp_owner_pending_receive_epoch(node_addr, received_k_bit)
+        {
+            return false;
+        }
+        let Some(retired) = self
+            .peers
+            .confirm_pending_peer_session(node_addr, received_k_bit)
+        else {
+            return false;
+        };
+        self.free_retired_peer_session_indices(&retired);
+        self.ensure_current_session_index_registered(
+            node_addr,
+            "responder authenticated FMP rekey cutover",
+        );
+        let synced = self.sync_dataplane_fmp_owner(node_addr);
+        self.make_direct_payload_eligible_for_validation_after_fmp_recovery(node_addr);
+        synced
+    }
+
+    pub(in crate::node) fn promote_dataplane_authenticated_pending_fsp_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+        received_k_bit: bool,
+    ) -> bool {
+        if !self
+            .dataplane
+            .fsp_owner_has_pending_receive_epoch(node_addr, received_k_bit)
+        {
+            return false;
+        }
+        let now_ms = Self::now_ms();
+        let promoted = {
+            let Some(session) = self.sessions.get_mut(node_addr) else {
+                return false;
+            };
+            session.cutover_to_authenticated_pending_epoch(now_ms, received_k_bit)
+        };
+        if !promoted {
+            return false;
+        }
+
+        self.sync_dataplane_fsp_owner_from_current_session(node_addr, 0)
+    }
+
+    pub(in crate::node) fn dataplane_fsp_owner_epoch(
+        session: &SessionEntry,
+    ) -> (bool, Option<bool>) {
+        let current_k_bit = session.current_k_bit();
+        (
+            current_k_bit,
+            session.is_draining().then_some(!current_k_bit),
+        )
+    }
+
+    pub(in crate::node) fn dataplane_has_fsp_owner(&self, node_addr: &NodeAddr) -> bool {
+        self.dataplane.has_owner(OwnerId::fsp_node(*node_addr))
+    }
+
+    pub(in crate::node) fn mark_dataplane_direct_fsp_sources_dirty(&mut self) {
+        self.dataplane_direct_fsp_sources_dirty = true;
+    }
+
+    pub(in crate::node) fn dataplane_direct_fsp_sources_for_rx_turn(
+        &mut self,
+    ) -> crate::dataplane::DataplaneDirectFspSources {
+        if self.dataplane_direct_fsp_sources_dirty {
+            let sources = self.dataplane_direct_fsp_sources();
+            self.dataplane
+                .set_established_fast_ingress_direct_fsp_sources(sources.clone());
+            self.dataplane_direct_fsp_sources = sources;
+            self.dataplane_direct_fsp_sources_dirty = false;
+        }
+        self.dataplane_direct_fsp_sources.clone()
+    }
+
+    pub(in crate::node) fn dataplane_direct_fsp_sources(
+        &self,
+    ) -> crate::dataplane::DataplaneDirectFspSources {
+        let mut sources = Vec::new();
+        for (node_addr, peer) in &self.peers {
+            let (Some(transport_id), Some(remote_addr)) =
+                (peer.transport_id(), peer.current_addr().cloned())
+            else {
+                continue;
+            };
+            let path_mtu = self
+                .transports
+                .get(&transport_id)
+                .map(|transport| transport.link_mtu(&remote_addr))
+                .unwrap_or_else(|| self.transport_mtu());
+            sources.push((
+                transport_id,
+                remote_addr,
+                DataplaneDirectFspSource {
+                    source_addr: *node_addr,
+                    path_mtu,
+                },
+            ));
+
+            for static_addr in
+                self.dataplane_configured_static_udp_source_addrs(node_addr, transport_id)
+            {
+                let path_mtu = self
+                    .transports
+                    .get(&transport_id)
+                    .map(|transport| transport.link_mtu(&static_addr))
+                    .unwrap_or(path_mtu);
+                sources.push((
+                    transport_id,
+                    static_addr,
+                    DataplaneDirectFspSource {
+                        source_addr: *node_addr,
+                        path_mtu,
+                    },
+                ));
+            }
+        }
+        crate::dataplane::dataplane_direct_fsp_sources_from_exact(sources)
+    }
+}

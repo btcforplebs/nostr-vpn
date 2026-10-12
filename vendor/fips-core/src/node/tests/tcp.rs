@@ -1,0 +1,612 @@
+//! TCP transport integration tests.
+//!
+//! Tests that the TCP transport works end-to-end at the node level:
+//! handshake, spanning tree convergence, mixed-transport routing,
+//! MMP link-dead detection, and reconnection after link death.
+//! All tests use 127.0.0.1:0 (ephemeral ports) and need no privileges.
+
+use super::*;
+use crate::config::{ConnectPolicy, TcpConfig};
+use crate::transport::tcp::TcpTransport;
+use crate::transport::{TransportAddr, TransportHandle, TransportId, packet_channel};
+use spanning_tree::{
+    TestNode, cleanup_nodes, drain_all_packets, initiate_handshake,
+    refresh_synthetic_filter_announces, verify_tree_convergence,
+};
+use std::time::Duration;
+
+/// Create a test node with a live TCP transport on loopback.
+///
+/// Parallel to `make_test_node()` in spanning_tree.rs but uses
+/// TcpTransport instead of UDP. Binds to 127.0.0.1:0 for an
+/// ephemeral port.
+async fn make_test_node_tcp() -> TestNode {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+
+    let config = TcpConfig {
+        bind_addr: Some("127.0.0.1:0".to_string()),
+        mtu: Some(1400),
+        ..Default::default()
+    };
+
+    let (packet_tx, packet_rx) = packet_channel(256);
+    let (tun_outbound_tx, tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(256);
+    node.tun_outbound_rx = Some(tun_outbound_rx);
+
+    let mut transport = TcpTransport::new(transport_id, None, config, packet_tx);
+    transport.start_async().await.unwrap();
+
+    let local_addr = transport
+        .local_addr()
+        .expect("TCP transport should have local addr after start");
+    let addr = TransportAddr::from_string(&local_addr.to_string());
+
+    node.transports
+        .insert(transport_id, TransportHandle::Tcp(transport));
+
+    TestNode {
+        node,
+        transport_id,
+        packet_rx,
+        tun_outbound_tx,
+        addr,
+    }
+}
+
+async fn configure_tcp_reconnect_pair(nodes: &mut [TestNode]) {
+    assert_eq!(
+        nodes.len(),
+        2,
+        "TCP reconnect fixture requires one peer pair"
+    );
+    let mut node_0 =
+        crate::config::PeerConfig::new(nodes[0].node.npub(), "tcp", nodes[0].addr.to_string());
+    let mut node_1 =
+        crate::config::PeerConfig::new(nodes[1].node.npub(), "tcp", nodes[1].addr.to_string());
+    node_0.connect_policy = ConnectPolicy::Manual;
+    node_1.connect_policy = ConnectPolicy::Manual;
+    nodes[0].node.update_peers(vec![node_1]).await.unwrap();
+    nodes[1].node.update_peers(vec![node_0]).await.unwrap();
+}
+
+/// Two TCP nodes complete a Noise handshake and establish bidirectional peering.
+#[tokio::test]
+async fn test_tcp_two_node_handshake() {
+    let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+
+    // Initiate handshake from node 0 to node 1
+    initiate_handshake(&mut nodes, 0, 1).await;
+
+    // Drain all packets (handshake msg1/msg2 + TreeAnnounce exchange)
+    let total = drain_all_packets(&mut nodes, false).await;
+    assert!(total > 0, "should have processed packets");
+
+    // Verify bidirectional peering
+    let addr_0 = *nodes[0].node.node_addr();
+    let addr_1 = *nodes[1].node.node_addr();
+    assert!(
+        nodes[0].node.get_peer(&addr_1).is_some(),
+        "node 0 should have node 1 as peer"
+    );
+    assert!(
+        nodes[1].node.get_peer(&addr_0).is_some(),
+        "node 1 should have node 0 as peer"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// Direct FSP application data retains its shorter record boundary when the
+/// authenticated peer path is a real TCP byte stream.
+#[tokio::test]
+async fn tcp_direct_fsp_endpoint_data_is_bidirectional() {
+    let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+
+    initiate_handshake(&mut nodes, 0, 1).await;
+    assert!(drain_all_packets(&mut nodes, false).await > 0);
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let mut endpoint_0 = nodes[0]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("node 0 endpoint data I/O");
+    let mut endpoint_1 = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("node 1 endpoint data I/O");
+    let identity_0 = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    let identity_1 = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[0].node,
+        identity_1,
+        b"tcp-ping".to_vec(),
+    )
+    .await
+    .expect("TCP endpoint ping should start");
+    let ping = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut endpoint_1.event_rx,
+        Duration::from_secs(5),
+        "TCP endpoint ping",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(ping)
+            .payload
+            .as_slice(),
+        b"tcp-ping"
+    );
+
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[1].node,
+        identity_0,
+        b"tcp-pong".to_vec(),
+    )
+    .await
+    .expect("TCP endpoint pong should start");
+    let pong = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut endpoint_0.event_rx,
+        Duration::from_secs(5),
+        "TCP endpoint pong",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(pong)
+            .payload
+            .as_slice(),
+        b"tcp-pong"
+    );
+
+    // TUN output follows the ordinary auto-coordinate warmup path. On a
+    // direct TCP carrier it must still remain one unambiguous direct-FSP
+    // stream record rather than combining DIRECT with a coordinate prefix.
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+    nodes[1].node.tun_tx = Some(tun_tx);
+    let ipv6_packet = super::session::build_ipv6_packet(
+        identity_0.address(),
+        identity_1.address(),
+        b"tcp-direct-tun",
+    );
+    super::session::send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet.clone()).await;
+    let delivered = super::session::recv_tun_packet_while_draining(
+        &mut nodes,
+        &tun_rx,
+        Duration::from_secs(5),
+        "TCP direct TUN packet",
+    )
+    .await;
+    assert_eq!(delivered, ipv6_packet);
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// Simultaneous TCP dials use different socket tuples on each host: the
+/// outbound side names the listener while the accepted side observes an
+/// ephemeral source port. They are still the two halves of one logical
+/// cross-connection and must converge on the NodeAddr direction tie-breaker.
+#[tokio::test]
+async fn tcp_simultaneous_dials_converge_and_carry_direct_fsp() {
+    let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+
+    initiate_handshake(&mut nodes, 0, 1).await;
+    initiate_handshake(&mut nodes, 1, 0).await;
+    assert!(drain_all_packets(&mut nodes, false).await > 0);
+
+    let addr_0 = *nodes[0].node.node_addr();
+    let addr_1 = *nodes[1].node.node_addr();
+    let node_0_is_smaller = addr_0 < addr_1;
+    assert_eq!(
+        nodes[0]
+            .node
+            .get_peer(&addr_1)
+            .expect("node 0 authenticated peer")
+            .fmp_mmp_is_initiator(),
+        node_0_is_smaller,
+        "only the smaller NodeAddr keeps its outbound TCP session"
+    );
+    assert_eq!(
+        nodes[1]
+            .node
+            .get_peer(&addr_0)
+            .expect("node 1 authenticated peer")
+            .fmp_mmp_is_initiator(),
+        !node_0_is_smaller,
+        "the larger NodeAddr keeps the matching inbound TCP session"
+    );
+
+    populate_all_coord_caches(&mut nodes);
+    let mut endpoint_1 = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("node 1 endpoint data I/O");
+    let identity_1 = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+    super::session::send_endpoint_data_via_dataplane(
+        &mut nodes[0].node,
+        identity_1,
+        b"simultaneous-tcp".to_vec(),
+    )
+    .await
+    .expect("direct FSP over the converged TCP carrier should start");
+    let data = super::session::recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut endpoint_1.event_rx,
+        Duration::from_secs(5),
+        "simultaneous TCP direct FSP",
+    )
+    .await;
+    assert_eq!(
+        super::session::expect_single_endpoint_data_event(data)
+            .payload
+            .as_slice(),
+        b"simultaneous-tcp"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// A configured listener address and an accepted stream's ephemeral source
+/// address name the same bidirectional TCP carrier. A later duplicate dial by
+/// the larger node must not be mistaken for a higher-priority path refresh.
+#[tokio::test]
+async fn tcp_late_reverse_dial_preserves_cross_connection_owner() {
+    let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+    configure_tcp_reconnect_pair(&mut nodes).await;
+
+    let node_0_addr = *nodes[0].node.node_addr();
+    let node_1_addr = *nodes[1].node.node_addr();
+    let (smaller, larger) = if node_0_addr < node_1_addr {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+
+    initiate_handshake(&mut nodes, smaller, larger).await;
+    assert!(drain_all_packets(&mut nodes, false).await > 0);
+    assert!(
+        nodes[smaller]
+            .node
+            .get_peer(nodes[larger].node.node_addr())
+            .expect("smaller node peer")
+            .fmp_mmp_is_initiator()
+    );
+    assert!(
+        !nodes[larger]
+            .node
+            .get_peer(nodes[smaller].node.node_addr())
+            .expect("larger node peer")
+            .fmp_mmp_is_initiator()
+    );
+
+    initiate_handshake(&mut nodes, larger, smaller).await;
+    assert!(drain_all_packets(&mut nodes, false).await > 0);
+    assert!(
+        nodes[smaller]
+            .node
+            .get_peer(nodes[larger].node.node_addr())
+            .expect("smaller node peer after reverse dial")
+            .fmp_mmp_is_initiator(),
+        "smaller node must retain the outbound session"
+    );
+    assert!(
+        !nodes[larger]
+            .node
+            .get_peer(nodes[smaller].node.node_addr())
+            .expect("larger node peer after reverse dial")
+            .fmp_mmp_is_initiator(),
+        "larger node must retain the inbound session"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// Three TCP nodes in a chain converge to a consistent spanning tree.
+///
+/// Chain: 0 -- 1 -- 2. Verifies tree convergence, peer counts, and
+/// bloom filter reachability across multiple hops.
+#[tokio::test]
+async fn test_tcp_three_node_chain() {
+    let mut nodes = vec![
+        make_test_node_tcp().await,
+        make_test_node_tcp().await,
+        make_test_node_tcp().await,
+    ];
+
+    // Chain: 0 -- 1 -- 2
+    initiate_handshake(&mut nodes, 0, 1).await;
+    initiate_handshake(&mut nodes, 1, 2).await;
+
+    let total = drain_all_packets(&mut nodes, false).await;
+    assert!(total > 0, "should have processed packets");
+    refresh_synthetic_filter_announces(&mut nodes, &[(0, 1), (1, 2)], false).await;
+
+    // Verify spanning tree convergence
+    verify_tree_convergence(&nodes);
+
+    // Verify correct root (smallest NodeAddr)
+    let expected_root = nodes.iter().map(|tn| *tn.node.node_addr()).min().unwrap();
+    for tn in &nodes {
+        assert_eq!(*tn.node.tree_state().root(), expected_root);
+    }
+
+    // Verify peer counts
+    assert_eq!(nodes[0].node.peer_count(), 1, "endpoint should have 1 peer");
+    assert_eq!(
+        nodes[1].node.peer_count(),
+        2,
+        "middle node should have 2 peers"
+    );
+    assert_eq!(nodes[2].node.peer_count(), 1, "endpoint should have 1 peer");
+
+    // Verify bloom filter reachability: node 0 can reach node 2 via node 1
+    let addr_2 = *nodes[2].node.node_addr();
+    let reaches = nodes[0].node.peers().any(|p| p.may_reach(&addr_2));
+    assert!(
+        reaches,
+        "node 0 should see node 2 as reachable through bloom filters"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// Mixed transport: UDP and TCP nodes coexist in the same test.
+///
+/// Two UDP nodes and two TCP nodes each form independent components.
+/// Validates that `process_available_packets()` handles heterogeneous
+/// transport types correctly.
+#[tokio::test]
+async fn test_tcp_mixed_transport_coexistence() {
+    use spanning_tree::{make_test_node, verify_tree_convergence_components};
+
+    // Create 2 UDP nodes and 2 TCP nodes
+    let udp_0 = make_test_node().await;
+    let udp_1 = make_test_node().await;
+    let tcp_0 = make_test_node_tcp().await;
+    let tcp_1 = make_test_node_tcp().await;
+
+    let mut nodes = vec![udp_0, udp_1, tcp_0, tcp_1];
+
+    // Handshake within each component
+    initiate_handshake(&mut nodes, 0, 1).await; // UDP pair
+    initiate_handshake(&mut nodes, 2, 3).await; // TCP pair
+
+    let total = drain_all_packets(&mut nodes, false).await;
+    assert!(total > 0);
+
+    // Verify each component converges independently
+    verify_tree_convergence_components(&nodes, &[vec![0, 1], vec![2, 3]]);
+
+    // TCP component has its own root
+    let tcp_root = std::cmp::min(*nodes[2].node.node_addr(), *nodes[3].node.node_addr());
+    assert_eq!(*nodes[2].node.tree_state().root(), tcp_root);
+    assert_eq!(*nodes[3].node.tree_state().root(), tcp_root);
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// TCP connection drop is detected by MMP link-dead timeout.
+///
+/// Establishes peering, force-closes the TCP connection, then verifies
+/// that `check_link_heartbeats()` marks the path stale after the link-dead
+/// timeout fires while preserving peer/session continuity. Stale paths remain
+/// sendable for probes/reconnect attempts but are not healthy payload routes.
+#[tokio::test]
+async fn test_tcp_connection_loss_detection() {
+    let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+    configure_tcp_reconnect_pair(&mut nodes).await;
+
+    // Short heartbeat/link-dead timeouts for faster test execution
+    for tn in nodes.iter_mut() {
+        tn.node.config.node.heartbeat_interval_secs = 1;
+        tn.node.config.node.link_dead_timeout_secs = 3;
+    }
+
+    // Establish peering
+    initiate_handshake(&mut nodes, 0, 1).await;
+    let total = drain_all_packets(&mut nodes, false).await;
+    assert!(total > 0);
+
+    let addr_0 = *nodes[0].node.node_addr();
+    let addr_1 = *nodes[1].node.node_addr();
+    assert!(nodes[0].node.get_peer(&addr_1).is_some());
+    assert!(nodes[1].node.get_peer(&addr_0).is_some());
+
+    // Force-close the TCP connection on node 0's side toward node 1
+    let node1_listen_addr = nodes[1].addr.clone();
+    let transport = nodes[0]
+        .node
+        .transports
+        .get(&nodes[0].transport_id)
+        .unwrap();
+    transport.close_connection(&node1_listen_addr).await;
+
+    // Wait for link-dead timeout to fire (3 seconds + margin)
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    // Trigger heartbeat check (normally done by the tick handler)
+    nodes[0].node.check_link_heartbeats().await;
+
+    let peer = nodes[0]
+        .node
+        .get_peer(&addr_1)
+        .expect("link-dead should preserve peer identity");
+    assert!(
+        peer.can_send(),
+        "node 0 should keep node 1 path probeable after link-dead"
+    );
+    assert!(
+        !peer.is_healthy(),
+        "node 0 should remove node 1 path from healthy payload routing after link-dead"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+/// TCP reconnection after link death: connect-on-send re-establishes the link.
+///
+/// After both peers detect a dead link and mark paths stale, a fresh handshake
+/// triggers TCP connect-on-send to open a new connection.
+/// Verifies that bidirectional peering is restored.
+#[tokio::test]
+async fn test_tcp_reconnection_after_link_death() {
+    let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+    configure_tcp_reconnect_pair(&mut nodes).await;
+
+    // Short timeouts
+    for tn in nodes.iter_mut() {
+        tn.node.config.node.heartbeat_interval_secs = 1;
+        tn.node.config.node.link_dead_timeout_secs = 3;
+    }
+
+    // Establish initial peering
+    initiate_handshake(&mut nodes, 0, 1).await;
+    let total = drain_all_packets(&mut nodes, false).await;
+    assert!(total > 0);
+
+    let addr_0 = *nodes[0].node.node_addr();
+    let addr_1 = *nodes[1].node.node_addr();
+    assert!(nodes[0].node.get_peer(&addr_1).is_some());
+
+    // Force-close the TCP connection on node 0's side
+    let node1_listen_addr = nodes[1].addr.clone();
+    let transport = nodes[0]
+        .node
+        .transports
+        .get(&nodes[0].transport_id)
+        .unwrap();
+    transport.close_connection(&node1_listen_addr).await;
+
+    // Wait for link-dead timeout
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    // Trigger dead path detection on both sides
+    nodes[0].node.check_link_heartbeats().await;
+    nodes[1].node.check_link_heartbeats().await;
+
+    // Both should keep the peer identity while marking the path stale: still
+    // probeable, but no longer healthy for payload routing.
+    assert!(
+        nodes[0]
+            .node
+            .get_peer(&addr_1)
+            .is_some_and(|peer| peer.can_send() && !peer.is_healthy()),
+        "node 0 should mark node 1 path stale"
+    );
+    assert!(
+        nodes[1]
+            .node
+            .get_peer(&addr_0)
+            .is_some_and(|peer| peer.can_send() && !peer.is_healthy()),
+        "node 1 should mark node 0 path stale"
+    );
+
+    // Re-initiate handshake — triggers TCP connect-on-send
+    initiate_handshake(&mut nodes, 0, 1).await;
+
+    // Drain to complete handshake + tree announce
+    let total2 = drain_all_packets(&mut nodes, false).await;
+    assert!(total2 > 0, "should have processed reconnection packets");
+
+    // Verify re-established peering
+    assert!(
+        nodes[0].node.get_peer(&addr_1).is_some(),
+        "node 0 should have re-established peer node 1"
+    );
+    assert!(
+        nodes[1].node.get_peer(&addr_0).is_some(),
+        "node 1 should have re-established peer node 0"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn tcp_peer_disconnect_releases_inbound_and_outbound_carriers() {
+    for removed in [0, 1] {
+        let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+        initiate_handshake(&mut nodes, 0, 1).await;
+        drain_all_packets(&mut nodes, false).await;
+        let other = 1 - removed;
+        let identity = nodes[other].node.identity().npub();
+        let peer = *nodes[other].node.node_addr();
+        assert!(nodes[removed].node.get_peer(&peer).is_some());
+        let stats = match nodes[removed]
+            .node
+            .transports
+            .get(&nodes[removed].transport_id)
+            .unwrap()
+        {
+            TransportHandle::Tcp(tcp) => tcp.stats().clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            stats.snapshot().pool_inbound + stats.snapshot().pool_outbound,
+            1
+        );
+        nodes[removed].node.api_disconnect(&identity).await.unwrap();
+        assert!(nodes[removed].node.get_peer(&peer).is_none());
+        assert!(nodes[removed].node.links.is_empty());
+        assert_eq!(
+            stats.snapshot().pool_inbound + stats.snapshot().pool_outbound,
+            0,
+            "removing a TCP peer must release its unshared physical carrier"
+        );
+        drain_all_packets(&mut nodes, false).await;
+        assert!(
+            nodes[other]
+                .node
+                .get_peer(nodes[removed].node.node_addr())
+                .is_none()
+        );
+        cleanup_nodes(&mut nodes).await;
+    }
+}
+
+#[tokio::test]
+async fn tcp_peer_removal_preserves_a_pending_carrier_owner() {
+    let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
+    initiate_handshake(&mut nodes, 0, 1).await;
+    drain_all_packets(&mut nodes, false).await;
+    let remote = nodes[1].addr.clone();
+    let peer = *nodes[1].node.node_addr();
+    let transport_id = nodes[0].transport_id;
+    let pending_identity = PeerIdentity::from_pubkey_full(make_node().identity.pubkey_full());
+    nodes[0]
+        .node
+        .initiate_connection(transport_id, remote.clone(), pending_identity)
+        .await
+        .unwrap();
+    assert_eq!(nodes[0].node.pending_connects.len(), 1);
+    let pending_link = nodes[0].node.pending_connects[0].link_id;
+    nodes[0].node.remove_active_peer(&peer);
+    assert!(nodes[0].node.get_peer(&peer).is_none());
+    assert_eq!(nodes[0].node.pending_connects.len(), 1);
+    assert_eq!(nodes[0].node.pending_connects[0].link_id, pending_link);
+    assert_eq!(
+        nodes[0]
+            .node
+            .transports
+            .get(&transport_id)
+            .unwrap()
+            .connection_state(&remote),
+        crate::transport::ConnectionState::Connected
+    );
+    nodes[0]
+        .node
+        .retire_connection_preparation(pending_link)
+        .await;
+    assert!(nodes[0].node.pending_connects.is_empty());
+    assert_eq!(
+        nodes[0]
+            .node
+            .transports
+            .get(&transport_id)
+            .unwrap()
+            .connection_state(&remote),
+        crate::transport::ConnectionState::None
+    );
+    cleanup_nodes(&mut nodes).await;
+}

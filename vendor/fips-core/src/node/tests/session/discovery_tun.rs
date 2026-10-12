@@ -1,0 +1,532 @@
+use super::*;
+
+#[tokio::test]
+async fn test_graph_auto_connect_races_direct_address_before_timeout() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let dest_addr = *nodes[2].node.node_addr();
+    let peer = crate::config::PeerConfig {
+        npub: nodes[2].node.npub(),
+        alias: Some("graph-timeout-direct".to_string()),
+        addresses: vec![crate::config::PeerAddress::new(
+            "udp",
+            nodes[2].addr.to_string(),
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+
+    nodes[0].node.update_peers(vec![peer]).await.unwrap();
+    assert!(
+        has_outbound_handshake_to(&nodes[0].node, &dest_addr),
+        "direct path should be tried without waiting for graph session timeout"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_update_peers_starts_lookup_for_auto_connect_peer_without_cached_route() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    nodes[0].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+
+    let dest_addr = *nodes[2].node.node_addr();
+    nodes[0].node.coord_cache_mut().remove(&dest_addr);
+    let peer = crate::config::PeerConfig {
+        npub: nodes[2].node.npub(),
+        alias: Some("lookup-peer".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+
+    let outcome = nodes[0].node.update_peers(vec![peer]).await.unwrap();
+
+    assert_eq!(outcome.added, 1);
+    assert!(
+        nodes[0].node.pending_lookups.contains_key(&dest_addr),
+        "configured peer should start FIPS discovery immediately when no route is cached"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_tun_packet_for_pending_session_triggers_reply_learned_discovery() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let dest = Identity::generate();
+    let dest_addr = *dest.node_addr();
+    add_direct_peer_for_identity(&mut node, &dest);
+    node.register_identity(dest_addr, dest.pubkey_full());
+    insert_initiating_session(&mut node, &dest);
+    assert!(
+        node.find_next_hop(&dest_addr).is_some(),
+        "fixture should model a stale direct route that still looks sendable"
+    );
+
+    let src_fips = crate::FipsAddress::from_node_addr(node.node_addr());
+    let dst_fips = crate::FipsAddress::from_node_addr(&dest_addr);
+    let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-probe");
+    let baseline = node.stats().discovery.req_initiated;
+
+    node.handle_dataplane_deferred_tun_packet(ipv6_packet).await;
+
+    assert_eq!(
+        node.pending_session_traffic
+            .tun_packets_for(&dest_addr)
+            .map(|queue| queue.len()),
+        Some(1),
+        "TUN packet should stay queued until the pending session recovers"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&dest_addr),
+        "a stale pending session must start mesh discovery in reply-learned mode"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "discovery should be initiated exactly once"
+    );
+}
+
+#[tokio::test]
+async fn test_tun_packet_for_established_session_with_no_route_queues_and_discovers() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let dest = Identity::generate();
+    let dest_addr = *dest.node_addr();
+    node.register_identity(dest_addr, dest.pubkey_full());
+    insert_established_session(&mut node, &dest);
+    assert!(
+        node.find_next_hop(&dest_addr).is_none(),
+        "fixture should model an established end-to-end session whose direct path disappeared"
+    );
+
+    let src_fips = crate::FipsAddress::from_node_addr(node.node_addr());
+    let dst_fips = crate::FipsAddress::from_node_addr(&dest_addr);
+    let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-probe");
+    let baseline = node.stats().discovery.req_initiated;
+
+    node.handle_dataplane_deferred_tun_packet(ipv6_packet).await;
+
+    assert_eq!(
+        node.pending_session_traffic
+            .tun_packets_for(&dest_addr)
+            .map(|queue| queue.len()),
+        Some(1),
+        "TUN packet should stay queued while fallback discovery repairs the route"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&dest_addr),
+        "route loss under an established session must start mesh discovery"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "discovery should be initiated exactly once"
+    );
+}
+
+#[tokio::test]
+async fn test_tun_packet_for_established_session_with_stale_direct_queues_and_discovers() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let dest = Identity::generate();
+    let dest_addr = *dest.node_addr();
+    node.register_identity(dest_addr, dest.pubkey_full());
+    insert_established_session(&mut node, &dest);
+    add_direct_peer_for_identity(&mut node, &dest);
+    node.get_peer_mut(&dest_addr)
+        .expect("direct peer")
+        .mark_stale();
+
+    assert!(
+        node.get_peer(&dest_addr).expect("direct peer").can_send(),
+        "stale direct peer should remain available for direct probing"
+    );
+    assert!(
+        node.find_next_hop(&dest_addr).is_none(),
+        "stale direct peer should not be selected for established-session payload"
+    );
+
+    let src_fips = crate::FipsAddress::from_node_addr(node.node_addr());
+    let dst_fips = crate::FipsAddress::from_node_addr(&dest_addr);
+    let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-stale-direct-probe");
+    let baseline = node.stats().discovery.req_initiated;
+
+    node.handle_dataplane_deferred_tun_packet(ipv6_packet).await;
+
+    assert_eq!(
+        node.pending_session_traffic
+            .tun_packets_for(&dest_addr)
+            .map(|queue| queue.len()),
+        Some(1),
+        "TUN packet should stay queued while fallback discovery runs"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&dest_addr),
+        "stale direct payload failure must start mesh discovery"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "discovery should be initiated exactly once"
+    );
+}
+
+#[tokio::test]
+async fn test_discovery_preserves_inflight_session_when_coords_refresh() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    for node in &mut nodes {
+        node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    }
+
+    let next_hop = *nodes[1].node.node_addr();
+    let dest_addr = *nodes[2].node.node_addr();
+    let dest_pubkey = nodes[2].node.identity().pubkey_full();
+    nodes[0].node.register_identity(dest_addr, dest_pubkey);
+    nodes[0].node.learn_reverse_route(dest_addr, next_hop);
+
+    let now_ms = crate::time::now_ms();
+    let stale_coords = nodes[0].node.tree_state().my_coords().clone();
+    nodes[0]
+        .node
+        .coord_cache_mut()
+        .insert(dest_addr, stale_coords.clone(), now_ms);
+    nodes[0]
+        .node
+        .initiate_session(dest_addr, dest_pubkey)
+        .await
+        .expect("initial session should start over stale coordinates");
+    let setup_before_refresh = nodes[0]
+        .node
+        .get_session(&dest_addr)
+        .and_then(|entry| entry.handshake_payload())
+        .expect("in-flight session should retain SessionSetup for resend")
+        .to_vec();
+    nodes[0]
+        .node
+        .pending_session_traffic
+        .push_endpoint_data_batch_with_enqueued_at_ms(
+            dest_addr,
+            vec![
+                crate::node::EndpointDataPayload::from_packet_payload(b"queued".to_vec())
+                    .expect("test endpoint payload"),
+            ],
+            usize::MAX,
+            usize::MAX,
+            crate::time::now_ms(),
+        );
+
+    let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
+    nodes[0]
+        .node
+        .coord_cache_mut()
+        .insert(dest_addr, fresh_coords.clone(), now_ms + 1);
+
+    nodes[0].node.retry_session_after_discovery(dest_addr).await;
+
+    let entry = nodes[0]
+        .node
+        .get_session(&dest_addr)
+        .expect("discovery refresh should preserve the in-flight session");
+    assert!(entry.is_initiating());
+    let setup_payload = entry
+        .handshake_payload()
+        .expect("preserved session should retain SessionSetup for resend");
+    assert_eq!(
+        setup_payload, setup_before_refresh,
+        "discovery must not reset an in-flight Noise handshake"
+    );
+    let setup = SessionSetup::decode(&setup_payload[FSP_COMMON_PREFIX_SIZE..])
+        .expect("stored setup should decode");
+    let setup_dest_path: Vec<NodeAddr> = setup.dest_coords.node_addrs().copied().collect();
+    let fresh_path: Vec<NodeAddr> = fresh_coords.node_addrs().copied().collect();
+    let stale_path: Vec<NodeAddr> = stale_coords.node_addrs().copied().collect();
+    assert_eq!(setup_dest_path, stale_path);
+    assert_ne!(
+        setup_dest_path, fresh_path,
+        "the preserved handshake payload must remain byte-stable while fresh coordinates are cached for subsequent traffic"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_discovery_warms_established_session_over_fresh_fallback_route() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    for node in &mut nodes {
+        node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    }
+
+    let fallback_next_hop = *nodes[1].node.node_addr();
+    let dest_addr = *nodes[2].node.node_addr();
+    let dest_pubkey = nodes[2].node.identity().pubkey_full();
+    nodes[0].node.register_identity(dest_addr, dest_pubkey);
+    populate_all_coord_caches(&mut nodes);
+    nodes[0]
+        .node
+        .initiate_session(dest_addr, dest_pubkey)
+        .await
+        .expect("session should initiate over graph route");
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &dest_addr,
+        Duration::from_secs(10),
+        "fallback warmup fixture",
+    )
+    .await;
+    nodes[0].node.coord_cache_mut().remove(&dest_addr);
+
+    nodes[0].node.maybe_initiate_lookup(&dest_addr).await;
+    let request_id = nodes[0]
+        .node
+        .pending_lookups
+        .last_origin_request_id(&dest_addr)
+        .expect("fixture must originate the lookup response being exercised");
+    let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
+    let proof_data =
+        crate::protocol::LookupResponse::proof_bytes(request_id, &dest_addr, &fresh_coords);
+    let proof = nodes[2].node.identity().sign(&proof_data);
+    let response = crate::protocol::LookupResponse::new(request_id, dest_addr, fresh_coords, proof);
+    let response_payload = &response.encode()[1..];
+    let originated_before = nodes[0].node.stats().forwarding.originated_packets;
+
+    nodes[0]
+        .node
+        .handle_lookup_response(&fallback_next_hop, response_payload)
+        .await;
+
+    assert_eq!(
+        nodes[0]
+            .node
+            .pending_session_traffic
+            .endpoint_data_for(&dest_addr)
+            .map(|queue| queue.len()),
+        None,
+        "fixture should not rely on queued endpoint payloads for fallback warmup"
+    );
+    assert_eq!(
+        nodes[0]
+            .node
+            .pending_session_traffic
+            .tun_packets_for(&dest_addr)
+            .map(|queue| queue.len()),
+        None,
+        "fixture should not rely on queued TUN packets for fallback warmup"
+    );
+    assert!(
+        nodes[0].node.stats().forwarding.originated_packets > originated_before,
+        "fresh discovery for an established session should immediately send a small fallback warmup"
+    );
+    drain_to_quiescence(&mut nodes).await;
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_route() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    for node in &mut nodes {
+        node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    }
+
+    let src_addr = *nodes[0].node.node_addr();
+    let fallback_next_hop = *nodes[1].node.node_addr();
+    let dest_addr = *nodes[2].node.node_addr();
+    let dest_pubkey = nodes[2].node.identity().pubkey_full();
+    nodes[0].node.register_identity(dest_addr, dest_pubkey);
+    populate_all_coord_caches(&mut nodes);
+    nodes[0]
+        .node
+        .initiate_session(dest_addr, dest_pubkey)
+        .await
+        .expect("session should initiate over graph route");
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &dest_addr,
+        Duration::from_secs(10),
+        "fallback TUN fixture",
+    )
+    .await;
+    nodes[0].node.coord_cache_mut().remove(&dest_addr);
+
+    let src_fips = crate::FipsAddress::from_node_addr(&src_addr);
+    let dest_fips = crate::FipsAddress::from_node_addr(&dest_addr);
+    let ipv6_packet = build_ipv6_packet(&src_fips, &dest_fips, b"queued-fallback");
+    nodes[0].node.pending_session_traffic.push_tun_packet(
+        dest_addr,
+        ipv6_packet.clone(),
+        usize::MAX,
+        usize::MAX,
+        None,
+    );
+
+    nodes[0].node.maybe_initiate_lookup(&dest_addr).await;
+    let request_id = nodes[0]
+        .node
+        .pending_lookups
+        .last_origin_request_id(&dest_addr)
+        .expect("fixture must originate the lookup response being exercised");
+    let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
+    let proof_data =
+        crate::protocol::LookupResponse::proof_bytes(request_id, &dest_addr, &fresh_coords);
+    let proof = nodes[2].node.identity().sign(&proof_data);
+    let response = crate::protocol::LookupResponse::new(request_id, dest_addr, fresh_coords, proof);
+    let response_payload = &response.encode()[1..];
+
+    nodes[0]
+        .node
+        .handle_lookup_response(&fallback_next_hop, response_payload)
+        .await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while nodes[0]
+        .node
+        .pending_session_traffic
+        .has_traffic_for(&dest_addr)
+        && tokio::time::Instant::now() < deadline
+    {
+        nodes[0].node.retry_pending_session_traffic().await;
+        process_available_packets(&mut nodes).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        nodes[0]
+            .node
+            .pending_session_traffic
+            .tun_packets_for(&dest_addr)
+            .is_none(),
+        "discovery should flush queued TUN traffic through the established session"
+    );
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn discovery_replaces_stale_direct_output_after_delayed_fallback() {
+    let mut nodes = run_tree_test(3, &[(0, 1), (1, 2)], false).await;
+    verify_tree_convergence(&nodes);
+    for node in &mut nodes {
+        node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    }
+    populate_all_coord_caches(&mut nodes);
+    let transit = *nodes[1].node.node_addr();
+    let dest = *nodes[2].node.node_addr();
+    let identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
+    let mut endpoint = nodes[2].node.attach_endpoint_data_io(8).unwrap();
+    nodes[0]
+        .node
+        .initiate_session(dest, identity.pubkey_full())
+        .await
+        .unwrap();
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &dest,
+        Duration::from_secs(10),
+        "delayed fallback fixture",
+    )
+    .await;
+
+    // A completed direct promotion replaces the routed output. The physical
+    // carrier then dies before a replacement route is known, as on reload.
+    let link = LinkId::new(77);
+    let now = Node::now_ms();
+    let mut connection = crate::peer::PeerConnection::outbound(link, identity, now);
+    let msg1 = connection
+        .start_handshake(
+            nodes[0].node.identity().keypair(),
+            nodes[0].node.startup_epoch,
+            now,
+        )
+        .unwrap();
+    let mut responder = crate::peer::PeerConnection::inbound(LinkId::new(78), now);
+    let msg2 = responder
+        .receive_handshake_init(
+            nodes[2].node.identity().keypair(),
+            nodes[2].node.startup_epoch,
+            &msg1,
+            now,
+        )
+        .unwrap();
+    connection.complete_handshake(&msg2, now).unwrap();
+    connection.set_our_index(nodes[0].node.index_allocator.allocate().unwrap());
+    connection.set_their_index(crate::utils::index::SessionIndex::new(42));
+    connection.set_transport_id(nodes[0].transport_id);
+    connection.set_source_addr(TransportAddr::from_string("127.0.0.1:5000"));
+    nodes[0].node.add_connection(connection).unwrap();
+    nodes[0]
+        .node
+        .promote_connection(link, identity, now)
+        .unwrap();
+    assert!(nodes[0].node.refresh_dataplane_fsp_owner_routes(&dest));
+    assert_eq!(
+        nodes[0].node.dataplane.fsp_owner_next_hop(&dest),
+        Some(dest)
+    );
+    nodes[0].node.learned_routes = Default::default();
+    nodes[0].node.coord_cache_mut().remove(&dest);
+    nodes[0].node.remove_link_dead_peer(&dest);
+    assert!(nodes[0].node.find_next_hop(&dest).is_none());
+    assert_eq!(
+        nodes[0].node.dataplane.fsp_owner_next_hop(&dest),
+        Some(dest)
+    );
+    assert!(nodes[0].node.get_peer(&dest).unwrap().can_send());
+    assert!(!nodes[0].node.get_peer(&dest).unwrap().is_healthy());
+
+    nodes[0]
+        .node
+        .maybe_initiate_path_recovery_lookup(&dest)
+        .await;
+    let request = nodes[0]
+        .node
+        .pending_lookups
+        .last_origin_request_id(&dest)
+        .unwrap();
+    let coords = nodes[2].node.tree_state().my_coords().clone();
+    let proof = nodes[2]
+        .node
+        .identity()
+        .sign(&crate::protocol::LookupResponse::proof_bytes(
+            request, &dest, &coords,
+        ));
+    let response = crate::protocol::LookupResponse::new(request, dest, coords, proof).encode();
+    nodes[0]
+        .node
+        .handle_lookup_response(&transit, &response[1..])
+        .await;
+    assert_eq!(
+        nodes[0].node.dataplane.fsp_owner_next_hop(&dest),
+        Some(transit),
+        "authenticated fallback discovery must replace the stale direct output"
+    );
+    send_endpoint_data_via_dataplane(&mut nodes[0].node, identity, b"after-reload".to_vec())
+        .await
+        .unwrap();
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut endpoint.event_rx,
+        Duration::from_secs(5),
+        "data after delayed fallback discovery",
+    )
+    .await;
+    assert_eq!(
+        expect_single_endpoint_data_event(event).payload.as_slice(),
+        b"after-reload"
+    );
+    cleanup_nodes(&mut nodes).await;
+}

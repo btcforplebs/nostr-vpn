@@ -1,0 +1,644 @@
+use super::*;
+use crate::node::route_impl::TransitNextHopPlan;
+use crate::node::session::{EndToEndState, SessionEntry};
+use crate::noise::HandshakeState;
+
+fn insert_established_session(node: &mut Node, target: &Identity) {
+    let mut initiator =
+        HandshakeState::new_initiator(node.identity().keypair(), target.pubkey_full());
+    let mut responder = HandshakeState::new_responder(target.keypair());
+    initiator.set_local_epoch([1; 8]);
+    responder.set_local_epoch([2; 8]);
+    let msg1 = initiator.write_message_1().expect("session msg1");
+    responder.read_message_1(&msg1).expect("session read msg1");
+    let msg2 = responder.write_message_2().expect("session msg2");
+    initiator.read_message_2(&msg2).expect("session read msg2");
+    let session = initiator.into_session().expect("established session");
+    node.sessions.insert(
+        *target.node_addr(),
+        SessionEntry::new(
+            *target.node_addr(),
+            target.pubkey_full(),
+            EndToEndState::Established(session),
+            1_000,
+            false,
+        ),
+    );
+}
+
+#[tokio::test]
+async fn test_response_decode_error() {
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+    node.handle_lookup_response(&from, &[0x00; 10]).await;
+    // No panic, no route cached
+    assert!(node.coord_cache().is_empty());
+}
+
+#[tokio::test]
+async fn test_response_originator_caches_route() {
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+
+    // Use the target identity's actual node_addr for consistency
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = *node.tree_state().root();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+
+    // Register target identity in cache so verification can find it
+    node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 555);
+
+    // Create a valid response with a real proof signature (includes coords)
+    let proof_data = LookupResponse::proof_bytes(555, &target, &coords);
+    let proof = target_identity.sign(&proof_data);
+
+    let response = LookupResponse::new(555, target, coords.clone(), proof);
+    let payload = &response.encode()[1..]; // skip msg_type
+
+    // No entry in recent_requests for 555 → we're the originator
+    assert!(!node.recent_requests.contains_key(&555));
+
+    node.handle_lookup_response(&from, payload).await;
+
+    // Route should be cached in coord_cache
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    assert!(node.coord_cache().contains(&target, now_ms));
+    assert_eq!(node.coord_cache().get(&target, now_ms).unwrap(), &coords);
+}
+
+#[tokio::test]
+async fn local_pending_lookup_wins_over_reflected_transit_request_id() {
+    let mut node = make_node();
+    let honest_response_hop = make_node_addr(0xAA);
+    let reflecting_peer = make_node_addr(0xDD);
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = *node.tree_state().my_coords().root_id();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let request_id = 0xfeed_1234;
+
+    node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, request_id);
+    node.recent_requests.insert(
+        request_id,
+        RecentRequest::new(reflecting_peer, target, Node::now_ms()),
+    );
+
+    let proof_data = LookupResponse::proof_bytes(request_id, &target, &coords);
+    let response = LookupResponse::new(
+        request_id,
+        target,
+        coords,
+        target_identity.sign(&proof_data),
+    );
+    node.handle_lookup_response(&honest_response_hop, &response.encode()[1..])
+        .await;
+
+    assert_eq!(node.stats().discovery.resp_accepted, 1);
+    assert_eq!(node.stats().discovery.resp_forwarded, 0);
+    assert!(
+        !node.pending_lookups.contains_key(&target),
+        "the locally originated lookup must complete"
+    );
+    assert!(
+        !node.recent_requests.contains_key(&request_id),
+        "the reflected reverse-path collision must not survive local completion"
+    );
+    assert_eq!(
+        node.recent_requests.indexed_len(),
+        node.recent_requests.len()
+    );
+}
+
+#[tokio::test]
+async fn established_session_lookup_does_not_revive_failed_payload_hop() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let from = make_node_addr(0xAA);
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = make_node_addr(0xF0);
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+
+    node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 556);
+    node.learn_reverse_route(target, from);
+    node.learned_routes.quarantine_failed_next_hop(
+        target,
+        from,
+        Node::now_ms(),
+        node.config.node.routing.learned_ttl_secs,
+        node.config.node.routing.max_learned_routes_per_dest,
+    );
+
+    insert_established_session(&mut node, &target_identity);
+    assert!(
+        node.learned_routes
+            .failed_next_hops(&target, Node::now_ms())
+            .contains(&from),
+        "fixture must begin with a recently failed payload next hop"
+    );
+
+    let proof_data = LookupResponse::proof_bytes(556, &target, &coords);
+    let response = LookupResponse::new(556, target, coords, target_identity.sign(&proof_data));
+    node.handle_lookup_response(&from, &response.encode()[1..])
+        .await;
+
+    assert!(
+        node.learned_routes
+            .failed_next_hops(&target, Node::now_ms())
+            .contains(&from),
+        "a control-plane lookup response must not erase an established session's payload failure"
+    );
+}
+
+#[tokio::test]
+async fn degraded_session_defers_lookup_and_adopts_a_recovered_response_hop() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let failed_hop = make_node_addr(0xA0);
+
+    assert!(node.register_endpoint_identity(target, target_identity.pubkey_full()));
+    node.learn_reverse_route(target, failed_hop);
+    node.learned_routes.quarantine_failed_next_hop(
+        target,
+        failed_hop,
+        Node::now_ms(),
+        node.config.node.routing.learned_ttl_secs,
+        node.config.node.routing.max_learned_routes_per_dest,
+    );
+
+    insert_established_session(&mut node, &target_identity);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&target, 0));
+    assert_eq!(node.dataplane.fsp_owner_next_hop(&target), None);
+    assert!(node.mark_session_direct_path_degraded(target, Node::now_ms()));
+
+    let initiated_before = node.stats().discovery.req_initiated;
+    node.maybe_initiate_lookup(&target).await;
+    assert!(
+        node.pending_lookups.contains_key(&target),
+        "an established degraded session must retain one deferred lookup until transit returns"
+    );
+    node.maybe_initiate_lookup(&target).await;
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        initiated_before + 1,
+        "repeated endpoint payload must deduplicate behind the deferred lookup"
+    );
+
+    let transit_link = LinkId::new(7);
+    let transit_transport = TransportId::new(7);
+    let (transit_connection, transit_identity) =
+        make_completed_connection(&mut node, transit_link, transit_transport, 2_000);
+    let transit = *transit_identity.node_addr();
+    node.add_connection(transit_connection).unwrap();
+    node.promote_connection(transit_link, transit_identity, 3_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&transit));
+    node.retry_degraded_session_routes_after_peer_authenticated(transit, Node::now_ms())
+        .await;
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        initiated_before + 2,
+        "transit authentication must immediately send the retained lookup"
+    );
+
+    let request_id = node
+        .pending_lookups
+        .last_origin_request_id(&target)
+        .expect("recovered transit must carry a current origin lookup request");
+    let root = *node.tree_state().my_coords().root_id();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let proof_data = LookupResponse::proof_bytes(request_id, &target, &coords);
+    let response = LookupResponse::new(
+        request_id,
+        target,
+        coords,
+        target_identity.sign(&proof_data),
+    );
+    node.handle_lookup_response(&transit, &response.encode()[1..])
+        .await;
+
+    assert!(
+        node.learned_routes
+            .failed_next_hops(&target, Node::now_ms())
+            .contains(&failed_hop),
+        "recovery must not clear the quarantined payload branch"
+    );
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&target),
+        Some(transit),
+        "the authenticated response hop must restore the established FSP owner"
+    );
+}
+
+#[tokio::test]
+async fn recovery_lookup_adopts_indirect_hop_despite_fresh_direct_payload_feedback() {
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    config.peers.push(crate::config::PeerConfig {
+        npub: target_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::new("udp", "203.0.113.9:2121")],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    });
+    let mut node = Node::new(config).unwrap();
+
+    let direct_link = LinkId::new(8);
+    let (direct_connection, direct_identity) = make_completed_connection_for_identity(
+        &mut node,
+        direct_link,
+        TransportId::new(8),
+        1_000,
+        &target_identity,
+    );
+    node.add_connection(direct_connection).unwrap();
+    node.promote_connection(direct_link, direct_identity, 2_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&target));
+
+    let transit_link = LinkId::new(9);
+    let (transit_connection, transit_identity) =
+        make_completed_connection(&mut node, transit_link, TransportId::new(9), 1_000);
+    let transit = *transit_identity.node_addr();
+    node.add_connection(transit_connection).unwrap();
+    node.promote_connection(transit_link, transit_identity, 2_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&transit));
+
+    assert!(node.register_endpoint_identity(target, target_identity.pubkey_full()));
+    insert_established_session(&mut node, &target_identity);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&target, 0));
+
+    let now_ms = Node::now_ms();
+    seed_dataplane_fsp_data_sent_for_test(&mut node, target, target, now_ms);
+    seed_dataplane_fsp_data_rx_for_test(&mut node, target, target, now_ms);
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&target),
+        Some(target),
+        "fixture must begin on the loaded direct path"
+    );
+    assert!(
+        node.session_direct_path_has_recent_data_return(&target, now_ms),
+        "fixture must retain fresh direct-path feedback from the loaded flow"
+    );
+
+    let request_id = 0xfeed_7001;
+    seed_pending_lookup(&mut node, target, request_id);
+    assert!(node.pending_lookups.mark_path_recovery(&target));
+    let root = *node.tree_state().my_coords().root_id();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let proof_data = LookupResponse::proof_bytes(request_id, &target, &coords);
+    let response = LookupResponse::new(
+        request_id,
+        target,
+        coords,
+        target_identity.sign(&proof_data),
+    );
+    node.handle_lookup_response(&transit, &response.encode()[1..])
+        .await;
+
+    assert!(
+        node.session_direct_path_degradation_active(&target, Node::now_ms()),
+        "a target-signed indirect response during an active direct recovery must degrade the unvalidated direct route"
+    );
+    assert!(
+        node.retry_pending.contains_key(&target),
+        "fallback adoption must keep probing the configured direct path"
+    );
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&target),
+        Some(transit),
+        "the established FSP owner must immediately adopt the authenticated recovery hop"
+    );
+}
+
+#[tokio::test]
+async fn stale_signed_response_does_not_repin_an_established_degraded_session() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+
+    assert!(node.register_endpoint_identity(target, target_identity.pubkey_full()));
+    insert_established_session(&mut node, &target_identity);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&target, 0));
+    assert!(node.mark_session_direct_path_degraded(target, Node::now_ms()));
+    node.maybe_initiate_lookup(&target).await;
+    assert!(
+        node.pending_lookups.contains_key(&target),
+        "fixture must retain the deferred lookup while no transit is available"
+    );
+
+    let transit_link = LinkId::new(8);
+    let transit_transport = TransportId::new(8);
+    let (transit_connection, transit_identity) =
+        make_completed_connection(&mut node, transit_link, transit_transport, 2_000);
+    let transit = *transit_identity.node_addr();
+    node.add_connection(transit_connection).unwrap();
+    node.promote_connection(transit_link, transit_identity, 3_000)
+        .unwrap();
+    assert!(node.sync_dataplane_fmp_owner(&transit));
+
+    let stale_request_id = 0x5a11_e000;
+    let root = *node.tree_state().my_coords().root_id();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let proof_data = LookupResponse::proof_bytes(stale_request_id, &target, &coords);
+    let stale_response = LookupResponse::new(
+        stale_request_id,
+        target,
+        coords,
+        target_identity.sign(&proof_data),
+    );
+    node.handle_lookup_response(&transit, &stale_response.encode()[1..])
+        .await;
+
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&target),
+        None,
+        "a target-signed response outside the active origin lookup must not repin payload"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&target),
+        "rejecting a stale response must leave the real recovery lookup pending"
+    );
+}
+
+#[tokio::test]
+async fn test_response_transit_learns_target_route() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let from = make_node_addr(0xAA);
+    let target = make_node_addr(0xBB);
+    let root = *node.tree_state().my_coords().root_id();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+
+    // Transit nodes don't verify proofs, so any valid signature suffices
+    let proof_data = LookupResponse::proof_bytes(444, &target, &coords);
+    let target_identity = Identity::generate();
+    let proof = target_identity.sign(&proof_data);
+
+    let response = LookupResponse::new(444, target, coords.clone(), proof);
+    let payload = &response.encode()[1..];
+
+    // Simulate being a transit node: record a recent_request for this ID
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    node.recent_requests.insert(
+        444,
+        RecentRequest::new(make_node_addr(0xDD), target, now_ms),
+    );
+
+    // Handle response — should try to reverse-path forward to 0xDD
+    // (will fail silently since 0xDD is not an actual peer)
+    node.handle_lookup_response(&from, payload).await;
+
+    // A following SessionSetup uses this same transit. Retain the coordinates
+    // and reverse next hop learned from the response so it does not immediately
+    // report CoordsRequired for the route it just discovered.
+    let now_ms2 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    assert_eq!(node.coord_cache().get(&target, now_ms2), Some(&coords));
+    let learned = node.learned_route_table_snapshot(now_ms2);
+    assert_eq!(learned.destination_count, 1);
+    assert_eq!(learned.route_count, 1);
+    assert_eq!(learned.destinations[0].destination, target.to_string());
+    assert_eq!(learned.destinations[0].routes[0].next_hop, from.to_string());
+}
+
+#[tokio::test]
+async fn test_response_transit_keeps_foreign_root_out_of_strict_routing() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let (target_side_connection, target_side_identity) =
+        make_completed_connection(&mut node, LinkId::new(1), transport_id, 1_000);
+    let target_side = *target_side_identity.node_addr();
+    node.add_connection(target_side_connection).unwrap();
+    node.promote_connection(LinkId::new(1), target_side_identity, 2_000)
+        .unwrap();
+
+    let (origin_side_connection, origin_side_identity) =
+        make_completed_connection(&mut node, LinkId::new(2), transport_id, 1_000);
+    let origin_side = *origin_side_identity.node_addr();
+    node.add_connection(origin_side_connection).unwrap();
+    node.promote_connection(LinkId::new(2), origin_side_identity, 2_000)
+        .unwrap();
+
+    let target = make_node_addr(0xBB);
+    let foreign_coords = TreeCoordinate::from_addrs(vec![target]).unwrap();
+    assert_ne!(
+        foreign_coords.root_id(),
+        node.tree_state().my_coords().root_id(),
+        "fixture requires a target in a different tree component"
+    );
+    let proof_data = LookupResponse::proof_bytes(445, &target, &foreign_coords);
+    let proof = Identity::generate().sign(&proof_data);
+    let response = LookupResponse::new(445, target, foreign_coords, proof);
+    let now_ms = Node::now_ms();
+    node.recent_requests
+        .insert(445, RecentRequest::new(origin_side, target, now_ms));
+
+    node.handle_lookup_response(&target_side, &response.encode()[1..])
+        .await;
+
+    let now_ms = Node::now_ms();
+    assert!(
+        !node.coord_cache().contains(&target, now_ms),
+        "foreign-root coordinates must not suppress the proven reply path"
+    );
+    match node.plan_transit_next_hop(&target, &origin_side) {
+        TransitNextHopPlan::Route(next_hop) => assert_eq!(next_hop, target_side),
+        TransitNextHopPlan::Loop(_) => panic!("foreign-root coordinates caused a route loop"),
+        TransitNextHopPlan::NoRoute => panic!("verified response path was not retained"),
+    }
+}
+
+// ============================================================================
+// Unit Tests — LookupResponse Proof Verification
+// ============================================================================
+
+#[tokio::test]
+async fn test_response_proof_verification_success() {
+    // Verify that a properly signed response is accepted and cached
+    // when the origin has the target's pubkey in identity_cache.
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = *node.tree_state().root();
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+
+    // Register target in identity_cache
+    node.register_identity(target, target_identity.pubkey_full());
+    seed_pending_lookup(&mut node, target, 700);
+
+    // Sign with correct proof_bytes (including coords)
+    let proof_data = LookupResponse::proof_bytes(700, &target, &coords);
+    let proof = target_identity.sign(&proof_data);
+
+    let response = LookupResponse::new(700, target, coords.clone(), proof);
+    let payload = &response.encode()[1..];
+
+    node.handle_lookup_response(&from, payload).await;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    assert!(
+        node.coord_cache().contains(&target, now_ms),
+        "Valid proof should result in cached coords"
+    );
+    assert_eq!(node.coord_cache().get(&target, now_ms).unwrap(), &coords);
+}
+
+#[tokio::test]
+async fn test_response_proof_verification_failure() {
+    // Verify that a response with a bad signature is discarded.
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = make_node_addr(0xF0);
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+
+    // Register target in identity_cache
+    node.register_identity(target, target_identity.pubkey_full());
+
+    // Sign with a DIFFERENT identity (wrong key)
+    seed_pending_lookup(&mut node, target, 701);
+    let wrong_identity = Identity::generate();
+    let proof_data = LookupResponse::proof_bytes(701, &target, &coords);
+    let proof = wrong_identity.sign(&proof_data);
+
+    let response = LookupResponse::new(701, target, coords, proof);
+    let payload = &response.encode()[1..];
+
+    node.handle_lookup_response(&from, payload).await;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    assert!(
+        !node.coord_cache().contains(&target, now_ms),
+        "Bad signature should NOT result in cached coords"
+    );
+}
+
+#[tokio::test]
+async fn test_response_identity_cache_miss() {
+    // Verify that a response is discarded when the origin lacks the
+    // target's pubkey in identity_cache (e.g., XK responder before msg3).
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = make_node_addr(0xF0);
+    let coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+
+    // Do NOT register target in identity_cache
+    seed_pending_lookup(&mut node, target, 702);
+
+    let proof_data = LookupResponse::proof_bytes(702, &target, &coords);
+    let proof = target_identity.sign(&proof_data);
+
+    let response = LookupResponse::new(702, target, coords, proof);
+    let payload = &response.encode()[1..];
+
+    node.handle_lookup_response(&from, payload).await;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    assert!(
+        !node.coord_cache().contains(&target, now_ms),
+        "identity_cache miss should discard the response"
+    );
+}
+
+#[tokio::test]
+async fn test_response_coord_substitution_detected() {
+    // Verify that if the proof was signed with correct coords but
+    // different coords are placed in the response, verification fails.
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let root = make_node_addr(0xF0);
+    let real_coords = TreeCoordinate::from_addrs(vec![target, root]).unwrap();
+    let fake_coords = TreeCoordinate::from_addrs(vec![target, make_node_addr(0xEE), root]).unwrap();
+
+    // Register target in identity_cache
+    node.register_identity(target, target_identity.pubkey_full());
+
+    // Sign proof with real coords
+    seed_pending_lookup(&mut node, target, 703);
+    let proof_data = LookupResponse::proof_bytes(703, &target, &real_coords);
+    let proof = target_identity.sign(&proof_data);
+
+    // But construct the response with FAKE coords
+    let response = LookupResponse::new(703, target, fake_coords, proof);
+    let payload = &response.encode()[1..];
+
+    node.handle_lookup_response(&from, payload).await;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    assert!(
+        !node.coord_cache().contains(&target, now_ms),
+        "Substituted coords should be detected and response discarded"
+    );
+}
+
+#[tokio::test]
+async fn unsolicited_signed_lookup_response_is_dropped_before_verification() {
+    let mut node = make_node();
+    let from = make_node_addr(0xAA);
+    let target_identity = Identity::generate();
+    let target = *target_identity.node_addr();
+    let coords = TreeCoordinate::from_addrs(vec![target, make_node_addr(0xF0)]).unwrap();
+    node.register_identity(target, target_identity.pubkey_full());
+    let proof_data = LookupResponse::proof_bytes(704, &target, &coords);
+    let response = LookupResponse::new(704, target, coords, target_identity.sign(&proof_data));
+
+    node.handle_lookup_response(&from, &response.encode()[1..])
+        .await;
+
+    assert!(node.coord_cache().is_empty());
+    assert_eq!(node.stats().discovery.resp_unsolicited, 1);
+    assert_eq!(node.stats().discovery.resp_proof_failed, 0);
+}
+
+// ============================================================================
+// Unit Tests — RecentRequest Expiry
+// ============================================================================

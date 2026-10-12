@@ -1,0 +1,621 @@
+//! Noise Protocol Implementations for FIPS
+//!
+//! Implements Noise Protocol Framework patterns using secp256k1:
+//!
+//! - **IK pattern**: Used by FMP (link layer) for hop-by-hop peer authentication.
+//!   The initiator knows the responder's static key and sends its encrypted
+//!   static in msg1. Two-message handshake.
+//!
+//! - **XK pattern**: Used by FSP (session layer) for end-to-end sessions.
+//!   The initiator knows the responder's static key but defers revealing its
+//!   own identity until msg3, providing stronger identity hiding. Three-message
+//!   handshake.
+//!
+//! ## IK Handshake Pattern (Link Layer)
+//!
+//! ```text
+//!   <- s                    (pre-message: responder's static known)
+//!   -> e, es, s, ss         (msg1: ephemeral + encrypted static)
+//!   <- e, ee, se            (msg2: ephemeral)
+//! ```
+//!
+//! ## XK Handshake Pattern (Session Layer)
+//!
+//! ```text
+//!   <- s                    (pre-message: responder's static known)
+//!   -> e, es                (msg1: ephemeral + DH with responder's static)
+//!   <- e, ee                (msg2: ephemeral + DH)
+//!   -> s, se                (msg3: encrypted static + DH)
+//! ```
+//!
+//! ## Separation of Concerns
+//!
+//! The IK pattern handles **link-layer peer authentication** — securing the
+//! direct link between neighboring nodes. The XK pattern handles **session-layer
+//! end-to-end encryption** between arbitrary network addresses, with stronger
+//! initiator identity protection.
+
+mod handshake;
+mod replay;
+mod session;
+
+use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
+use std::fmt;
+use thiserror::Error;
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
+pub use handshake::HandshakeState;
+pub use replay::{ReplayRejection, ReplayWindow};
+pub use session::NoiseSession;
+pub(crate) use session::SendCounterAuthority;
+
+/// Protocol name for Noise IK with secp256k1 (link layer).
+/// Format: Noise_IK_secp256k1_ChaChaPoly_SHA256
+pub(crate) const PROTOCOL_NAME_IK: &[u8] = b"Noise_IK_secp256k1_ChaChaPoly_SHA256";
+
+/// Protocol name for Noise XK with secp256k1 (session layer).
+/// Format: Noise_XK_secp256k1_ChaChaPoly_SHA256
+pub(crate) const PROTOCOL_NAME_XK: &[u8] = b"Noise_XK_secp256k1_ChaChaPoly_SHA256";
+
+/// Maximum message size for noise transport messages.
+pub const MAX_MESSAGE_SIZE: usize = 65535;
+
+/// Size of the AEAD tag.
+pub const TAG_SIZE: usize = 16;
+
+/// Size of a public key (compressed secp256k1).
+pub const PUBKEY_SIZE: usize = 33;
+
+/// Size of the startup epoch (random bytes for restart detection).
+pub const EPOCH_SIZE: usize = 8;
+
+/// Size of encrypted epoch (epoch + AEAD tag).
+pub const EPOCH_ENCRYPTED_SIZE: usize = EPOCH_SIZE + TAG_SIZE;
+
+/// Size of IK handshake message 1: ephemeral (33) + encrypted static (33 + 16 tag) + encrypted epoch (8 + 16 tag).
+pub const HANDSHAKE_MSG1_SIZE: usize = PUBKEY_SIZE + PUBKEY_SIZE + TAG_SIZE + EPOCH_ENCRYPTED_SIZE;
+
+/// Size of IK handshake message 2: ephemeral (33) + encrypted epoch (8 + 16 tag).
+pub const HANDSHAKE_MSG2_SIZE: usize = PUBKEY_SIZE + EPOCH_ENCRYPTED_SIZE;
+
+/// XK msg1: ephemeral only (33 bytes).
+pub const XK_HANDSHAKE_MSG1_SIZE: usize = PUBKEY_SIZE;
+
+/// XK msg2: ephemeral (33) + encrypted epoch (8 + 16 tag) = 57 bytes.
+pub const XK_HANDSHAKE_MSG2_SIZE: usize = PUBKEY_SIZE + EPOCH_ENCRYPTED_SIZE;
+
+/// XK msg3: encrypted static (33 + 16 tag) + encrypted epoch (8 + 16 tag) = 73 bytes.
+pub const XK_HANDSHAKE_MSG3_SIZE: usize = PUBKEY_SIZE + TAG_SIZE + EPOCH_ENCRYPTED_SIZE;
+
+/// Replay window size in packets.
+///
+/// This is local receiver state, not a wire-format value. Keep it wide enough
+/// to tolerate bounded userspace queue/reorder tails under CPU pressure.
+pub const REPLAY_WINDOW_SIZE: usize = 8192;
+
+/// Errors from Noise protocol operations.
+#[derive(Debug, Error)]
+pub enum NoiseError {
+    #[error("handshake not complete")]
+    HandshakeNotComplete,
+
+    #[error("handshake already complete")]
+    HandshakeAlreadyComplete,
+
+    #[error("wrong handshake state: expected {expected}, got {got}")]
+    WrongState { expected: String, got: String },
+
+    #[error("invalid public key")]
+    InvalidPublicKey,
+
+    #[error("decryption failed")]
+    DecryptionFailed,
+
+    #[error("encryption failed")]
+    EncryptionFailed,
+
+    #[error("message too large: {size} > {max}")]
+    MessageTooLarge { size: usize, max: usize },
+
+    #[error("message too short: expected at least {expected}, got {got}")]
+    MessageTooShort { expected: usize, got: usize },
+
+    #[error("nonce overflow")]
+    NonceOverflow,
+
+    #[error("replay detected: counter {0} already seen or too old")]
+    ReplayDetected(u64),
+
+    #[error("secp256k1 error: {0}")]
+    Secp256k1(#[from] secp256k1::Error),
+}
+
+/// Role in the handshake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandshakeRole {
+    /// We initiated the connection.
+    Initiator,
+    /// They initiated the connection.
+    Responder,
+}
+
+impl fmt::Display for HandshakeRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HandshakeRole::Initiator => write!(f, "initiator"),
+            HandshakeRole::Responder => write!(f, "responder"),
+        }
+    }
+}
+
+/// Which Noise pattern is being used for this handshake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoisePattern {
+    /// Noise IK: two-message handshake (link layer).
+    Ik,
+    /// Noise XK: three-message handshake (session layer).
+    Xk,
+}
+
+/// Handshake state machine states.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandshakeProgress {
+    /// Initial state, ready to send/receive message 1.
+    Initial,
+    /// Message 1 sent/received, ready for message 2.
+    Message1Done,
+    /// Message 2 sent/received, ready for message 3 (XK only).
+    Message2Done,
+    /// Handshake complete, ready for transport.
+    Complete,
+}
+
+impl fmt::Display for HandshakeProgress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HandshakeProgress::Initial => write!(f, "initial"),
+            HandshakeProgress::Message1Done => write!(f, "message1_done"),
+            HandshakeProgress::Message2Done => write!(f, "message2_done"),
+            HandshakeProgress::Complete => write!(f, "complete"),
+        }
+    }
+}
+
+/// Symmetric cipher state for post-handshake encryption.
+///
+/// AEAD is `ring`'s ChaCha20-Poly1305 (BoringSSL backend), which dispatches
+/// to NEON on aarch64 and AVX-512/AVX2 on x86_64. The `cipher` field caches
+/// a constructed `LessSafeKey` so we don't re-derive it per packet.
+/// `LessSafeKey` itself isn't `Clone`, so `CipherState`'s `Clone` impl
+/// rebuilds it from the retained 32-byte key on demand — for the
+/// off-task-decrypt path see `cipher_clone`.
+pub struct CipherState {
+    /// Encryption key (32 bytes). Retained so we can rebuild the keyed
+    /// AEAD on `Clone` and `cipher_clone()` (ring's `UnboundKey`/`LessSafeKey`
+    /// don't implement `Clone` deliberately for safety).
+    key: [u8; 32],
+    /// Cached keyed AEAD, valid iff `has_key`. None for an un-keyed state.
+    cipher: Option<LessSafeKey>,
+    /// Nonce counter (8 bytes used, 4 bytes zero prefix).
+    pub(super) nonce: u64,
+    /// Whether this cipher has a valid key.
+    has_key: bool,
+}
+
+impl Zeroize for CipherState {
+    fn zeroize(&mut self) {
+        // `ring` does not expose the backend key bytes for explicit erasure,
+        // but dropping the cached handle makes the old key unreachable and,
+        // crucially, prevents this state from continuing to use it after the
+        // application-owned key copy has been cleared.
+        self.cipher = None;
+        self.key.zeroize();
+        self.nonce.zeroize();
+        self.has_key = false;
+    }
+}
+
+impl Drop for CipherState {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for CipherState {}
+
+impl Clone for CipherState {
+    fn clone(&self) -> Self {
+        let cipher = if self.has_key {
+            Self::build_cipher(&self.key)
+        } else {
+            None
+        };
+        Self {
+            key: self.key,
+            cipher,
+            nonce: self.nonce,
+            has_key: self.has_key,
+        }
+    }
+}
+
+impl CipherState {
+    /// Create a new cipher state with the given key.
+    pub(crate) fn new(mut key: [u8; 32]) -> Self {
+        let cipher = Self::build_cipher(&key);
+        let state = Self {
+            key,
+            cipher,
+            nonce: 0,
+            has_key: true,
+        };
+        key.zeroize();
+        state
+    }
+
+    /// Create an empty cipher state (no key yet).
+    pub(super) fn empty() -> Self {
+        Self {
+            key: [0u8; 32],
+            cipher: None,
+            nonce: 0,
+            has_key: false,
+        }
+    }
+
+    /// Initialize with a key.
+    pub(super) fn initialize_key(&mut self, mut key: [u8; 32]) {
+        self.key = key;
+        self.cipher = Self::build_cipher(&key);
+        self.nonce = 0;
+        self.has_key = true;
+        key.zeroize();
+    }
+
+    /// Build a ring `LessSafeKey` from raw key bytes. Centralized so the
+    /// cipher-cache rebuild paths (`new`, `initialize_key`, `Clone`,
+    /// `cipher_clone`) all agree on construction.
+    fn build_cipher(key: &[u8; 32]) -> Option<LessSafeKey> {
+        UnboundKey::new(&CHACHA20_POLY1305, key)
+            .ok()
+            .map(LessSafeKey::new)
+    }
+
+    /// Encrypt plaintext, returning ciphertext with appended tag.
+    pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NoiseError> {
+        if !self.has_key {
+            // No key means no encryption (shouldn't happen in transport phase)
+            return Ok(plaintext.to_vec());
+        }
+
+        if plaintext.len() > MAX_MESSAGE_SIZE - TAG_SIZE {
+            return Err(NoiseError::MessageTooLarge {
+                size: plaintext.len(),
+                max: MAX_MESSAGE_SIZE - TAG_SIZE,
+            });
+        }
+
+        let counter = self.advance_nonce()?;
+        seal(self.cipher.as_ref(), counter, &[], plaintext)
+    }
+
+    /// Decrypt ciphertext (with appended tag), returning plaintext.
+    ///
+    /// Uses the internal nonce counter. For transport phase with explicit
+    /// counters from the wire format, use `decrypt_with_counter` instead.
+    pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, NoiseError> {
+        if !self.has_key {
+            // No key means no encryption
+            return Ok(ciphertext.to_vec());
+        }
+
+        if ciphertext.len() < TAG_SIZE {
+            return Err(NoiseError::MessageTooShort {
+                expected: TAG_SIZE,
+                got: ciphertext.len(),
+            });
+        }
+
+        let counter = self.advance_nonce()?;
+        open(self.cipher.as_ref(), counter, &[], ciphertext)
+    }
+
+    /// Decrypt with an explicit counter value (for transport phase).
+    ///
+    /// This is used when the counter comes from the wire format rather than
+    /// an internal counter. The counter must be validated by a replay window
+    /// before calling this method.
+    pub fn decrypt_with_counter(
+        &self,
+        ciphertext: &[u8],
+        counter: u64,
+    ) -> Result<Vec<u8>, NoiseError> {
+        if !self.has_key {
+            return Ok(ciphertext.to_vec());
+        }
+
+        if ciphertext.len() < TAG_SIZE {
+            return Err(NoiseError::MessageTooShort {
+                expected: TAG_SIZE,
+                got: ciphertext.len(),
+            });
+        }
+
+        open(self.cipher.as_ref(), counter, &[], ciphertext)
+    }
+
+    /// Encrypt plaintext with Additional Authenticated Data (AAD).
+    ///
+    /// The AAD is authenticated but not encrypted. Used for the FMP
+    /// established frame format where the 16-byte outer header is
+    /// bound to the AEAD tag.
+    pub fn encrypt_with_aad(
+        &mut self,
+        plaintext: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, NoiseError> {
+        if !self.has_key {
+            return Ok(plaintext.to_vec());
+        }
+
+        if plaintext.len() > MAX_MESSAGE_SIZE - TAG_SIZE {
+            return Err(NoiseError::MessageTooLarge {
+                size: plaintext.len(),
+                max: MAX_MESSAGE_SIZE - TAG_SIZE,
+            });
+        }
+
+        let counter = self.advance_nonce()?;
+        seal(self.cipher.as_ref(), counter, aad, plaintext)
+    }
+
+    /// Encrypt plaintext with an explicit counter (no AAD).
+    ///
+    /// Symmetric to `decrypt_with_counter`: takes `&self` and a caller-
+    /// supplied counter rather than mutating the internal nonce. Intended
+    /// for pipelined encrypt paths where a dispatcher pre-assigns counters
+    /// and fans the AEAD work out across worker threads. Callers are
+    /// responsible for ensuring counter uniqueness — typically by holding
+    /// the cipher behind a lock or queue that hands out counters in order.
+    pub fn encrypt_with_counter(
+        &self,
+        plaintext: &[u8],
+        counter: u64,
+    ) -> Result<Vec<u8>, NoiseError> {
+        if !self.has_key {
+            return Ok(plaintext.to_vec());
+        }
+
+        if plaintext.len() > MAX_MESSAGE_SIZE - TAG_SIZE {
+            return Err(NoiseError::MessageTooLarge {
+                size: plaintext.len(),
+                max: MAX_MESSAGE_SIZE - TAG_SIZE,
+            });
+        }
+
+        seal(self.cipher.as_ref(), counter, &[], plaintext)
+    }
+
+    /// Encrypt plaintext with an explicit counter and AAD.
+    ///
+    /// Symmetric to `decrypt_with_counter_and_aad`: takes `&self` and a
+    /// caller-supplied counter rather than mutating the internal nonce.
+    /// Same uniqueness contract as `encrypt_with_counter`.
+    pub fn encrypt_with_counter_and_aad(
+        &self,
+        plaintext: &[u8],
+        counter: u64,
+        aad: &[u8],
+    ) -> Result<Vec<u8>, NoiseError> {
+        if !self.has_key {
+            return Ok(plaintext.to_vec());
+        }
+
+        if plaintext.len() > MAX_MESSAGE_SIZE - TAG_SIZE {
+            return Err(NoiseError::MessageTooLarge {
+                size: plaintext.len(),
+                max: MAX_MESSAGE_SIZE - TAG_SIZE,
+            });
+        }
+
+        seal(self.cipher.as_ref(), counter, aad, plaintext)
+    }
+
+    /// Construct an independent keyed AEAD pinned to this cipher's key.
+    ///
+    /// Returns `None` for an empty (un-keyed) state. The returned key is
+    /// freshly built from the retained 32-byte key material — ring's
+    /// `LessSafeKey` doesn't implement `Clone` deliberately, but for
+    /// ChaCha20-Poly1305 the construction is essentially a key copy plus
+    /// a constant-time check, so this is cheap. Combined with
+    /// `decrypt_with_counter[_and_aad]` (which already takes `&self`),
+    /// this lets a dispatcher offload the AEAD rounds to a worker pool
+    /// while the main task keeps the replay window and counter
+    /// assignment sequential.
+    pub fn cipher_clone(&self) -> Option<LessSafeKey> {
+        if self.has_key {
+            Self::build_cipher(&self.key)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(test)]
+    fn retained_key_bytes(&self) -> [u8; 32] {
+        self.key
+    }
+
+    #[cfg(test)]
+    fn has_cached_cipher(&self) -> bool {
+        self.cipher.is_some()
+    }
+
+    /// Decrypt with an explicit counter and AAD (for transport phase).
+    ///
+    /// Combines explicit counter (from wire format) with AAD verification.
+    /// The AAD must match exactly what was used during encryption or the
+    /// AEAD tag verification will fail.
+    pub fn decrypt_with_counter_and_aad(
+        &self,
+        ciphertext: &[u8],
+        counter: u64,
+        aad: &[u8],
+    ) -> Result<Vec<u8>, NoiseError> {
+        if !self.has_key {
+            return Ok(ciphertext.to_vec());
+        }
+
+        if ciphertext.len() < TAG_SIZE {
+            return Err(NoiseError::MessageTooShort {
+                expected: TAG_SIZE,
+                got: ciphertext.len(),
+            });
+        }
+
+        open(self.cipher.as_ref(), counter, aad, ciphertext)
+    }
+
+    /// In-place variant of [`Self::decrypt_with_counter_and_aad`].
+    ///
+    /// On entry, `buf` holds `ciphertext + 16-byte AEAD tag`. On
+    /// successful return, `buf[..returned_len]` holds the plaintext.
+    /// Saves one heap alloc + memcpy per packet versus the by-value
+    /// variant — at multi-Gbps that's a real chunk of the rx_loop's
+    /// per-packet cost.
+    ///
+    /// If the cipher has no key (handshake-not-yet-complete fallback),
+    /// `buf` is treated as already-plaintext and the full length is
+    /// returned unchanged.
+    pub fn decrypt_with_counter_and_aad_in_place(
+        &self,
+        buf: &mut [u8],
+        counter: u64,
+        aad: &[u8],
+    ) -> Result<usize, NoiseError> {
+        if !self.has_key {
+            return Ok(buf.len());
+        }
+        open_in_place(self.cipher.as_ref(), counter, aad, buf)
+    }
+
+    /// Build a ring `Nonce` from a counter value (8-byte LE counter, with
+    /// 4-byte zero prefix to match the Noise/WireGuard wire format).
+    /// Public-in-crate helper so the off-task encrypt/decrypt path on
+    /// callers (e.g. `recv_cipher_clone`) can produce a matching nonce.
+    pub(crate) fn counter_to_nonce(counter: u64) -> Nonce {
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
+        Nonce::assume_unique_for_key(nonce_bytes)
+    }
+
+    /// Reserve and return the next nonce, advancing the internal counter.
+    fn advance_nonce(&mut self) -> Result<u64, NoiseError> {
+        if self.nonce == u64::MAX {
+            return Err(NoiseError::NonceOverflow);
+        }
+        let n = self.nonce;
+        self.nonce += 1;
+        Ok(n)
+    }
+
+    /// Get the current nonce value (for debugging/testing).
+    pub fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    /// Check if cipher has a key.
+    pub fn has_key(&self) -> bool {
+        self.has_key
+    }
+}
+
+impl fmt::Debug for CipherState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CipherState")
+            .field("nonce", &self.nonce)
+            .field("has_key", &self.has_key)
+            .field("key", &"[redacted]")
+            .finish()
+    }
+}
+
+/// Encrypt `plaintext` with the given keyed AEAD, counter, and AAD,
+/// returning a `Vec<u8>` of `plaintext.len() + TAG_SIZE` bytes (ring's
+/// `seal_in_place_append_tag` works on a single buffer; we own it here
+/// to keep the public Vec-returning API of `CipherState`).
+///
+/// Module-private so other paths inside `noise` (e.g. a future pipelined
+/// dispatcher consuming `cipher_clone`) can reuse the exact same
+/// allocation + AEAD pattern.
+pub(crate) fn seal(
+    cipher: Option<&LessSafeKey>,
+    counter: u64,
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, NoiseError> {
+    let cipher = cipher.ok_or(NoiseError::EncryptionFailed)?;
+    let mut buf = Vec::with_capacity(plaintext.len() + TAG_SIZE);
+    buf.extend_from_slice(plaintext);
+    let nonce = CipherState::counter_to_nonce(counter);
+    cipher
+        .seal_in_place_append_tag(nonce, Aad::from(aad), &mut buf)
+        .map_err(|_| NoiseError::EncryptionFailed)?;
+    Ok(buf)
+}
+
+/// Decrypt `ciphertext` (with appended tag) with the given keyed AEAD,
+/// counter, and AAD, returning the plaintext as a `Vec<u8>`. Truncates
+/// in place to drop the AEAD tag.
+pub(crate) fn open(
+    cipher: Option<&LessSafeKey>,
+    counter: u64,
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, NoiseError> {
+    let cipher = cipher.ok_or(NoiseError::DecryptionFailed)?;
+    let mut buf = ciphertext.to_vec();
+    let nonce = CipherState::counter_to_nonce(counter);
+    let plaintext_len = cipher
+        .open_in_place(nonce, Aad::from(aad), &mut buf)
+        .map_err(|_| NoiseError::DecryptionFailed)?
+        .len();
+    buf.truncate(plaintext_len);
+    Ok(buf)
+}
+
+/// In-place variant of [`open`] — decrypts `buf` (which on entry holds
+/// `ciphertext + 16-byte AEAD tag`) into the same buffer, returning the
+/// plaintext length. The caller can then slice `&buf[..plaintext_len]`
+/// without any heap allocation.
+///
+/// Saves one ~1.4 KB heap alloc + memcpy per packet on the FMP / FSP
+/// receive hot path versus the by-value [`open`] variant (which
+/// internally does `ciphertext.to_vec()` before calling
+/// `open_in_place`). At 113 kpps that's ~150 MB/s of memory traffic
+/// dropped per AEAD step, and a meaningful chunk of the rx_loop's
+/// per-packet cost.
+///
+/// Returns `NoiseError::DecryptionFailed` if the AEAD tag check fails,
+/// the cipher has no key, or the buffer is shorter than the tag.
+pub(crate) fn open_in_place(
+    cipher: Option<&LessSafeKey>,
+    counter: u64,
+    aad: &[u8],
+    buf: &mut [u8],
+) -> Result<usize, NoiseError> {
+    let cipher = cipher.ok_or(NoiseError::DecryptionFailed)?;
+    if buf.len() < TAG_SIZE {
+        return Err(NoiseError::MessageTooShort {
+            expected: TAG_SIZE,
+            got: buf.len(),
+        });
+    }
+    let nonce = CipherState::counter_to_nonce(counter);
+    let plaintext = cipher
+        .open_in_place(nonce, Aad::from(aad), buf)
+        .map_err(|_| NoiseError::DecryptionFailed)?;
+    Ok(plaintext.len())
+}
+
+#[cfg(test)]
+mod tests;
