@@ -88,7 +88,7 @@ fn fips_peer_configs_from_mesh(
                 &peer.endpoint_npub,
                 Some(hints),
                 true,
-                FIPS_MOBILE_AUTO_RECONNECT,
+                FIPS_MOBILE_BOOTSTRAP_AUTO_RECONNECT,
             ));
             included.insert(participant.clone());
         }
