@@ -12,6 +12,80 @@ fn wireguard_exit_status_json(app: &AppConfig) -> serde_json::Value {
     })
 }
 
+/// Network DNS override state for `nvpn status`.
+///
+/// `enforced` is the truth that matters when resolution breaks: the override
+/// fails closed, so an operator needs to see at a glance that it is on and
+/// whether the nameserver is usable and reachable.
+fn network_dns_status_json(
+    app: &AppConfig,
+    daemon_peers: Option<&[DaemonPeerState]>,
+) -> serde_json::Value {
+    use nostr_vpn_core::config::NetworkDnsRoute;
+
+    let Some(network) = app.active_network_opt() else {
+        return json!({ "node": null, "override": false, "enforced": false });
+    };
+    let route = app.network_dns_route();
+    if network.dns_node.is_empty() && route == NetworkDnsRoute::Off {
+        return json!({ "node": null, "override": false, "enforced": false });
+    }
+
+    let dns_node = (!network.dns_node.is_empty()).then(|| network.dns_node.clone());
+    let nameserver = match route {
+        NetworkDnsRoute::Nameserver(ip) => Some(ip),
+        _ => None,
+    };
+    let reachable = match (&dns_node, nameserver) {
+        (Some(dns_node), Some(_)) => daemon_peers.map(|peers| {
+            peers
+                .iter()
+                .any(|peer| &peer.participant_pubkey == dns_node && peer.reachable)
+        }),
+        _ => None,
+    };
+    let role = match route {
+        NetworkDnsRoute::ServesNetwork => "nameserver",
+        _ => "client",
+    };
+
+    json!({
+        "node": dns_node,
+        "node_name": dns_node.as_deref().and_then(|node| app.peer_alias(node)),
+        "nameserver_ip": nameserver.map(|ip| ip.to_string()),
+        "override": network.dns_override,
+        "role": role,
+        "enforced": matches!(route, NetworkDnsRoute::Nameserver(_) | NetworkDnsRoute::Unavailable),
+        "unavailable": route == NetworkDnsRoute::Unavailable,
+        "reachable": reachable,
+    })
+}
+
+fn network_dns_status_text(app: &AppConfig, daemon_peers: Option<&[DaemonPeerState]>) -> String {
+    let status = network_dns_status_json(app, daemon_peers);
+    if status["unavailable"].as_bool().unwrap_or(false) {
+        return "override=on NO USABLE NAMESERVER, DNS fails closed".to_string();
+    }
+    let Some(node) = status["node"].as_str() else {
+        return "none".to_string();
+    };
+    let name = status["node_name"].as_str().unwrap_or(node);
+
+    if status["role"] == "nameserver" {
+        return format!("{name} (this device serves network DNS)");
+    }
+    if !status["enforced"].as_bool().unwrap_or(false) {
+        return format!("{name} (selected, override off)");
+    }
+
+    let nameserver = status["nameserver_ip"].as_str().unwrap_or("unknown");
+    match status["reachable"].as_bool() {
+        Some(false) => format!("{name} ({nameserver}) override=on UNREACHABLE, DNS fails closed"),
+        Some(true) => format!("{name} ({nameserver}) override=on reachable"),
+        None => format!("{name} ({nameserver}) override=on"),
+    }
+}
+
 fn apply_cached_active_network_roster(app: &mut AppConfig, path: &Path) -> Result<bool> {
     let Some(network) = app.active_network_opt() else {
         return Ok(false);

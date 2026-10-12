@@ -256,6 +256,7 @@ async fn run_command(command: Command) -> Result<()> {
                             "custom_doh_bootstrap_ips": app.exit_dns.custom_doh_bootstrap_ips,
                             "through_exit_servers": app.exit_dns.through_exit_servers,
                         },
+                        "network_dns": network_dns_status_json(&app, daemon_peers.as_deref()),
                         "wireguard_exit": wireguard_exit_status_json(&app),
                         "paid_exit": paid_exit_status,
                         "daemon": daemon_status_json_value(&daemon),
@@ -311,6 +312,10 @@ async fn run_command(command: Command) -> Result<()> {
                         app.exit_dns.doh_provider.as_str()
                     );
                 }
+                println!(
+                    "network_dns: {}",
+                    network_dns_status_text(&app, daemon_peers.as_deref())
+                );
                 if !app.fips_host_inbound_tcp_ports.is_empty() {
                     println!(
                         "fips_host_inbound_tcp_ports: {}",
@@ -587,6 +592,23 @@ async fn run_command(command: Command) -> Result<()> {
                     .id
                     .clone();
                 app.set_network_join_requests_enabled(&network_id, value)?;
+            }
+            if args.network_dns_node.is_some() || args.network_dns_override.is_some() {
+                let network_id = app
+                    .active_network_opt()
+                    .ok_or_else(|| anyhow!("activate a network before changing network DNS"))?
+                    .id
+                    .clone();
+                // Either flag may be set on its own, so carry the other one over
+                // rather than resetting it. `set_network_dns` enforces the admin
+                // check.
+                let (current_node, current_override) = app
+                    .network_by_id(&network_id)
+                    .map(|network| (network.dns_node.clone(), network.dns_override))
+                    .unwrap_or_default();
+                let dns_node = args.network_dns_node.clone().unwrap_or(current_node);
+                let dns_override = args.network_dns_override.unwrap_or(current_override);
+                app.set_network_dns(&network_id, dns_node.trim(), dns_override)?;
             }
             if let Some(value) = args.fips_advertise_public_endpoint {
                 app.fips_advertise_public_endpoint = value;
