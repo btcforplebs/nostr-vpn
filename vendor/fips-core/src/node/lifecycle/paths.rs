@@ -1,0 +1,837 @@
+use super::*;
+
+impl Node {
+    pub(in crate::node) async fn try_peer_addresses(
+        &mut self,
+        peer_config: &PeerConfig,
+        peer_identity: PeerIdentity,
+        allow_bootstrap_nat: bool,
+    ) -> Result<(), NodeError> {
+        let peer_node_addr = *peer_identity.node_addr();
+        if self.peers.contains_key(&peer_node_addr) {
+            debug!(
+                npub = %peer_config.npub,
+                "Peer already exists, skipping address attempts"
+            );
+            return Ok(());
+        }
+
+        let candidates = self.peer_address_candidates(peer_config).await;
+
+        if candidates.is_empty() {
+            if allow_bootstrap_nat && self.request_nostr_bootstrap(peer_config).await {
+                return Ok(());
+            }
+            return Err(NodeError::NoTransportForType(format!(
+                "no addresses known for {}",
+                peer_config.npub
+            )));
+        }
+
+        if self
+            .attempt_peer_address_list(peer_config, peer_identity, allow_bootstrap_nat, &candidates)
+            .await
+            .is_ok()
+        {
+            if allow_bootstrap_nat {
+                self.request_nostr_bootstrap(peer_config).await;
+            }
+            return Ok(());
+        }
+
+        if allow_bootstrap_nat && self.request_nostr_bootstrap(peer_config).await {
+            return Ok(());
+        }
+
+        Err(NodeError::NoTransportForType(format!(
+            "no operational transport for any of {}'s addresses",
+            peer_config.npub
+        )))
+    }
+
+    pub(super) async fn try_active_peer_alternative_addresses(
+        &mut self,
+        peer_config: &PeerConfig,
+        peer_identity: PeerIdentity,
+        allow_same_path_refresh: bool,
+    ) -> Result<bool, NodeError> {
+        let peer_node_addr = *peer_identity.node_addr();
+        let mut candidates = self.peer_address_candidates(peer_config).await;
+        let direct_path_refresh_needed = allow_same_path_refresh
+            && self
+                .session_direct_degradation
+                .has_pending_validation(&peer_node_addr);
+        // A rebound socket cannot make a stale public endpoint reachable
+        // through endpoint-dependent NAT. Start authenticated traversal over
+        // the preserved mesh session immediately, in parallel with concrete
+        // address probes and rekey recovery.
+        let traversal_started = if direct_path_refresh_needed {
+            self.request_nostr_bootstrap(peer_config).await
+        } else {
+            false
+        };
+        let direct_validation_rekey = direct_path_refresh_needed
+            && self.config.node.rekey.enabled
+            && self.peers.get(&peer_node_addr).is_some_and(|peer| {
+                peer.is_healthy()
+                    && peer.can_send()
+                    && self
+                        .active_peer_current_udp_candidate(&peer_node_addr)
+                        .is_some()
+                    && candidates.iter().any(|candidate| {
+                        self.active_peer_matches_candidate(&peer_node_addr, candidate)
+                    })
+            });
+        if direct_validation_rekey {
+            if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
+                if peer.rekey_in_progress() {
+                    // A route or interface refresh is stronger evidence than
+                    // the ordinary exponential resend timer. Keep the sender
+                    // index that the remote responder may already own, but
+                    // make its stored Msg1 eligible on the next tick so a
+                    // handshake started while the route was down does not
+                    // wait behind stale backoff after connectivity returns.
+                    peer.set_msg1_next_resend(Self::now_ms());
+                    return Ok(true);
+                }
+                if peer.pending_new_session().is_some() {
+                    return Ok(true);
+                }
+                if peer.is_draining() {
+                    return Ok(true);
+                }
+                let dampening_secs = crate::node::handlers::REKEY_DAMPENING_SECS;
+                if peer.is_rekey_dampened(dampening_secs) {
+                    // The retry remains live, but a stale validation marker
+                    // must not rotate FMP epochs again as soon as the previous
+                    // drain ends. Periodic rekey uses the same dampening
+                    // window; recovery must not bypass it.
+                    return Ok(true);
+                }
+            }
+            if self.initiate_rekey(&peer_node_addr).await {
+                return Ok(true);
+            }
+        }
+        let same_path_refresh_needed = allow_same_path_refresh
+            && self.peers.get(&peer_node_addr).is_some_and(|peer| {
+                !peer.is_healthy()
+                    || self
+                        .session_direct_degradation
+                        .has_pending_validation(&peer_node_addr)
+                    || self.active_peer_needs_same_path_refresh(&peer_node_addr)
+            });
+        if same_path_refresh_needed
+            && let Some(candidate) = self.active_peer_current_udp_candidate(&peer_node_addr)
+            && !candidates.iter().any(|existing| {
+                existing.transport == candidate.transport && existing.addr == candidate.addr
+            })
+        {
+            candidates.push(candidate);
+            Self::sort_peer_address_candidates(&mut candidates);
+        }
+        let healthy_bootstrap_upgrade = self.active_peer_uses_websocket(&peer_node_addr)
+            && self.peers.get(&peer_node_addr).is_some_and(|peer| {
+                peer.is_healthy()
+                    && peer.can_send()
+                    && !self.active_peer_needs_same_path_refresh(&peer_node_addr)
+            });
+
+        if candidates.is_empty() {
+            if traversal_started {
+                return Ok(true);
+            }
+            return Err(NodeError::NoTransportForType(format!(
+                "no addresses known for {}",
+                peer_config.npub
+            )));
+        }
+
+        let alternatives: Vec<_> = candidates
+            .into_iter()
+            .filter(|addr| {
+                !(healthy_bootstrap_upgrade && addr.transport == "websocket")
+                    && (same_path_refresh_needed
+                        || !self.active_peer_matches_candidate(&peer_node_addr, addr))
+            })
+            .collect();
+
+        if alternatives.is_empty() {
+            return Ok(traversal_started);
+        }
+
+        match self
+            .attempt_peer_address_list(peer_config, peer_identity, true, &alternatives)
+            .await
+        {
+            Ok(()) => Ok(true),
+            Err(_) if traversal_started => Ok(true),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(in crate::node) async fn peer_address_candidates(
+        &self,
+        peer_config: &PeerConfig,
+    ) -> Vec<PeerAddress> {
+        // Merge every candidate from every source we have for this peer.
+        // Explicitly high-priority configured addresses keep first shot, while
+        // ordinary static hints share priority with freshly fetched overlay
+        // adverts so freshness can break ties after peers roam.
+        let static_addresses = self.static_peer_addresses(peer_config);
+        let overlay_addresses = self
+            .nostr_peer_fallback_addresses(peer_config, &static_addresses)
+            .await;
+
+        let mut candidates = Vec::with_capacity(overlay_addresses.len() + static_addresses.len());
+        for addr in overlay_addresses.into_iter().chain(static_addresses) {
+            if !candidates.iter().any(|existing: &PeerAddress| {
+                existing.transport == addr.transport && existing.addr == addr.addr
+            }) {
+                candidates.push(addr);
+            }
+        }
+
+        Self::sort_peer_address_candidates(&mut candidates);
+
+        candidates
+    }
+
+    pub(super) fn sort_peer_address_candidates(candidates: &mut [PeerAddress]) {
+        // Stable sort: explicit priority is the contract, and freshness breaks
+        // ties inside one priority tier. Ordinary configured endpoints are
+        // hints, not authoritative paths, so fresh overlay/recent candidates can
+        // win when priorities match.
+        candidates.sort_by(|a, b| {
+            if a.priority != b.priority {
+                return a.priority.cmp(&b.priority);
+            }
+            match (a.seen_at_ms, b.seen_at_ms) {
+                (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+    }
+
+    pub(super) fn active_peer_matches_any_candidate(
+        &self,
+        peer_node_addr: &NodeAddr,
+        candidates: &[PeerAddress],
+    ) -> bool {
+        candidates
+            .iter()
+            .any(|candidate| self.active_peer_matches_candidate(peer_node_addr, candidate))
+    }
+
+    pub(in crate::node) fn active_peer_candidate_is_fresh_enough_to_skip(
+        &self,
+        peer_node_addr: &NodeAddr,
+        candidates: &[PeerAddress],
+    ) -> bool {
+        if !self
+            .peers
+            .get(peer_node_addr)
+            .is_some_and(|peer| peer.is_healthy())
+        {
+            return false;
+        }
+        if !self.active_peer_matches_any_candidate(peer_node_addr, candidates) {
+            return false;
+        }
+        !self.active_peer_needs_same_path_refresh(peer_node_addr)
+    }
+
+    pub(in crate::node) fn active_peer_should_keep_direct_retry(
+        &self,
+        peer_node_addr: &NodeAddr,
+        peer_config: &PeerConfig,
+    ) -> bool {
+        if !peer_config.auto_reconnect {
+            return false;
+        }
+
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return false;
+        };
+
+        if self
+            .session_direct_degradation
+            .has_pending_validation(peer_node_addr)
+        {
+            return true;
+        }
+
+        if self.active_peer_uses_websocket(peer_node_addr) {
+            return true;
+        }
+
+        let static_addresses = self.static_peer_addresses(peer_config);
+        if !static_addresses.is_empty() {
+            let Some(peer) = self.peers.get(peer_node_addr) else {
+                return true;
+            };
+            if self.active_peer_has_fresh_endpoint_data_liveness(peer_node_addr) {
+                return false;
+            }
+            if peer
+                .transport_id()
+                .is_some_and(|transport_id| self.bootstrap_transports.contains(&transport_id))
+            {
+                return !self.active_peer_has_fresh_endpoint_data_liveness(peer_node_addr);
+            }
+            let same_path_refresh_needed = self.active_peer_needs_same_path_refresh(peer_node_addr);
+            if !self.active_peer_matches_any_candidate(peer_node_addr, &static_addresses)
+                && peer.is_healthy()
+                && peer.can_send()
+                && !same_path_refresh_needed
+            {
+                return false;
+            }
+            if peer.can_send() && !same_path_refresh_needed {
+                return false;
+            }
+            return !self
+                .active_peer_candidate_is_fresh_enough_to_skip(peer_node_addr, &static_addresses);
+        }
+
+        if peer_config.npub.is_empty() {
+            return false;
+        }
+
+        if !self.config.node.discovery.nostr.enabled
+            || self.config.node.discovery.nostr.policy == NostrDiscoveryPolicy::Disabled
+        {
+            return false;
+        }
+
+        let Some(transport_id) = peer.transport_id() else {
+            return true;
+        };
+
+        if self.bootstrap_transports.contains(&transport_id) {
+            return self.active_peer_needs_same_path_refresh(peer_node_addr);
+        }
+
+        let Some(transport) = self.transports.get(&transport_id) else {
+            return true;
+        };
+
+        if transport.transport_type().name != "udp" {
+            return true;
+        }
+
+        self.active_peer_needs_same_path_refresh(peer_node_addr)
+    }
+
+    pub(in crate::node) fn clear_retry_unless_direct_refresh_needed(
+        &mut self,
+        peer_node_addr: &NodeAddr,
+    ) {
+        let keep_retry = self
+            .retry_pending
+            .get(peer_node_addr)
+            .map(|state| state.peer_config.clone())
+            .is_some_and(|peer_config| {
+                self.active_peer_should_keep_direct_retry(peer_node_addr, &peer_config)
+            });
+
+        if !keep_retry {
+            self.retry_pending.remove(peer_node_addr);
+            return;
+        }
+
+        // FMP/control liveness can resume on an old direct link while the FSP
+        // payload route is still blackholed. Keep racing a replacement until
+        // authenticated direct FSP data (or a promoted direct handshake)
+        // explicitly clears the pending payload validation marker.
+        if self
+            .session_direct_degradation
+            .has_pending_validation(peer_node_addr)
+        {
+            return;
+        }
+
+        if self.active_peer_uses_websocket(peer_node_addr) {
+            return;
+        }
+
+        if self.active_peer_has_fresh_endpoint_data_liveness(peer_node_addr)
+            || (!self.active_peer_uses_bootstrap_transport(peer_node_addr)
+                && self.active_peer_has_fresh_link_liveness(peer_node_addr))
+        {
+            self.retry_pending.remove(peer_node_addr);
+        }
+    }
+
+    pub(in crate::node) fn active_peer_has_fresh_endpoint_data_liveness(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return false;
+        };
+        if !peer.is_healthy() || !peer.can_send() {
+            return false;
+        }
+
+        let now_ms = Self::now_ms();
+        let fresh_after_ms = self.session_direct_path_exclusive_trust_timeout_ms();
+        self.dataplane
+            .min_fsp_data_rx_age_for_next_hop(peer_node_addr, now_ms)
+            .is_some_and(|age_ms| age_ms <= fresh_after_ms)
+    }
+
+    pub(in crate::node) fn active_peer_has_fresh_link_liveness(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return false;
+        };
+        if !peer.is_healthy() || !peer.can_send() {
+            return false;
+        }
+
+        let now_ms = Self::now_ms();
+        let now = std::time::Instant::now();
+        let fresh_after_ms = self.session_direct_path_exclusive_trust_timeout_ms();
+        peer.idle_time(now_ms) <= fresh_after_ms
+            || self
+                .dataplane
+                .fmp_link_metrics(peer_node_addr, now)
+                .and_then(|metrics| metrics.srtt_age_ms)
+                .is_some_and(|age_ms| age_ms <= fresh_after_ms)
+            || self
+                .dataplane
+                .min_fsp_rx_age_for_next_hop(peer_node_addr, now_ms)
+                .is_some_and(|age_ms| age_ms <= fresh_after_ms)
+            || self
+                .dataplane
+                .min_fsp_data_rx_age_for_next_hop(peer_node_addr, now_ms)
+                .is_some_and(|age_ms| age_ms <= fresh_after_ms)
+    }
+
+    pub(in crate::node) fn active_peer_has_fresh_carrier_liveness(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        let now_ms = Self::now_ms();
+        let active_outbound_payload = self
+            .dataplane
+            .fsp_owner_destinations()
+            .into_iter()
+            .filter_map(|dest| self.dataplane.fsp_owner_activity(&dest))
+            .any(|activity| {
+                activity.last_outbound_next_hop() == Some(*peer_node_addr)
+                    && activity.has_recent_outbound_activity(
+                        now_ms,
+                        self.session_direct_path_exclusive_trust_timeout_ms(),
+                    )
+            });
+        active_outbound_payload
+            || self.active_peer_has_fresh_endpoint_data_liveness(peer_node_addr)
+            || (!self.active_peer_uses_websocket(peer_node_addr)
+                && !self.active_peer_uses_bootstrap_transport(peer_node_addr)
+                && self.active_peer_has_fresh_link_liveness(peer_node_addr))
+    }
+
+    pub(in crate::node) fn active_peer_uses_bootstrap_transport(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        self.peers
+            .get(peer_node_addr)
+            .and_then(|peer| peer.transport_id())
+            .is_some_and(|transport_id| self.bootstrap_transports.contains(&transport_id))
+    }
+
+    pub(in crate::node) fn active_peer_uses_websocket(&self, peer_node_addr: &NodeAddr) -> bool {
+        self.peers
+            .get(peer_node_addr)
+            .and_then(|peer| peer.transport_id())
+            .and_then(|transport_id| self.transports.get(&transport_id))
+            .is_some_and(|transport| {
+                matches!(transport, crate::transport::TransportHandle::WebSocket(_))
+            })
+    }
+
+    pub(in crate::node) fn active_peer_needs_same_path_refresh(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return false;
+        };
+        let now_ms = Self::now_ms();
+        if self
+            .dataplane
+            .any_fsp_recent_outbound_without_inbound_for_next_hop(
+                peer_node_addr,
+                now_ms,
+                self.session_direct_path_exclusive_trust_timeout_ms(),
+            )
+        {
+            return true;
+        }
+        let stale_after_ms = self
+            .config
+            .node
+            .heartbeat_interval_secs
+            .saturating_mul(1000)
+            .max(1000);
+        let now = std::time::Instant::now();
+        let mut inbound_quiet_ms = peer.idle_time(now_ms);
+        inbound_quiet_ms = inbound_quiet_ms.min(
+            self.dataplane
+                .fmp_link_metrics(peer_node_addr, now)
+                .and_then(|metrics| metrics.last_recv_age_ms)
+                .unwrap_or_else(|| now_ms.saturating_sub(peer.authenticated_at())),
+        );
+        if let Some(session_age_ms) = self
+            .dataplane
+            .min_fsp_data_rx_age_for_next_hop(peer_node_addr, now_ms)
+        {
+            inbound_quiet_ms = inbound_quiet_ms.min(session_age_ms);
+        }
+        inbound_quiet_ms > stale_after_ms
+    }
+
+    pub(in crate::node) fn active_peer_current_udp_candidate(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> Option<PeerAddress> {
+        let peer = self.peers.get(peer_node_addr)?;
+        let current_addr = peer.current_addr()?;
+        if let Some(transport_id) = peer.transport_id() {
+            if let Some(transport) = self.transports.get(&transport_id) {
+                if transport.transport_type().name != "udp" {
+                    return None;
+                }
+            } else if !self
+                .transports
+                .values()
+                .any(|transport| transport.transport_type().name == "udp")
+            {
+                return None;
+            }
+        } else if !self
+            .transports
+            .values()
+            .any(|transport| transport.transport_type().name == "udp")
+        {
+            return None;
+        }
+        let socket_addr = current_addr.as_str()?.parse::<SocketAddr>().ok()?;
+
+        // A healthy current endpoint has already authenticated for this peer,
+        // so prefer it over older overlay hints during idle refresh. If the
+        // roster has explicit static UDP candidates and the current tuple is
+        // only an observed source address, keep it probeable but let the
+        // configured addresses race first; observed source ports can be
+        // ephemeral across NAT and macOS roaming events.
+        let current_is_configured = self
+            .configured_path_priority(peer_node_addr, peer.transport_id()?, current_addr)
+            .is_some();
+        let provenance = if current_is_configured {
+            PeerAddressProvenance::Configured
+        } else {
+            PeerAddressProvenance::Authenticated
+        };
+        self.find_udp_transport_for_remote_addr(socket_addr, provenance)?;
+        let has_configured_static_udp = self
+            .configured_static_udp_path_for_peer(peer_node_addr, peer.transport_id()?)
+            .is_some();
+        let candidate =
+            if peer.is_healthy() && (!has_configured_static_udp || current_is_configured) {
+                PeerAddress::with_priority("udp", socket_addr.to_string(), 0)
+                    .with_seen_at_ms(Self::now_ms())
+            } else {
+                PeerAddress::with_priority("udp", socket_addr.to_string(), u8::MAX)
+            };
+        Some(if current_is_configured {
+            candidate
+        } else {
+            candidate.authenticated()
+        })
+    }
+
+    pub(super) fn active_peer_current_path_priority(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> Option<u8> {
+        let peer = self.peers.get(peer_node_addr)?;
+        if !peer.is_healthy() {
+            return None;
+        }
+        if peer.transport_id() != Some(transport_id) || peer.current_addr() != Some(remote_addr) {
+            return None;
+        }
+        let transport = self.transports.get(&transport_id)?;
+        (transport.transport_type().name == "udp").then_some(0)
+    }
+
+    pub(in crate::node) fn active_peer_matches_candidate(
+        &self,
+        peer_node_addr: &NodeAddr,
+        candidate: &PeerAddress,
+    ) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return false;
+        };
+        let Some(current_addr) = peer.current_addr() else {
+            return false;
+        };
+        if let Some(peer_transport_id) = peer.transport_id()
+            && let Some((candidate_transport_id, candidate_addr)) =
+                self.resolve_peer_address_for_match(candidate)
+        {
+            return peer_transport_id == candidate_transport_id && current_addr == &candidate_addr;
+        }
+        if candidate.transport == "udp"
+            && candidate.addr.parse::<SocketAddr>().is_ok()
+            && self
+                .transports
+                .values()
+                .any(|transport| transport.transport_type().name == "udp")
+        {
+            return false;
+        }
+        if peer
+            .transport_id()
+            .map(|id| self.bootstrap_transports.contains(&id))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        let current_addr = current_addr.to_string();
+        let current_transport = peer
+            .transport_id()
+            .and_then(|id| self.transports.get(&id))
+            .map(|transport| transport.transport_type().name);
+
+        candidate.addr == current_addr
+            && current_transport
+                .map(|transport| transport == candidate.transport)
+                .unwrap_or(true)
+    }
+
+    pub(super) fn configured_path_priority(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> Option<u8> {
+        self.configured_peer(peer_node_addr)
+            .and_then(|peer| self.peer_config_path_priority(peer, transport_id, remote_addr, true))
+    }
+
+    fn peer_config_path_priority(
+        &self,
+        peer: &PeerConfig,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+        configured_only: bool,
+    ) -> Option<u8> {
+        peer.addresses
+            .iter()
+            .filter_map(|candidate| {
+                if configured_only && !candidate.is_configured() {
+                    return None;
+                }
+                let (candidate_transport_id, candidate_addr) =
+                    self.resolve_peer_address_for_match(candidate)?;
+                (candidate_transport_id == transport_id && &candidate_addr == remote_addr)
+                    .then_some(candidate.priority)
+            })
+            .min()
+    }
+
+    fn known_path_priority(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> Option<u8> {
+        self.retry_pending
+            .get(peer_node_addr)
+            .and_then(|state| {
+                self.peer_config_path_priority(&state.peer_config, transport_id, remote_addr, false)
+            })
+            .or_else(|| {
+                self.configured_peer(peer_node_addr).and_then(|peer| {
+                    self.peer_config_path_priority(peer, transport_id, remote_addr, false)
+                })
+            })
+            .or_else(|| {
+                self.transports.get(&transport_id).map(|transport| {
+                    if transport.transport_type().name == "websocket" {
+                        200
+                    } else {
+                        100
+                    }
+                })
+            })
+    }
+
+    pub(in crate::node) fn configured_static_udp_path_for_peer(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+    ) -> Option<TransportAddr> {
+        self.configured_peer(peer_node_addr)?
+            .addresses
+            .iter()
+            .filter_map(|candidate| {
+                if !candidate.is_configured() || !candidate.transport.eq_ignore_ascii_case("udp") {
+                    return None;
+                }
+                let (candidate_transport_id, candidate_addr) =
+                    self.resolve_peer_address_for_match(candidate)?;
+                (candidate_transport_id == transport_id)
+                    .then_some((candidate.priority, candidate_addr))
+            })
+            .min_by_key(|(priority, _)| *priority)
+            .map(|(_, addr)| addr)
+    }
+
+    pub(in crate::node) fn alternate_path_priority_allows_replace(
+        &self,
+        peer_node_addr: &NodeAddr,
+        candidate_transport_id: TransportId,
+        candidate_addr: &TransportAddr,
+    ) -> bool {
+        const UNKNOWN_PATH_PRIORITY: u16 = u8::MAX as u16 + 1;
+
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return true;
+        };
+        let Some(current_transport_id) = peer.transport_id() else {
+            return true;
+        };
+        let Some(current_addr) = peer.current_addr() else {
+            return true;
+        };
+
+        // Same-host composition must remain usable even when these identities
+        // also have a public/application-owned path. Prefer the authenticated
+        // loopback path without altering or disabling any configured transport.
+        let candidate_is_local =
+            self.is_local_rendezvous_path(candidate_transport_id, candidate_addr);
+        let current_is_local = self.is_local_rendezvous_path(current_transport_id, current_addr);
+        if candidate_is_local != current_is_local {
+            return candidate_is_local;
+        }
+
+        let current_priority = self
+            .known_path_priority(peer_node_addr, current_transport_id, current_addr)
+            .map(u16::from)
+            .unwrap_or(UNKNOWN_PATH_PRIORITY);
+        let candidate_priority = self
+            .known_path_priority(peer_node_addr, candidate_transport_id, candidate_addr)
+            .map(u16::from)
+            .unwrap_or(UNKNOWN_PATH_PRIORITY);
+
+        if candidate_priority < current_priority {
+            return true;
+        }
+
+        debug!(
+            peer = %self.peer_display_name(peer_node_addr),
+            current_transport_id = %current_transport_id,
+            current_addr = %current_addr,
+            current_priority,
+            candidate_transport_id = %candidate_transport_id,
+            candidate_addr = %candidate_addr,
+            candidate_priority,
+            "Suppressing lower-priority alternate path while current path remains healthy"
+        );
+        false
+    }
+
+    pub(in crate::node) fn authenticated_packet_path_allows_bookkeeping(
+        &mut self,
+        peer_node_addr: &NodeAddr,
+        candidate_transport_id: TransportId,
+        candidate_addr: &TransportAddr,
+        now_ms: u64,
+    ) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return true;
+        };
+
+        if peer.transport_id() == Some(candidate_transport_id)
+            && peer.current_addr() == Some(candidate_addr)
+        {
+            return true;
+        }
+
+        // A valid packet opened by the current FMP session on the same UDP
+        // socket is authoritative endpoint-roaming evidence. The configured
+        // address only ordered the original dial; continuing to send replies
+        // there after the peer's NAT tuple changes creates one-way traffic.
+        if peer.transport_id() == Some(candidate_transport_id)
+            && matches!(
+                self.transports.get(&candidate_transport_id),
+                Some(crate::transport::TransportHandle::Udp(_))
+            )
+            && peer.current_addr().is_some_and(|current_addr| {
+                !self.is_local_rendezvous_path(candidate_transport_id, current_addr)
+            })
+        {
+            return true;
+        }
+
+        let current_path_sendable = peer.can_send();
+        if !current_path_sendable
+            || self.session_direct_path_blocks_direct_payload(peer_node_addr, now_ms)
+        {
+            return true;
+        }
+
+        if !self.alternate_path_priority_allows_replace(
+            peer_node_addr,
+            candidate_transport_id,
+            candidate_addr,
+        ) {
+            return false;
+        }
+
+        debug!(
+            peer = %self.peer_display_name(peer_node_addr),
+            candidate_transport_id = %candidate_transport_id,
+            candidate_addr = %candidate_addr,
+            "Accepting authenticated direct-path rotation"
+        );
+        true
+    }
+
+    pub(in crate::node) fn active_peer_uses_recent_endpoint_path(
+        &self,
+        peer_node_addr: &NodeAddr,
+        peer_config: &PeerConfig,
+    ) -> bool {
+        peer_config.addresses.iter().any(|addr| {
+            !addr.is_configured() && self.active_peer_matches_candidate(peer_node_addr, addr)
+        })
+    }
+
+    pub(in crate::node) fn active_peer_uses_traversal_path(
+        &self,
+        peer_node_addr: &NodeAddr,
+        peer_config: &PeerConfig,
+    ) -> bool {
+        let via_bootstrap_transport = self
+            .peers
+            .get(peer_node_addr)
+            .and_then(|peer| peer.transport_id())
+            .map(|id| self.bootstrap_transports.contains(&id))
+            .unwrap_or(false);
+
+        via_bootstrap_transport
+            || self.active_peer_uses_recent_endpoint_path(peer_node_addr, peer_config)
+    }
+}

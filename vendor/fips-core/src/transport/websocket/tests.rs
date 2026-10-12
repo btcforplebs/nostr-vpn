@@ -1,0 +1,433 @@
+use super::*;
+
+#[test]
+fn websocket_record_validation_accepts_bounded_direct_fsp_fragments() {
+    let mut fragment = vec![0u8; 24];
+    fragment[..4].copy_from_slice(b"DFP1");
+    fragment[4..12].copy_from_slice(&7u64.to_le_bytes());
+    fragment[12..16].copy_from_slice(&100u32.to_le_bytes());
+    fragment[16..18].copy_from_slice(&0u16.to_le_bytes());
+    fragment[18..20].copy_from_slice(&2u16.to_le_bytes());
+
+    assert!(validate_websocket_record(&fragment).is_ok());
+    fragment[18..20].copy_from_slice(&1u16.to_le_bytes());
+    assert!(validate_websocket_record(&fragment).is_err());
+}
+use crate::node::wire::build_msg1;
+use crate::transport::packet_channel;
+use crate::utils::index::SessionIndex;
+
+fn test_transport(queue: usize) -> WebSocketTransport {
+    let identity = Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    WebSocketTransport::new(
+        TransportId::new(7),
+        None,
+        WebSocketConfig {
+            max_send_queue: Some(queue),
+            ..Default::default()
+        },
+        packet_tx,
+        &identity,
+    )
+}
+
+async fn wait_for_connection(transport: &WebSocketTransport, addr: &TransportAddr) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if transport.connection_state_sync(addr) == ConnectionState::Connected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("WebSocket seed connection did not become ready");
+}
+
+#[test]
+fn key_hint_round_trip_is_exact_and_nonce_bound() {
+    let request = LocalKeyHint::Request { nonce: 42 };
+    assert_eq!(LocalKeyHint::decode(&request.encode()), Some(request));
+    let response = LocalKeyHint::Response {
+        nonce: 42,
+        pubkey: [9; 32],
+    };
+    assert_eq!(LocalKeyHint::decode(&response.encode()), Some(response));
+    assert!(LocalKeyHint::decode(b"not-a-key-hint").is_none());
+}
+
+#[tokio::test]
+async fn full_send_queue_returns_backpressure_without_growing() {
+    let mut transport = test_transport(1);
+    transport.state = TransportState::Up;
+    let addr = TransportAddr::from_string("ws://127.0.0.1:1/fips");
+    let (tx, _rx) = mpsc::channel(1);
+    transport
+        .runtime
+        .pool
+        .lock()
+        .await
+        .insert(addr.clone(), Connection { generation: 1, tx });
+    let record = build_msg1(
+        SessionIndex::new(1),
+        &[0; crate::noise::HANDSHAKE_MSG1_SIZE],
+    );
+    transport.send_async(&addr, &record).await.unwrap();
+    let error = transport.send_async(&addr, &record).await.unwrap_err();
+    assert!(error.to_string().contains("send queue full"));
+    assert_eq!(transport.stats().send_queue_full, 1);
+}
+
+#[tokio::test]
+async fn configured_seed_reconnects_after_listener_restart() {
+    let server_identity = Identity::generate();
+    let (server_packet_tx, _server_packet_rx) = packet_channel(8);
+    let mut first_server = WebSocketTransport::new(
+        TransportId::new(1),
+        None,
+        WebSocketConfig {
+            bind_addr: Some("127.0.0.1:0".into()),
+            ..Default::default()
+        },
+        server_packet_tx,
+        &server_identity,
+    );
+    first_server.start_async().await.unwrap();
+    let server_addr = first_server.local_addr().unwrap();
+    let seed_url = TransportAddr::from_string(&format!("ws://{server_addr}/fips"));
+
+    let client_identity = Identity::generate();
+    let (client_packet_tx, _client_packet_rx) = packet_channel(8);
+    let mut client = WebSocketTransport::new(
+        TransportId::new(2),
+        None,
+        WebSocketConfig {
+            seed_urls: vec![seed_url.to_string()],
+            reconnect_initial_ms: Some(10),
+            reconnect_max_ms: Some(40),
+            ..Default::default()
+        },
+        client_packet_tx,
+        &client_identity,
+    );
+    client.start_async().await.unwrap();
+    wait_for_connection(&client, &seed_url).await;
+
+    first_server.stop_async().await.unwrap();
+    let (replacement_packet_tx, _replacement_packet_rx) = packet_channel(8);
+    let mut replacement_server = WebSocketTransport::new(
+        TransportId::new(1),
+        None,
+        WebSocketConfig {
+            bind_addr: Some(server_addr.to_string()),
+            ..Default::default()
+        },
+        replacement_packet_tx,
+        &server_identity,
+    );
+    replacement_server.start_async().await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if client.stats().connections_opened >= 2
+                && client.connection_state_sync(&seed_url) == ConnectionState::Connected
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("configured WebSocket seed did not reconnect after restart");
+
+    client.stop_async().await.unwrap();
+    replacement_server.stop_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn ordinary_seed_close_keeps_configured_reconnect_backoff() {
+    let server_identity = Identity::generate();
+    let (server_packet_tx, _server_packet_rx) = packet_channel(8);
+    let mut server = WebSocketTransport::new(
+        TransportId::new(1),
+        None,
+        WebSocketConfig {
+            bind_addr: Some("127.0.0.1:0".into()),
+            ..Default::default()
+        },
+        server_packet_tx,
+        &server_identity,
+    );
+    server.start_async().await.unwrap();
+    let seed_url =
+        TransportAddr::from_string(&format!("ws://{}/fips", server.local_addr().unwrap()));
+
+    let client_identity = Identity::generate();
+    let (client_packet_tx, _client_packet_rx) = packet_channel(8);
+    let mut client = WebSocketTransport::new(
+        TransportId::new(2),
+        None,
+        WebSocketConfig {
+            seed_urls: vec![seed_url.to_string()],
+            reconnect_initial_ms: Some(400),
+            reconnect_max_ms: Some(400),
+            ..Default::default()
+        },
+        client_packet_tx,
+        &client_identity,
+    );
+    client.start_async().await.unwrap();
+    wait_for_connection(&client, &seed_url).await;
+    let opened_before_close = client.stats().connections_opened;
+
+    client.close_connection_async(&seed_url).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        client.stats().connections_opened,
+        opened_before_close,
+        "an ordinary close must retain configured reconnect pacing"
+    );
+
+    wait_for_connection(&client, &seed_url).await;
+    assert!(client.stats().connections_opened > opened_before_close);
+
+    client.stop_async().await.unwrap();
+    server.stop_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn configured_seed_reconnects_immediately_after_network_change() {
+    let server_identity = Identity::generate();
+    let (server_packet_tx, _server_packet_rx) = packet_channel(8);
+    let mut server = WebSocketTransport::new(
+        TransportId::new(1),
+        None,
+        WebSocketConfig {
+            bind_addr: Some("127.0.0.1:0".into()),
+            ..Default::default()
+        },
+        server_packet_tx,
+        &server_identity,
+    );
+    server.start_async().await.unwrap();
+    let seed_url =
+        TransportAddr::from_string(&format!("ws://{}/fips", server.local_addr().unwrap()));
+
+    let client_identity = Identity::generate();
+    let (client_packet_tx, _client_packet_rx) = packet_channel(8);
+    let mut client = WebSocketTransport::new(
+        TransportId::new(2),
+        None,
+        WebSocketConfig {
+            seed_urls: vec![seed_url.to_string()],
+            reconnect_initial_ms: Some(5_000),
+            reconnect_max_ms: Some(5_000),
+            ..Default::default()
+        },
+        client_packet_tx,
+        &client_identity,
+    );
+    client.start_async().await.unwrap();
+    wait_for_connection(&client, &seed_url).await;
+
+    assert!(client.restart_after_network_change().await.unwrap());
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if client.stats().connections_opened >= 2
+                && client.connection_state_sync(&seed_url) == ConnectionState::Connected
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect(
+        "configured WebSocket seed did not redial promptly after positive network-change evidence",
+    );
+    assert_eq!(client.transport_id(), TransportId::new(2));
+
+    client.stop_async().await.unwrap();
+    server.stop_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn network_rebind_rejects_inflight_seed_handshake_before_replacement() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let seed_url =
+        TransportAddr::from_string(&format!("ws://{}/fips", listener.local_addr().unwrap()));
+    let (handshake_blocked_tx, handshake_blocked_rx) = tokio::sync::oneshot::channel();
+    let (release_handshake_tx, release_handshake_rx) = tokio::sync::oneshot::channel();
+    let (old_handshake_done_tx, old_handshake_done_rx) = tokio::sync::oneshot::channel();
+    let (old_dial_observed_tx, old_dial_observed_rx) = tokio::sync::oneshot::channel();
+    let (replacement_ready_tx, replacement_ready_rx) = tokio::sync::oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        let (old_stream, _) = listener.accept().await.unwrap();
+        handshake_blocked_tx.send(()).unwrap();
+        release_handshake_rx.await.unwrap();
+        let old_connection = tokio_tungstenite::accept_async(old_stream).await.ok();
+        old_handshake_done_tx
+            .send(old_connection.is_some())
+            .unwrap();
+        old_dial_observed_rx.await.unwrap();
+
+        let (replacement_stream, _) = listener.accept().await.unwrap();
+        let replacement = tokio_tungstenite::accept_async(replacement_stream)
+            .await
+            .unwrap();
+        replacement_ready_tx.send(()).unwrap();
+        let _ = shutdown_rx.await;
+        drop(replacement);
+        drop(old_connection);
+    });
+
+    let client_identity = Identity::generate();
+    let (client_packet_tx, _client_packet_rx) = packet_channel(8);
+    let mut client = WebSocketTransport::new(
+        TransportId::new(2),
+        None,
+        WebSocketConfig {
+            seed_urls: vec![seed_url.to_string()],
+            connect_timeout_ms: Some(10_000),
+            reconnect_initial_ms: Some(5_000),
+            reconnect_max_ms: Some(5_000),
+            ..Default::default()
+        },
+        client_packet_tx,
+        &client_identity,
+    );
+    client.start_async().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), handshake_blocked_rx)
+        .await
+        .expect("the first seed handshake must reach the blocking server")
+        .unwrap();
+
+    assert!(client.restart_after_network_change().await.unwrap());
+    release_handshake_tx.send(()).unwrap();
+    let old_network_handshake_completed =
+        tokio::time::timeout(Duration::from_secs(2), old_handshake_done_rx)
+            .await
+            .expect("the released old-network handshake must finish or observe cancellation")
+            .unwrap();
+    let stale_connection_survived = tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if client.stats().connections_opened > 0
+                && client.connection_state_sync(&seed_url) == ConnectionState::Connected
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .is_ok();
+    assert!(
+        !stale_connection_survived,
+        "the old-network in-flight dial completed after pool clearing and survived as connected (handshake completed: {old_network_handshake_completed})"
+    );
+    old_dial_observed_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), replacement_ready_rx)
+        .await
+        .expect("the replacement seed handshake must bypass normal reconnect backoff")
+        .unwrap();
+    wait_for_connection(&client, &seed_url).await;
+    assert_eq!(client.stats().connections_opened, 1);
+
+    client.stop_async().await.unwrap();
+    shutdown_tx.send(()).ok();
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn network_change_keeps_live_websocket_listener_bound() {
+    let identity = Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let mut server = WebSocketTransport::new(
+        TransportId::new(1),
+        None,
+        WebSocketConfig {
+            bind_addr: Some("127.0.0.1:0".into()),
+            ..Default::default()
+        },
+        packet_tx,
+        &identity,
+    );
+    server.start_async().await.unwrap();
+    let listener_addr = server.local_addr().unwrap();
+
+    assert!(server.restart_after_network_change().await.unwrap());
+    assert_eq!(server.state(), TransportState::Up);
+    assert_eq!(server.local_addr(), Some(listener_addr));
+    tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(listener_addr))
+        .await
+        .expect("listener must remain available during WebSocket stream refresh")
+        .expect("connect to retained WebSocket listener");
+
+    server.stop_async().await.unwrap();
+}
+
+#[test]
+fn websocket_url_validation_rejects_remote_plaintext_and_bad_limits() {
+    let remote_plaintext = WebSocketConfig {
+        seed_urls: vec!["ws://example.com/fips".into()],
+        ..Default::default()
+    };
+    assert!(remote_plaintext.validate().is_err());
+
+    let loopback_plaintext = WebSocketConfig {
+        seed_urls: vec!["ws://127.0.0.1:9000/fips".into()],
+        ..Default::default()
+    };
+    loopback_plaintext.validate().unwrap();
+
+    let unbounded = WebSocketConfig {
+        max_send_queue: Some(4097),
+        ..Default::default()
+    };
+    assert!(unbounded.validate().is_err());
+}
+
+#[test]
+fn configured_seed_accepts_routed_fips_handshakes_by_default() {
+    let client = WebSocketConfig {
+        seed_urls: vec!["wss://seed.example/fips".into()],
+        ..Default::default()
+    };
+    assert!(client.accept_connections());
+
+    let explicitly_closed = WebSocketConfig {
+        accept_connections: Some(false),
+        ..client
+    };
+    assert!(!explicitly_closed.accept_connections());
+}
+
+#[test]
+fn configured_seed_adjacency_survives_responder_handshake_role() {
+    let identity = Identity::generate();
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let seed_url = "wss://seed.example/fips";
+    let transport = WebSocketTransport::new(
+        TransportId::new(9),
+        None,
+        WebSocketConfig {
+            seed_urls: vec![seed_url.into()],
+            ..Default::default()
+        },
+        packet_tx,
+        &identity,
+    );
+    let seed_addr = TransportAddr::from_string(seed_url);
+
+    assert!(transport.is_configured_adjacency(&seed_addr, true));
+    assert!(
+        transport.is_configured_adjacency(&seed_addr, false),
+        "the configured physical seed URL must remain an explicit adjacency when simultaneous FIPS initiation makes the local session the responder"
+    );
+    assert!(!transport.is_configured_adjacency(
+        &TransportAddr::from_string("wss://other.example/fips"),
+        false
+    ));
+}

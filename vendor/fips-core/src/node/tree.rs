@@ -1,0 +1,493 @@
+//! Spanning Tree Announce send/receive logic.
+//!
+//! Handles building, sending, and receiving TreeAnnounce messages,
+//! including periodic root refresh and rate-limited propagation.
+
+use std::collections::HashMap;
+
+use crate::NodeAddr;
+use crate::protocol::TreeAnnounce;
+
+use super::{Node, NodeError};
+use tracing::{debug, info, trace, warn};
+
+impl Node {
+    /// Build a TreeAnnounce from our current tree state.
+    pub(super) fn build_tree_announce(&self) -> Result<TreeAnnounce, NodeError> {
+        let decl = self.tree_state.my_declaration().clone();
+        let ancestry = self.tree_state.my_coords().clone();
+
+        if !decl.is_signed() {
+            return Err(NodeError::SendFailed {
+                node_addr: *self.identity.node_addr(),
+                reason: "declaration not signed".into(),
+            });
+        }
+
+        Ok(TreeAnnounce::new(decl, ancestry))
+    }
+
+    /// Send a TreeAnnounce to a specific peer, respecting rate limits.
+    ///
+    /// If the peer is rate-limited, the announce is marked pending for
+    /// delivery on the next tick cycle.
+    pub(super) async fn send_tree_announce_to_peer(
+        &mut self,
+        peer_addr: &NodeAddr,
+    ) -> Result<(), NodeError> {
+        let now_ms = Self::now_ms();
+
+        // Check rate limit
+        let peer = match self.peers.get_mut(peer_addr) {
+            Some(p) => p,
+            None => return Err(NodeError::PeerNotFound(*peer_addr)),
+        };
+
+        if !peer.can_send_tree_announce(now_ms) {
+            peer.mark_tree_announce_pending();
+            self.stats_mut().tree.rate_limited += 1;
+            debug!(
+                peer = %self.peer_display_name(peer_addr),
+                "TreeAnnounce rate-limited, marking pending"
+            );
+            return Ok(());
+        }
+
+        // Build and encode
+        let announce = self.build_tree_announce()?;
+        let encoded = announce.encode().map_err(|e| NodeError::SendFailed {
+            node_addr: *peer_addr,
+            reason: format!("encode failed: {}", e),
+        })?;
+
+        // Send
+        if let Err(e) = self
+            .send_dataplane_fmp_link_plaintext(peer_addr, &encoded, false)
+            .await
+        {
+            self.stats_mut().tree.send_failed += 1;
+            return Err(e);
+        }
+
+        self.stats_mut().tree.sent += 1;
+
+        // Record send time
+        if let Some(peer) = self.peers.get_mut(peer_addr) {
+            peer.record_tree_announce_sent(now_ms);
+        }
+
+        trace!(peer = %self.peer_display_name(peer_addr), "Sent TreeAnnounce");
+        Ok(())
+    }
+
+    /// Send a TreeAnnounce to all active peers.
+    pub(super) async fn send_tree_announce_to_all(&mut self) {
+        let peer_addrs: Vec<NodeAddr> = self.peers.keys().copied().collect();
+
+        for peer_addr in peer_addrs {
+            if let Err(e) = self.send_tree_announce_to_peer(&peer_addr).await {
+                debug!(
+                    peer = %self.peer_display_name(&peer_addr),
+                    error = %e,
+                    "Failed to send TreeAnnounce"
+                );
+            }
+        }
+    }
+
+    /// Send pending rate-limited tree announces whose cooldown has expired.
+    pub(super) async fn send_pending_tree_announces(&mut self) {
+        let now_ms = Self::now_ms();
+
+        let ready: Vec<NodeAddr> = self
+            .peers
+            .iter()
+            .filter(|(_, peer)| {
+                peer.has_pending_tree_announce() && peer.can_send_tree_announce(now_ms)
+            })
+            .map(|(addr, _)| *addr)
+            .collect();
+
+        for peer_addr in ready {
+            if let Err(e) = self.send_tree_announce_to_peer(&peer_addr).await {
+                debug!(
+                    peer = %self.peer_display_name(&peer_addr),
+                    error = %e,
+                    "Failed to send pending TreeAnnounce"
+                );
+            }
+        }
+    }
+
+    /// Handle an inbound TreeAnnounce from an authenticated peer.
+    ///
+    /// 1. Decode the message
+    /// 2. Verify the sender's declaration signature (pubkey from handshake)
+    /// 3. Update the peer's tree state
+    /// 4. Re-evaluate parent selection
+    /// 5. If parent changed: increment seq, sign, recompute coords, announce to all
+    pub(super) async fn handle_tree_announce(&mut self, from: &NodeAddr, payload: &[u8]) {
+        self.stats_mut().tree.received += 1;
+
+        let announce = match TreeAnnounce::decode(payload) {
+            Ok(a) => a,
+            Err(e) => {
+                self.stats_mut().tree.decode_error += 1;
+                debug!(from = %self.peer_display_name(from), error = %e, "Malformed TreeAnnounce");
+                return;
+            }
+        };
+
+        // Verify sender's declaration signature using their known pubkey
+        let pubkey = match self.peers.get(from) {
+            Some(peer) => peer.pubkey(),
+            None => {
+                self.stats_mut().tree.unknown_peer += 1;
+                debug!(from = %self.peer_display_name(from), "TreeAnnounce from unknown peer");
+                return;
+            }
+        };
+
+        // The declaring node_addr in the announce should match the sender
+        if announce.declaration.node_addr() != from {
+            self.stats_mut().tree.addr_mismatch += 1;
+            debug!(
+                from = %self.peer_display_name(from),
+                declared = %announce.declaration.node_addr(),
+                "TreeAnnounce node_addr mismatch"
+            );
+            return;
+        }
+
+        if let Err(e) = announce.declaration.verify(&pubkey) {
+            self.stats_mut().tree.sig_failed += 1;
+            warn!(
+                from = %self.peer_display_name(from),
+                error = %e,
+                "TreeAnnounce signature verification failed"
+            );
+            return;
+        }
+
+        if let Err(e) = announce.validate_semantics() {
+            warn!(
+                from = %self.peer_display_name(from),
+                error = %e,
+                "Rejected TreeAnnounce with invalid ancestry"
+            );
+            return;
+        }
+
+        let was_tree_peer = self.is_tree_peer(from);
+
+        // Update peer's tree state in ActivePeer
+        if let Some(peer) = self.peers.get_mut(from) {
+            peer.update_tree_position(announce.declaration.clone(), announce.ancestry.clone());
+        }
+
+        // Update in TreeState
+        let updated = self
+            .tree_state
+            .update_peer(announce.declaration.clone(), announce.ancestry.clone());
+
+        if !updated {
+            self.stats_mut().tree.stale += 1;
+            debug!(from = %self.peer_display_name(from), "TreeAnnounce not fresher than existing, ignored");
+            return;
+        }
+
+        self.stats_mut().tree.accepted += 1;
+
+        debug!(
+            from = %self.peer_display_name(from),
+            seq = announce.declaration.sequence(),
+            depth = announce.ancestry.depth(),
+            root = %announce.ancestry.root_id(),
+            "Processed TreeAnnounce"
+        );
+
+        if *announce.ancestry.root_id() > *self.tree_state.root()
+            && let Err(e) = self.send_tree_announce_to_peer(from).await
+        {
+            debug!(
+                peer = %self.peer_display_name(from),
+                error = %e,
+                "Failed to re-push TreeAnnounce on root disagreement"
+            );
+        }
+
+        // TreeAnnounce and FilterAnnounce are independent datagrams. If the
+        // accepted declaration changes tree membership, recompute from the new
+        // state so a filter received before that transition reaches the other
+        // peers. Avoid recomputing on ordinary ancestry/sequence updates.
+        if was_tree_peer != self.is_tree_peer(from) {
+            let peer_addrs: Vec<NodeAddr> = self.peers.keys().copied().collect();
+            let peer_filters = self.peer_inbound_filters();
+            self.bloom_state
+                .mark_changed_peers(from, &peer_addrs, &peer_filters);
+        }
+
+        // Re-evaluate parent selection with current link costs.
+        // Exclude peers without MMP RTT data — they are not yet eligible
+        // as parent candidates (prevents oscillation from optimistic defaults).
+        let peer_costs: HashMap<NodeAddr, f64> = self.dataplane_fmp_peer_costs();
+        if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
+            let new_seq = self.tree_state.my_declaration().sequence() + 1;
+            let timestamp = crate::time::now_secs();
+
+            let flap_dampened = self.tree_state.set_parent(new_parent, new_seq, timestamp);
+            // recompute_coords may demote to self_root if the new path would be
+            // invalid; sign AFTER recompute so the signature covers the final
+            // declaration.
+            self.tree_state.recompute_coords();
+            if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
+                warn!(error = %e, "Failed to sign declaration after parent switch");
+                return;
+            }
+            self.coord_cache.clear();
+            self.reset_discovery_backoff();
+
+            self.stats_mut().tree.parent_switches += 1;
+
+            info!(
+                new_parent = %self.peer_display_name(&new_parent),
+                new_seq = new_seq,
+                new_root = %self.tree_state.root(),
+                depth = self.tree_state.my_coords().depth(),
+                "Parent switched, flushed coord cache, announcing to all peers"
+            );
+            if flap_dampened {
+                self.stats_mut().tree.flap_dampened += 1;
+                warn!("Flap dampening engaged: excessive parent switches detected");
+            }
+
+            self.send_tree_announce_to_all().await;
+
+            // Tree structure changed — trigger bloom filter exchange with all peers
+            let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
+            self.bloom_state.mark_all_updates_needed(all_peers);
+        } else if !self.tree_state.is_root() && self.tree_state.should_be_root() {
+            // Self is the smallest visible NodeAddr — promote to root rather
+            // than continuing to advertise a stale ancestry rooted elsewhere.
+            self.tree_state.become_root();
+            if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
+                warn!(error = %e, "Failed to sign self-root declaration");
+                return;
+            }
+            self.coord_cache.clear();
+            self.reset_discovery_backoff();
+            self.stats_mut().tree.parent_switches += 1;
+            info!(
+                new_root = %self.tree_state.root(),
+                "Self-promoted to root: smallest visible NodeAddr"
+            );
+            self.send_tree_announce_to_all().await;
+            let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
+            self.bloom_state.mark_all_updates_needed(all_peers);
+        } else if !self.tree_state.is_root()
+            && *self.tree_state.my_declaration().parent_id() == *from
+        {
+            // Check for loop: if parent's ancestry now contains us, drop parent
+            if let Some(parent_coords) = self.tree_state.peer_coords(from)
+                && parent_coords.contains(self.identity.node_addr())
+            {
+                self.stats_mut().tree.loop_detected += 1;
+                warn!(
+                    parent = %self.peer_display_name(from),
+                    "Parent ancestry contains us — loop detected, dropping parent"
+                );
+                let peer_costs: HashMap<NodeAddr, f64> = self.dataplane_fmp_peer_costs();
+                if self.tree_state.handle_parent_lost(&peer_costs) {
+                    if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
+                        warn!(error = %e, "Failed to sign declaration after loop detection");
+                        return;
+                    }
+                    self.coord_cache.clear();
+                    self.reset_discovery_backoff();
+                    self.send_tree_announce_to_all().await;
+                    let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
+                    self.bloom_state.mark_all_updates_needed(all_peers);
+                }
+                return;
+            }
+
+            // Our parent's ancestry changed but we're keeping the same parent.
+            // Recompute our own coordinates (which derive from parent's ancestry)
+            // and re-announce so downstream nodes stay current.
+            //
+            // Compare the full address path (not just root + depth) so that a
+            // mid-chain ancestor swap also triggers re-announce. A reroute that
+            // replaces an interior ancestor without changing the root or the
+            // path length leaves both `root` and `depth` unchanged but still
+            // alters our coords; downstream peers must learn the new path or
+            // they will route into a phantom intermediate that no longer
+            // exists on our parent's tree.
+            let old_root = *self.tree_state.root();
+            let old_depth = self.tree_state.my_coords().depth();
+            let old_addrs: Vec<NodeAddr> =
+                self.tree_state.my_coords().node_addrs().copied().collect();
+
+            let new_seq = self.tree_state.my_declaration().sequence() + 1;
+            let timestamp = crate::time::now_secs();
+
+            self.tree_state.set_parent(*from, new_seq, timestamp);
+            self.tree_state.recompute_coords();
+            if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
+                warn!(error = %e, "Failed to sign declaration after parent update");
+                return;
+            }
+            self.coord_cache.clear();
+            self.reset_discovery_backoff();
+
+            let new_addrs: Vec<NodeAddr> =
+                self.tree_state.my_coords().node_addrs().copied().collect();
+
+            if old_addrs != new_addrs {
+                self.stats_mut().tree.ancestry_changed += 1;
+                info!(
+                    parent = %self.peer_display_name(from),
+                    old_root = %old_root,
+                    new_root = %self.tree_state.root(),
+                    old_depth = old_depth,
+                    new_depth = self.tree_state.my_coords().depth(),
+                    "Parent ancestry changed, re-announcing"
+                );
+                self.send_tree_announce_to_all().await;
+            }
+        }
+    }
+
+    /// Periodic tree maintenance, called from the tick handler.
+    ///
+    /// Sends pending rate-limited announces and checks for periodic
+    /// parent re-evaluation based on current MMP link costs.
+    pub(super) async fn check_tree_state(&mut self) {
+        self.send_pending_tree_announces().await;
+        self.check_periodic_parent_reeval().await;
+    }
+
+    /// Periodic parent re-evaluation based on current MMP link costs.
+    ///
+    /// Self-paces using `last_parent_reeval` and the configured
+    /// `reeval_interval_secs`. When a better parent is found, follows
+    /// the same switch flow as TreeAnnounce-triggered switches.
+    async fn check_periodic_parent_reeval(&mut self) {
+        let interval_secs = self.config.node.tree.reeval_interval_secs;
+        if interval_secs == 0 {
+            return;
+        }
+
+        // Need at least 2 peers for a meaningful comparison
+        if self.peers.len() < 2 {
+            return;
+        }
+
+        let now = crate::time::instant_now();
+        let interval = std::time::Duration::from_secs(interval_secs);
+
+        if let Some(last) = self.last_parent_reeval
+            && now.duration_since(last) < interval
+        {
+            return;
+        }
+
+        self.last_parent_reeval = Some(now);
+
+        let peer_costs: HashMap<NodeAddr, f64> = self.dataplane_fmp_peer_costs();
+
+        if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
+            let new_seq = self.tree_state.my_declaration().sequence() + 1;
+            let timestamp = crate::time::now_secs();
+
+            let flap_dampened = self.tree_state.set_parent(new_parent, new_seq, timestamp);
+            self.tree_state.recompute_coords();
+            if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
+                warn!(error = %e, "Failed to sign declaration after periodic parent re-eval");
+                return;
+            }
+            self.coord_cache.clear();
+            self.reset_discovery_backoff();
+
+            self.stats_mut().tree.parent_switches += 1;
+
+            info!(
+                new_parent = %self.peer_display_name(&new_parent),
+                new_seq = new_seq,
+                new_root = %self.tree_state.root(),
+                depth = self.tree_state.my_coords().depth(),
+                trigger = "periodic",
+                "Parent switched via periodic cost re-evaluation"
+            );
+            if flap_dampened {
+                self.stats_mut().tree.flap_dampened += 1;
+                warn!("Flap dampening engaged: excessive parent switches detected");
+            }
+
+            self.send_tree_announce_to_all().await;
+
+            let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
+            self.bloom_state.mark_all_updates_needed(all_peers);
+        } else if !self.tree_state.is_root() && self.tree_state.should_be_root() {
+            self.tree_state.become_root();
+            if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
+                warn!(error = %e, "Failed to sign self-root declaration in periodic reeval");
+                return;
+            }
+            self.coord_cache.clear();
+            self.reset_discovery_backoff();
+            self.stats_mut().tree.parent_switches += 1;
+            info!(
+                new_root = %self.tree_state.root(),
+                trigger = "periodic",
+                "Self-promoted to root in periodic reeval: smallest visible NodeAddr"
+            );
+            self.send_tree_announce_to_all().await;
+            let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
+            self.bloom_state.mark_all_updates_needed(all_peers);
+        } else {
+            trace!(
+                seq = self.tree_state.my_declaration().sequence(),
+                root = %self.tree_state.root(),
+                "Periodic TreeAnnounce re-broadcast (no state change)"
+            );
+            self.send_tree_announce_to_all().await;
+        }
+    }
+
+    /// Handle tree state cleanup when a peer is removed.
+    ///
+    /// Called from `remove_active_peer`. If the removed peer was our parent,
+    /// attempts to find an alternative or becomes root.
+    ///
+    /// Returns `true` if our tree state changed (caller should announce).
+    pub(super) fn handle_peer_removal_tree_cleanup(&mut self, node_addr: &NodeAddr) -> bool {
+        let was_parent =
+            !self.tree_state.is_root() && self.tree_state.my_declaration().parent_id() == node_addr;
+
+        self.tree_state.remove_peer(node_addr);
+
+        if was_parent {
+            self.stats_mut().tree.parent_losses += 1;
+            let peer_costs: HashMap<NodeAddr, f64> = self.dataplane_fmp_peer_costs();
+            let changed = self.tree_state.handle_parent_lost(&peer_costs);
+            if changed {
+                // Re-sign the new declaration
+                if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
+                    warn!(error = %e, "Failed to sign declaration after parent loss");
+                }
+                let our_addr = *self.identity.node_addr();
+                self.coord_cache.invalidate_via_node(&our_addr);
+                self.coord_cache
+                    .invalidate_other_roots(self.tree_state.root());
+                info!(
+                    new_root = %self.tree_state.root(),
+                    is_root = self.tree_state.is_root(),
+                    "Tree state updated after parent loss"
+                );
+            }
+            changed
+        } else {
+            false
+        }
+    }
+}

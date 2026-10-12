@@ -1,0 +1,69 @@
+[package]
+name = "fips-core"
+version = "0.4.53"
+edition = "2024"
+description = "Reusable FIPS mesh, endpoint, transport, and protocol library"
+license = "MIT"
+authors = ["Johnathan Corgan <jcorgan@corganlabs.com>"]
+repository = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips"
+readme = "README.md"
+
+[features]
+default = []
+sim-transport = []
+webrtc-transport = ["dep:bytes", "dep:if-addrs", "dep:webrtc"]
+host-ble-transport = []
+
+[dependencies]
+fips-identity = { version = "0.3.2", path = "../fips-identity" }
+
+secp256k1 = { version = "0.30", features = ["rand", "global-context"] }
+sha2 = "0.10"
+hkdf = "0.12"
+ring = "0.17"
+rand = "0.10.0"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+dirs = "6.0"
+hex = "0.4"
+base64 = "0.22"
+tracing = "0.1"
+tokio = { version = "1", features = ["rt", "macros", "signal", "sync", "net", "time", "process", "io-util"] }
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+simple-dns = "0.11.2"
+mdns-sd = "0.19"
+socket2 = { version = "0.6.2", features = ["all"] }
+tokio-socks = "0.5"
+tokio-tungstenite = { version = "0.26.2", features = ["rustls-tls-webpki-roots"] }
+portable-atomic = { version = "1", features = ["std"] }
+bytes = { version = "1", optional = true }
+if-addrs = { version = "0.15", optional = true }
+webrtc = { version = "0.17", optional = true }
+
+nostr = { version = "0.44", features = ["std"] }
+nostr-sdk = "0.44"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+tun = { version = "0.8.5", features = ["async"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rtnetlink = "0.20.0"
+procfs = { version = "0.18", default-features = false }
+
+[target.'cfg(all(target_os = "linux", not(target_env = "musl")))'.dependencies]
+rustables = "0.8.7"
+bluer = { version = "0.17", features = ["bluetoothd", "l2cap"] }
+
+[target.'cfg(windows)'.dependencies]
+wintun = "0.5"
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
+
+[dev-dependencies]
+tempfile = "3.15"
+tokio = { version = "1", features = ["test-util"] }

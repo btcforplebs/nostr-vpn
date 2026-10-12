@@ -1,0 +1,981 @@
+//! SessionDatagram forwarding tests.
+//!
+//! Tests for the handle_session_datagram handler including decode errors,
+//! TTL enforcement, local delivery, coordinate cache warming, and
+//! multi-hop forwarding through live node topologies.
+
+use super::*;
+use crate::ParentDeclaration;
+use crate::node::route_impl::TransitNextHopPlan;
+use crate::node::session_wire::{FSP_FLAG_CP, build_fsp_header};
+use crate::protocol::{PathBroken, SessionAck, SessionDatagram, SessionSetup, encode_coords};
+use crate::tree::TreeCoordinate;
+use spanning_tree::{
+    cleanup_nodes, process_available_packets, run_tree_test, verify_tree_convergence,
+};
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+fn authenticated_session_datagram<'a>(
+    payload: &'a [u8],
+    incoming_ce: bool,
+) -> AuthenticatedSessionDatagram<'a> {
+    AuthenticatedSessionDatagram::new(make_peer_identity(), payload, incoming_ce)
+}
+
+// --- Decode errors ---
+
+#[tokio::test]
+async fn test_forwarding_decode_error() {
+    let mut node = make_node();
+    // Too-short payload: should log error and return without panic
+    let payload = [0x00; 5];
+    node.handle_session_datagram(authenticated_session_datagram(&payload, false))
+        .await;
+}
+
+// --- TTL ---
+
+#[tokio::test]
+async fn test_forwarding_hop_limit_exhausted() {
+    let mut node = make_node();
+    let src = make_node_addr(0x01);
+    let dest = make_node_addr(0x02);
+    let dg = SessionDatagram::new(src, dest, vec![0x10, 0x00, 0x00, 0x00]).with_ttl(0);
+    let encoded = dg.encode();
+    // Dispatch with payload after msg_type byte
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
+        .await;
+    // No panic, no send (node has no peers)
+}
+
+#[tokio::test]
+async fn test_forwarding_hop_limit_one_drops_at_transit() {
+    // ttl=1 means after decrement it becomes 0 — the datagram can
+    // still be delivered this hop but would be dropped at the next.
+    // decrement_ttl returns true (1 > 0), so the handler proceeds.
+    let mut node = make_node();
+    let my_addr = *node.node_addr();
+    let src = make_node_addr(0x01);
+    let dg = SessionDatagram::new(src, my_addr, vec![0x10, 0x00, 0x00, 0x00]).with_ttl(1);
+    let encoded = dg.encode();
+    // Should succeed — ttl=1 decrements to 0 but packet is still processed
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
+        .await;
+}
+
+// --- Local delivery ---
+
+#[tokio::test]
+async fn test_forwarding_local_delivery() {
+    let mut node = make_node();
+    let my_addr = *node.node_addr();
+    let from = make_node_addr(0x01);
+    let dg = SessionDatagram::new(from, my_addr, vec![0x10, 0x00, 0x00, 0x00]);
+    let encoded = dg.encode();
+    // Should detect local delivery and return without forwarding
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
+        .await;
+}
+
+// --- Direct peer forwarding ---
+
+#[tokio::test]
+async fn test_forwarding_direct_peer() {
+    // Set up a node with one peer. Send a datagram destined for that peer.
+    // The handler should forward it directly.
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+
+    let node1_addr = *nodes[1].node.node_addr();
+
+    // Build a datagram from some external source destined for node 1
+    let external_src = make_node_addr(0xEE);
+    let dg = SessionDatagram::new(external_src, node1_addr, vec![0x10, 0x00, 0x00, 0x00]);
+    let encoded = dg.encode();
+
+    // Handle on node 0: should forward to node 1 (direct peer)
+    nodes[0]
+        .node
+        .handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
+        .await;
+
+    // Process packets — node 1 should receive the forwarded datagram
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let count = process_available_packets(&mut nodes).await;
+    assert!(count > 0, "Expected forwarded packet to arrive at node 1");
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+// ============================================================================
+// Coordinate Cache Warming Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_coord_cache_warming_session_setup() {
+    let mut node = make_node();
+    let src_addr = make_node_addr(0x01);
+    let dest_addr = make_node_addr(0x02);
+    let root_addr = *node.tree_state().my_coords().root_id();
+
+    let src_coords = TreeCoordinate::from_addrs(vec![src_addr, root_addr]).unwrap();
+    let dest_coords = TreeCoordinate::from_addrs(vec![dest_addr, root_addr]).unwrap();
+
+    let setup = SessionSetup::new(src_coords.clone(), dest_coords.clone());
+    let setup_payload = setup.encode();
+
+    let dg = SessionDatagram::new(src_addr, dest_addr, setup_payload);
+    let encoded = dg.encode();
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    // Before: cache is empty
+    assert!(node.coord_cache().get(&src_addr, now_ms).is_none());
+    assert!(node.coord_cache().get(&dest_addr, now_ms).is_none());
+
+    // Handle the datagram (will be local delivery or no-route, but cache warming
+    // happens before routing decision)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
+        .await;
+
+    // After: both src and dest coords should be cached
+    let cached_src = node.coord_cache().get(&src_addr, now_ms);
+    let cached_dest = node.coord_cache().get(&dest_addr, now_ms);
+    assert!(cached_src.is_some(), "src_addr coords not cached");
+    assert!(cached_dest.is_some(), "dest_addr coords not cached");
+
+    // Verify the cached coords have the right root
+    let cached_src = cached_src.unwrap();
+    let cached_dest = cached_dest.unwrap();
+    assert_eq!(cached_src.root_id(), &root_addr);
+    assert_eq!(cached_dest.root_id(), &root_addr);
+}
+
+#[tokio::test]
+async fn test_coord_cache_warming_session_ack() {
+    let mut node = make_node();
+    let src_addr = make_node_addr(0x01);
+    let dest_addr = make_node_addr(0x02);
+    let root_addr = *node.tree_state().my_coords().root_id();
+
+    let src_coords = TreeCoordinate::from_addrs(vec![src_addr, root_addr]).unwrap();
+    let dest_coords = TreeCoordinate::from_addrs(vec![dest_addr, root_addr]).unwrap();
+
+    let ack = SessionAck::new(src_coords.clone(), dest_coords.clone());
+    let ack_payload = ack.encode();
+
+    let dg = SessionDatagram::new(src_addr, dest_addr, ack_payload);
+    let encoded = dg.encode();
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    assert!(node.coord_cache().get(&src_addr, now_ms).is_none());
+    assert!(node.coord_cache().get(&dest_addr, now_ms).is_none());
+
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
+        .await;
+
+    // SessionAck caches both src_coords and dest_coords
+    let cached_src = node.coord_cache().get(&src_addr, now_ms);
+    assert!(
+        cached_src.is_some(),
+        "src_addr coords not cached from SessionAck"
+    );
+    assert_eq!(cached_src.unwrap().root_id(), &root_addr);
+
+    let cached_dest = node.coord_cache().get(&dest_addr, now_ms);
+    assert!(
+        cached_dest.is_some(),
+        "dest_addr coords not cached from SessionAck"
+    );
+    assert_eq!(cached_dest.unwrap().root_id(), &root_addr);
+}
+
+#[tokio::test]
+async fn test_transit_session_ack_pins_the_completed_handshake_path() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let (target_connection, target_hop_identity) =
+        make_completed_connection(&mut node, LinkId::new(1), transport_id, 1_000);
+    let target_hop = *target_hop_identity.node_addr();
+    node.add_connection(target_connection).unwrap();
+    node.promote_connection(LinkId::new(1), target_hop_identity, 2_000)
+        .unwrap();
+
+    let (origin_connection, origin_hop_identity) =
+        make_completed_connection(&mut node, LinkId::new(2), transport_id, 1_000);
+    let origin_hop = *origin_hop_identity.node_addr();
+    node.add_connection(origin_connection).unwrap();
+    node.promote_connection(LinkId::new(2), origin_hop_identity, 2_000)
+        .unwrap();
+
+    let (explored_connection, explored_identity) =
+        make_completed_connection(&mut node, LinkId::new(3), transport_id, 1_000);
+    let explored_hop = *explored_identity.node_addr();
+    node.add_connection(explored_connection).unwrap();
+    node.promote_connection(LinkId::new(3), explored_identity, 2_000)
+        .unwrap();
+
+    let target = make_node_addr(0x41);
+    let origin = make_node_addr(0x42);
+    node.learn_reverse_route(origin, origin_hop);
+    for _ in 0..8 {
+        node.learn_reverse_route(target, explored_hop);
+    }
+
+    let root = *node.tree_state().my_coords().root_id();
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(explored_hop, root, 1, 2_000),
+        TreeCoordinate::from_addrs(vec![explored_hop, root]).unwrap(),
+    );
+    let ack = SessionAck::new(
+        TreeCoordinate::from_addrs(vec![target, explored_hop, root]).unwrap(),
+        TreeCoordinate::from_addrs(vec![origin, root]).unwrap(),
+    );
+    let encoded = SessionDatagram::new(target, origin, ack.encode()).encode();
+    node.handle_session_datagram(AuthenticatedSessionDatagram::new(
+        target_hop_identity,
+        &encoded[1..],
+        false,
+    ))
+    .await;
+
+    for _ in 0..16 {
+        assert!(matches!(
+            node.plan_transit_next_hop(&target, &origin_hop),
+            TransitNextHopPlan::Route(next_hop) if next_hop == target_hop
+        ));
+    }
+
+    node.record_route_failure(target, target_hop);
+    assert!(
+        matches!(
+            node.plan_transit_next_hop(&target, &origin_hop),
+            TransitNextHopPlan::Route(next_hop) if next_hop == explored_hop
+        ),
+        "after the pinned route fails, recovery may use a learned hop only when its tree coordinates prove forward progress"
+    );
+}
+
+#[tokio::test]
+async fn test_stale_root_session_ack_does_not_replace_current_root_coords() {
+    let mut node = make_node();
+    let src_addr = make_node_addr(0x01);
+    let dest_addr = make_node_addr(0x02);
+    let current_root = *node.tree_state().my_coords().root_id();
+    let stale_root = make_node_addr(0xF0);
+    assert_ne!(stale_root, current_root);
+
+    let current_dest_coords = TreeCoordinate::from_addrs(vec![dest_addr, current_root]).unwrap();
+    let stale_src_coords = TreeCoordinate::from_addrs(vec![src_addr, stale_root]).unwrap();
+    let stale_dest_coords = TreeCoordinate::from_addrs(vec![dest_addr, stale_root]).unwrap();
+    let now_ms = Node::now_ms();
+    node.coord_cache_mut()
+        .insert(dest_addr, current_dest_coords.clone(), now_ms);
+
+    let ack = SessionAck::new(stale_src_coords, stale_dest_coords);
+    let datagram = SessionDatagram::new(src_addr, dest_addr, ack.encode()).encode();
+    node.handle_session_datagram(authenticated_session_datagram(&datagram[1..], false))
+        .await;
+
+    assert_eq!(
+        node.coord_cache().get(&dest_addr, Node::now_ms()),
+        Some(&current_dest_coords),
+        "stale carried coordinates must not replace a usable current-root route"
+    );
+}
+
+#[test]
+fn test_current_root_coord_cache_rejects_claimed_node_mismatch() {
+    let mut node = make_node();
+    let claimed_addr = make_node_addr(0x01);
+    let different_addr = make_node_addr(0x02);
+    let root = *node.tree_state().my_coords().root_id();
+    let mismatched_coords = TreeCoordinate::from_addrs(vec![different_addr, root]).unwrap();
+
+    assert!(!node.cache_current_root_coords(claimed_addr, mismatched_coords, Node::now_ms()));
+    assert!(
+        node.coord_cache()
+            .get(&claimed_addr, Node::now_ms())
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn test_coord_cache_warming_encrypted_msg_with_coords() {
+    let mut node = make_node();
+    let src_addr = make_node_addr(0x01);
+    let dest_addr = make_node_addr(0x02);
+    let root_addr = *node.tree_state().my_coords().root_id();
+
+    let src_coords = TreeCoordinate::from_addrs(vec![src_addr, root_addr]).unwrap();
+    let dest_coords = TreeCoordinate::from_addrs(vec![dest_addr, root_addr]).unwrap();
+
+    // Build FSP encrypted message with CP flag: header(12) + coords + fake_ciphertext
+    let header = build_fsp_header(0, FSP_FLAG_CP, 20);
+    let mut data_payload = Vec::new();
+    data_payload.extend_from_slice(&header);
+    encode_coords(&src_coords, &mut data_payload);
+    encode_coords(&dest_coords, &mut data_payload);
+    data_payload.extend_from_slice(&[0xCC; 36]); // fake ciphertext (20 payload + 16 tag)
+
+    let dg = SessionDatagram::new(src_addr, dest_addr, data_payload);
+    let encoded = dg.encode();
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    assert!(node.coord_cache().get(&src_addr, now_ms).is_none());
+    assert!(node.coord_cache().get(&dest_addr, now_ms).is_none());
+
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
+        .await;
+
+    assert!(
+        node.coord_cache().get(&src_addr, now_ms).is_some(),
+        "src coords not cached from encrypted message"
+    );
+    assert!(
+        node.coord_cache().get(&dest_addr, now_ms).is_some(),
+        "dest coords not cached from encrypted message"
+    );
+}
+
+#[tokio::test]
+async fn test_coord_cache_warming_encrypted_msg_no_coords() {
+    let mut node = make_node();
+    let src_addr = make_node_addr(0x01);
+    let dest_addr = make_node_addr(0x02);
+
+    // Build FSP encrypted message without CP flag: header(12) + fake_ciphertext
+    let header = build_fsp_header(0, 0, 20);
+    let mut data_payload = Vec::new();
+    data_payload.extend_from_slice(&header);
+    data_payload.extend_from_slice(&[0xCC; 36]); // fake ciphertext (20 payload + 16 tag)
+
+    let dg = SessionDatagram::new(src_addr, dest_addr, data_payload);
+    let encoded = dg.encode();
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
+        .await;
+
+    assert!(
+        node.coord_cache().get(&src_addr, now_ms).is_none(),
+        "Should not cache coords from message without CP flag"
+    );
+    assert!(
+        node.coord_cache().get(&dest_addr, now_ms).is_none(),
+        "Should not cache coords from message without CP flag"
+    );
+}
+
+// ============================================================================
+// Integration Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_forwarding_single_hop() {
+    // 3-node chain: 0 -- 1 -- 2
+    // Send datagram from node 0 destined for node 2.
+    // Node 1 should forward it.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node2_addr = *nodes[2].node.node_addr();
+
+    // Build a SessionDatagram from node 0 to node 2
+    let dg = SessionDatagram::new(
+        node0_addr,
+        node2_addr,
+        vec![0x10, 0x00, 0x04, 0x00, 1, 2, 3, 4],
+    );
+    let encoded = dg.encode();
+
+    // Send from node 0 to node 1 (the first hop)
+    nodes[0]
+        .node
+        .send_dataplane_fmp_link_plaintext(&node1_addr, &encoded, false)
+        .await
+        .unwrap();
+
+    // Process: node 1 receives, decrypts, dispatches to handler, forwards to node 2
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    process_available_packets(&mut nodes).await;
+
+    // Give time for the forwarded packet to arrive at node 2
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let count = process_available_packets(&mut nodes).await;
+
+    // Node 2 should have received the forwarded datagram
+    // (it sees dest_addr == self, treats as local delivery)
+    // We verify the chain completed by checking packets were processed.
+    assert!(count > 0, "Expected forwarded packet at node 2");
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_forwarding_multi_hop() {
+    // 5-node chain: 0 -- 1 -- 2 -- 3 -- 4
+    // Send datagram from node 0 destined for node 4.
+    let edges = vec![(0, 1), (1, 2), (2, 3), (3, 4)];
+    let mut nodes = run_tree_test(5, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node4_addr = *nodes[4].node.node_addr();
+
+    // Build a SessionDatagram with enough TTL for 4 hops
+    let dg = SessionDatagram::new(
+        node0_addr,
+        node4_addr,
+        vec![0x10, 0x00, 0x04, 0x00, 1, 2, 3, 4],
+    );
+    let encoded = dg.encode();
+
+    // Inject at node 0 → node 1
+    nodes[0]
+        .node
+        .send_dataplane_fmp_link_plaintext(&node1_addr, &encoded, false)
+        .await
+        .unwrap();
+
+    // Process multiple rounds to let the datagram traverse the chain
+    for _ in 0..5 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    // Verify no crashes — the datagram should have traversed 1→2→3→4
+    // and been delivered locally at node 4.
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_forwarding_hop_limit_prevents_infinite_loops() {
+    // 3-node chain: 0 -- 1 -- 2
+    // Send a datagram with ttl=1. It should be forwarded by node 1
+    // (decrement to 0) and delivered at node 2 (local delivery). If node 2
+    // tried to forward further, the 0 ttl would prevent it.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node2_addr = *nodes[2].node.node_addr();
+
+    let dg = SessionDatagram::new(
+        node0_addr,
+        node2_addr,
+        vec![0x10, 0x00, 0x04, 0x00, 1, 2, 3, 4],
+    )
+    .with_ttl(2); // Enough for 0->1 (decrement to 1) and 1->2 (decrement to 0, local delivery)
+
+    let encoded = dg.encode();
+
+    nodes[0]
+        .node
+        .send_dataplane_fmp_link_plaintext(&node1_addr, &encoded, false)
+        .await
+        .unwrap();
+
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    // No panic, no infinite loop
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_forwarding_no_route_generates_error() {
+    // 2-node network: 0 -- 1
+    // Node 0 receives a datagram from node 1 destined for unknown node.
+    // Node 0 should generate CoordsRequired back to node 1.
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let unknown_dest = make_node_addr(0xFF);
+
+    // Node 1 sends a datagram to unknown dest via node 0
+    let dg = SessionDatagram::new(node1_addr, unknown_dest, vec![0x10, 0x00, 0x00, 0x00]);
+    let encoded = dg.encode();
+
+    // Inject at node 1 → node 0
+    nodes[1]
+        .node
+        .send_dataplane_fmp_link_plaintext(&node0_addr, &encoded, false)
+        .await
+        .unwrap();
+
+    // A single drain can process both the failed forward and the returned
+    // signal. Observe the signal's actual side effect instead of requiring it
+    // to land in an arbitrary later drain turn.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            process_available_packets(&mut nodes).await;
+            if nodes[1].node.stats().errors.coords_required > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Expected CoordsRequired error signal to arrive at node 1");
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_stale_path_broken_does_not_invalidate_pinned_handshake_route() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let pinned_link = LinkId::new(1);
+    let (pinned_connection, pinned_identity) =
+        make_completed_connection(&mut node, pinned_link, transport_id, 1_000);
+    let pinned_hop = *pinned_identity.node_addr();
+    node.add_connection(pinned_connection).unwrap();
+    node.promote_connection(pinned_link, pinned_identity, 2_000)
+        .unwrap();
+
+    let stale_link = LinkId::new(2);
+    let (stale_connection, stale_identity) =
+        make_completed_connection(&mut node, stale_link, transport_id, 1_000);
+    let stale_hop = *stale_identity.node_addr();
+    node.add_connection(stale_connection).unwrap();
+    node.promote_connection(stale_link, stale_identity, 2_000)
+        .unwrap();
+
+    let target = make_node_addr(0xE1);
+    let target_coords = TreeCoordinate::root(target);
+    let now_ms = Node::now_ms();
+    node.coord_cache_mut()
+        .insert(target, target_coords.clone(), now_ms);
+    node.pin_handshake_reverse_route(target, pinned_hop);
+
+    assert!(
+        node.routing_error_matches_active_path(&target, &pinned_hop),
+        "multi-hop recovery feedback from a downstream router must remain actionable when it returns through the pinned ingress"
+    );
+
+    let stale_error = PathBroken::new(target, stale_hop)
+        .with_last_coords(target_coords.clone())
+        .encode();
+    node.handle_session_payload(LocalSessionPayload::new(stale_hop, stale_hop, &stale_error))
+        .await;
+
+    assert!(
+        node.coord_cache().contains(&target, Node::now_ms()),
+        "an error returning through a different branch must not invalidate the authenticated handshake path"
+    );
+
+    node.handle_session_payload(LocalSessionPayload::new(
+        stale_hop,
+        pinned_hop,
+        &stale_error,
+    ))
+    .await;
+
+    assert!(
+        node.coord_cache().contains(&target, Node::now_ms()),
+        "downstream recovery feedback routed back through the pinned branch must not destructively invalidate coordinates"
+    );
+    assert_eq!(
+        node.learned_routes
+            .active_handshake_route(&target, Node::now_ms()),
+        None,
+        "downstream PathBroken must release the failed authenticated branch"
+    );
+
+    node.pin_handshake_reverse_route(target, pinned_hop);
+
+    node.get_peer_mut(&pinned_hop)
+        .expect("pinned branch should remain registered")
+        .mark_stale();
+    node.handle_session_payload(LocalSessionPayload::new(stale_hop, stale_hop, &stale_error))
+        .await;
+
+    assert!(
+        node.coord_cache().contains(&target, Node::now_ms()),
+        "transient liveness on the pinned branch must not authorize an unrelated branch to invalidate the authenticated route"
+    );
+
+    let current_error = PathBroken::new(target, pinned_hop)
+        .with_last_coords(target_coords)
+        .encode();
+    node.handle_session_payload(LocalSessionPayload::new(
+        pinned_hop,
+        pinned_hop,
+        &current_error,
+    ))
+    .await;
+
+    assert!(
+        !node.coord_cache().contains(&target, Node::now_ms()),
+        "an error returning through the pinned path must retain normal recovery behavior"
+    );
+}
+
+#[tokio::test]
+async fn test_forwarding_with_cache_warming_enables_routing() {
+    // 4-node chain: 0 -- 1 -- 2 -- 3
+    // Initially, only populate coord caches at node 0.
+    // Send a SessionSetup from node 0 to node 3.
+    // As it traverses 1 and 2, those nodes should cache coordinates from the
+    // SessionSetup. Then verify the caches were warmed.
+    let edges = vec![(0, 1), (1, 2), (2, 3)];
+    let mut nodes = run_tree_test(4, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let _node2_addr = *nodes[2].node.node_addr();
+    let node3_addr = *nodes[3].node.node_addr();
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    // Only populate node 0's cache with all coords (the source knows where to send)
+    let all_coords: Vec<(NodeAddr, TreeCoordinate)> = nodes
+        .iter()
+        .map(|tn| {
+            (
+                *tn.node.node_addr(),
+                tn.node.tree_state().my_coords().clone(),
+            )
+        })
+        .collect();
+
+    // Node 0 gets full cache
+    for (addr, coords) in &all_coords {
+        if addr != nodes[0].node.node_addr() {
+            nodes[0]
+                .node
+                .coord_cache_mut()
+                .insert(*addr, coords.clone(), now_ms);
+        }
+    }
+
+    // Nodes 1 and 2 only get their direct peers' coords (from tree state)
+    // but NOT node 0 or node 3's coords (the endpoints)
+    // Actually, they need bloom filter hits to route, so let's also ensure
+    // bloom filters are converged (which they should be from run_tree_test).
+
+    // But nodes 1 and 2 need cached coords to make loop-free forwarding
+    // decisions. Without coords, find_next_hop returns None.
+    // This is exactly what the SessionSetup cache warming solves!
+    // Populate enough so nodes can route to their adjacent peers,
+    // but NOT the distant endpoint coords.
+    for i in 0..4 {
+        for j in 0..4 {
+            if i != j {
+                // Give each node coords for its direct peers only
+                let j_addr = *nodes[j].node.node_addr();
+                if nodes[i].node.get_peer(&j_addr).is_some() {
+                    let coords = all_coords
+                        .iter()
+                        .find(|(a, _)| a == &j_addr)
+                        .unwrap()
+                        .1
+                        .clone();
+                    nodes[i]
+                        .node
+                        .coord_cache_mut()
+                        .insert(j_addr, coords, now_ms);
+                }
+            }
+        }
+    }
+
+    // Build SessionSetup with real coordinates
+    let src_coords = nodes[0].node.tree_state().my_coords().clone();
+    let dest_coords = nodes[3].node.tree_state().my_coords().clone();
+    let setup = SessionSetup::new(src_coords, dest_coords);
+    let setup_payload = setup.encode();
+
+    let dg = SessionDatagram::new(node0_addr, node3_addr, setup_payload);
+    let encoded = dg.encode();
+
+    // Inject: node 0 → node 1
+    nodes[0]
+        .node
+        .send_dataplane_fmp_link_plaintext(&node1_addr, &encoded, false)
+        .await
+        .unwrap();
+
+    // Process multiple rounds for the datagram to traverse 1→2→3
+    for _ in 0..5 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    // Verify cache warming: nodes 1 and 2 should now have cached coords
+    // for both node 0 and node 3 (from the SessionSetup)
+    let cached_0_at_1 = nodes[1].node.coord_cache().get(&node0_addr, now_ms);
+    let cached_3_at_1 = nodes[1].node.coord_cache().get(&node3_addr, now_ms);
+    assert!(
+        cached_0_at_1.is_some(),
+        "Node 1 should have cached node 0's coords from SessionSetup"
+    );
+    assert!(
+        cached_3_at_1.is_some(),
+        "Node 1 should have cached node 3's coords from SessionSetup"
+    );
+
+    let cached_0_at_2 = nodes[2].node.coord_cache().get(&node0_addr, now_ms);
+    let cached_3_at_2 = nodes[2].node.coord_cache().get(&node3_addr, now_ms);
+    assert!(
+        cached_0_at_2.is_some(),
+        "Node 2 should have cached node 0's coords from SessionSetup"
+    );
+    assert!(
+        cached_3_at_2.is_some(),
+        "Node 2 should have cached node 3's coords from SessionSetup"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+// ============================================================================
+// ECN Tests
+// ============================================================================
+
+use crate::node::handlers::session::mark_ipv6_ecn_ce;
+use crate::transport::TransportId;
+
+/// Build a minimal IPv6 header (40 bytes) with specified ECN bits.
+fn make_ipv6_packet_with_ecn(ecn: u8) -> Vec<u8> {
+    let mut pkt = vec![0u8; 40];
+    let tc = ecn; // DSCP=0, ECN=ecn
+    pkt[0] = 0x60 | (tc >> 4);
+    pkt[1] = tc << 4;
+    pkt
+}
+
+/// Extract ECN bits from an IPv6 packet.
+fn read_ecn(pkt: &[u8]) -> u8 {
+    let tc = ((pkt[0] & 0x0F) << 4) | (pkt[1] >> 4);
+    tc & 0x03
+}
+
+#[test]
+fn test_mark_ecn_ce_on_ect0() {
+    let mut pkt = make_ipv6_packet_with_ecn(0b10);
+    assert_eq!(read_ecn(&pkt), 0b10);
+    mark_ipv6_ecn_ce(&mut pkt);
+    assert_eq!(read_ecn(&pkt), 0b11);
+}
+
+#[test]
+fn test_mark_ecn_ce_on_ect1() {
+    let mut pkt = make_ipv6_packet_with_ecn(0b01);
+    assert_eq!(read_ecn(&pkt), 0b01);
+    mark_ipv6_ecn_ce(&mut pkt);
+    assert_eq!(read_ecn(&pkt), 0b11);
+}
+
+#[test]
+fn test_mark_ecn_ce_on_not_ect() {
+    let mut pkt = make_ipv6_packet_with_ecn(0b00);
+    mark_ipv6_ecn_ce(&mut pkt);
+    assert_eq!(read_ecn(&pkt), 0b00);
+}
+
+#[test]
+fn test_mark_ecn_ce_already_ce() {
+    let mut pkt = make_ipv6_packet_with_ecn(0b11);
+    mark_ipv6_ecn_ce(&mut pkt);
+    assert_eq!(read_ecn(&pkt), 0b11);
+}
+
+#[test]
+fn test_mark_ecn_ce_preserves_dscp_and_flow_label() {
+    let mut pkt = vec![0u8; 40];
+    // DSCP=0b101100 (46=EF), ECN=ECT(0)=0b10 → TC=0xB2
+    let tc: u8 = 0xB2;
+    pkt[0] = 0x60 | (tc >> 4); // 0x6B
+    pkt[1] = (tc << 4) | 0x0A; // 0x2A (flow label high nibble = 0xA)
+    pkt[2] = 0xBC;
+    pkt[3] = 0xDE;
+
+    mark_ipv6_ecn_ce(&mut pkt);
+
+    let new_tc = ((pkt[0] & 0x0F) << 4) | (pkt[1] >> 4);
+    assert_eq!(new_tc, 0xB3, "TC should be 0xB3 (DSCP preserved, ECN=CE)");
+    assert_eq!(pkt[0] >> 4, 6, "Version nibble preserved");
+    assert_eq!(pkt[1] & 0x0F, 0x0A, "Flow label high nibble preserved");
+    assert_eq!(pkt[2], 0xBC, "Flow label byte 2 preserved");
+    assert_eq!(pkt[3], 0xDE, "Flow label byte 3 preserved");
+}
+
+#[test]
+fn test_mark_ecn_ce_short_packet() {
+    let mut pkt = vec![0x60];
+    mark_ipv6_ecn_ce(&mut pkt);
+    assert_eq!(pkt, vec![0x60]);
+
+    let mut empty: Vec<u8> = vec![];
+    mark_ipv6_ecn_ce(&mut empty);
+    assert!(empty.is_empty());
+}
+
+#[tokio::test]
+async fn test_ce_relay_through_forwarding() {
+    // 3-node chain: 0 -- 1 -- 2
+    // Send a datagram with CE set from node 0 to node 1.
+    // Node 1 should relay CE to node 2.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node2_addr = *nodes[2].node.node_addr();
+
+    // Record ecn_ce_count at node 2 before
+    let ce_before = nodes[2]
+        .node
+        .dataplane_fmp_link_metrics(&node1_addr, std::time::Instant::now())
+        .map(|metrics| metrics.ecn_ce_count)
+        .unwrap_or(0);
+
+    // Build a SessionDatagram from node 0 to node 2
+    let dg = SessionDatagram::new(
+        node0_addr,
+        node2_addr,
+        vec![0x10, 0x00, 0x04, 0x00, 1, 2, 3, 4],
+    );
+    let encoded = dg.encode();
+
+    // Send from node 0 to node 1 with CE flag set
+    nodes[0]
+        .node
+        .send_dataplane_fmp_link_plaintext(&node1_addr, &encoded, true)
+        .await
+        .unwrap();
+
+    // Process: node 1 receives (CE set), forwards to node 2 (CE relayed)
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    // Node 2's link-layer MMP should have received a CE-flagged frame from node 1
+    let ce_after = nodes[2]
+        .node
+        .dataplane_fmp_link_metrics(&node1_addr, std::time::Instant::now())
+        .map(|metrics| metrics.ecn_ce_count)
+        .unwrap_or(0);
+
+    assert!(
+        ce_after > ce_before,
+        "Node 2 should see CE flag relayed from node 1 (before={ce_before}, after={ce_after})"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[test]
+fn test_detect_congestion_with_transport_drops() {
+    let mut node = make_node();
+
+    // No drops — detect_congestion should return false for any address
+    let fake_addr = NodeAddr::from_bytes([1; 16]);
+    assert!(!node.detect_congestion(&fake_addr));
+
+    // Simulate transport kernel drops
+    let tid = TransportId::new(1);
+    node.transport_drops.set_for_test(tid, 100, true);
+
+    // Now detect_congestion should return true (local transport congestion)
+    assert!(node.detect_congestion(&fake_addr));
+
+    // Clear the dropping flag — should return false again
+    node.transport_drops.set_for_test(tid, 100, false);
+    assert!(!node.detect_congestion(&fake_addr));
+}
+
+#[test]
+fn transport_drop_tracker_owns_drop_delta_state_and_cleanup() {
+    let tid = TransportId::new(1);
+    let other_tid = TransportId::new(2);
+    let mut drops = TransportDropTracker::default();
+
+    assert!(!drops.any_dropping());
+    assert_eq!(drops.sample(tid, Some(10)), Some(10));
+    assert!(drops.any_dropping());
+    assert_eq!(drops.sample(tid, Some(12)), Some(2));
+    assert!(drops.any_dropping());
+    assert_eq!(drops.sample(tid, Some(12)), None);
+    assert!(!drops.any_dropping());
+
+    assert_eq!(drops.sample(tid, Some(13)), Some(1));
+    drops.sample(other_tid, None);
+    assert!(drops.any_dropping());
+    drops.remove(&tid);
+    assert!(!drops.any_dropping());
+}
+
+#[test]
+fn test_detect_congestion_disabled_ecn() {
+    let mut node = make_node();
+    node.config.node.ecn.enabled = false;
+
+    // Even with transport drops, disabled ECN should return false
+    let tid = TransportId::new(1);
+    node.transport_drops.set_for_test(tid, 50, true);
+
+    let fake_addr = NodeAddr::from_bytes([1; 16]);
+    assert!(!node.detect_congestion(&fake_addr));
+}
+
+#[test]
+fn test_sample_transport_congestion() {
+    let mut node = make_node();
+
+    // Insert a transport drop state with a baseline
+    let tid = TransportId::new(1);
+    node.transport_drops.set_for_test(tid, 0, false);
+
+    // No transports registered — sample_transport_congestion is a no-op
+    // (transport_drops entry stays unchanged)
+    node.sample_transport_congestion();
+    assert!(!node.transport_drops.any_dropping());
+}

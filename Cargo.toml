@@ -8,7 +8,7 @@ members = [
   "crates/nostr-vpn-web",
   "crates/nostr-vpn-wintun",
 ]
-exclude = ["linux"]
+exclude = ["linux", "vendor/fips-core"]
 resolver = "2"
 
 [workspace.package]
@@ -74,3 +74,7 @@ missing_panics_doc = "allow"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# fips-core 0.4.53 from crates.io, plus one fix (vendor/fips-core/PATCHES.md).
+[patch.crates-io]
+fips-core = { path = "vendor/fips-core" }

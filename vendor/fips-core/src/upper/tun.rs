@@ -1,0 +1,735 @@
+//! FIPS TUN Interface
+//!
+//! Manages the TUN device for sending and receiving IPv6 packets.
+//! The TUN interface presents FIPS addresses to the local system,
+//! allowing standard socket applications to communicate over the mesh.
+//!
+//! Platform-specific implementations:
+//! - Linux: Uses the `tun` crate with `rtnetlink` for interface configuration
+//! - macOS: Uses the `tun` crate with `ifconfig`/`route` for interface configuration
+//! - Windows: Uses the `wintun` crate for TUN device support
+
+use crate::FipsAddress;
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    not(any(target_os = "linux", target_os = "macos", windows))
+))]
+use crate::TunConfig;
+use std::collections::HashMap;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::fs::File;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::io::Read;
+#[cfg(not(target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::io::Write;
+use std::net::Ipv6Addr;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::sync::{Arc, RwLock};
+use thiserror::Error;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use tracing::error;
+use tracing::{debug, trace};
+#[cfg(windows)]
+use tracing::{error, warn};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use tun::Layer;
+
+#[cfg(target_os = "linux")]
+use self::linux_vnet::{LinuxVnetTun, linux_vnet_tun_enabled};
+
+pub(crate) use super::tun_outbound::tun_outbound_channel;
+pub use super::tun_outbound::{TunOutboundRx, TunOutboundTx};
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
+pub(crate) use super::tun_write::TunRx;
+pub use super::tun_write::TunTx;
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
+pub(crate) use super::tun_write::write_channel;
+
+/// Read-only handle to the per-destination path MTU map. Populated by
+/// the discovery handler on `LookupResponse`; read by the TUN reader
+/// (outbound clamp) and writer (inbound clamp) at TCP MSS clamp time.
+/// Keyed by [`FipsAddress`] (16 bytes, the IPv6 form of a fips peer
+/// address).
+pub type PathMtuLookup = Arc<RwLock<HashMap<FipsAddress, u16>>>;
+
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
+const TUN_OUTBOUND_PACKET_TAIL_RESERVE: usize = 128;
+
+/// Compute the effective TCP MSS ceiling for a packet given its peer
+/// address bytes (a 16-byte IPv6 destination on outbound, source on
+/// inbound). Returns `min(global_max_mss, learned_path_max_mss)` when
+/// the per-destination path MTU is known via discovery; otherwise
+/// returns `min(global_max_mss, ipv6_minimum_safe_max_mss)`, the
+/// conservative IPv6-minimum-derived ceiling.
+///
+/// The conservative empty-lookup fallback exists because there is a
+/// race window between TCP-SYN-out and discovery-completes-with-path-
+/// MTU on cold flows. Without the floor, the first SYN exits at the
+/// kernel-natural MSS (TUN MTU minus IPv6/TCP headers), which can
+/// exceed what some downstream forwarder hop is willing to carry.
+/// The drop is silent (no PTB feedback through the userspace TUN to
+/// the kernel TCP stack), so TCP retransmits at the same too-large
+/// MSS and the application's first connection wedges before discovery
+/// completes for a corrected second SYN to fire.
+///
+/// RFC 8200 mandates every IPv6 path accepts at least 1280-byte
+/// packets, so a SYN clamped to the IPv6-minimum-derived MSS fits
+/// any compliant path. Subsequent flows pick up the actual learned
+/// per-destination value, which can be larger (when path supports
+/// it) or smaller (when path is observed-tighter than the IPv6 min).
+///
+/// Path MTU bytes-on-wire to TCP MSS: subtract 77 bytes of FIPS encap
+/// overhead, then 40 bytes IPv6 + 20 bytes TCP headers.
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
+pub(crate) fn per_flow_max_mss(
+    lookup: &PathMtuLookup,
+    addr_bytes: &[u8],
+    global_max_mss: u16,
+) -> u16 {
+    use super::icmp::effective_ipv6_mtu;
+
+    // RFC 8200 IPv6-minimum MTU (1280) → effective FIPS-encapsulated
+    // payload (1203) → TCP segment after IPv6+TCP headers (1143).
+    // Used as the conservative ceiling for empty-lookup destinations.
+    const IPV6_MIN_MTU: u16 = 1280;
+    let conservative_max_mss = effective_ipv6_mtu(IPV6_MIN_MTU)
+        .saturating_sub(40)
+        .saturating_sub(20);
+    let empty_lookup_ceiling = std::cmp::min(global_max_mss, conservative_max_mss);
+
+    if addr_bytes.len() != 16 {
+        trace!(
+            len = addr_bytes.len(),
+            global_max_mss,
+            empty_lookup_ceiling,
+            "per_flow_max_mss: addr_bytes wrong length, fall back to conservative ceiling"
+        );
+        return empty_lookup_ceiling;
+    }
+    let Ok(fips_addr) = FipsAddress::from_slice(addr_bytes) else {
+        trace!(
+            global_max_mss,
+            empty_lookup_ceiling,
+            "per_flow_max_mss: FipsAddress::from_slice rejected (non-fd::/8 prefix), fall back to conservative ceiling"
+        );
+        return empty_lookup_ceiling;
+    };
+    let Ok(map) = lookup.read() else {
+        trace!(
+            fips_addr = %fips_addr,
+            global_max_mss,
+            empty_lookup_ceiling,
+            "per_flow_max_mss: lookup read lock poisoned, fall back to conservative ceiling"
+        );
+        return empty_lookup_ceiling;
+    };
+    let Some(&path_mtu) = map.get(&fips_addr) else {
+        trace!(
+            fips_addr = %fips_addr,
+            global_max_mss,
+            empty_lookup_ceiling,
+            map_len = map.len(),
+            "per_flow_max_mss: no path_mtu_lookup entry for destination, fall back to conservative ceiling"
+        );
+        return empty_lookup_ceiling;
+    };
+    let path_max_mss = effective_ipv6_mtu(path_mtu)
+        .saturating_sub(40)
+        .saturating_sub(20);
+    let result = std::cmp::min(global_max_mss, path_max_mss);
+    trace!(
+        fips_addr = %fips_addr,
+        path_mtu,
+        path_max_mss,
+        global_max_mss,
+        result,
+        "per_flow_max_mss: per-destination clamp applied"
+    );
+    result
+}
+
+/// Errors that can occur with TUN operations.
+#[derive(Debug, Error)]
+pub enum TunError {
+    #[error("failed to create TUN device: {0}")]
+    Create(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("failed to configure TUN device: {0}")]
+    Configure(String),
+
+    #[cfg(target_os = "linux")]
+    #[error("netlink error: {0}")]
+    Netlink(#[from] rtnetlink::Error),
+
+    #[error("interface not found: {0}")]
+    InterfaceNotFound(String),
+
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[error("IPv6 is disabled (set net.ipv6.conf.all.disable_ipv6=0)")]
+    Ipv6Disabled,
+
+    #[error("system TUN is not supported on this platform")]
+    UnsupportedPlatform,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl From<tun::Error> for TunError {
+    fn from(e: tun::Error) -> Self {
+        TunError::Create(Box::new(e))
+    }
+}
+
+/// TUN device state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunState {
+    /// TUN is disabled in configuration.
+    Disabled,
+    /// TUN is configured but not yet created.
+    Configured,
+    /// TUN device is active and ready.
+    Active,
+    /// TUN device failed to initialize.
+    Failed,
+}
+
+impl std::fmt::Display for TunState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TunState::Disabled => write!(f, "disabled"),
+            TunState::Configured => write!(f, "configured"),
+            TunState::Active => write!(f, "active"),
+            TunState::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+// ============================================================================
+// Unix (Linux + macOS) TUN implementation
+// ============================================================================
+
+/// FIPS TUN device wrapper.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub struct TunDevice {
+    #[cfg(target_os = "linux")]
+    device: LinuxTunDevice,
+    #[cfg(target_os = "macos")]
+    device: tun::Device,
+    name: String,
+    mtu: u16,
+    address: FipsAddress,
+}
+
+#[cfg(target_os = "linux")]
+enum LinuxTunDevice {
+    Plain(tun::Device),
+    Vnet(LinuxVnetTun),
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxTunDevice {
+    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+        match self {
+            Self::Plain(device) => device.as_raw_fd(),
+            Self::Vnet(device) => device.as_raw_fd(),
+        }
+    }
+
+    fn read_packet(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+        match self {
+            Self::Plain(device) => {
+                let n = device.read(buf)?;
+                if n > 0 {
+                    crate::perf_profile::record_tun_read_frame(n);
+                }
+                Ok(n)
+            }
+            Self::Vnet(device) => device.read_packet(buf),
+        }
+    }
+
+    fn read_vnet_packets_into(
+        &mut self,
+        buf: &mut [u8],
+        packets: &mut Vec<Vec<u8>>,
+    ) -> Result<usize, std::io::Error> {
+        match self {
+            Self::Plain(_) => unreachable!("Linux vnet packet batching requires a vnet TUN"),
+            Self::Vnet(device) => device.read_packets_into(buf, packets),
+        }
+    }
+
+    fn read_buffer_len(&self, mtu: u16) -> usize {
+        match self {
+            Self::Plain(_) => default_tun_read_buffer_len(mtu),
+            Self::Vnet(device) => device.read_buffer_len(),
+        }
+    }
+
+    fn vnet_hdr(&self) -> bool {
+        matches!(self, Self::Vnet(_))
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl TunDevice {
+    /// Create or open a TUN device.
+    ///
+    /// If the interface already exists, opens it and reconfigures it.
+    /// Otherwise, creates a new TUN device.
+    ///
+    /// This requires CAP_NET_ADMIN capability (run with sudo or setcap).
+    pub async fn create(config: &TunConfig, address: FipsAddress) -> Result<Self, TunError> {
+        // Check if IPv6 is enabled
+        if platform::is_ipv6_disabled() {
+            return Err(TunError::Ipv6Disabled);
+        }
+
+        let name = config.name();
+        let mtu = config.mtu();
+
+        // Delete existing interface if present (TUN devices are exclusive)
+        if platform::interface_exists(name).await {
+            debug!(name, "Deleting existing TUN interface");
+            if let Err(e) = platform::delete_interface(name).await {
+                debug!(name, error = %e, "Failed to delete existing interface");
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        let (device, actual_name) = {
+            if linux_vnet_tun_enabled() {
+                let device =
+                    LinuxVnetTun::create(name).map_err(|e| TunError::Create(Box::new(e)))?;
+                let actual_name = device.name().to_string();
+                (LinuxTunDevice::Vnet(device), actual_name)
+            } else {
+                let mut tun_config = tun::Configuration::default();
+                tun_config.tun_name(name).layer(Layer::L3).mtu(mtu);
+                let device = tun::create(&tun_config)?;
+                let actual_name = {
+                    use tun::AbstractDevice;
+                    device.tun_name().map_err(|e| {
+                        TunError::Configure(format!("failed to get device name: {}", e))
+                    })?
+                };
+                (LinuxTunDevice::Plain(device), actual_name)
+            }
+        };
+
+        #[cfg(target_os = "macos")]
+        let (device, actual_name) = {
+            // On macOS, utun devices get kernel-assigned names (utun0, utun1, ...),
+            // so we skip setting the name and read it back after creation.
+            let mut tun_config = tun::Configuration::default();
+            tun_config.layer(Layer::L3).mtu(mtu);
+            let device = tun::create(&tun_config)?;
+            let actual_name = {
+                use tun::AbstractDevice;
+                device
+                    .tun_name()
+                    .map_err(|e| TunError::Configure(format!("failed to get device name: {}", e)))?
+            };
+            (device, actual_name)
+        };
+
+        // Configure address and bring up via platform-specific method
+        platform::configure_interface(&actual_name, address.to_ipv6(), mtu).await?;
+
+        Ok(Self {
+            device,
+            name: actual_name,
+            mtu,
+            address,
+        })
+    }
+
+    /// Get the device name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the configured MTU.
+    pub fn mtu(&self) -> u16 {
+        self.mtu
+    }
+
+    /// Get the FIPS address assigned to this device.
+    pub fn address(&self) -> &FipsAddress {
+        &self.address
+    }
+
+    /// Get a reference to the underlying tun::Device.
+    #[cfg(target_os = "macos")]
+    pub fn device(&self) -> &tun::Device {
+        &self.device
+    }
+
+    /// Get a mutable reference to the underlying tun::Device.
+    #[cfg(target_os = "macos")]
+    pub fn device_mut(&mut self) -> &mut tun::Device {
+        &mut self.device
+    }
+
+    /// Read a packet from the TUN device.
+    ///
+    /// Returns the number of bytes read into the buffer, or an `io::Error`.
+    /// The buffer should be at least MTU + header size (typically 1500+ bytes).
+    ///
+    /// The tun crate's `Read` impl transparently strips the macOS utun
+    /// packet information header, so this returns a raw IP packet on all
+    /// platforms.
+    ///
+    /// The raw `io::Error` is returned so callers can inspect `ErrorKind`
+    /// (e.g. `WouldBlock`) or `raw_os_error()` without string matching.
+    pub fn read_packet(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+        #[cfg(target_os = "linux")]
+        {
+            self.device.read_packet(buf)
+        }
+
+        #[cfg(target_os = "macos")]
+        self.device.read(buf)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_vnet_packets_into(
+        &mut self,
+        buf: &mut [u8],
+        packets: &mut Vec<Vec<u8>>,
+    ) -> Result<usize, std::io::Error> {
+        self.device.read_vnet_packets_into(buf, packets)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_buffer_len(&self, mtu: u16) -> usize {
+        self.device.read_buffer_len(mtu)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn vnet_hdr(&self) -> bool {
+        self.device.vnet_hdr()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+        #[cfg(target_os = "linux")]
+        {
+            self.device.as_raw_fd()
+        }
+
+        #[cfg(target_os = "macos")]
+        self.device.as_raw_fd()
+    }
+
+    /// Shutdown and delete the TUN device.
+    ///
+    /// This deletes the interface entirely.
+    pub async fn shutdown(&self) -> Result<(), TunError> {
+        debug!(name = %self.name, "Deleting TUN device");
+        platform::delete_interface(&self.name).await
+    }
+
+    /// Create a TunWriter for this device.
+    ///
+    /// This duplicates the underlying file descriptor so that reads and writes
+    /// can happen independently on separate threads. Returns the writer and
+    /// a channel sender for submitting packets to be written.
+    ///
+    /// `max_mss` is the global TCP MSS ceiling derived from the local
+    /// `transport_mtu()` floor. `path_mtu_lookup` is a read-only handle to
+    /// the per-destination path MTU map populated by discovery; the writer
+    /// reads it on each inbound SYN-ACK to compute a per-flow ceiling that
+    /// honors learned narrow paths through the mesh.
+    pub fn create_writer(
+        &self,
+        max_mss: u16,
+        path_mtu_lookup: PathMtuLookup,
+    ) -> Result<(TunWriter, TunTx), TunError> {
+        let fd = self.as_raw_fd();
+
+        // Duplicate the file descriptor for writing
+        let write_fd = unsafe { libc::dup(fd) };
+        if write_fd < 0 {
+            return Err(TunError::Configure(format!(
+                "failed to dup fd: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        let write_file = unsafe { File::from_raw_fd(write_fd) };
+        let (tx, rx) = write_channel();
+
+        Ok((
+            TunWriter {
+                file: write_file,
+                rx,
+                name: self.name.clone(),
+                max_mss,
+                path_mtu_lookup,
+                #[cfg(target_os = "linux")]
+                vnet_hdr: self.vnet_hdr(),
+            },
+            tx,
+        ))
+    }
+}
+
+/// macOS utun protocol family value for IPv6 (matches `<sys/socket.h>`
+/// `AF_INET6` on Darwin). Used as the 4-byte big-endian packet-info
+/// header prepended to every utun frame.
+#[cfg(target_os = "macos")]
+const UTUN_AF_INET6: u32 = 30;
+
+/// Build the 4-byte big-endian utun packet-info header for an IPv6 frame.
+///
+/// utun devices on macOS require a 4-byte address-family prefix on every
+/// frame: a single big-endian `u32` carrying the protocol family. For
+/// IPv6 traffic (the only family FIPS sends) this is `AF_INET6 = 30`,
+/// which serializes as `[0x00, 0x00, 0x00, 0x1e]`.
+#[cfg(target_os = "macos")]
+#[inline]
+fn utun_af_inet6_header() -> [u8; 4] {
+    UTUN_AF_INET6.to_be_bytes()
+}
+
+/// Parse the 4-byte big-endian utun packet-info header.
+///
+/// Returns the address-family value (`AF_INET6 = 30` for IPv6 frames),
+/// or `None` if the buffer is shorter than the 4-byte header. The `tun`
+/// crate's `Read` impl strips this transparently for us in the read
+/// path; this helper exists for round-trip testability with
+/// [`utun_af_inet6_header`] and for any future code path that reads
+/// from the dup'd fd directly.
+#[cfg(all(test, target_os = "macos"))]
+#[inline]
+fn parse_utun_af_prefix(buf: &[u8]) -> Option<u32> {
+    if buf.len() < 4 {
+        return None;
+    }
+    Some(u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]))
+}
+
+/// Writer thread for TUN device.
+///
+/// Services a queue of outbound packets and writes them to the TUN device.
+/// Multiple producers can send packets via the TunTx channel.
+///
+/// Also performs TCP MSS clamping on inbound SYN-ACK packets.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub struct TunWriter {
+    file: File,
+    rx: TunRx,
+    name: String,
+    max_mss: u16,
+    path_mtu_lookup: PathMtuLookup,
+    #[cfg(target_os = "linux")]
+    vnet_hdr: bool,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl TunWriter {
+    fn clamp_inbound_packet(&self, packet: &mut super::tun_write::TunWritePacket) {
+        use super::tcp_mss::clamp_tcp_mss;
+
+        // Per-destination clamp: peer IPv6 source address (bytes 8..24)
+        // identifies the flow's remote end. If discovery has learned a
+        // smaller path MTU for that peer, tighten the ceiling.
+        let effective_max_mss = if packet.len() >= 24 {
+            per_flow_max_mss(
+                &self.path_mtu_lookup,
+                &packet.as_slice()[8..24],
+                self.max_mss,
+            )
+        } else {
+            self.max_mss
+        };
+        // Clamp TCP MSS on inbound SYN-ACK packets
+        if clamp_tcp_mss(packet.as_mut_slice(), effective_max_mss) {
+            trace!(
+                name = %self.name,
+                max_mss = effective_max_mss,
+                "Clamped TCP MSS in inbound SYN-ACK packet"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_linux_vnet(mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        const LINUX_VNET_TUN_WRITE_BATCH_CAP: usize = 256;
+
+        debug!(name = %self.name, max_mss = self.max_mss, "Linux vnet TUN writer starting");
+
+        let mut batch = Vec::with_capacity(LINUX_VNET_TUN_WRITE_BATCH_CAP);
+        let mut write_preparer = linux_vnet::LinuxVnetWritePreparer::new();
+
+        while let Some(mut packet) = self.rx.recv() {
+            self.clamp_inbound_packet(&mut packet);
+            batch.push(packet);
+
+            while batch.len() < LINUX_VNET_TUN_WRITE_BATCH_CAP {
+                match self.rx.try_recv_packet() {
+                    Ok(mut packet) => {
+                        self.clamp_inbound_packet(&mut packet);
+                        batch.push(packet);
+                    }
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                }
+            }
+
+            let write_result = {
+                linux_vnet::write_packet_slices_to_tun(
+                    &mut self.file,
+                    batch.iter().map(|packet| packet.as_slice()),
+                    &mut write_preparer,
+                )
+            };
+
+            if let Err(e) = write_result {
+                let err_str = e.to_string();
+                if err_str.contains("Bad address") {
+                    break;
+                }
+                error!(name = %self.name, error = %e, "Linux vnet TUN write error");
+            } else {
+                for packet in &batch {
+                    crate::perf_profile::record_tun_write_packet(packet.len());
+                    debug_ipv4_icmp_packet("Linux vnet TUN packet written", packet.as_slice());
+                    trace!(name = %self.name, len = packet.len(), "TUN packet written");
+                }
+            }
+
+            batch.clear();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn write_packet(&self, packet: &super::tun_write::TunWritePacket) -> std::io::Result<()> {
+        use std::os::unix::io::AsRawFd;
+
+        let af_header = utun_af_inet6_header();
+        let iov = [
+            libc::iovec {
+                iov_base: af_header.as_ptr() as *mut libc::c_void,
+                iov_len: 4,
+            },
+            libc::iovec {
+                iov_base: packet.as_slice().as_ptr() as *mut libc::c_void,
+                iov_len: packet.len(),
+            },
+        ];
+        let ret = unsafe { libc::writev(self.file.as_raw_fd(), iov.as_ptr(), 2) };
+        if ret < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let expected = 4 + packet.len();
+        if (ret as usize) < expected {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                format!("short writev: {} of {} bytes", ret, expected),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn write_packet(&mut self, packet: &super::tun_write::TunWritePacket) -> std::io::Result<()> {
+        self.file.write_all(packet.as_slice())
+    }
+
+    /// Run the writer loop.
+    ///
+    /// Blocks forever, reading packets from the channel and writing them
+    /// to the TUN device. Returns when the channel is closed (all senders dropped).
+    pub fn run(self) {
+        #[cfg(target_os = "linux")]
+        let mut writer = self;
+        #[cfg(target_os = "macos")]
+        let writer = self;
+
+        debug!(name = %writer.name, max_mss = writer.max_mss, "TUN writer starting");
+
+        #[cfg(target_os = "linux")]
+        if writer.vnet_hdr {
+            writer.run_linux_vnet();
+            return;
+        }
+
+        while let Some(mut packet) = writer.rx.recv() {
+            writer.clamp_inbound_packet(&mut packet);
+            let write_result = writer.write_packet(&packet);
+
+            if let Err(e) = write_result {
+                // "Bad address" is expected during shutdown when interface is deleted
+                let err_str = e.to_string();
+                if err_str.contains("Bad address") {
+                    break;
+                }
+                error!(name = %writer.name, error = %e, "TUN write error");
+            } else {
+                crate::perf_profile::record_tun_write_packet(packet.len());
+                debug_ipv4_icmp_packet("TUN packet written", packet.as_slice());
+                trace!(name = %writer.name, len = packet.len(), "TUN packet written");
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn debug_ipv4_icmp_packet(message: &'static str, packet: &[u8]) {
+    let Some((src, dst, icmp_type, icmp_id, icmp_seq)) = ipv4_icmp_echo(packet) else {
+        return;
+    };
+    debug!(
+        src = %src,
+        dst = %dst,
+        icmp_type,
+        icmp_id,
+        icmp_seq,
+        message
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn ipv4_icmp_echo(packet: &[u8]) -> Option<(std::net::Ipv4Addr, std::net::Ipv4Addr, u8, u16, u16)> {
+    if packet.len() < 28 || packet[0] >> 4 != 4 || packet[9] != 1 {
+        return None;
+    }
+    let header_len = usize::from(packet[0] & 0x0f).checked_mul(4)?;
+    if header_len < 20 || packet.len() < header_len.saturating_add(8) {
+        return None;
+    }
+    let icmp_type = packet[header_len];
+    if !matches!(icmp_type, 0 | 8) {
+        return None;
+    }
+    let src = std::net::Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+    let dst = std::net::Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+    let icmp_id = u16::from_be_bytes([packet[header_len + 4], packet[header_len + 5]]);
+    let icmp_seq = u16::from_be_bytes([packet[header_len + 6], packet[header_len + 7]]);
+    Some((src, dst, icmp_type, icmp_id, icmp_seq))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod platform;
+
+#[cfg(windows)]
+mod windows;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+mod unsupported;
+
+#[cfg(target_os = "linux")]
+mod linux_vnet;
+
+#[cfg(test)]
+mod tests;
+
+include!("tun_runtime.rs");
