@@ -24,6 +24,7 @@ mod mtu_notification;
 mod multihop_pmtud;
 mod purge_idle;
 mod remote_restart;
+mod surviving_initiator_restart;
 mod resend_rekey_large;
 mod retransmit_harness;
 mod route_metrics;
