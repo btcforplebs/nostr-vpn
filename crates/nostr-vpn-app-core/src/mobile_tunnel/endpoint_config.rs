@@ -88,7 +88,7 @@ fn fips_peer_configs_from_mesh(
                 &peer.endpoint_npub,
                 Some(hints),
                 true,
-                FIPS_MOBILE_BOOTSTRAP_AUTO_RECONNECT,
+                FIPS_MOBILE_AUTO_RECONNECT,
             ));
             included.insert(participant.clone());
         }
@@ -97,6 +97,29 @@ fn fips_peer_configs_from_mesh(
     configs.sort_by(|left, right| left.npub.cmp(&right.npub));
     configs.dedup_by(|left, right| left.npub == right.npub);
     configs
+}
+
+/// Peers to redial after the physical network changes: the roster plus the
+/// bootstrap/transit peers. On cellular the transit peers are often the only
+/// off-LAN route, so they must be redialed too. FIPS skips any npub that is
+/// not in its auto-connect config, so listing an unused transit peer is a no-op.
+fn mobile_network_change_refresh_peers(config: &MobileTunnelConfig) -> Vec<PeerIdentity> {
+    let mut npubs = config
+        .peers
+        .iter()
+        .map(|peer| normalize_mobile_endpoint_npub(&peer.endpoint_npub))
+        .chain(config.bootstrap_peers.keys().filter_map(|participant| {
+            FipsMeshPeerConfig::from_participant_pubkey(participant, Vec::new())
+                .ok()
+                .map(|peer| peer.endpoint_npub)
+        }))
+        .collect::<Vec<_>>();
+    npubs.sort();
+    npubs.dedup();
+    npubs
+        .iter()
+        .filter_map(|npub| PeerIdentity::from_npub(npub).ok())
+        .collect()
 }
 
 fn fips_peer_config_from_hint(

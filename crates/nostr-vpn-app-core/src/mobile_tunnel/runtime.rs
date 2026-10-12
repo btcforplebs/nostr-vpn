@@ -689,16 +689,13 @@ impl MobileTunnel {
             .endpoint
             .clone()
             .ok_or_else(|| anyhow!("mobile tunnel stopped"))?;
-        let peers = self
-            .config
-            .read()
-            .map_err(|_| anyhow!("mobile FIPS config lock poisoned"))?
-            .peers
-            .iter()
-            .filter_map(|peer| {
-                PeerIdentity::from_npub(&normalize_mobile_endpoint_npub(&peer.endpoint_npub)).ok()
-            })
-            .collect::<Vec<_>>();
+        let peers = {
+            let config = self
+                .config
+                .read()
+                .map_err(|_| anyhow!("mobile FIPS config lock poisoned"))?;
+            mobile_network_change_refresh_peers(&config)
+        };
         let wg_upstream = self.wg_upstream.as_ref();
         self.runtime.block_on(async move {
             let wireguard_refresh = match wg_upstream {

@@ -609,13 +609,47 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         )
     }
 
+    // Interface names alone stay the same across a Wi-Fi network switch, a DHCP
+    // renew, or a cellular IP rebind, so the signature also carries each
+    // physical interface's current addresses and the path's gateways.
     private static func underlaySignature(_ path: Network.NWPath) -> String {
-        let physical = path.availableInterfaces
+        let interfaces = path.availableInterfaces
             .filter { $0.type != .other && $0.type != .loopback }
-            .map { "\($0.type):\($0.name)" }
+        let addresses = interfaceAddresses(named: Set(interfaces.map(\.name)))
+        let physical = interfaces
+            .map { "\($0.type):\($0.name)=\(addresses[$0.name, default: []].sorted().joined(separator: "+"))" }
             .sorted()
             .joined(separator: ",")
-        return "\(path.status)|\(physical)"
+        let gateways = path.gateways.map { "\($0)" }.sorted().joined(separator: ",")
+        return "\(path.status)|\(physical)|\(gateways)"
+    }
+
+    private static func interfaceAddresses(named names: Set<String>) -> [String: [String]] {
+        var result: [String: [String]] = [:]
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else {
+            return result
+        }
+        defer { freeifaddrs(head) }
+        for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let name = String(cString: entry.pointee.ifa_name)
+            guard names.contains(name), let addr = entry.pointee.ifa_addr else {
+                continue
+            }
+            let family = Int32(addr.pointee.sa_family)
+            guard family == AF_INET || family == AF_INET6 else {
+                continue
+            }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let length = socklen_t(family == AF_INET
+                ? MemoryLayout<sockaddr_in>.size
+                : MemoryLayout<sockaddr_in6>.size)
+            guard getnameinfo(addr, length, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else {
+                continue
+            }
+            result[name, default: []].append(String(cString: host))
+        }
+        return result
     }
 
     private func refreshFipsAfterUnderlayChange(generation: UInt64) {

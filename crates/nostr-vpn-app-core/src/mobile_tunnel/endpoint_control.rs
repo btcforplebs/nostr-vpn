@@ -14,10 +14,6 @@ const FIPS_PRIVATE_DYNAMIC_PEER_ENDPOINT_PRIORITY: u8 = 200;
 // exhaust each connection attempt so dormant devices cannot keep the packet
 // tunnel awake in a permanent fast-reconnect loop.
 const FIPS_MOBILE_AUTO_RECONNECT: bool = false;
-// Bootstrap/transit peers are the only off-LAN route on cellular. A network
-// change closes their links, so they must come back on their own or the phone
-// never rejoins the mesh.
-const FIPS_MOBILE_BOOTSTRAP_AUTO_RECONNECT: bool = true;
 
 fn default_fips_peer_address_priority() -> u8 {
     FIPS_DYNAMIC_PEER_ENDPOINT_PRIORITY
