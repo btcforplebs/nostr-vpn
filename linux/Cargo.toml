@@ -23,6 +23,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
+[patch.crates-io]
+nvpn-fips-core = { path = "../vendor/fips-core" }
+
 [package.metadata.deb]
 name = "nostr-vpn"
 maintainer = "Nostr VPN"

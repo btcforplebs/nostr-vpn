@@ -17,6 +17,8 @@ vendor/**
 !vendor/cashu-service/**
 !vendor/cdk-spilman
 !vendor/cdk-spilman/**
+!vendor/fips-core
+!vendor/fips-core/**
 
 !linux
 linux/**
