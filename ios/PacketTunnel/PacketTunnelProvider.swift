@@ -41,6 +41,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var underlayMonitors: [NWPathMonitor] = []
     private var underlayMonitorGeneration: UInt64?
     private var initializedUnderlaySources: Set<UnderlayPathSource> = []
+    private var lastUnderlaySignatures: [UnderlayPathSource: String] = [:]
     private var underlayRefreshWorkItem: DispatchWorkItem?
 
     override func startTunnel(
@@ -548,6 +549,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         underlayMonitors = monitors
         underlayMonitorGeneration = generation
         initializedUnderlaySources.removeAll()
+        lastUnderlaySignatures.removeAll()
         underlayRefreshWorkItem?.cancel()
         underlayRefreshWorkItem = nil
         underlayMonitorLock.unlock()
@@ -563,6 +565,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         underlayMonitors.removeAll()
         underlayMonitorGeneration = nil
         initializedUnderlaySources.removeAll()
+        lastUnderlaySignatures.removeAll()
         underlayRefreshWorkItem?.cancel()
         underlayRefreshWorkItem = nil
         underlayMonitorLock.unlock()
@@ -579,9 +582,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             underlayMonitorLock.unlock()
             return
         }
+        // NWPathMonitor also fires for changes that are not the physical
+        // underlay (the tunnel's own utun, DNS, expensive/constrained flags).
+        // Refreshing FIPS carriers tears down live links, so only refresh when
+        // the physical interfaces or status actually changed.
+        let signature = Self.underlaySignature(path)
+        let previousSignature = lastUnderlaySignatures.updateValue(signature, forKey: source)
         if initializedUnderlaySources.insert(source).inserted {
             underlayMonitorLock.unlock()
             packetDebugLog("\(source) underlay monitor ready status=\(path.status)")
+            return
+        }
+        if previousSignature == signature {
+            underlayMonitorLock.unlock()
             return
         }
         underlayRefreshWorkItem?.cancel()
@@ -594,6 +607,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             deadline: .now() + .milliseconds(250),
             execute: workItem
         )
+    }
+
+    private static func underlaySignature(_ path: Network.NWPath) -> String {
+        let physical = path.availableInterfaces
+            .filter { $0.type != .other && $0.type != .loopback }
+            .map { "\($0.type):\($0.name)" }
+            .sorted()
+            .joined(separator: ",")
+        return "\(path.status)|\(physical)"
     }
 
     private func refreshFipsAfterUnderlayChange(generation: UInt64) {

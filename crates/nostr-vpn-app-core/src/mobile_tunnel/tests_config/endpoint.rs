@@ -30,7 +30,7 @@
                 .iter()
                 .find(|address| address.transport == "websocket")
                 .expect("WebSocket fallback");
-            assert_eq!(peer.auto_reconnect, FIPS_MOBILE_AUTO_RECONNECT);
+            assert_eq!(peer.auto_reconnect, FIPS_MOBILE_BOOTSTRAP_AUTO_RECONNECT);
             assert_eq!(udp.priority, FIPS_STATIC_PEER_ENDPOINT_PRIORITY);
             assert!(
                 udp.priority < websocket.priority,
