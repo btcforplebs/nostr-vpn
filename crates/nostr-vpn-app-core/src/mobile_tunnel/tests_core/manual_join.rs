@@ -138,8 +138,8 @@
         );
         assert!(configured.discovery_fallback_transit);
         assert!(
-            configured.auto_reconnect,
-            "bootstrap/transit peers are the only off-LAN route on cellular and must reconnect"
+            !configured.auto_reconnect,
+            "bootstrap/transit peers should not use nvpn roster-style fast reconnect"
         );
         assert!(mobile.nostr_discovery_enabled);
     }

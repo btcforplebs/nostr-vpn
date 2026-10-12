@@ -737,6 +737,56 @@
     }
 
     #[test]
+    fn mobile_network_change_redials_bootstrap_transit_peers_without_auto_reconnect() {
+        let own_keys = Keys::generate();
+        let bootstrap = Keys::generate();
+        let bootstrap_npub = bootstrap.public_key().to_bech32().expect("bootstrap npub");
+        let mut app = AppConfig::generated_without_networks();
+        app.nostr.secret_key = own_keys.secret_key().to_bech32().expect("test nsec");
+        app.ensure_defaults();
+        app.fips_nostr_discovery_enabled = false;
+        app.fips_websocket_seed_urls.clear();
+        app.fips_bootstrap_enabled = true;
+        app.set_fips_bootstrap_peers(HashMap::from([(
+            bootstrap_npub.clone(),
+            vec!["192.168.50.20:51820".to_string()],
+        )]));
+        let mut config = MobileTunnelConfig::from_app(&app).expect("mobile config");
+        config.listen_port = available_udp_port();
+        config.nostr_discovery_enabled = false;
+        config.webrtc_enabled = false;
+
+        let bootstrap_identity = PeerIdentity::from_npub(&bootstrap_npub).expect("bootstrap id");
+        let refresh = mobile_network_change_refresh_peers(&config);
+        assert!(
+            refresh
+                .iter()
+                .any(|peer| peer.node_addr() == bootstrap_identity.node_addr()),
+            "a network change must redial the bootstrap/transit peer, the only off-LAN route on cellular"
+        );
+        // Redial comes from the network-change path, not from roster-style
+        // fast reconnect: every mobile FIPS peer keeps auto_reconnect off.
+        let endpoint = fips_endpoint_config("network-change-transit", &config);
+        assert!(endpoint.peers.iter().any(|peer| peer.npub == bootstrap_npub));
+        assert!(endpoint
+            .peers
+            .iter()
+            .all(|peer| peer.auto_reconnect == FIPS_MOBILE_AUTO_RECONNECT));
+        assert!(!FIPS_MOBILE_AUTO_RECONNECT);
+
+        let config_json = serde_json::to_string(&config).expect("mobile config JSON");
+        let tunnel = MobileTunnel::start(&config_json).expect("mobile tunnel should start");
+        let outcome = tunnel
+            .handle_underlay_network_change()
+            .expect("live mobile FIPS endpoint should accept an underlay change");
+        assert_eq!(
+            outcome.refreshed_peers, 1,
+            "the configured bootstrap/transit peer must be redialed after the underlay changes"
+        );
+        drop(tunnel);
+    }
+
+    #[test]
     fn wg_upstream_excluded_route_is_ipv4_only() {
         assert_eq!(
             wg_upstream_excluded_route_for_addr("198.51.100.20:51820".parse().unwrap()),
