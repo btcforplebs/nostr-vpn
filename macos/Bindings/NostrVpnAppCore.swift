@@ -942,6 +942,11 @@ public struct NativeAppState {
     public var vpnEnabled: Bool
     public var vpnActive: Bool
     public var vpnStatus: String
+    /**
+     * The last status poll failed; peers and VPN state are the last known
+     * values, not live ones.
+     */
+    public var daemonStatusDelayed: Bool
     public var daemonBinaryVersion: String
     public var serviceBinaryVersion: String
     public var expectedServiceBinaryVersion: String
@@ -1032,7 +1037,11 @@ public struct NativeAppState {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(rev: UInt64, platform: String, mobile: Bool, vpnControlSupported: Bool, cliInstallSupported: Bool, startupSettingsSupported: Bool, trayBehaviorSupported: Bool, runtimeStatusDetail: String, appVersion: String, configPath: String, error: String, cliInstalled: Bool, serviceSupported: Bool, serviceEnablementSupported: Bool, serviceInstalled: Bool, serviceDisabled: Bool, serviceRunning: Bool, serviceStatusDetail: String, daemonRunning: Bool, vpnEnabled: Bool, vpnActive: Bool, vpnStatus: String, daemonBinaryVersion: String, serviceBinaryVersion: String, expectedServiceBinaryVersion: String, ownNpub: String, ownPubkeyHex: String, nodeId: String, nodeName: String, selfMagicDnsName: String, endpoint: String, tunnelIp: String, listenPort: UInt32, relays: [NativeRelayState], nostrPubsubMode: String, nostrPubsubFanout: UInt32, nostrPubsubMaxHops: UInt8, nostrPubsubMaxEventBytes: UInt32, networkId: String, joinRequestQrCodeOrLink: String, internetSource: String, exitNode: String, exitNodeLeakProtection: Bool, exitNodeActive: Bool, exitNodeBlocked: Bool, exitNodeNeedsAttention: Bool, exitNodeStatusText: String,
+    public init(rev: UInt64, platform: String, mobile: Bool, vpnControlSupported: Bool, cliInstallSupported: Bool, startupSettingsSupported: Bool, trayBehaviorSupported: Bool, runtimeStatusDetail: String, appVersion: String, configPath: String, error: String, cliInstalled: Bool, serviceSupported: Bool, serviceEnablementSupported: Bool, serviceInstalled: Bool, serviceDisabled: Bool, serviceRunning: Bool, serviceStatusDetail: String, daemonRunning: Bool, vpnEnabled: Bool, vpnActive: Bool, vpnStatus: String,
+        /**
+         * The last status poll failed; peers and VPN state are the last known
+         * values, not live ones.
+         */daemonStatusDelayed: Bool, daemonBinaryVersion: String, serviceBinaryVersion: String, expectedServiceBinaryVersion: String, ownNpub: String, ownPubkeyHex: String, nodeId: String, nodeName: String, selfMagicDnsName: String, endpoint: String, tunnelIp: String, listenPort: UInt32, relays: [NativeRelayState], nostrPubsubMode: String, nostrPubsubFanout: UInt32, nostrPubsubMaxHops: UInt8, nostrPubsubMaxEventBytes: UInt32, networkId: String, joinRequestQrCodeOrLink: String, internetSource: String, exitNode: String, exitNodeLeakProtection: Bool, exitNodeActive: Bool, exitNodeBlocked: Bool, exitNodeNeedsAttention: Bool, exitNodeStatusText: String,
         /**
          * Where lookups go under the network DNS override; empty when it is off.
          */networkDnsStatusText: String,
@@ -1067,6 +1076,7 @@ public struct NativeAppState {
         self.vpnEnabled = vpnEnabled
         self.vpnActive = vpnActive
         self.vpnStatus = vpnStatus
+        self.daemonStatusDelayed = daemonStatusDelayed
         self.daemonBinaryVersion = daemonBinaryVersion
         self.serviceBinaryVersion = serviceBinaryVersion
         self.expectedServiceBinaryVersion = expectedServiceBinaryVersion
@@ -1216,6 +1226,9 @@ extension NativeAppState: Equatable, Hashable {
             return false
         }
         if lhs.vpnStatus != rhs.vpnStatus {
+            return false
+        }
+        if lhs.daemonStatusDelayed != rhs.daemonStatusDelayed {
             return false
         }
         if lhs.daemonBinaryVersion != rhs.daemonBinaryVersion {
@@ -1469,6 +1482,7 @@ extension NativeAppState: Equatable, Hashable {
         hasher.combine(vpnEnabled)
         hasher.combine(vpnActive)
         hasher.combine(vpnStatus)
+        hasher.combine(daemonStatusDelayed)
         hasher.combine(daemonBinaryVersion)
         hasher.combine(serviceBinaryVersion)
         hasher.combine(expectedServiceBinaryVersion)
@@ -1578,6 +1592,7 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
                 vpnEnabled: FfiConverterBool.read(from: &buf),
                 vpnActive: FfiConverterBool.read(from: &buf),
                 vpnStatus: FfiConverterString.read(from: &buf),
+                daemonStatusDelayed: FfiConverterBool.read(from: &buf),
                 daemonBinaryVersion: FfiConverterString.read(from: &buf),
                 serviceBinaryVersion: FfiConverterString.read(from: &buf),
                 expectedServiceBinaryVersion: FfiConverterString.read(from: &buf),
@@ -1679,6 +1694,7 @@ public struct FfiConverterTypeNativeAppState: FfiConverterRustBuffer {
         FfiConverterBool.write(value.vpnEnabled, into: &buf)
         FfiConverterBool.write(value.vpnActive, into: &buf)
         FfiConverterString.write(value.vpnStatus, into: &buf)
+        FfiConverterBool.write(value.daemonStatusDelayed, into: &buf)
         FfiConverterString.write(value.daemonBinaryVersion, into: &buf)
         FfiConverterString.write(value.serviceBinaryVersion, into: &buf)
         FfiConverterString.write(value.expectedServiceBinaryVersion, into: &buf)

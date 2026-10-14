@@ -79,6 +79,9 @@ impl NativeAppRuntime {
 
     fn invalidate_service_status(&mut self) {
         self.last_service_status_refresh_at = None;
+        // A deliberate service change must read fresh daemon state, never the
+        // last-known list kept across a transient status failure.
+        self.forget_last_known_daemon_status();
     }
 
     /// Cache the version of the bundled `nvpn` CLI — i.e. the version that
@@ -289,6 +292,60 @@ impl NativeAppRuntime {
             .hide_console_window()
             .output()
             .with_context(|| format!("failed to execute {}", nvpn_bin.display()))
+    }
+
+    fn run_nvpn_with_timeout<const N: usize>(
+        &self,
+        args: [&str; N],
+        timeout: Duration,
+    ) -> Result<Output> {
+        let Some(nvpn_bin) = &self.nvpn_bin else {
+            return Err(anyhow!(
+                "nvpn CLI binary not found; set {NVPN_BIN_ENV} or install nvpn"
+            ));
+        };
+        let mut child = Command::new(nvpn_bin)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .hide_console_window()
+            .spawn()
+            .with_context(|| format!("failed to execute {}", nvpn_bin.display()))?;
+        // Drain both pipes off-thread so a large status document cannot fill a
+        // pipe and stall the child while we wait on it.
+        let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                if let Some(mut pipe) = pipe {
+                    let _ = pipe.read_to_end(&mut bytes);
+                }
+                bytes
+            })
+        };
+        let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as _));
+        let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as _));
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(anyhow!(
+                    "`nvpn {}` timed out after {}s",
+                    args.first().copied().unwrap_or_default(),
+                    timeout.as_secs()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        Ok(Output {
+            status,
+            stdout: stdout.join().unwrap_or_default(),
+            stderr: stderr.join().unwrap_or_default(),
+        })
     }
 
     fn run_nvpn_service_action<const N: usize>(&self, args: [&str; N]) -> Result<Output> {

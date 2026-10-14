@@ -998,3 +998,208 @@ exit 0
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[cfg(unix)]
+    fn runtime_with_reachable_peer_and_failing_status(prefix: &str) -> (NativeAppRuntime, PathBuf) {
+        let dir = unique_service_test_dir(prefix);
+        let script_path = write_starting_service_fake_nvpn(&dir);
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.startup_error = None;
+        runtime.last_error.clear();
+        runtime.config_path = dir.join("config.toml");
+        create_test_network(&mut runtime, "Home");
+        let own_pubkey = runtime
+            .config
+            .own_nostr_pubkey_hex()
+            .expect("generated config should have own pubkey");
+        let peer_pubkey = "26525c442dd039de4e728b41ee8d7f717b267ab25b7c219d53a3249e1c9174cc";
+        runtime.config.networks[0].admins = vec![own_pubkey];
+        runtime.config.networks[0].devices = vec![peer_pubkey.to_string()];
+        runtime
+            .config
+            .save(&runtime.config_path)
+            .expect("save test config");
+        runtime.nvpn_bin = Some(script_path);
+        runtime.daemon_status_grace_until = None;
+        runtime.daemon_running = true;
+        runtime.vpn_enabled = true;
+        runtime.vpn_active = true;
+        let now = unix_timestamp();
+        runtime.daemon_state = Some(DaemonRuntimeState {
+            vpn_enabled: true,
+            vpn_active: true,
+            expected_peer_count: 1,
+            connected_peer_count: 1,
+            mesh_ready: true,
+            peers: vec![DaemonPeerState {
+                participant_pubkey: peer_pubkey.to_string(),
+                endpoint: "fips".to_string(),
+                last_fips_seen_at: Some(now),
+                last_handshake_at: Some(now),
+                reachable: true,
+                ..DaemonPeerState::default()
+            }],
+            ..DaemonRuntimeState::default()
+        });
+        (runtime, dir)
+    }
+
+    #[cfg(unix)]
+    fn reachable_participant_count(runtime: &NativeAppRuntime) -> usize {
+        runtime.state().networks[0]
+            .participants
+            .iter()
+            .filter(|participant| participant.reachable)
+            .count()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_failed_status_poll_keeps_the_last_known_peer_list() {
+        let (mut runtime, dir) =
+            runtime_with_reachable_peer_and_failing_status("nvpn-app-core-status-keep");
+        runtime.daemon_status_ok_at = Some(Instant::now());
+        let before = reachable_participant_count(&runtime);
+        assert!(before >= 1);
+
+        runtime.refresh_status().expect("transient failure is not a UI error");
+
+        assert_eq!(reachable_participant_count(&runtime), before);
+        assert!(runtime.daemon_state.is_some());
+        assert!(runtime.vpn_active);
+        assert_eq!(runtime.vpn_status, "Status delayed, showing last known peers");
+        assert!(runtime.state().daemon_status_delayed);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_outage_past_the_keep_window_clears_the_peer_list() {
+        let (mut runtime, dir) =
+            runtime_with_reachable_peer_and_failing_status("nvpn-app-core-status-expire");
+        runtime.daemon_status_ok_at =
+            Instant::now().checked_sub(DAEMON_STATUS_LAST_KNOWN_KEEP + Duration::from_secs(1));
+
+        assert!(runtime.refresh_status().is_err());
+
+        assert_eq!(reachable_participant_count(&runtime), 0);
+        assert!(runtime.daemon_state.is_none());
+        assert!(!runtime.vpn_active);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_change_never_reuses_the_last_known_peer_list() {
+        let (mut runtime, dir) =
+            runtime_with_reachable_peer_and_failing_status("nvpn-app-core-status-service-change");
+        runtime.daemon_status_ok_at = Some(Instant::now());
+
+        runtime.invalidate_service_status();
+        let _ = runtime.refresh_status();
+
+        assert!(runtime.daemon_state.is_none());
+        assert!(!runtime.vpn_active);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hung_status_call_times_out() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = unique_service_test_dir("nvpn-app-core-status-timeout");
+        let script_path = dir.join("nvpn");
+        fs::write(&script_path, "#!/bin/sh\nexec sleep 30\n").expect("write fake nvpn");
+        let mut permissions = fs::metadata(&script_path)
+            .expect("fake nvpn metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("make fake nvpn executable");
+        let error = anyhow!("boom");
+        let mut runtime = NativeAppRuntime::from_startup_error(&error);
+        runtime.nvpn_bin = Some(script_path);
+
+        let started = Instant::now();
+        let result = runtime.run_nvpn_with_timeout(["status"], Duration::from_millis(300));
+
+        assert!(result.is_err_and(|error| error.to_string().contains("timed out")));
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn log_fake_nvpn_calls(runtime: &mut NativeAppRuntime, dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let log_path = dir.join("calls.log");
+        let script_path = dir.join("nvpn-logging");
+        fs::write(
+            &script_path,
+            format!(
+                r#"#!/bin/sh
+echo "$1" >> '{}'
+if [ "$1" = "service" ] && [ "$2" = "status" ]; then
+  cat <<'JSON'
+{{"supported":true,"installed":true,"disabled":false,"loaded":true,"running":true,"pid":123,"label":"fi.siriusbusiness.nvpn.test","binary_version":"test"}}
+JSON
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  echo "control socket not ready" >&2
+  exit 7
+fi
+exit 0
+"#,
+                log_path.display()
+            ),
+        )
+        .expect("write logging fake nvpn");
+        let mut permissions = fs::metadata(&script_path)
+            .expect("fake nvpn metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("make fake nvpn executable");
+        runtime.nvpn_bin = Some(script_path);
+        log_path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_after_a_daemon_death_starts_the_daemon_instead_of_resuming() {
+        let (mut runtime, dir) =
+            runtime_with_reachable_peer_and_failing_status("nvpn-app-core-status-connect");
+        runtime.daemon_status_ok_at = Some(Instant::now());
+        runtime.daemon_status_delayed = true;
+        let log_path = log_fake_nvpn_calls(&mut runtime, &dir);
+
+        let _ = runtime.connect_vpn();
+
+        let calls = fs::read_to_string(&log_path).expect("fake nvpn was called");
+        assert!(!calls.lines().any(|call| call == "resume"), "{calls}");
+        assert!(calls.lines().any(|call| call == "start"), "{calls}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnect_reads_fresh_daemon_state() {
+        let (mut runtime, dir) =
+            runtime_with_reachable_peer_and_failing_status("nvpn-app-core-status-disconnect");
+        runtime.daemon_status_ok_at = Some(Instant::now());
+        runtime.daemon_status_delayed = true;
+        let _ = log_fake_nvpn_calls(&mut runtime, &dir);
+
+        let _ = runtime.disconnect_vpn();
+
+        assert!(runtime.daemon_state.is_none());
+        assert!(!runtime.state().daemon_status_delayed);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
