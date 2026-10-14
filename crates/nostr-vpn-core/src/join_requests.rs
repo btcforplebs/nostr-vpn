@@ -76,6 +76,7 @@ pub fn prepare_manual_join_delivery(
         shared.network_id.clone(),
         NetworkRoster {
             dns_node: shared.dns_node,
+            dns_backup_nodes: shared.dns_backup_nodes,
             dns_override: shared.dns_override,
             network_name: shared.name,
             devices: shared.devices,

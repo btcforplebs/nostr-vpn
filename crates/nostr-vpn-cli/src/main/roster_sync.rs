@@ -27,15 +27,19 @@ fn network_dns_status_json(
         return json!({ "node": null, "override": false, "enforced": false });
     };
     let route = app.network_dns_route();
-    if network.dns_node.is_empty() && route == NetworkDnsRoute::Off {
+    if network.dns_node.is_empty()
+        && network.dns_backup_nodes.is_empty()
+        && route == NetworkDnsRoute::Off
+    {
         return json!({ "node": null, "override": false, "enforced": false });
     }
 
     let dns_node = (!network.dns_node.is_empty()).then(|| network.dns_node.clone());
-    let nameserver = match route {
-        NetworkDnsRoute::Nameserver(ip) => Some(ip),
-        _ => None,
+    let nameservers = match &route {
+        NetworkDnsRoute::Nameservers(nameservers) => nameservers.clone(),
+        _ => Vec::new(),
     };
+    let nameserver = nameservers.first().copied();
     let reachable = match (&dns_node, nameserver) {
         (Some(dns_node), Some(_)) => daemon_peers.map(|peers| {
             peers
@@ -44,18 +48,24 @@ fn network_dns_status_json(
         }),
         _ => None,
     };
+    let own_pubkey = app.own_nostr_pubkey_hex().ok();
     let role = match route {
-        NetworkDnsRoute::ServesNetwork => "nameserver",
+        NetworkDnsRoute::ServesNetwork if own_pubkey.as_deref() == dns_node.as_deref() => {
+            "nameserver"
+        }
+        NetworkDnsRoute::ServesNetwork => "backup",
         _ => "client",
     };
 
     json!({
         "node": dns_node,
         "node_name": dns_node.as_deref().and_then(|node| app.peer_alias(node)),
+        "backups": network.dns_backup_nodes,
         "nameserver_ip": nameserver.map(|ip| ip.to_string()),
+        "nameserver_ips": nameservers.iter().map(ToString::to_string).collect::<Vec<_>>(),
         "override": network.dns_override,
         "role": role,
-        "enforced": matches!(route, NetworkDnsRoute::Nameserver(_) | NetworkDnsRoute::Unavailable),
+        "enforced": matches!(route, NetworkDnsRoute::Nameservers(_) | NetworkDnsRoute::Unavailable),
         "unavailable": route == NetworkDnsRoute::Unavailable,
         "reachable": reachable,
     })
@@ -65,6 +75,9 @@ fn network_dns_status_text(app: &AppConfig, daemon_peers: Option<&[DaemonPeerSta
     let status = network_dns_status_json(app, daemon_peers);
     if status["unavailable"].as_bool().unwrap_or(false) {
         return "override=on NO USABLE NAMESERVER, DNS fails closed".to_string();
+    }
+    if status["role"] == "backup" {
+        return "this device is a backup network DNS server".to_string();
     }
     let Some(node) = status["node"].as_str() else {
         return "none".to_string();
@@ -79,10 +92,21 @@ fn network_dns_status_text(app: &AppConfig, daemon_peers: Option<&[DaemonPeerSta
     }
 
     let nameserver = status["nameserver_ip"].as_str().unwrap_or("unknown");
+    let backups = status["nameserver_ips"]
+        .as_array()
+        .map_or(0, |ips| ips.len().saturating_sub(1));
+    let backups = match backups {
+        0 => String::new(),
+        1 => " +1 backup".to_string(),
+        count => format!(" +{count} backups"),
+    };
     match status["reachable"].as_bool() {
-        Some(false) => format!("{name} ({nameserver}) override=on UNREACHABLE, DNS fails closed"),
-        Some(true) => format!("{name} ({nameserver}) override=on reachable"),
-        None => format!("{name} ({nameserver}) override=on"),
+        Some(false) if backups.is_empty() => {
+            format!("{name} ({nameserver}) override=on UNREACHABLE, DNS fails closed")
+        }
+        Some(false) => format!("{name} ({nameserver}) override=on UNREACHABLE{backups}"),
+        Some(true) => format!("{name} ({nameserver}) override=on reachable{backups}"),
+        None => format!("{name} ({nameserver}) override=on{backups}"),
     }
 }
 
@@ -170,6 +194,7 @@ pub(crate) fn shared_roster_publish_allowed(
 fn network_roster_from_shared(shared: &SharedNetworkRoster) -> NetworkRoster {
     NetworkRoster {
         dns_node: shared.dns_node.clone(),
+        dns_backup_nodes: shared.dns_backup_nodes.clone(),
         dns_override: shared.dns_override,
         network_name: shared.name.clone(),
         devices: shared.devices.clone(),
@@ -362,4 +387,58 @@ fn sync_fips_roster_with_connected_peers(
         sent += 1;
     }
     Ok(sent)
+}
+
+/// `nvpn status --json` is what a DNS box's own healthcheck reads, so the
+/// role names are a contract, not just display text.
+#[cfg(test)]
+mod network_dns_status_tests {
+    use super::*;
+    use nostr_sdk::prelude::{Keys, ToBech32};
+
+    fn app_with_roles() -> (AppConfig, String, String, String) {
+        let keys = Keys::generate();
+        let own = keys.public_key().to_hex();
+        let primary = Keys::generate().public_key().to_hex();
+        let backup = Keys::generate().public_key().to_hex();
+        let mut app = AppConfig::default();
+        app.nostr.secret_key = keys.secret_key().to_bech32().expect("nsec");
+        app.nostr.public_key = own.clone();
+        app.networks[0].enabled = true;
+        app.networks[0].network_id = "network-dns".to_string();
+        app.networks[0].admins = vec![own.clone()];
+        app.networks[0].devices = vec![own.clone(), primary.clone(), backup.clone()];
+        (app, own, primary, backup)
+    }
+
+    fn select(app: &mut AppConfig, primary: &str, backups: &[String]) {
+        let network_id = app.networks[0].id.clone();
+        app.set_network_dns(&network_id, primary, true)
+            .expect("select primary");
+        app.set_network_dns_backups(&network_id, backups)
+            .expect("select backups");
+    }
+
+    #[test]
+    fn status_names_the_primary_the_backup_and_a_client() {
+        let (mut app, own, primary, backup) = app_with_roles();
+
+        select(&mut app, &own, std::slice::from_ref(&backup));
+        assert_eq!(network_dns_status_json(&app, None)["role"], "nameserver");
+
+        select(&mut app, &primary, std::slice::from_ref(&own));
+        let status = network_dns_status_json(&app, None);
+        assert_eq!(status["role"], "backup");
+        assert_eq!(status["enforced"], false);
+
+        select(&mut app, &primary, std::slice::from_ref(&backup));
+        let status = network_dns_status_json(&app, None);
+        assert_eq!(status["role"], "client");
+        assert_eq!(status["backups"], serde_json::json!([backup]));
+        assert_eq!(
+            status["nameserver_ips"].as_array().map(Vec::len),
+            Some(2),
+            "a client must be handed the primary and the backup"
+        );
+    }
 }

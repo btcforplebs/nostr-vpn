@@ -576,6 +576,11 @@ struct SetArgs {
     /// only. Pass an empty value to clear it.
     #[arg(long)]
     network_dns_node: Option<String>,
+    /// Comma-separated roster devices (npub or hex) that also serve DNS, in
+    /// the order members should try them after the network DNS device. Admin
+    /// only. Pass an empty value to clear them.
+    #[arg(long)]
+    network_dns_backup: Option<String>,
     /// Force every device on this network to resolve through the network DNS
     /// device instead of its local network's DNS. Admin only.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]

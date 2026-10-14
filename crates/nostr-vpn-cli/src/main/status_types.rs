@@ -420,7 +420,7 @@ pub(crate) fn global_system_dns_required(app: &AppConfig) -> bool {
     !app.internet_source.is_direct()
         || matches!(
             app.network_dns_route(),
-            nostr_vpn_core::config::NetworkDnsRoute::Nameserver(_)
+            nostr_vpn_core::config::NetworkDnsRoute::Nameservers(_)
                 | nostr_vpn_core::config::NetworkDnsRoute::Unavailable
         )
 }

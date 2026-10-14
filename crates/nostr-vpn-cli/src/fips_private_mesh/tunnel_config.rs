@@ -654,7 +654,7 @@ impl FipsPrivateTunnelConfig {
     fn network_dns_override_active(&self) -> bool {
         matches!(
             self.network_dns,
-            NetworkDnsRoute::Nameserver(_) | NetworkDnsRoute::Unavailable
+            NetworkDnsRoute::Nameservers(_) | NetworkDnsRoute::Unavailable
         )
     }
 
@@ -712,10 +712,10 @@ impl FipsPrivateTunnelConfig {
         // and it applies on a Direct connection where `secure_dns_requested` is
         // false, so this branch has to come first.
         if self.client_dataplane_enabled {
-            match self.network_dns {
-                NetworkDnsRoute::Nameserver(nameserver) => {
+            match &self.network_dns {
+                NetworkDnsRoute::Nameservers(nameservers) => {
                     return Ok(ExitDnsResolverConfig::ThroughExit {
-                        servers: vec![IpAddr::V4(nameserver)],
+                        servers: nameservers.iter().copied().map(IpAddr::V4).collect(),
                     });
                 }
                 NetworkDnsRoute::Unavailable => return Ok(ExitDnsResolverConfig::FailClosed),

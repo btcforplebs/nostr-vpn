@@ -643,6 +643,7 @@ fn apply_verified_admin_signed_shared_roster_applies_the_network_dns_selection()
 
     let roster = NetworkRoster {
         dns_node: pihole_hex.clone(),
+        dns_backup_nodes: Vec::new(),
         dns_override: true,
         network_name: "Home Mesh".to_string(),
         devices: vec![own_hex, pihole_hex.clone()],
@@ -681,6 +682,7 @@ fn apply_verified_admin_signed_shared_roster_drops_a_dns_node_that_is_not_a_memb
 
     let roster = NetworkRoster {
         dns_node: stranger,
+        dns_backup_nodes: Vec::new(),
         dns_override: true,
         network_name: "Home Mesh".to_string(),
         devices: vec![own_hex],
@@ -699,4 +701,53 @@ fn apply_verified_admin_signed_shared_roster_drops_a_dns_node_that_is_not_a_memb
         config.networks[0].dns_override,
         "a bad nameserver must leave the override on so members fail closed"
     );
+}
+
+/// The roster decoder already drops strangers, so this goes through the apply
+/// step directly: it must hold the backups to the same membership and
+/// tombstone checks as the primary on its own.
+#[test]
+fn apply_admin_signed_shared_roster_keeps_only_member_dns_backups() {
+    let own = Keys::generate();
+    let admin = Keys::generate();
+    let own_hex = own.public_key().to_hex();
+    let admin_hex = admin.public_key().to_hex();
+    let pihole_hex = Keys::generate().public_key().to_hex();
+    let backup_hex = Keys::generate().public_key().to_hex();
+    let tombstoned_hex = Keys::generate().public_key().to_hex();
+    let stranger_hex = Keys::generate().public_key().to_hex();
+
+    let mut config = AppConfig::generated();
+    config.nostr.secret_key = own.secret_key().to_secret_hex();
+    config.nostr.public_key = own_hex.clone();
+    config.networks[0].network_id = "mesh-home".to_string();
+    config.networks[0].admins = vec![admin_hex.clone()];
+    config.networks[0].devices = vec![own_hex.clone()];
+    config.networks[0].removed_devices = vec![tombstoned_hex.clone()];
+    config.networks[0].shared_roster_updated_at = 1_726_000_000;
+    config.networks[0].shared_roster_signed_by = admin_hex.clone();
+    config.ensure_defaults();
+
+    let changed = config
+        .apply_admin_signed_shared_roster(AdminSignedSharedRosterUpdate {
+            network_id: "mesh-home".to_string(),
+            network_name: "Home Mesh".to_string(),
+            devices: vec![
+                own_hex,
+                pihole_hex.clone(),
+                backup_hex.clone(),
+                tombstoned_hex.clone(),
+            ],
+            admins: vec![admin_hex.clone()],
+            dns_node: pihole_hex,
+            dns_backup_nodes: vec![stranger_hex, tombstoned_hex, backup_hex.clone()],
+            dns_override: true,
+            signed_at: 1_726_000_001,
+            signed_by: admin_hex,
+            ..Default::default()
+        })
+        .expect("apply roster carrying DNS backups");
+
+    assert!(changed);
+    assert_eq!(config.networks[0].dns_backup_nodes, vec![backup_hex]);
 }

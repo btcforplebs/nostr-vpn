@@ -138,10 +138,14 @@ impl AppConfig {
     ///
     /// See [`network_has_member`] for why this cannot just check `devices`.
     ///
-    /// The nameserver device itself gets [`NetworkDnsRoute::ServesNetwork`].
-    /// It already runs the resolver on port 53, so installing our own stub
-    /// there would collide with it and take the tunnel down with it, and
-    /// forwarding to our own mesh address would loop.
+    /// Every device that serves DNS, primary or backup, gets
+    /// [`NetworkDnsRoute::ServesNetwork`]. It already runs the resolver on
+    /// port 53, so installing our own stub there would collide with it and take
+    /// the tunnel down with it, and forwarding to a mesh address would make
+    /// one DNS box depend on another staying awake.
+    ///
+    /// Everyone else gets the primary followed by the backups, in the admin's
+    /// order, skipping any that are not members or have no mesh address.
     pub fn network_dns_route(&self) -> NetworkDnsRoute {
         let Some(network) = self.active_network_opt() else {
             return NetworkDnsRoute::Off;
@@ -150,32 +154,36 @@ impl AppConfig {
             return NetworkDnsRoute::Off;
         }
         let own_pubkey = self.own_nostr_pubkey_hex().ok();
-        if !network.dns_node.is_empty() && own_pubkey.as_deref() == Some(network.dns_node.as_str())
+        let dns_nodes = std::iter::once(&network.dns_node)
+            .chain(network.dns_backup_nodes.iter())
+            .filter(|node| !node.is_empty());
+        if let Some(own) = own_pubkey.as_deref()
+            && dns_nodes.clone().any(|node| node == own)
         {
             return NetworkDnsRoute::ServesNetwork;
         }
-        if network.dns_node.is_empty()
-            || !network_has_member(network, &network.dns_node, own_pubkey.as_deref())
-        {
-            return NetworkDnsRoute::Unavailable;
-        }
-        derive_mesh_tunnel_ip(&self.effective_network_id(), &network.dns_node)
-            .and_then(|tunnel_ip| {
+        let network_id = self.effective_network_id();
+        let mut nameservers = Vec::new();
+        for node in dns_nodes {
+            if !network_has_member(network, node, own_pubkey.as_deref()) {
+                continue;
+            }
+            let Some(address) = derive_mesh_tunnel_ip(&network_id, node).and_then(|tunnel_ip| {
                 tunnel_ip
                     .split('/')
                     .next()
                     .and_then(|address| address.parse::<Ipv4Addr>().ok())
-            })
-            .map_or(NetworkDnsRoute::Unavailable, NetworkDnsRoute::Nameserver)
-    }
-
-    /// Mesh address of the network nameserver this device should resolve
-    /// through, or `None` when there is no reachable nameserver to forward to.
-    /// `None` does not mean the override is off; see [`Self::network_dns_route`].
-    pub fn network_dns_nameserver_ipv4(&self) -> Option<Ipv4Addr> {
-        match self.network_dns_route() {
-            NetworkDnsRoute::Nameserver(nameserver) => Some(nameserver),
-            _ => None,
+            }) else {
+                continue;
+            };
+            if !nameservers.contains(&address) {
+                nameservers.push(address);
+            }
+        }
+        if nameservers.is_empty() {
+            NetworkDnsRoute::Unavailable
+        } else {
+            NetworkDnsRoute::Nameservers(nameservers)
         }
     }
 
@@ -191,6 +199,11 @@ impl AppConfig {
             {
                 network.dns_node.clear();
             }
+            let backups = std::mem::take(&mut network.dns_backup_nodes);
+            network.dns_backup_nodes =
+                normalize_dns_backup_nodes(backups, &network.dns_node, |backup| {
+                    network_has_member(network, backup, own_pubkey.as_deref())
+                });
         }
     }
 

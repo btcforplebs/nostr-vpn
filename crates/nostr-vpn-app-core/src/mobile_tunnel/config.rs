@@ -304,6 +304,7 @@ fn mobile_admin_signed_roster(app: &AppConfig) -> Result<Option<SignedRoster>> {
         shared.network_id,
         NetworkRoster {
             dns_node: shared.dns_node,
+            dns_backup_nodes: shared.dns_backup_nodes,
             dns_override: shared.dns_override,
             network_name: shared.name,
             devices: shared.devices,
@@ -530,8 +531,10 @@ impl MobileTunnelConfig {
         } else {
             app.network_dns_route()
         };
-        let network_dns = match network_dns_route {
-            NetworkDnsRoute::Nameserver(nameserver) => Some(nameserver),
+        // The mobile DNS NAT rewrites to one address: the first usable
+        // nameserver, which is the primary whenever it is still a member.
+        let network_dns = match &network_dns_route {
+            NetworkDnsRoute::Nameservers(nameservers) => nameservers.first().copied(),
             _ => None,
         };
         let network_dns_unavailable = network_dns_route == NetworkDnsRoute::Unavailable;

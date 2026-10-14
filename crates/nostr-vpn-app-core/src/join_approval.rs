@@ -41,6 +41,7 @@ pub fn prepare_join_approval(
         shared.network_id.clone(),
         NetworkRoster {
             dns_node: shared.dns_node.clone(),
+            dns_backup_nodes: shared.dns_backup_nodes.clone(),
             dns_override: shared.dns_override,
             network_name: shared.name.clone(),
             devices: shared.devices.clone(),
@@ -257,6 +258,7 @@ mod tests {
             shared.network_id,
             NetworkRoster {
                 dns_node: shared.dns_node,
+                dns_backup_nodes: shared.dns_backup_nodes,
                 dns_override: shared.dns_override,
                 network_name: shared.name,
                 devices: shared.devices,
