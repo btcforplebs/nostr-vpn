@@ -116,6 +116,11 @@ pub(crate) struct MobileTunnelConfig {
     #[serde(default)]
     pub(crate) join_secret: String,
     pub(crate) local_address: String,
+    /// IPv6 address for the tun, set only when IPv6 routes must enter it (the
+    /// DNS sinkhole's /128s). Both mobile platforms need an IPv6 address on
+    /// the interface before they will route any IPv6 into it.
+    #[serde(default)]
+    pub(crate) local_address_ipv6: String,
     #[serde(default)]
     pub(crate) advertised_endpoint: String,
     #[serde(default)]
@@ -171,6 +176,19 @@ pub(crate) struct MobileTunnelConfig {
     /// `MagicDNS` requires nvpn to own DNS resolution.
     #[serde(default)]
     pub(crate) magic_dns_server: String,
+    /// Mesh address of the network's nameserver when the admin has turned the
+    /// network DNS override on, empty otherwise. Mirrors `network_dns` on the
+    /// daemon's `FipsPrivateTunnelConfig`: without it, a mobile device is a
+    /// full roster member that silently ignores the network's DNS policy.
+    /// Already empty on the nameserver itself, so it never points at us.
+    #[serde(default)]
+    pub(crate) network_dns: String,
+    /// The network DNS override is on but names no usable nameserver. The
+    /// tunnel then owns DNS exactly as with `network_dns` set, and answers
+    /// every lookup it cannot serve locally with a failure: falling back to
+    /// the local network's resolver is the silent leak the override prevents.
+    #[serde(default)]
+    pub(crate) network_dns_unavailable: bool,
     /// Empty-string means all DNS should use the tunnel. A direct/split
     /// tunnel lists only the `MagicDNS` suffix so ordinary device DNS remains
     /// on the underlay.
@@ -334,6 +352,14 @@ fn serialized_mobile_internet_source(app: &AppConfig) -> Option<String> {
 fn mobile_exit_dns_resolver_config(
     config: &MobileTunnelConfig,
 ) -> Result<ExitDnsResolverConfig> {
+    // Admin network policy outranks this device's own exit DNS preference, and
+    // it applies with no exit node at all, so this branch comes first — same
+    // precedence the daemon uses in FipsPrivateTunnelConfig.
+    if let Some(nameserver) = parse_ipv4(&config.network_dns) {
+        return Ok(ExitDnsResolverConfig::ThroughExit {
+            servers: vec![IpAddr::V4(nameserver)],
+        });
+    }
     let exit_active = config.wireguard_exit.is_some()
         || config
             .route_targets
@@ -343,6 +369,31 @@ fn mobile_exit_dns_resolver_config(
         return ExitDnsConfig::default().resolver_config(None);
     }
     config.exit_dns.resolver_config(config.wireguard_exit.as_ref())
+}
+
+/// Where the in-tunnel stub may send a public lookup it cannot answer itself.
+#[derive(Debug, PartialEq, Eq)]
+enum MobileDnsUpstream {
+    /// NAT the query to these servers: the network nameserver, or exit DNS.
+    Nat(Vec<Ipv4Addr>),
+    /// Resolve it over `DoH` from this process.
+    SecureDns,
+    /// Fail it. The network override is on with no usable nameserver, and
+    /// either fallback would resolve around the override: exit DNS through the
+    /// exit, `DoH` from a process that may sit outside the tunnel on Android.
+    Nowhere,
+}
+
+fn mobile_dns_upstream(config: &MobileTunnelConfig) -> Result<MobileDnsUpstream> {
+    if config.network_dns_unavailable {
+        return Ok(MobileDnsUpstream::Nowhere);
+    }
+    let servers = active_mobile_exit_dns_servers(config)?;
+    Ok(if servers.is_empty() {
+        MobileDnsUpstream::SecureDns
+    } else {
+        MobileDnsUpstream::Nat(servers)
+    })
 }
 
 fn active_mobile_exit_dns_servers(config: &MobileTunnelConfig) -> Result<Vec<Ipv4Addr>> {
@@ -468,6 +519,32 @@ impl MobileTunnelConfig {
         {
             route_targets.push(MESH_TUNNEL_IPV4_CIDR.to_string());
         }
+        // The network DNS override only applies once this device is a member
+        // of the mesh; a manual join still waiting on its roster has no mesh
+        // route to the nameserver. Route the nameserver's mesh /32 explicitly:
+        // configuring the DNS NAT is useless if the rewritten destination is
+        // not inside the tunnel.
+        let network_dns_route = if network_id.trim().is_empty() {
+            NetworkDnsRoute::Off
+        } else {
+            app.network_dns_route()
+        };
+        let network_dns = match network_dns_route {
+            NetworkDnsRoute::Nameserver(nameserver) => Some(nameserver),
+            _ => None,
+        };
+        let network_dns_unavailable = network_dns_route == NetworkDnsRoute::Unavailable;
+        // Unavailable owns DNS the same way, it just has nowhere to forward.
+        let network_dns_enforced = network_dns.is_some() || network_dns_unavailable;
+        if let Some(nameserver) = network_dns {
+            route_targets.push(format!("{nameserver}/32"));
+        }
+        if network_dns_enforced {
+            // Pull the well-known public resolvers into the tunnel too, where
+            // the sinkhole refuses them: an app doing DoH/DoT to a hard-coded
+            // address would otherwise resolve around the nameserver.
+            route_targets.extend(dns_sinkhole_route_targets());
+        }
         let internet_source = serialized_mobile_internet_source(app);
         preserve_mobile_pending_exit_default_routes(
             &mut route_targets,
@@ -518,8 +595,13 @@ impl MobileTunnelConfig {
             } else {
                 (None, Vec::new())
             };
+        // The network DNS override is enforced by NATing in-tunnel DNS to the
+        // nameserver, so it needs the local responder even with no exit node
+        // and MagicDNS turned off — otherwise the OS installs no in-tunnel
+        // resolver and the override is silently ignored.
         let local_dns_required = wireguard_exit.is_some()
             || selected_peer_exit
+            || network_dns_enforced
             || (!network_id.trim().is_empty() && !app.magic_dns_suffix.trim().is_empty());
         let (dns_servers, magic_dns_server) = if local_dns_required {
             let server = nostr_vpn_core::MESH_MAGIC_DNS_SERVER.to_string();
@@ -527,7 +609,13 @@ impl MobileTunnelConfig {
         } else {
             (Vec::new(), String::new())
         };
-        let dns_match_domains = if wireguard_exit.is_some() || selected_peer_exit {
+        // An exit or the network DNS override owns every lookup, so the OS must
+        // hand all domains to the in-tunnel resolver, not just the MagicDNS
+        // suffix.
+        let dns_match_domains = if wireguard_exit.is_some()
+            || selected_peer_exit
+            || network_dns_enforced
+        {
             vec![String::new()]
         } else if local_dns_required {
             let suffix = app
@@ -569,6 +657,11 @@ impl MobileTunnelConfig {
                 .active_network_opt()
                 .map_or_else(String::new, |network| network.join_secret.clone()),
             local_address,
+            local_address_ipv6: if network_dns_enforced {
+                MOBILE_SINKHOLE_LOCAL_IPV6.to_string()
+            } else {
+                String::new()
+            },
             advertised_endpoint: app.node.endpoint.trim().to_string(),
             listen_port: app.node.listen_port,
             mtu: DEFAULT_MOBILE_MTU,
@@ -586,6 +679,10 @@ impl MobileTunnelConfig {
             excluded_routes,
             dns_servers,
             magic_dns_server,
+            network_dns: network_dns
+                .map(|nameserver| nameserver.to_string())
+                .unwrap_or_default(),
+            network_dns_unavailable,
             dns_match_domains,
             exit_dns: app.exit_dns.clone(),
             wireguard_exit,
@@ -736,6 +833,9 @@ pub(crate) struct MobileTunnel {
     pending_join_roster_receipts: PendingJoinRosterReceipts,
     tun_counters: Arc<MobileTunAtomicCounters>,
     secure_dns: Option<SecureDnsResolver>,
+    /// The DNS NAT toward the network nameserver, kept so status can report a
+    /// nameserver that stopped answering. `None` unless the override is on.
+    network_dns_nat: Option<Arc<MobileExitDnsNat>>,
     #[cfg(any(target_os = "android", target_os = "ios"))]
     outbound_tx: tokio_mpsc::Sender<Vec<Vec<u8>>>,
     inbound_rx: Option<tokio_mpsc::Receiver<Vec<Vec<u8>>>>,

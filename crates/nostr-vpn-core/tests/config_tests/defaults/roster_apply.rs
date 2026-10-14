@@ -695,5 +695,8 @@ fn apply_verified_admin_signed_shared_roster_drops_a_dns_node_that_is_not_a_memb
         .expect("apply roster naming a non-member nameserver");
 
     assert!(config.networks[0].dns_node.is_empty());
-    assert!(!config.networks[0].dns_override);
+    assert!(
+        config.networks[0].dns_override,
+        "a bad nameserver must leave the override on so members fail closed"
+    );
 }

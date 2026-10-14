@@ -419,6 +419,12 @@ class NostrVpnService : VpnService() {
 
         val local = parseCidr(config.optString("localAddress", "10.44.0.1/32")) ?: return null
         builder.addAddress(local.address, local.prefix)
+        // Set only while IPv6 routes must enter the tun (the DNS sinkhole).
+        // Android routes no IPv6 into a VPN interface that has no IPv6 address.
+        config.optString("localAddressIpv6").trim().takeIf(String::isNotEmpty)?.let { value ->
+            val localIpv6 = parseCidr(value) ?: return null
+            builder.addAddress(localIpv6.address, localIpv6.prefix)
+        }
 
         val routeTargets = AndroidVpnRoutingPolicy.routeTargets(config)
         if (AndroidVpnRoutingPolicy.requiresBypass(routeTargets)) {
@@ -443,7 +449,10 @@ class NostrVpnService : VpnService() {
                 builder.addRoute(route.address, route.prefix)
             }
         }
-        addDnsServers(builder, config, routeTargets)
+        if (!addDnsServers(builder, config, routeTargets)) {
+            Log.w("NostrVpnService", "Refusing to start: tunnel must own DNS but has no usable DNS server")
+            return null
+        }
 
         // When WG upstream or a Nostr peer exit is on, the Rust runtime
         // expanded routeTargets to 0.0.0.0/0 so all traffic enters the tun.
@@ -482,19 +491,26 @@ class NostrVpnService : VpnService() {
         }
     }
 
+    /**
+     * Returns false when the tunnel must own every lookup but no DNS server
+     * could be installed. Starting anyway would leave Android on the
+     * carrier's resolver with the VPN showing as connected: fail closed.
+     */
     private fun addDnsServers(
         builder: Builder,
         config: JSONObject,
         routeTargets: List<String>,
-    ) {
+    ): Boolean {
         // VpnService has no suffix-scoped DNS API. Installing the MagicDNS
         // stub while only mesh routes are captured makes it Android's global
         // resolver and can break ordinary Internet even though no exit is
-        // selected. Direct/split mode must retain the device resolver.
-        if (!AndroidVpnRoutingPolicy.installsVpnDns(routeTargets)) {
-            return
+        // selected. Direct/split mode must retain the device resolver, unless
+        // the network DNS override owns all domains.
+        val ownsAllDns = AndroidVpnRoutingPolicy.ownsAllDns(config)
+        if (!AndroidVpnRoutingPolicy.installsVpnDns(routeTargets, ownsAllDns)) {
+            return true
         }
-        val servers = config.optJSONArray("dnsServers") ?: return
+        val servers = config.optJSONArray("dnsServers") ?: return !ownsAllDns
         val magicDnsServer = config.optString("magicDnsServer").trim()
         val selected = mutableListOf<String>()
         for (index in 0 until servers.length()) {
@@ -507,13 +523,16 @@ class NostrVpnService : VpnService() {
         } else {
             selected
         }
+        var installed = 0
         for (server in effectiveServers) {
             runCatching {
                 builder.addDnsServer(server)
+                installed += 1
             }.onFailure { error ->
                 Log.w("NostrVpnService", "Ignoring invalid VPN DNS server: $server", error)
             }
         }
+        return installed > 0 || !ownsAllDns
     }
 
     private fun currentLockdownActive(): Boolean =
@@ -883,8 +902,9 @@ class NostrVpnService : VpnService() {
     private fun parseCidr(value: String): Cidr? {
         val parts = value.trim().split("/", limit = 2)
         val address = parts.firstOrNull()?.takeIf { it.isNotBlank() } ?: return null
-        val prefix = parts.getOrNull(1)?.toIntOrNull() ?: 32
-        if (prefix !in 0..32) {
+        val maxPrefix = if (address.contains(':')) 128 else 32
+        val prefix = parts.getOrNull(1)?.toIntOrNull() ?: maxPrefix
+        if (prefix !in 0..maxPrefix) {
             return null
         }
         return Cidr(address, prefix)

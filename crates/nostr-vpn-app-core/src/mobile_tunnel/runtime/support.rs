@@ -196,6 +196,7 @@ struct MobileTunnelStarted {
     pending_join_roster_receipts: PendingJoinRosterReceipts,
     tun_counters: Arc<MobileTunAtomicCounters>,
     secure_dns: Option<SecureDnsResolver>,
+    network_dns_nat: Option<Arc<MobileExitDnsNat>>,
     #[cfg(any(test, target_os = "android", target_os = "ios"))]
     outbound_tx: tokio_mpsc::Sender<Vec<Vec<u8>>>,
     inbound_rx: tokio_mpsc::Receiver<Vec<Vec<u8>>>,

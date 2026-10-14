@@ -5,13 +5,13 @@ use std::fs::OpenOptions;
 use std::io::Write;
 #[cfg(test)]
 use std::net::UdpSocket;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 #[cfg(target_os = "android")]
 use std::os::raw::c_int;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex, RwLock,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, Mutex, OnceLock, RwLock,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,8 +23,8 @@ use fips_endpoint::{
 };
 use nostr_sdk::prelude::PublicKey;
 use nostr_vpn_core::config::{
-    AppConfig, ExitDnsConfig, ExitDnsResolverConfig, MESH_TUNNEL_IPV4_CIDR, WireGuardExitConfig,
-    derive_mesh_tunnel_ip, effective_nostr_relays, maybe_autoconfigure_node,
+    AppConfig, ExitDnsConfig, ExitDnsResolverConfig, MESH_TUNNEL_IPV4_CIDR, NetworkDnsRoute,
+    WireGuardExitConfig, derive_mesh_tunnel_ip, effective_nostr_relays, maybe_autoconfigure_node,
     normalize_fips_transport_address, normalize_nostr_pubkey, normalize_runtime_network_id,
     split_peer_transport_addr,
 };
@@ -74,6 +74,7 @@ include!("mobile_tunnel/endpoint_control.rs");
 include!("mobile_tunnel/runtime_state.rs");
 include!("mobile_tunnel/endpoint_config.rs");
 include!("mobile_tunnel/magic_dns.rs");
+include!("mobile_tunnel/dns_sinkhole.rs");
 #[cfg(feature = "paid-exit")]
 include!("mobile_tunnel/paid_exit_offer.rs");
 
@@ -92,4 +93,6 @@ mod tests {
     include!("mobile_tunnel/tests_runtime_future_presence.rs");
     include!("mobile_tunnel/tests_paid_route.rs");
     include!("mobile_tunnel/tests_config.rs");
+    include!("mobile_tunnel/tests_dns_sinkhole.rs");
+    include!("mobile_tunnel/tests_network_dns.rs");
 }

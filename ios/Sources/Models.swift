@@ -36,6 +36,8 @@ struct AppState: Decodable {
     var exitNodeActive = false
     var exitNodeBlocked = false
     var exitNodeStatusText = ""
+    var networkDnsStatusText = ""
+    var networkDnsBlocked = false
     var exitDnsMode = "automatic"
     var exitDnsDohProvider = "cloudflare"
     var exitDnsCustomDohUrl = ""
@@ -85,6 +87,7 @@ struct AppState: Decodable {
         case fipsConnectedPeerCount, fipsRosterPeerCount, nonFipsRosterPeerCount
         case meshReady, internetSource, exitNode, exitNodeLeakProtection
         case exitNodeActive, exitNodeBlocked, exitNodeStatusText
+        case networkDnsStatusText, networkDnsBlocked
         case exitDnsMode, exitDnsDohProvider, exitDnsCustomDohUrl
         case exitDnsCustomDohBootstrapIps, exitDnsThroughExitServers, advertiseExitNode
         case advertisedRoutes
@@ -140,6 +143,8 @@ struct AppState: Decodable {
         exitNodeActive = container.bool(.exitNodeActive)
         exitNodeBlocked = container.bool(.exitNodeBlocked)
         exitNodeStatusText = container.string(.exitNodeStatusText)
+        networkDnsStatusText = container.string(.networkDnsStatusText)
+        networkDnsBlocked = container.bool(.networkDnsBlocked)
         exitDnsMode = container.string(.exitDnsMode, default: "automatic")
         exitDnsDohProvider = container.string(.exitDnsDohProvider, default: "cloudflare")
         exitDnsCustomDohUrl = container.string(.exitDnsCustomDohUrl)

@@ -252,6 +252,13 @@ impl NativeAppRuntime {
                 })
                 .unwrap_or_default()
         };
+        let network_dns_status = if network_setup_required || config_unavailable {
+            NetworkDnsUiStatus::default()
+        } else {
+            active_network
+                .map(|network| self.network_dns_ui_status(vpn_active, daemon_state, network))
+                .unwrap_or_default()
+        };
         let networks = if config_unavailable {
             Vec::new()
         } else {
@@ -394,6 +401,8 @@ impl NativeAppRuntime {
             exit_node_blocked: exit_node_status.blocked,
             exit_node_needs_attention: exit_node_status.needs_attention,
             exit_node_status_text: exit_node_status.text,
+            network_dns_blocked: network_dns_status.blocked,
+            network_dns_status_text: network_dns_status.text,
             exit_dns_mode: self.config.exit_dns.mode.as_str().to_string(),
             exit_dns_doh_provider: self.config.exit_dns.doh_provider.as_str().to_string(),
             exit_dns_custom_doh_url: self.config.exit_dns.custom_doh_url.clone(),
