@@ -150,7 +150,7 @@ pub fn deliver_queued_join_rosters(config_path: &Path, timeout: Duration) -> Res
     runtime_config.excluded_routes.clear();
     runtime_config.dns_servers.clear();
     runtime_config.magic_dns_server.clear();
-    runtime_config.network_dns.clear();
+    runtime_config.network_dns_servers.clear();
     runtime_config.wireguard_exit = None;
     let runtime_json =
         serde_json::to_string(&runtime_config).context("encode FIPS join delivery runtime")?;

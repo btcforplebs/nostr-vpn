@@ -154,7 +154,21 @@ impl NativeAppRuntime {
         daemon_state: Option<&DaemonRuntimeState>,
         network: &NetworkConfig,
     ) -> NetworkDnsUiStatus {
-        let name = || exit_node_display_name(&self.config, network, &network.dns_node);
+        // Every box serves as an equal: lookups go to all of them and the
+        // first answer wins, so the status names them all and only reports
+        // trouble when none of them can answer.
+        let dns_nodes = || {
+            std::iter::once(&network.dns_node)
+                .chain(network.dns_backup_nodes.iter())
+                .filter(|node| !node.is_empty())
+        };
+        let name = || {
+            dns_nodes()
+                .map(|node| exit_node_display_name(&self.config, network, node))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let several = dns_nodes().count() > 1;
         match self.config.network_dns_route() {
             NetworkDnsRoute::Off => NetworkDnsUiStatus {
                 blocked: false,
@@ -182,22 +196,30 @@ impl NativeAppRuntime {
                 let not_answering = unanswered_since != 0
                     && unix_timestamp().saturating_sub(unanswered_since)
                         >= NETWORK_DNS_UNANSWERED_ALERT_SECS;
-                // The override sends every lookup to the nameserver, so a
-                // nameserver the mesh cannot reach means lookups fail now.
+                // The override sends every lookup to every box, so lookups
+                // fail now only when the mesh can reach none of them.
                 let unreachable = daemon_state.is_some_and(|state| {
                     !state.peers.iter().any(|peer| {
-                        peer.participant_pubkey == network.dns_node && peer.reachable
+                        peer.reachable && dns_nodes().any(|node| *node == peer.participant_pubkey)
                     })
                 });
                 if unreachable {
                     NetworkDnsUiStatus {
                         blocked: true,
-                        text: format!("DNS via {} is unreachable. Lookups will fail.", name()),
+                        text: format!(
+                            "DNS via {} {} unreachable. Lookups will fail.",
+                            name(),
+                            if several { "are all" } else { "is" }
+                        ),
                     }
                 } else if not_answering {
                     NetworkDnsUiStatus {
                         blocked: true,
-                        text: format!("DNS via {} isn't answering. Lookups are blocked.", name()),
+                        text: format!(
+                            "DNS via {} {} answering. Lookups are blocked.",
+                            name(),
+                            if several { "aren't" } else { "isn't" }
+                        ),
                     }
                 } else {
                     NetworkDnsUiStatus {

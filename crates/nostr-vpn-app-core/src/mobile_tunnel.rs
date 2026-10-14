@@ -95,4 +95,5 @@ mod tests {
     include!("mobile_tunnel/tests_config.rs");
     include!("mobile_tunnel/tests_dns_sinkhole.rs");
     include!("mobile_tunnel/tests_network_dns.rs");
+    include!("mobile_tunnel/tests_dns_fanout.rs");
 }

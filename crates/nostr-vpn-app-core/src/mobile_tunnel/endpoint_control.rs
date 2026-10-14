@@ -733,9 +733,17 @@ async fn dispatch_mobile_outbound_packets(
         // any mesh or exit routing can carry them out.
         // Plain DNS to a sinkholed resolver is redirected to the nameserver
         // rather than refused; see `redirect_public_resolver_query`.
-        let redirected = dns_sinkhole
-            && exit_dns_nat
-                .is_some_and(|nat| nat.redirect_public_resolver_query(&mut packet).is_some());
+        // A lookup is copied to every DNS box; `copies` holds the ones for
+        // the other boxes, which are routed exactly like `packet`.
+        let mut copies = Vec::new();
+        let mut redirected = false;
+        if dns_sinkhole
+            && let Some(nat) = exit_dns_nat
+            && let Some(siblings) = nat.redirect_public_resolver_query(&mut packet)
+        {
+            copies = siblings;
+            redirected = true;
+        }
         if dns_sinkhole && !redirected {
             match dns_sinkhole_verdict(&packet) {
                 DnsSinkholeVerdict::Pass => {}
@@ -797,44 +805,50 @@ async fn dispatch_mobile_outbound_packets(
             return false;
         }
 
-        if let Some(exit_dns_nat) = exit_dns_nat {
-            exit_dns_nat.rewrite_query(&mut packet);
+        if let Some(exit_dns_nat) = exit_dns_nat
+            && let Some(siblings) = exit_dns_nat.rewrite_query(&mut packet)
+        {
+            copies = siblings;
         }
 
-        let outgoing_peer = mesh.as_ref().and_then(|mesh| {
-            mesh.route_outbound_packet_peer(&packet).map(|peer| {
-                (
-                    peer.participant_pubkey_bytes
-                        .is_none()
-                        .then(|| peer.participant_pubkey.to_string()),
-                    peer.participant_pubkey_bytes.copied(),
-                    *peer.endpoint_node_addr,
-                )
-            })
-        });
-        if let Some((participant_fallback, participant_key, endpoint_node_addr)) = outgoing_peer {
-            if !flush_mobile_wg_packets(wg_send_tx, &mut pending_wg_packets).await {
-                return false;
-            }
-            if let Some(run) = push_mobile_endpoint_send_run(
-                &mut pending_run,
-                peer_identities,
-                participant_fallback,
-                participant_key,
-                endpoint_node_addr,
-                packet,
-            ) && !send_mobile_endpoint_run(endpoint, run).await
+        for packet in std::iter::once(packet).chain(copies) {
+            let outgoing_peer = mesh.as_ref().and_then(|mesh| {
+                mesh.route_outbound_packet_peer(&packet).map(|peer| {
+                    (
+                        peer.participant_pubkey_bytes
+                            .is_none()
+                            .then(|| peer.participant_pubkey.to_string()),
+                        peer.participant_pubkey_bytes.copied(),
+                        *peer.endpoint_node_addr,
+                    )
+                })
+            });
+            if let Some((participant_fallback, participant_key, endpoint_node_addr)) =
+                outgoing_peer
             {
+                if !flush_mobile_wg_packets(wg_send_tx, &mut pending_wg_packets).await {
+                    return false;
+                }
+                if let Some(run) = push_mobile_endpoint_send_run(
+                    &mut pending_run,
+                    peer_identities,
+                    participant_fallback,
+                    participant_key,
+                    endpoint_node_addr,
+                    packet,
+                ) && !send_mobile_endpoint_run(endpoint, run).await
+                {
+                    return false;
+                }
+                continue;
+            }
+
+            if !flush_mobile_endpoint_send_run(endpoint, &mut pending_run).await {
                 return false;
             }
-            continue;
-        }
-
-        if !flush_mobile_endpoint_send_run(endpoint, &mut pending_run).await {
-            return false;
-        }
-        if wg_send_tx.is_some() {
-            push_mobile_wg_packet(&mut pending_wg_packets, packet, wg_addr, mesh_addr);
+            if wg_send_tx.is_some() {
+                push_mobile_wg_packet(&mut pending_wg_packets, packet, wg_addr, mesh_addr);
+            }
         }
     }
     if !flush_mobile_inbound_packets(inbound_tx_for_dns, &mut pending_dns_responses).await {

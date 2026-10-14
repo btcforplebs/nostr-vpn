@@ -57,9 +57,11 @@ struct MobileDnsFlowEntry {
 /// Bounded: a nameserver that is off answers nothing, and any app can spray
 /// UDP/53 at a listed resolver, so entries must expire on their own.
 const MOBILE_DNS_FLOW_CAPACITY: usize = 1024;
-/// Most one socket may hold. A resolver pipelines a handful of lookups.
+/// Most one socket may hold, per DNS box. A resolver pipelines a handful of
+/// lookups, and every lookup takes one flow per box it is sent to.
 const MOBILE_DNS_FLOWS_PER_PORT: usize = 32;
-/// What every port may hold however full the table is: an A and an AAAA.
+/// What every port may hold however full the table is: an A and an AAAA,
+/// per DNS box.
 const MOBILE_DNS_FLOWS_PER_PORT_FLOOR: usize = 2;
 /// Kept for ports still under their floor. Flows past a port's floor share
 /// only the rest, so filling the table takes hundreds of sockets, not 32.
@@ -83,15 +85,19 @@ struct MobileDnsFlowTable {
     per_port: HashMap<u16, usize>,
     redirected: usize,
     last_sweep: Instant,
+    /// How many boxes each UDP lookup is sent to, so the per-port limits
+    /// count lookups rather than copies.
+    fan_out: usize,
 }
 
 impl MobileDnsFlowTable {
-    fn new(now: Instant) -> Self {
+    fn new(now: Instant, fan_out: usize) -> Self {
         Self {
             entries: HashMap::new(),
             per_port: HashMap::new(),
             redirected: 0,
             last_sweep: now,
+            fan_out: fan_out.max(1),
         }
     }
 
@@ -257,10 +263,10 @@ impl MobileDnsFlowTable {
             return false;
         }
         let held = self.per_port.get(&client_port).copied().unwrap_or(0);
-        if held < MOBILE_DNS_FLOWS_PER_PORT_FLOOR {
+        if held < MOBILE_DNS_FLOWS_PER_PORT_FLOOR * self.fan_out {
             return true;
         }
-        held < MOBILE_DNS_FLOWS_PER_PORT
+        held < MOBILE_DNS_FLOWS_PER_PORT * self.fan_out
             && total < MOBILE_DNS_FLOW_CAPACITY - MOBILE_DNS_NEWCOMER_RESERVE
     }
 
@@ -285,11 +291,14 @@ impl MobileDnsFlowTable {
         })
     }
 
-    /// The origin for an answer. A UDP answer consumes its flow, so a
-    /// duplicate finds nothing; a TCP flow lives until RST, FIN grace or idle.
+    /// The origin for an answer. A UDP answer consumes its flow and the
+    /// copies of the same lookup sent to the other boxes, so a duplicate or a
+    /// slower box's answer finds nothing; a TCP flow lives until RST, FIN
+    /// grace or idle.
     fn answer(
         &mut self,
         flow: &MobileWireGuardDnsFlow,
+        servers: &[Ipv4Addr],
         tcp_flags: u8,
         now: Instant,
     ) -> Option<MobileDnsFlowOrigin> {
@@ -303,16 +312,28 @@ impl MobileDnsFlowTable {
             entry.last_seen = now;
             entry.closing |= tcp_flags & TCP_FIN != 0;
         } else {
-            self.remove(flow);
+            for server in servers {
+                self.remove(&MobileWireGuardDnsFlow {
+                    server: *server,
+                    ..*flow
+                });
+            }
         }
         Some(origin)
     }
 }
 
+/// Rewrites in-tunnel DNS to the upstream boxes and the answers back. Every
+/// UDP lookup is copied to every box and the first answer wins, so no box is
+/// primary and one that is asleep costs nothing but a duplicate query in the
+/// other box's log. TCP cannot be copied: a stream goes to one box, the one
+/// that answered most recently.
 struct MobileExitDnsNat {
     local_dns_server: Ipv4Addr,
     servers: Vec<Ipv4Addr>,
-    next_server: AtomicUsize,
+    /// Index of the box whose answer arrived last: the one a new TCP stream
+    /// is sent to, since it is known to be awake.
+    answering_server: AtomicUsize,
     /// The tunnel's own IPv4 address: the source for IPv6 queries carried to
     /// the nameserver over IPv4. Without it IPv6 resolvers are refused, not
     /// redirected.
@@ -331,11 +352,11 @@ impl MobileExitDnsNat {
     fn new(local_dns_server: Ipv4Addr, servers: Vec<Ipv4Addr>) -> Option<Self> {
         (!servers.is_empty()).then_some(Self {
             local_dns_server,
+            flows: Mutex::new(MobileDnsFlowTable::new(Instant::now(), servers.len())),
             servers,
-            next_server: AtomicUsize::new(0),
+            answering_server: AtomicUsize::new(0),
             ipv4_source: None,
             ipv6_answer_budget: ipv6_dns_answer_budget(DEFAULT_MOBILE_MTU),
-            flows: Mutex::new(MobileDnsFlowTable::new(Instant::now())),
             unanswered_since: AtomicU64::new(0),
         })
     }
@@ -350,7 +371,11 @@ impl MobileExitDnsNat {
         self
     }
 
-    fn rewrite_query(&self, packet: &mut [u8]) -> Option<Ipv4Addr> {
+    /// Rewrite a query to the stub so it reaches the boxes. `packet` is
+    /// rewritten for the first box; the returned copies, one per further box,
+    /// have to be sent too. `None` when it is not a query for the stub or
+    /// the flow table refuses it.
+    fn rewrite_query(&self, packet: &mut [u8]) -> Option<Vec<Vec<u8>>> {
         let (_, destination, _, destination_port, _) = ipv4_transport_endpoints(packet)?;
         if destination != self.local_dns_server || destination_port != 53 {
             return None;
@@ -369,7 +394,7 @@ impl MobileExitDnsNat {
     /// to the nameserver as IPv4 and its answer translated back. TCP to an
     /// IPv6 resolver is left to the sinkhole's immediate reset; clients retry
     /// over UDP or the system resolver.
-    fn redirect_public_resolver_query(&self, packet: &mut Vec<u8>) -> Option<Ipv4Addr> {
+    fn redirect_public_resolver_query(&self, packet: &mut Vec<u8>) -> Option<Vec<Vec<u8>>> {
         self.redirect_public_resolver_query_at(packet, Instant::now())
     }
 
@@ -377,7 +402,7 @@ impl MobileExitDnsNat {
         &self,
         packet: &mut Vec<u8>,
         now: Instant,
-    ) -> Option<Ipv4Addr> {
+    ) -> Option<Vec<Vec<u8>>> {
         if packet.first()? >> 4 == 6 {
             return self.redirect_ipv6_udp_query(packet, now);
         }
@@ -391,37 +416,65 @@ impl MobileExitDnsNat {
         self.translate_query(packet, destination, now)
     }
 
-    fn redirect_ipv6_udp_query(&self, packet: &mut Vec<u8>, now: Instant) -> Option<Ipv4Addr> {
+    fn redirect_ipv6_udp_query(
+        &self,
+        packet: &mut Vec<u8>,
+        now: Instant,
+    ) -> Option<Vec<Vec<u8>>> {
         let source_v4 = self.ipv4_source?;
         let (client, resolver, client_port, payload) = ipv6_udp_dns_query(packet)?;
         if !is_dns_sinkhole_address(IpAddr::V6(resolver)) {
             return None;
         }
         let query_id = dns_message_id(17, payload);
-        let server = self.pick_server();
-        let flow = MobileWireGuardDnsFlow {
-            server,
-            protocol: 17,
-            client_port,
-            query_id,
-        };
         let origin = MobileDnsFlowOrigin::V6 { resolver, client };
-        if !self.flows.lock().ok()?.record(flow, origin, 0, now) {
-            return None;
-        }
+        let servers = self.record_udp_flows(client_port, query_id, origin, now)?;
         // The answer grows by 20 bytes on the way back. Asking the nameserver
         // for no more than fits makes it truncate (TC) instead of sending an
         // answer the tun would have to drop.
         let mut payload = payload.to_vec();
         clamp_edns_udp_size(&mut payload, self.ipv6_answer_budget);
-        let translated = build_ipv4_udp_packet(source_v4, server, client_port, 53, &payload)?;
-        *packet = translated;
+        let (first, rest) = servers.split_first()?;
+        let copies = rest
+            .iter()
+            .map(|server| build_ipv4_udp_packet(source_v4, *server, client_port, 53, &payload))
+            .collect::<Option<Vec<_>>>()?;
+        *packet = build_ipv4_udp_packet(source_v4, *first, client_port, 53, &payload)?;
         self.mark_unanswered();
-        Some(server)
+        Some(copies)
     }
 
-    fn pick_server(&self) -> Ipv4Addr {
-        let index = self.next_server.fetch_add(1, Ordering::Relaxed) % self.servers.len();
+    /// Record one UDP flow per box for this lookup. The boxes that admitted
+    /// it, in list order; `None` when none did.
+    fn record_udp_flows(
+        &self,
+        client_port: u16,
+        query_id: u16,
+        origin: MobileDnsFlowOrigin,
+        now: Instant,
+    ) -> Option<Vec<Ipv4Addr>> {
+        let mut flows = self.flows.lock().ok()?;
+        let servers = self
+            .servers
+            .iter()
+            .copied()
+            .filter(|server| {
+                let flow = MobileWireGuardDnsFlow {
+                    server: *server,
+                    protocol: 17,
+                    client_port,
+                    query_id,
+                };
+                flows.record(flow, origin, 0, now)
+            })
+            .collect::<Vec<_>>();
+        (!servers.is_empty()).then_some(servers)
+    }
+
+    /// The box a new TCP stream goes to: the one that answered last, so a
+    /// box that is asleep is not asked to open a stream it never will.
+    fn answering_server(&self) -> Ipv4Addr {
+        let index = self.answering_server.load(Ordering::Relaxed) % self.servers.len();
         self.servers[index]
     }
 
@@ -439,40 +492,45 @@ impl MobileExitDnsNat {
         packet: &mut [u8],
         destination: Ipv4Addr,
         now: Instant,
-    ) -> Option<Ipv4Addr> {
+    ) -> Option<Vec<Vec<u8>>> {
         let (_, _, source_port, _, protocol) = ipv4_transport_endpoints(packet)?;
         let header_len = usize::from(packet[0] & 0x0f) * 4;
-        let (query_id, tcp_flags) = match protocol {
-            17 => (dns_message_id(17, packet.get(header_len + 8..)?), 0),
-            _ => (0, tcp_flags_at(packet, header_len)?),
+        let origin = MobileDnsFlowOrigin::V4(destination);
+        let servers = if protocol == 17 {
+            let query_id = dns_message_id(17, packet.get(header_len + 8..)?);
+            self.record_udp_flows(source_port, query_id, origin, now)?
+        } else {
+            let tcp_flags = tcp_flags_at(packet, header_len)?;
+            let mut flows = self.flows.lock().ok()?;
+            // A TCP stream keeps the box it started on.
+            let server = flows
+                .tcp_stream_server(&self.servers, source_port, origin)
+                .unwrap_or_else(|| self.answering_server());
+            let flow = MobileWireGuardDnsFlow {
+                server,
+                protocol,
+                client_port: source_port,
+                query_id: 0,
+            };
+            if !flows.record(flow, origin, tcp_flags, now) {
+                return None;
+            }
+            vec![server]
         };
-        let mut flows = self.flows.lock().ok()?;
-        // A TCP stream keeps the server it started on; a new stream or UDP
-        // query rotates.
-        let server = (protocol == 6)
-            .then(|| {
-                flows.tcp_stream_server(
-                    &self.servers,
-                    source_port,
-                    MobileDnsFlowOrigin::V4(destination),
-                )
+        let (first, rest) = servers.split_first()?;
+        let copies = rest
+            .iter()
+            .map(|server| {
+                let mut copy = packet.to_vec();
+                rewrite_ipv4_destination(&mut copy, destination, *server);
+                nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut copy);
+                copy
             })
-            .flatten()
-            .unwrap_or_else(|| self.pick_server());
-        let flow = MobileWireGuardDnsFlow {
-            server,
-            protocol,
-            client_port: source_port,
-            query_id,
-        };
-        if !flows.record(flow, MobileDnsFlowOrigin::V4(destination), tcp_flags, now) {
-            return None;
-        }
-        drop(flows);
-        rewrite_ipv4_destination(packet, destination, server);
+            .collect::<Vec<_>>();
+        rewrite_ipv4_destination(packet, destination, *first);
         nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(packet);
         self.mark_unanswered();
-        Some(server)
+        Some(copies)
     }
 
     fn unanswered_since(&self) -> u64 {
@@ -481,6 +539,20 @@ impl MobileExitDnsNat {
 
     fn rewrite_response(&self, packet: &mut Vec<u8>) -> bool {
         self.rewrite_response_at(packet, Instant::now())
+    }
+
+    /// Rewrite an inbound packet if it answers a forwarded lookup. `false`
+    /// when the packet must be dropped instead of handed to the OS: a
+    /// port-53 UDP datagram from one of the boxes that matches no flow, which
+    /// is a slower box's copy of an answer the client already has. Resolvers
+    /// bound to a port but not connected would otherwise see it.
+    fn deliver_response(&self, packet: &mut Vec<u8>) -> bool {
+        if self.rewrite_response(packet) {
+            return true;
+        }
+        !ipv4_transport_endpoints(packet).is_some_and(|(source, _, source_port, _, protocol)| {
+            protocol == 17 && source_port == 53 && self.servers.contains(&source)
+        })
     }
 
     fn rewrite_response_at(&self, packet: &mut Vec<u8>, now: Instant) -> bool {
@@ -513,11 +585,14 @@ impl MobileExitDnsNat {
             .flows
             .lock()
             .ok()
-            .and_then(|mut flows| flows.answer(&flow, tcp_flags, now))
+            .and_then(|mut flows| flows.answer(&flow, &self.servers, tcp_flags, now))
         else {
             return false;
         };
         self.unanswered_since.store(0, Ordering::Relaxed);
+        if let Some(index) = self.servers.iter().position(|server| *server == source) {
+            self.answering_server.store(index, Ordering::Relaxed);
+        }
         match origin {
             MobileDnsFlowOrigin::V4(original) => {
                 rewrite_ipv4_source(packet, source, original);
@@ -920,7 +995,7 @@ fn empty_config() -> MobileTunnelConfig {
         excluded_routes: Vec::new(),
         dns_servers: Vec::new(),
         magic_dns_server: String::new(),
-        network_dns: String::new(),
+        network_dns_servers: Vec::new(),
         network_dns_unavailable: false,
         dns_match_domains: Vec::new(),
         exit_dns: ExitDnsConfig::default(),
