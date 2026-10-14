@@ -19,6 +19,7 @@ const DOH_CONTENT_TYPE: &str = "application/dns-message";
 const DOH_TIMEOUT: Duration = Duration::from_secs(3);
 const WIREGUARD_DNS_TIMEOUT: Duration = Duration::from_secs(3);
 const WIREGUARD_DNS_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const WIREGUARD_DNS_SERVER_FAILURE_HOLD: Duration = Duration::from_secs(1);
 pub const SECURE_DNS_MAX_MESSAGE_BYTES: usize = 4_096;
 
 #[derive(Clone)]
@@ -257,20 +258,49 @@ impl WireGuardDnsResolver {
         Ok(Self { servers })
     }
 
+    /// Asks every server at once and returns the first usable answer, so a
+    /// silent server costs nothing while another one answers. A fast SERVFAIL
+    /// or REFUSED is held briefly so a working server can still win.
     async fn resolve_query(&self, query: &[u8]) -> Result<Vec<u8>, SecureDnsError> {
-        let request = validated_query(query)?;
+        let request = Arc::new(validated_query(query)?);
+        let query: Arc<[u8]> = Arc::from(query);
+        // Dropping the set aborts the servers that lost the race.
+        let mut lookups = tokio::task::JoinSet::new();
+        for server in self.servers.iter().copied() {
+            let (query, request) = (Arc::clone(&query), Arc::clone(&request));
+            lookups.spawn(async move { Self::resolve_via_server(server, &query, &request).await });
+        }
+        let mut held: Option<(Vec<u8>, tokio::time::Instant)> = None;
         let mut last_error = None;
-        for server in &self.servers {
-            match self.resolve_via_server(*server, query, &request).await {
+        loop {
+            let next = match &held {
+                Some((_, deadline)) => {
+                    match tokio::time::timeout_at(*deadline, lookups.join_next()).await {
+                        Ok(next) => next,
+                        Err(_) => break,
+                    }
+                }
+                None => lookups.join_next().await,
+            };
+            let Some(result) = next else { break };
+            match result.expect("DNS lookup task is not cancelled while racing") {
+                Ok(response) if is_server_failure(&response) => {
+                    held.get_or_insert((
+                        response,
+                        tokio::time::Instant::now() + WIREGUARD_DNS_SERVER_FAILURE_HOLD,
+                    ));
+                }
                 Ok(response) => return Ok(response),
                 Err(error) => last_error = Some(error),
             }
         }
-        Err(last_error.unwrap_or(SecureDnsError::NoWireGuardDnsServers))
+        match held {
+            Some((response, _)) => Ok(response),
+            None => Err(last_error.unwrap_or(SecureDnsError::NoWireGuardDnsServers)),
+        }
     }
 
     async fn resolve_via_server(
-        &self,
         server: SocketAddr,
         query: &[u8],
         request: &Message,
@@ -402,6 +432,15 @@ fn validated_response(request: &Message, packet: &[u8]) -> Result<Message, Secur
         return Err(SecureDnsError::InvalidResponse);
     }
     Ok(response)
+}
+
+fn is_server_failure(packet: &[u8]) -> bool {
+    Message::from_vec(packet).is_ok_and(|response| {
+        matches!(
+            response.metadata.response_code,
+            ResponseCode::ServFail | ResponseCode::Refused
+        )
+    })
 }
 
 pub fn build_servfail_response(query: &[u8]) -> Option<Vec<u8>> {
@@ -704,38 +743,142 @@ mod tests {
         );
     }
 
+    /// Answers every query after `delay` with `response_code`.
+    async fn dns_fixture(
+        delay: Duration,
+        response_code: ResponseCode,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("DNS fixture");
+        let address = socket.local_addr().expect("DNS fixture address");
+        let task = tokio::spawn(async move {
+            let mut packet = [0_u8; SECURE_DNS_MAX_MESSAGE_BYTES];
+            loop {
+                let (length, peer) = socket.recv_from(&mut packet).await.expect("DNS query");
+                let query = &packet[..length];
+                let request = Message::from_vec(query).expect("query");
+                let mut response =
+                    Message::from_vec(&dns_response(query, request.id)).expect("response");
+                response.metadata.response_code = response_code;
+                tokio::time::sleep(delay).await;
+                socket
+                    .send_to(&encode(response), peer)
+                    .await
+                    .expect("DNS answer");
+            }
+        });
+        (address, task)
+    }
+
+    fn response_code(packet: &[u8]) -> ResponseCode {
+        Message::from_vec(packet)
+            .expect("DNS answer")
+            .metadata
+            .response_code
+    }
+
     #[tokio::test]
-    async fn through_exit_dns_retries_preserve_the_upstream_failover_deadline() {
-        let blackhole = tokio::net::UdpSocket::bind("127.0.0.1:0")
+    async fn through_exit_dns_answers_from_a_healthy_server_while_another_is_silent() {
+        const BOUND: Duration = Duration::from_millis(500);
+        let silent = tokio::net::UdpSocket::bind("127.0.0.1:0")
             .await
-            .expect("unresponsive DNS fixture");
-        let server = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .expect("silent DNS fixture");
+        let (healthy, fixture) = dns_fixture(Duration::ZERO, ResponseCode::NoError).await;
+        // The silent server is listed first, so asking in order waits on it.
+        let servers = vec![silent.local_addr().expect("silent address"), healthy];
+        let query = dns_query(922);
+
+        // Positive control: the previous one-at-a-time loop cannot meet the bound.
+        let request = validated_query(&query).expect("query");
+        let in_order = async {
+            for server in &servers {
+                if let Ok(response) =
+                    WireGuardDnsResolver::resolve_via_server(*server, &query, &request).await
+                {
+                    return Ok(response);
+                }
+            }
+            Err(())
+        };
+        assert!(
+            tokio::time::timeout(BOUND, in_order).await.is_err(),
+            "in-order lookup should still be waiting on the silent server"
+        );
+
+        let resolver = WireGuardDnsResolver::with_servers(servers).expect("exit DNS");
+        let response = tokio::time::timeout(BOUND, resolver.resolve_query(&query))
             .await
-            .expect("healthy DNS fixture");
+            .expect("a silent server must not delay the healthy answer")
+            .expect("DNS response");
+        assert_eq!(Message::from_vec(&response).expect("DNS answer").id, 922);
+        fixture.abort();
+    }
+
+    #[tokio::test]
+    async fn through_exit_dns_holds_a_fast_server_failure_for_a_slower_good_answer() {
+        for refusal in [ResponseCode::ServFail, ResponseCode::Refused] {
+            let (failing, failing_fixture) = dns_fixture(Duration::ZERO, refusal).await;
+            let (healthy, healthy_fixture) =
+                dns_fixture(Duration::from_millis(300), ResponseCode::NoError).await;
+            let resolver =
+                WireGuardDnsResolver::with_servers(vec![failing, healthy]).expect("exit DNS");
+            let response = resolver
+                .resolve_query(&dns_query(923))
+                .await
+                .expect("DNS response");
+            assert_eq!(
+                response_code(&response),
+                ResponseCode::NoError,
+                "{refusal:?}"
+            );
+            failing_fixture.abort();
+            healthy_fixture.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn through_exit_dns_returns_a_held_server_failure_after_the_hold() {
+        let silent = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("silent DNS fixture");
+        let (failing, fixture) = dns_fixture(Duration::ZERO, ResponseCode::ServFail).await;
         let resolver = WireGuardDnsResolver::with_servers(vec![
-            blackhole.local_addr().expect("unresponsive address"),
-            server.local_addr().expect("healthy address"),
+            silent.local_addr().expect("silent address"),
+            failing,
         ])
         .expect("exit DNS");
-        let query = dns_query(922);
-        let response = dns_response(&query, 922);
-        let fixture = tokio::spawn(async move {
-            let mut packet = [0_u8; 512];
-            let (_, peer) = server.recv_from(&mut packet).await.expect("failover query");
-            server
-                .send_to(&response, peer)
-                .await
-                .expect("failover response");
-        });
+        let started = tokio::time::Instant::now();
+        let response = resolver
+            .resolve_query(&dns_query(924))
+            .await
+            .expect("held SERVFAIL");
+        let elapsed = started.elapsed();
+        assert_eq!(response_code(&response), ResponseCode::ServFail);
+        assert!(
+            elapsed >= WIREGUARD_DNS_SERVER_FAILURE_HOLD,
+            "SERVFAIL returned before the hold: {elapsed:?}"
+        );
+        assert!(
+            elapsed < WIREGUARD_DNS_TIMEOUT,
+            "the hold must not wait for the silent server to time out: {elapsed:?}"
+        );
+        fixture.abort();
+    }
+
+    #[tokio::test]
+    async fn through_exit_dns_returns_a_lone_server_failure_without_holding() {
+        let (failing, fixture) = dns_fixture(Duration::ZERO, ResponseCode::ServFail).await;
+        let resolver = WireGuardDnsResolver::with_servers(vec![failing]).expect("exit DNS");
         let response = tokio::time::timeout(
-            WIREGUARD_DNS_TIMEOUT + Duration::from_secs(1),
-            resolver.resolve_query(&query),
+            Duration::from_millis(500),
+            resolver.resolve_query(&dns_query(925)),
         )
         .await
-        .expect("retries must not extend upstream failover")
+        .expect("nothing else can answer, so there is nothing to wait for")
         .expect("DNS response");
-        assert_eq!(Message::from_vec(&response).expect("DNS answer").id, 922);
-        fixture.await.expect("DNS fixture");
+        assert_eq!(response_code(&response), ResponseCode::ServFail);
+        fixture.abort();
     }
 
     #[tokio::test]
