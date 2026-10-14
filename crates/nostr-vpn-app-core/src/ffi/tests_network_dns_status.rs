@@ -26,6 +26,12 @@
         runtime.daemon_state = Some(DaemonRuntimeState {
             vpn_enabled: vpn_active,
             vpn_active,
+            peers: vec![DaemonPeerState {
+                participant_pubkey: pihole.to_string(),
+                endpoint: "fips".to_string(),
+                reachable: true,
+                ..DaemonPeerState::default()
+            }],
             ..DaemonRuntimeState::default()
         });
         (runtime, pihole.to_string())
@@ -35,7 +41,7 @@
     fn network_dns_status_names_the_nameserver() {
         let (runtime, _) = network_dns_status_runtime(true);
         let state = runtime.state();
-        assert!(state.network_dns_status_text.starts_with("DNS: pihole"), "{}", state.network_dns_status_text);
+        assert_eq!(state.network_dns_status_text, "DNS via pihole.nvpn");
         assert!(!state.network_dns_blocked);
     }
 
@@ -71,7 +77,54 @@
     }
 
     #[test]
-    fn network_dns_status_is_empty_with_the_override_off() {
+    fn network_dns_status_warns_when_the_nameserver_is_unreachable() {
+        let (mut runtime, _) = network_dns_status_runtime(true);
+        if let Some(daemon_state) = runtime.daemon_state.as_mut() {
+            daemon_state.peers[0].reachable = false;
+        }
+        let state = runtime.state();
+        assert!(state.network_dns_blocked);
+        assert_eq!(
+            state.network_dns_status_text,
+            "DNS via pihole.nvpn is unreachable. Lookups will fail."
+        );
+    }
+
+    #[test]
+    fn network_dns_status_warns_when_the_nameserver_is_missing_from_the_mesh() {
+        let (mut runtime, _) = network_dns_status_runtime(true);
+        if let Some(daemon_state) = runtime.daemon_state.as_mut() {
+            daemon_state.peers.clear();
+        }
+        assert!(runtime.state().network_dns_blocked);
+    }
+
+    #[test]
+    fn network_dns_status_names_the_nameserver_while_disconnected() {
+        let (runtime, _) = network_dns_status_runtime(false);
+        let state = runtime.state();
+        assert_eq!(state.network_dns_status_text, "DNS via pihole.nvpn when connected");
+        assert!(!state.network_dns_blocked);
+    }
+
+    #[test]
+    fn only_the_nameserver_row_is_marked_as_the_dns_server() {
+        let (runtime, pihole) = network_dns_status_runtime(true);
+        let state = runtime.state();
+        let participants = &state.networks[0].participants;
+        assert!(participants.len() >= 2);
+        for participant in participants {
+            assert_eq!(
+                participant.serves_network_dns,
+                participant.pubkey_hex == pihole,
+                "{}",
+                participant.pubkey_hex
+            );
+        }
+    }
+
+    #[test]
+    fn dns_server_row_follows_the_configured_nameserver_with_the_override_off() {
         let (mut runtime, pihole) = network_dns_status_runtime(true);
         let network_id = runtime.config.networks[0].id.clone();
         runtime
@@ -79,6 +132,23 @@
             .set_network_dns(&network_id, &pihole, false)
             .expect("turn the override off");
         let state = runtime.state();
-        assert!(state.network_dns_status_text.is_empty());
+        assert!(
+            state.networks[0]
+                .participants
+                .iter()
+                .any(|participant| participant.serves_network_dns)
+        );
+    }
+
+    #[test]
+    fn network_dns_status_says_network_default_with_the_override_off() {
+        let (mut runtime, pihole) = network_dns_status_runtime(true);
+        let network_id = runtime.config.networks[0].id.clone();
+        runtime
+            .config
+            .set_network_dns(&network_id, &pihole, false)
+            .expect("turn the override off");
+        let state = runtime.state();
+        assert_eq!(state.network_dns_status_text, "DNS: network default");
         assert!(!state.network_dns_blocked);
     }

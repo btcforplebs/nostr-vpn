@@ -156,7 +156,10 @@ impl NativeAppRuntime {
     ) -> NetworkDnsUiStatus {
         let name = || exit_node_display_name(&self.config, network, &network.dns_node);
         match self.config.network_dns_route() {
-            NetworkDnsRoute::Off => NetworkDnsUiStatus::default(),
+            NetworkDnsRoute::Off => NetworkDnsUiStatus {
+                blocked: false,
+                text: "DNS: network default".to_string(),
+            },
             NetworkDnsRoute::ServesNetwork => NetworkDnsUiStatus {
                 blocked: false,
                 text: "DNS: This device serves the network".to_string(),
@@ -171,7 +174,7 @@ impl NativeAppRuntime {
             },
             NetworkDnsRoute::Nameserver(_) if !vpn_active => NetworkDnsUiStatus {
                 blocked: false,
-                text: format!("DNS: {} when connected", name()),
+                text: format!("DNS via {} when connected", name()),
             },
             NetworkDnsRoute::Nameserver(_) => {
                 let unanswered_since =
@@ -179,15 +182,27 @@ impl NativeAppRuntime {
                 let not_answering = unanswered_since != 0
                     && unix_timestamp().saturating_sub(unanswered_since)
                         >= NETWORK_DNS_UNANSWERED_ALERT_SECS;
-                if not_answering {
+                // The override sends every lookup to the nameserver, so a
+                // nameserver the mesh cannot reach means lookups fail now.
+                let unreachable = daemon_state.is_some_and(|state| {
+                    !state.peers.iter().any(|peer| {
+                        peer.participant_pubkey == network.dns_node && peer.reachable
+                    })
+                });
+                if unreachable {
                     NetworkDnsUiStatus {
                         blocked: true,
-                        text: format!("DNS: {} isn't answering. Lookups are blocked.", name()),
+                        text: format!("DNS via {} is unreachable. Lookups will fail.", name()),
+                    }
+                } else if not_answering {
+                    NetworkDnsUiStatus {
+                        blocked: true,
+                        text: format!("DNS via {} isn't answering. Lookups are blocked.", name()),
                     }
                 } else {
                     NetworkDnsUiStatus {
                         blocked: false,
-                        text: format!("DNS: {}", name()),
+                        text: format!("DNS via {}", name()),
                     }
                 }
             }
@@ -356,6 +371,7 @@ impl NativeAppRuntime {
             rx_bytes: daemon_peer.map_or(0, |peer| peer.rx_bytes),
             advertised_routes,
             offers_exit_node,
+            serves_network_dns: !network.dns_node.is_empty() && network.dns_node == participant,
             fips_endpoint_npub: daemon_peer
                 .map(|peer| peer.fips_endpoint_npub.clone())
                 .unwrap_or_default(),

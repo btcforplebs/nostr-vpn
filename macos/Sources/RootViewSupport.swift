@@ -280,6 +280,11 @@ extension RootView {
             if isSelf(lhs) != isSelf(rhs) {
                 return isSelf(lhs)
             }
+            // The nameserver stays next to this device so a DNS warning always
+            // has its device on screen, even while that device is offline.
+            if lhs.servesNetworkDns != rhs.servesNetworkDns {
+                return lhs.servesNetworkDns
+            }
             if lhs.reachable != rhs.reachable {
                 return lhs.reachable && !rhs.reachable
             }
@@ -675,9 +680,12 @@ enum BadgeStyle {
     case bad
     case muted
     case selected
+    case dns
 
     var foreground: Color {
         switch self {
+        case .dns:
+            return .teal
         case .ok:
             return .green
         case .warn:
@@ -693,6 +701,8 @@ enum BadgeStyle {
 
     var background: Color {
         switch self {
+        case .dns:
+            return .teal.opacity(0.14)
         case .ok:
             return .green.opacity(0.14)
         case .warn:

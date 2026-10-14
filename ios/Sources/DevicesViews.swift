@@ -44,6 +44,12 @@ struct DevicesPage: View {
                         .disabled(!network.enabled)
                         .accessibilityIdentifier("link-device-open")
                     }
+                    if !model.state.networkDnsStatusText.isEmpty {
+                        AppCard {
+                            NetworkDnsStatusLabel(state: model.state)
+                        }
+                        .accessibilityIdentifier("devices-network-dns-status")
+                    }
                     ForEach(sortedParticipants(network.participants, state: model.state)) { participant in
                         ParticipantRow(model: model, network: network, participant: participant)
                     }

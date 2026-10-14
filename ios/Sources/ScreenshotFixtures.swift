@@ -8,6 +8,8 @@ enum ScreenshotFixtures {
         let linuxNpub = fakeNpub("r")
         let androidNpub = fakeNpub("t")
         let ipadNpub = fakeNpub("v")
+        let dnsBoxNpub = fakeNpub("d")
+        let dns = FixtureDns.requested()
 
         var state = AppState()
         state.rev = 1
@@ -68,6 +70,8 @@ enum ScreenshotFixtures {
         state.fipsWebrtcEnabled = false
         state.fipsBootstrapEnabled = false
         state.configPath = "Fixture data"
+        state.networkDnsStatusText = dns.statusText
+        state.networkDnsBlocked = dns == .unreachable
         state.networks = [
             network(
                 ownNpub: ownNpub,
@@ -75,7 +79,9 @@ enum ScreenshotFixtures {
                 windowsNpub: windowsNpub,
                 linuxNpub: linuxNpub,
                 androidNpub: androidNpub,
-                ipadNpub: ipadNpub
+                ipadNpub: ipadNpub,
+                dnsBoxNpub: dnsBoxNpub,
+                dns: dns
             )
         ]
         return state
@@ -145,7 +151,9 @@ enum ScreenshotFixtures {
         windowsNpub: String,
         linuxNpub: String,
         androidNpub: String,
-        ipadNpub: String
+        ipadNpub: String,
+        dnsBoxNpub: String,
+        dns: FixtureDns
     ) -> NetworkState {
         var network = NetworkState()
         network.id = "fixture-home"
@@ -168,6 +176,17 @@ enum ScreenshotFixtures {
                 state: "local",
                 meshState: "local",
                 status: "This device"
+            ),
+            participant(
+                npub: dnsBoxNpub,
+                alias: "DNS box",
+                magicDns: "dns-box.home.mesh",
+                ip: "10.44.0.53/32",
+                reachable: dns != .unreachable,
+                servesNetworkDns: true,
+                state: dns == .unreachable ? "offline" : "online",
+                transport: dns == .unreachable ? "" : "LAN direct",
+                status: dns == .unreachable ? "Last seen 4 min ago" : "Online via LAN"
             ),
             participant(
                 npub: macNpub,
@@ -230,6 +249,7 @@ enum ScreenshotFixtures {
         isAdmin: Bool = false,
         reachable: Bool,
         offersExitNode: Bool = false,
+        servesNetworkDns: Bool = false,
         state: String,
         meshState: String = "",
         transport: String = "",
@@ -246,6 +266,7 @@ enum ScreenshotFixtures {
         participant.rosterAccepted = true
         participant.reachable = reachable
         participant.offersExitNode = offersExitNode
+        participant.servesNetworkDns = servesNetworkDns
         participant.fipsEndpointNpub = fakeNpub("s")
         participant.fipsTransportAddr = transport
         participant.fipsTransportType = transport.isEmpty ? "" : "udp"
@@ -312,6 +333,30 @@ enum ScreenshotFixtures {
         if let config = patch["wireguardExitConfig"] as? String {
             state.wireguardExitConfig = config
             state.wireguardExitConfigured = !config.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// DNS state shown by fixture mode: `--nvpn-fixture-dns ok|unreachable|off`.
+    enum FixtureDns: String {
+        case ok
+        case unreachable
+        case off
+
+        static func requested() -> FixtureDns {
+            let arguments = ProcessInfo.processInfo.arguments
+            guard let index = arguments.firstIndex(of: "--nvpn-fixture-dns"),
+                  arguments.indices.contains(index + 1) else {
+                return .ok
+            }
+            return FixtureDns(rawValue: arguments[index + 1]) ?? .ok
+        }
+
+        var statusText: String {
+            switch self {
+            case .ok: "DNS via dns-box.home.mesh"
+            case .unreachable: "DNS via dns-box.home.mesh is unreachable. Lookups will fail."
+            case .off: "DNS: network default"
+            }
         }
     }
 
