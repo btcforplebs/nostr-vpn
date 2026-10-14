@@ -89,6 +89,19 @@ internal fun androidx.compose.foundation.lazy.LazyListScope.internetPage(
                 color = if (state.exitNodeBlocked) MaterialTheme.colorScheme.error else Muted,
                 style = MaterialTheme.typography.bodySmall,
             )
+            // Network DNS override: which device answers lookups, or that
+            // lookups are failing closed. Never silent.
+            if (state.networkDnsStatusText.isNotEmpty()) {
+                Text(
+                    state.networkDnsStatusText,
+                    modifier = Modifier.mobileUiSelector(
+                        id = "network-dns-status",
+                        description = "Network DNS status",
+                    ),
+                    color = if (state.networkDnsBlocked) MaterialTheme.colorScheme.error else Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
 
             if (state.internetSource == "private_vpn") {
                 val exitParticipants = network?.participants.orEmpty()

@@ -61,6 +61,22 @@ struct InternetPage: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("internet-source-status")
 
+                    // Network DNS override: which device answers lookups, or
+                    // that lookups are failing closed. Never silent.
+                    if !model.state.networkDnsStatusText.isEmpty {
+                        Label(
+                            model.state.networkDnsStatusText,
+                            systemImage: model.state.networkDnsBlocked
+                                ? "exclamationmark.triangle.fill" : "server.rack"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(
+                            model.state.networkDnsBlocked ? Color.red : Color.secondary
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("network-dns-status")
+                    }
+
                     if model.state.internetSource == "private_vpn" {
                         if exitParticipants.isEmpty {
                             Text("No trusted devices sharing internet")

@@ -127,47 +127,69 @@ impl AppConfig {
         }
     }
 
-    /// Mesh address of the network nameserver this device should resolve
-    /// through, or `None` when the override does not apply here.
+    /// How this device resolves under the active network's DNS override.
+    ///
+    /// The override is the admin's intent and outlives the nameserver it
+    /// names: when that device leaves the roster, is tombstoned locally, or has
+    /// no mesh address, the result is [`NetworkDnsRoute::Unavailable`] rather
+    /// than `Off`. Falling back to the local network's DNS there would put a
+    /// connected device back on carrier DNS without anyone noticing, which is
+    /// exactly what the override exists to prevent.
     ///
     /// See [`network_has_member`] for why this cannot just check `devices`.
     ///
-    /// Returns `None` on the nameserver device itself. That device already runs
-    /// the resolver on port 53, so installing our own stub there would collide
-    /// with it and take the tunnel down with it, and forwarding to our own mesh
-    /// address would loop.
-    pub fn network_dns_nameserver_ipv4(&self) -> Option<Ipv4Addr> {
-        let network = self.active_network_opt()?;
-        if !network.dns_override || network.dns_node.is_empty() {
-            return None;
+    /// The nameserver device itself gets [`NetworkDnsRoute::ServesNetwork`].
+    /// It already runs the resolver on port 53, so installing our own stub
+    /// there would collide with it and take the tunnel down with it, and
+    /// forwarding to our own mesh address would loop.
+    pub fn network_dns_route(&self) -> NetworkDnsRoute {
+        let Some(network) = self.active_network_opt() else {
+            return NetworkDnsRoute::Off;
+        };
+        if !network.dns_override {
+            return NetworkDnsRoute::Off;
         }
-        if self.own_nostr_pubkey_hex().ok().as_deref() == Some(network.dns_node.as_str()) {
-            return None;
-        }
-        if !network_has_member(network, &network.dns_node, self.own_nostr_pubkey_hex().ok().as_deref())
+        let own_pubkey = self.own_nostr_pubkey_hex().ok();
+        if !network.dns_node.is_empty() && own_pubkey.as_deref() == Some(network.dns_node.as_str())
         {
-            return None;
+            return NetworkDnsRoute::ServesNetwork;
         }
+        if network.dns_node.is_empty()
+            || !network_has_member(network, &network.dns_node, own_pubkey.as_deref())
+        {
+            return NetworkDnsRoute::Unavailable;
+        }
+        derive_mesh_tunnel_ip(&self.effective_network_id(), &network.dns_node)
+            .and_then(|tunnel_ip| {
+                tunnel_ip
+                    .split('/')
+                    .next()
+                    .and_then(|address| address.parse::<Ipv4Addr>().ok())
+            })
+            .map_or(NetworkDnsRoute::Unavailable, NetworkDnsRoute::Nameserver)
+    }
 
-        let tunnel_ip = derive_mesh_tunnel_ip(&self.effective_network_id(), &network.dns_node)?;
-        tunnel_ip
-            .split('/')
-            .next()
-            .and_then(|address| address.parse::<Ipv4Addr>().ok())
+    /// Mesh address of the network nameserver this device should resolve
+    /// through, or `None` when there is no reachable nameserver to forward to.
+    /// `None` does not mean the override is off; see [`Self::network_dns_route`].
+    pub fn network_dns_nameserver_ipv4(&self) -> Option<Ipv4Addr> {
+        match self.network_dns_route() {
+            NetworkDnsRoute::Nameserver(nameserver) => Some(nameserver),
+            _ => None,
+        }
     }
 
     /// Drop a network nameserver that is no longer a member of its network.
-    /// Mirrors [`Self::normalize_selected_exit_node`] for the per-network setting.
+    /// Mirrors [`Self::normalize_selected_exit_node`] for the per-network
+    /// setting, except that the override itself stays on: with no nameserver
+    /// it fails closed instead of handing members back to local DNS.
     fn normalize_network_dns_nodes(&mut self) {
         let own_pubkey = self.own_nostr_pubkey_hex().ok();
         for network in &mut self.networks {
-            if network.dns_node.is_empty() {
-                network.dns_override = false;
-                continue;
-            }
-            if !network_has_member(network, &network.dns_node, own_pubkey.as_deref()) {
+            if !network.dns_node.is_empty()
+                && !network_has_member(network, &network.dns_node, own_pubkey.as_deref())
+            {
                 network.dns_node.clear();
-                network.dns_override = false;
             }
         }
     }

@@ -62,6 +62,10 @@ pub struct DaemonRuntimeState {
     pub secure_dns_successes: u64,
     #[serde(default, alias = "secure_dns_failures")]
     pub secure_dns_failures: u64,
+    /// Unix time of the oldest lookup forwarded to the network nameserver
+    /// that has not been answered since; 0 while it is answering.
+    #[serde(default, alias = "network_dns_unanswered_since")]
+    pub network_dns_unanswered_since: u64,
     pub peers: Vec<DaemonPeerState>,
 }
 

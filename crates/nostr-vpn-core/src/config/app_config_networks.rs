@@ -308,9 +308,10 @@ impl AppConfig {
             if network.join_request_admin == normalized {
                 network.join_request_admin = network.admins.first().cloned().unwrap_or_default();
             }
+            // Removing the nameserver leaves the override on, so members fail
+            // closed until an admin picks another one or turns it off.
             if network.dns_node == normalized {
                 network.dns_node = String::new();
-                network.dns_override = false;
             }
         }
 

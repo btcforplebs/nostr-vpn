@@ -64,6 +64,7 @@ impl MobileTunnel {
             pending_join_roster_receipts: started.pending_join_roster_receipts,
             tun_counters: started.tun_counters,
             secure_dns: started.secure_dns,
+            network_dns_nat: started.network_dns_nat,
             #[cfg(any(target_os = "android", target_os = "ios"))]
             outbound_tx: started.outbound_tx,
             inbound_rx: Some(started.inbound_rx),
@@ -197,14 +198,17 @@ impl MobileTunnel {
             }));
         }
         let exit_dns_resolver_config = mobile_exit_dns_resolver_config(&config)?;
-        let exit_dns_nat = parse_ipv4(&config.magic_dns_server)
-            .and_then(|local_dns_server| {
-                active_mobile_exit_dns_servers(&config)
-                    .map(|servers| MobileExitDnsNat::new(local_dns_server, servers))
-                    .transpose()
-            })
-            .transpose()?
-            .map(Arc::new);
+        let dns_upstream = mobile_dns_upstream(&config)?;
+        let exit_dns_nat = match (&dns_upstream, parse_ipv4(&config.magic_dns_server)) {
+            (MobileDnsUpstream::Nat(servers), Some(local_dns_server)) => {
+                MobileExitDnsNat::new(local_dns_server, servers.clone())
+                    .map(|nat| Arc::new(nat.with_ipv4_source(mesh_ipv4).with_mtu(config.mtu)))
+            }
+            _ => None,
+        };
+        let network_dns_nat = exit_dns_nat
+            .clone()
+            .filter(|_| !config.network_dns.is_empty());
         if let Some(wg_config) = config.wireguard_exit.as_ref() {
             wg_address_ipv4 = parse_ipv4(&wg_config.address);
             let (send_tx, send_rx) =
@@ -290,7 +294,7 @@ impl MobileTunnel {
         }
 
         let magic_dns_server = parse_ipv4(&config.magic_dns_server);
-        let secure_dns = (magic_dns_server.is_some() && exit_dns_nat.is_none())
+        let secure_dns = (magic_dns_server.is_some() && dns_upstream == MobileDnsUpstream::SecureDns)
             .then(|| SecureDnsResolver::from_resolver_config(&exit_dns_resolver_config))
             .transpose()
             .context("failed to initialize mobile secure DNS")?;
@@ -308,6 +312,7 @@ impl MobileTunnel {
             let app_config_for_dns = Arc::clone(&app_config);
             let outbound_exit_dns_nat = exit_dns_nat.clone();
             let mut secure_dns_dispatch = secure_dns_dispatch;
+            let dns_sinkhole = !config.network_dns.is_empty() || config.network_dns_unavailable;
             tokio::spawn(async move {
                 while let Some(packets) = outbound_rx.recv().await {
                     if !dispatch_mobile_outbound_packets(
@@ -322,6 +327,7 @@ impl MobileTunnel {
                         &mut secure_dns_dispatch,
                         magic_dns_server,
                         outbound_exit_dns_nat.as_deref(),
+                        dns_sinkhole,
                         packets,
                     )
                     .await
@@ -395,6 +401,7 @@ impl MobileTunnel {
             let status_config = Arc::clone(&config_state);
             let status_tun_counters = Arc::clone(&tun_counters);
             let status_secure_dns = secure_dns.clone();
+            let status_network_dns_nat = network_dns_nat.clone();
             let status_wireguard_handshake = wg_runtime
                 .as_ref()
                 .map(WgUpstreamRuntime::handshake_observer);
@@ -409,6 +416,7 @@ impl MobileTunnel {
                         &status_tun_counters,
                         MobileRuntimeDiagnostics {
                             secure_dns: status_secure_dns.as_ref(),
+                            network_dns_nat: status_network_dns_nat.as_deref(),
                             wireguard_handshake: status_wireguard_handshake.as_ref(),
                         },
                     )
@@ -580,6 +588,7 @@ impl MobileTunnel {
             pending_join_roster_receipts,
             tun_counters,
             secure_dns,
+            network_dns_nat,
             #[cfg(any(test, target_os = "android", target_os = "ios"))]
             outbound_tx,
             inbound_rx,
@@ -720,6 +729,10 @@ impl MobileTunnel {
     pub(crate) fn runtime_state_json(&self) -> Result<String> {
         let tun_counters = self.tun_counters.snapshot();
         let secure_dns_counters = self.secure_dns.as_ref().map(SecureDnsResolver::counters);
+        let network_dns_unanswered_since = self
+            .network_dns_nat
+            .as_ref()
+            .map_or(0, |nat| nat.unanswered_since());
         let wireguard_exit_ready = self
             .wg_upstream
             .as_ref()
@@ -766,6 +779,7 @@ impl MobileTunnel {
                 state.secure_dns_failures = counters.failures;
             }
             state.wireguard_exit_ready = wireguard_exit_ready;
+            state.network_dns_unanswered_since = network_dns_unanswered_since;
             serde_json::to_string(&state).context("serialize mobile runtime state")
         })
     }
