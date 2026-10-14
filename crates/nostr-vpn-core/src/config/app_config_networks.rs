@@ -308,6 +308,10 @@ impl AppConfig {
             if network.join_request_admin == normalized {
                 network.join_request_admin = network.admins.first().cloned().unwrap_or_default();
             }
+            if network.dns_node == normalized {
+                network.dns_node = String::new();
+                network.dns_override = false;
+            }
         }
 
         self.note_network_roster_local_change(network_id)?;
@@ -374,6 +378,50 @@ impl AppConfig {
         self.note_network_roster_local_change(network_id)?;
         self.normalize_selected_exit_node();
         Ok(())
+    }
+
+    /// Point a network at one of its own members as the network nameserver.
+    /// Pass an empty `dns_node` to clear the selection.
+    ///
+    /// Admin-only, enforced here rather than at each caller: a non-admin's
+    /// roster is rejected by every peer anyway, so failing loudly beats
+    /// writing a setting that would never take effect.
+    pub fn set_network_dns(
+        &mut self,
+        network_id: &str,
+        dns_node: &str,
+        dns_override: bool,
+    ) -> Result<String> {
+        let normalized = if dns_node.trim().is_empty() {
+            String::new()
+        } else {
+            normalize_nostr_pubkey(dns_node)?
+        };
+        let own_pubkey = self.own_nostr_pubkey_hex().ok();
+        {
+            let network = self
+                .network_by_id_mut(network_id)
+                .ok_or_else(|| anyhow::anyhow!("network not found"))?;
+            if own_pubkey
+                .as_deref()
+                .is_none_or(|own| !network.admins.iter().any(|admin| admin == own))
+            {
+                return Err(anyhow::anyhow!(
+                    "only a network admin can change the network DNS settings"
+                ));
+            }
+            if !normalized.is_empty()
+                && !network_has_member(network, &normalized, own_pubkey.as_deref())
+            {
+                return Err(anyhow::anyhow!(
+                    "the DNS device must be a member of this network"
+                ));
+            }
+            network.dns_override = dns_override && !normalized.is_empty();
+            network.dns_node = normalized.clone();
+        }
+        self.note_network_roster_local_change(network_id)?;
+        Ok(normalized)
     }
 
     pub fn network_admin_pubkeys_hex(&self, network_id: &str) -> Result<Vec<String>> {

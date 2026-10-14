@@ -137,6 +137,7 @@ impl AppConfig {
             }
             network.join_request_admin =
                 normalize_nostr_pubkey(&network.join_request_admin).unwrap_or_default();
+            network.dns_node = normalize_nostr_pubkey(&network.dns_node).unwrap_or_default();
 
             network.devices = network
                 .devices
@@ -189,6 +190,7 @@ impl AppConfig {
         self.ensure_single_active_network();
         self.generate_placeholder_network_ids();
         self.normalize_selected_exit_node();
+        self.normalize_network_dns_nodes();
         self.normalize_fips_peer_endpoints();
         self.normalize_peer_aliases();
     }
@@ -272,6 +274,7 @@ impl AppConfig {
             network.admins.dedup();
             network.join_request_admin =
                 canonical_npub_key(&network.join_request_admin).unwrap_or_default();
+            network.dns_node = canonical_npub_key(&network.dns_node).unwrap_or_default();
             network.outbound_join_request =
                 canonicalize_outbound_join_request(network.outbound_join_request.take());
             network.inbound_join_requests = canonicalize_inbound_join_requests(std::mem::take(
@@ -437,6 +440,7 @@ impl AppConfig {
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         });
         let _ = self.note_network_roster_local_change(&id);
         id

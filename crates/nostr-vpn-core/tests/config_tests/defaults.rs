@@ -22,6 +22,7 @@ fn admin_signed_roster_update(
         aliases,
         signed_at,
         signed_by: signed_by.to_string(),
+        ..Default::default()
     }
 }
 
