@@ -774,6 +774,27 @@
     await run('/api/remove_network', { networkId: network.id }, 'Removing network');
   }
 
+  async function setNetworkDns(network: NetworkView, npub: string, dnsOverride: boolean) {
+    await run(
+      '/api/set_network_dns',
+      { networkId: network.id, npub, dnsOverride },
+      'Saving network DNS',
+    );
+  }
+
+  function networkDnsHint(network: NetworkView): string {
+    if (!network.dnsOverride) {
+      return 'Selected, but not enforced. Devices keep using their local DNS.';
+    }
+    if (network.localIsDnsNode) {
+      return "This device serves the network's DNS, so it keeps its own resolver settings.";
+    }
+    return (
+      'All DNS on this network resolves through the selected device. ' +
+      'If it goes offline, lookups fail rather than falling back to the local network.'
+    );
+  }
+
   async function saveSettings() {
     const listenPort = Number(settingsDraft.listenPort);
     if (!Number.isInteger(listenPort) || listenPort <= 0 || listenPort > 65535) {
@@ -1866,6 +1887,51 @@
                       Remove
                     </button>
                   </div>
+                  {#if network.enabled}
+                    <div class="network-dns">
+                      <label>
+                        <span>
+                          Network DNS
+                          {#if network.localIsDnsNode}
+                            <span class="badge muted">this device</span>
+                          {/if}
+                        </span>
+                        <select
+                          value={network.dnsNodeNpub}
+                          disabled={!canEditNetwork(network) || Boolean(busyAction)}
+                          aria-label="Network DNS device"
+                          on:change={(event) =>
+                            setNetworkDns(
+                              network,
+                              (event.currentTarget as HTMLSelectElement).value,
+                              (event.currentTarget as HTMLSelectElement).value ? network.dnsOverride : false,
+                            )}
+                        >
+                          <option value="">Off</option>
+                          {#each network.participants as participant (participant.npub)}
+                            <option value={participant.npub}>{participantName(participant)}</option>
+                          {/each}
+                        </select>
+                      </label>
+                      {#if network.dnsNodeNpub}
+                        <label class="switch-row">
+                          <span>Override local DNS</span>
+                          <input
+                            type="checkbox"
+                            checked={network.dnsOverride}
+                            disabled={!canEditNetwork(network) || Boolean(busyAction)}
+                            on:change={(event) =>
+                              setNetworkDns(
+                                network,
+                                network.dnsNodeNpub,
+                                (event.currentTarget as HTMLInputElement).checked,
+                              )}
+                          />
+                        </label>
+                        <p class="settings-panel-help">{networkDnsHint(network)}</p>
+                      {/if}
+                    </div>
+                  {/if}
                 </form>
               {/each}
             </div>

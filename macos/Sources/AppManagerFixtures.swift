@@ -258,6 +258,9 @@ extension AppManager {
             enabled: true,
             networkId: networkId,
             localIsAdmin: true,
+            dnsNodeNpub: "",
+            dnsOverride: false,
+            localIsDnsNode: false,
             joinRequestsEnabled: true,
             joinRequestAdminNpub: "",
             adminNpubs: [selfNpub],
@@ -324,6 +327,8 @@ extension AppManager {
             exitNodeStatusText: automaticExit
                 ? "Automatic paid exit · FI · ≈ $0.02/GB · 198.51.100.42 · Active"
                 : sellerScreenshot ? "" : "Using paid internet: FI",
+            networkDnsStatusText: "",
+            networkDnsBlocked: false,
             exitDnsMode: "automatic",
             exitDnsDohProvider: "cloudflare",
             exitDnsCustomDohUrl: "",
