@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 #[cfg(not(target_os = "macos"))]
 use std::io::Write;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 #[cfg(all(unix, not(target_os = "macos")))]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;

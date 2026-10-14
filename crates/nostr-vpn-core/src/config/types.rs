@@ -476,6 +476,14 @@ pub struct NetworkConfig {
     pub removed_devices: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admins: Vec<String>,
+    /// Roster member whose mesh tunnel IP serves as this network's nameserver,
+    /// set by an admin and distributed through the signed roster.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dns_node: String,
+    /// Force every member to resolve through `dns_node` instead of its local
+    /// network's DNS.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dns_override: bool,
     #[serde(
         default = "default_listen_for_join_requests",
         skip_serializing_if = "is_true"
@@ -533,17 +541,21 @@ pub struct SharedNetworkRoster {
     pub devices: Vec<String>,
     pub admins: Vec<String>,
     pub aliases: HashMap<String, String>,
+    pub dns_node: String,
+    pub dns_override: bool,
     pub updated_at: u64,
     pub signed_by: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdminSignedSharedRosterUpdate {
     pub network_id: String,
     pub network_name: String,
     pub devices: Vec<String>,
     pub admins: Vec<String>,
     pub aliases: HashMap<String, String>,
+    pub dns_node: String,
+    pub dns_override: bool,
     pub signed_at: u64,
     pub signed_by: String,
 }
@@ -554,19 +566,9 @@ impl Default for AppConfig {
             networks: vec![NetworkConfig {
                 id: default_network_entry_id(1),
                 name: default_network_name(1),
-                enabled: default_network_enabled(),
                 network_id: default_network_id(),
                 join_secret: default_join_secret(),
-                devices: Vec::new(),
-                removed_devices: Vec::new(),
-                admins: Vec::new(),
-                listen_for_join_requests: default_listen_for_join_requests(),
-                join_request_admin: String::new(),
-                local_identity_confirmation_pending: false,
-                outbound_join_request: None,
-                inbound_join_requests: Vec::new(),
-                shared_roster_updated_at: 0,
-                shared_roster_signed_by: String::new(),
+                ..Default::default()
             }],
             node_name: default_node_name(),
             lan_discovery_enabled: default_lan_discovery_enabled(),
@@ -607,6 +609,30 @@ impl Default for AppConfig {
         };
         config.ensure_defaults();
         config
+    }
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            enabled: default_network_enabled(),
+            network_id: String::new(),
+            join_secret: String::new(),
+            devices: Vec::new(),
+            removed_devices: Vec::new(),
+            admins: Vec::new(),
+            dns_node: String::new(),
+            dns_override: false,
+            listen_for_join_requests: default_listen_for_join_requests(),
+            join_request_admin: String::new(),
+            local_identity_confirmation_pending: false,
+            outbound_join_request: None,
+            inbound_join_requests: Vec::new(),
+            shared_roster_updated_at: 0,
+            shared_roster_signed_by: String::new(),
+        }
     }
 }
 

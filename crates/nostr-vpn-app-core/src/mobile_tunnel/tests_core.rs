@@ -22,6 +22,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         Arc::new(RwLock::new(app))
     }
@@ -150,6 +151,7 @@
                 admins: vec![known_admin_hex, outsider_hex],
                 aliases: HashMap::new(),
                 signed_at: 1_726_000_000,
+                ..Default::default()
             },
             &outsider,
         )
@@ -185,6 +187,7 @@
                 admins: vec![admin_hex],
                 aliases: std::collections::HashMap::new(),
                 signed_at: 1_726_000_000,
+                ..Default::default()
             },
             &admin,
         )
@@ -230,6 +233,7 @@
                 admins: vec![admin.public_key().to_hex()],
                 aliases: HashMap::new(),
                 signed_at: now,
+                ..Default::default()
             },
             &admin,
         )
@@ -271,6 +275,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
 
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
@@ -328,6 +333,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.set_internet_source(nostr_vpn_core::config::InternetSource::Direct);
 
@@ -360,6 +366,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.exit_node = peer.to_string();
 
@@ -531,6 +538,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.set_peer_alias(peer, "fixture-peer")
             .expect("peer alias");
@@ -861,6 +869,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.fips_peer_endpoints
             .insert(peer.to_string(), vec!["192.168.50.10:51820".to_string()]);
@@ -908,6 +917,7 @@
             inbound_join_requests: Vec::new(),
             shared_roster_updated_at: 0,
             shared_roster_signed_by: String::new(),
+            ..Default::default()
         }];
         app.fips_peer_endpoints
             .insert(admin.clone(), vec!["192.168.50.10:51820".to_string()]);

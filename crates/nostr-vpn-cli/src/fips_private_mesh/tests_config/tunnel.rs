@@ -60,6 +60,7 @@
                 admins: vec![admin_pubkey.clone()],
                 aliases: HashMap::new(),
                 signed_at: unix_timestamp(),
+                ..Default::default()
             },
             &admin_keys,
         )

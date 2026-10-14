@@ -416,6 +416,7 @@
                 admins: vec![alice_pubkey.clone()],
                 aliases: HashMap::new(),
                 signed_at: now,
+                ..Default::default()
             },
             &alice_keys,
         )

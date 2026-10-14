@@ -90,6 +90,7 @@ mod tests {
             admins: vec![admin.public_key().to_hex()],
             aliases,
             signed_at: 123,
+            ..Default::default()
         };
 
         let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
@@ -117,6 +118,7 @@ mod tests {
             admins: vec![admin.public_key().to_hex()],
             aliases,
             signed_at: 123,
+            ..Default::default()
         };
 
         let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
@@ -148,6 +150,7 @@ mod tests {
                 admins: vec![admin.public_key().to_hex()],
                 aliases: HashMap::new(),
                 signed_at: 123,
+                ..Default::default()
             },
             &admin,
         )
@@ -193,6 +196,7 @@ mod tests {
             admins: vec![admin.public_key().to_hex()],
             aliases: HashMap::new(),
             signed_at: 123,
+            ..Default::default()
         };
         let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
         let mut event = signed.event.clone();
@@ -279,6 +283,7 @@ mod tests {
                 .map(|value| (format!("{value:064x}"), format!("node-{value}")))
                 .collect(),
             signed_at: 123,
+            ..Default::default()
         };
         let frame = FipsControlFrame::Roster {
             network_id: "mesh".to_string(),
@@ -309,5 +314,105 @@ mod tests {
             .extend_from_slice(br#"{"v":99,"frame":{"kind":"ping","network_id":"x","sent_at":1}}"#);
 
         assert!(decode_fips_control_frame(&bytes).expect("decode").is_none());
+    }
+
+    fn dns_roster(dns_node: String, dns_override: bool, devices: Vec<String>) -> NetworkRoster {
+        NetworkRoster {
+            network_name: "Home".to_string(),
+            devices,
+            admins: Vec::new(),
+            aliases: HashMap::new(),
+            dns_node,
+            dns_override,
+            signed_at: 123,
+        }
+    }
+
+    #[test]
+    fn signed_roster_round_trips_the_network_dns_selection() {
+        let admin = Keys::generate();
+        let pihole = Keys::generate().public_key().to_hex();
+        let mut roster = dns_roster(pihole.clone(), true, vec![pihole.clone()]);
+        roster.admins = vec![admin.public_key().to_hex()];
+
+        let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
+        let tags = signed
+            .event
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect::<Vec<_>>();
+        assert!(tags.contains(&vec!["dns-node".to_string(), pihole.clone()]));
+        assert!(tags.contains(&vec!["dns-override".to_string(), "1".to_string()]));
+
+        let decoded = signed.roster().expect("decode roster");
+        assert_eq!(decoded.dns_node, pihole);
+        assert!(decoded.dns_override);
+    }
+
+    #[test]
+    fn signed_roster_without_dns_tags_stays_unset() {
+        let admin = Keys::generate();
+        let member = Keys::generate().public_key().to_hex();
+        let mut roster = dns_roster(String::new(), false, vec![member]);
+        roster.admins = vec![admin.public_key().to_hex()];
+
+        let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
+        assert!(
+            !signed
+                .event
+                .tags
+                .iter()
+                .any(|tag| matches!(tag.as_slice().first(), Some(kind) if kind.starts_with("dns")))
+        );
+
+        let decoded = signed.roster().expect("decode roster");
+        assert!(decoded.dns_node.is_empty());
+        assert!(!decoded.dns_override);
+    }
+
+    #[test]
+    fn signed_roster_drops_a_dns_node_that_left_the_roster() {
+        let admin = Keys::generate();
+        let member = Keys::generate().public_key().to_hex();
+        let stranger = Keys::generate().public_key().to_hex();
+        let mut roster = dns_roster(stranger, true, vec![member]);
+        roster.admins = vec![admin.public_key().to_hex()];
+
+        let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
+        let decoded = signed.roster().expect("decode roster");
+
+        assert!(decoded.dns_node.is_empty());
+        assert!(!decoded.dns_override);
+    }
+
+    #[test]
+    fn signed_roster_keeps_override_off_without_a_dns_node() {
+        let admin = Keys::generate();
+        let member = Keys::generate().public_key().to_hex();
+        let mut roster = dns_roster(String::new(), true, vec![member]);
+        roster.admins = vec![admin.public_key().to_hex()];
+
+        let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
+        let decoded = signed.roster().expect("decode roster");
+
+        assert!(decoded.dns_node.is_empty());
+        assert!(!decoded.dns_override);
+    }
+
+    /// A bad nameserver value must not stop membership changes from publishing.
+    #[test]
+    fn signed_roster_still_publishes_membership_with_an_unparseable_dns_node() {
+        let admin = Keys::generate();
+        let member = Keys::generate().public_key().to_hex();
+        let mut roster = dns_roster("not-a-pubkey".to_string(), true, vec![member.clone()]);
+        roster.admins = vec![admin.public_key().to_hex()];
+
+        let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
+        let decoded = signed.roster().expect("decode roster");
+
+        assert_eq!(decoded.devices, vec![member]);
+        assert!(decoded.dns_node.is_empty());
+        assert!(!decoded.dns_override);
     }
 }

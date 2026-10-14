@@ -30,6 +30,7 @@ fn bridge_represents_roster_members_as_canonical_app_keys() {
         admins: vec![admin_hex.clone()],
         aliases: HashMap::from([(member_hex.clone(), "garden-node".to_string())]),
         signed_at: 1_726_000_000,
+        ..Default::default()
     };
 
     let identities = roster_app_key_identities(
@@ -84,6 +85,7 @@ fn signed_roster_bridge_does_not_change_30388_wire_tags() {
         admins: vec![admin_hex],
         aliases: HashMap::from([(member_hex.clone(), "phone".to_string())]),
         signed_at: 1_726_000_000,
+        ..Default::default()
     };
     let signed = SignedRoster::sign("mesh-home", roster, &admin).expect("sign roster");
     let before_tags = signed
@@ -149,6 +151,7 @@ fn unified_bridge_accepts_legacy_signed_rosters_and_identity_roster_ops() {
         admins: vec![admin_hex.clone()],
         aliases: HashMap::from([(member_hex.clone(), "phone".to_string())]),
         signed_at: 1_726_000_010,
+        ..Default::default()
     };
     let signed = SignedRoster::sign("mesh-home", roster, &admin).expect("sign roster");
 

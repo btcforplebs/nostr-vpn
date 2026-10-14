@@ -75,6 +75,8 @@ pub fn prepare_manual_join_delivery(
     let signed_roster = SignedRoster::sign(
         shared.network_id.clone(),
         NetworkRoster {
+            dns_node: shared.dns_node,
+            dns_override: shared.dns_override,
             network_name: shared.name,
             devices: shared.devices,
             admins: shared.admins,
