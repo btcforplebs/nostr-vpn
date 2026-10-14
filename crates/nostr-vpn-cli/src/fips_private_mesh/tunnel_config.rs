@@ -493,6 +493,7 @@ impl FipsPrivateTunnelConfig {
             secure_dns_requested: !app.internet_source.is_direct()
                 && (!local_identity_confirmation_pending
                     || app.internet_source == InternetSource::WireGuard),
+            network_dns: app.network_dns_route(),
             public_paid_exit_waiting_for_admission: false,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             magic_dns_suffix: app.magic_dns_suffix.clone(),
@@ -648,7 +649,21 @@ impl FipsPrivateTunnelConfig {
             && !self.exit_node_leak_protection
     }
 
+    /// The admin DNS override owns system DNS: forward to the nameserver, or
+    /// fail closed when the override names no usable nameserver.
+    fn network_dns_override_active(&self) -> bool {
+        matches!(
+            self.network_dns,
+            NetworkDnsRoute::Nameserver(_) | NetworkDnsRoute::Unavailable
+        )
+    }
+
     fn secure_dns_required(&self) -> bool {
+        // Admin network policy owns system DNS on any connection, including
+        // Direct and a paid exit still waiting for admission.
+        if self.client_dataplane_enabled && self.network_dns_override_active() {
+            return true;
+        }
         // Until a public paid seller authenticates and admits the selected
         // session there is no usable exit path for forwarded DNS. Keep the
         // system resolver on the direct underlay while ordinary Internet is
@@ -693,6 +708,20 @@ impl FipsPrivateTunnelConfig {
         &self,
         wireguard_active: bool,
     ) -> Result<ExitDnsResolverConfig> {
+        // Admin network policy outranks this device's own exit DNS preference,
+        // and it applies on a Direct connection where `secure_dns_requested` is
+        // false, so this branch has to come first.
+        if self.client_dataplane_enabled {
+            match self.network_dns {
+                NetworkDnsRoute::Nameserver(nameserver) => {
+                    return Ok(ExitDnsResolverConfig::ThroughExit {
+                        servers: vec![IpAddr::V4(nameserver)],
+                    });
+                }
+                NetworkDnsRoute::Unavailable => return Ok(ExitDnsResolverConfig::FailClosed),
+                NetworkDnsRoute::Off | NetworkDnsRoute::ServesNetwork => {}
+            }
+        }
         if !self.client_dataplane_enabled || !self.secure_dns_requested {
             return ExitDnsConfig::default().resolver_config(None);
         }

@@ -428,12 +428,21 @@ impl ConnectMagicDnsRuntime {
     }
 }
 
-fn secure_exit_dns_required(app: &AppConfig) -> bool {
+/// Whether `SecureDnsRuntime` owns system DNS on this device, which is also
+/// exactly when the suffix-only `ConnectMagicDnsRuntime` must stand down. The
+/// two bind the same local port and install conflicting resolver state, so
+/// every start/stop decision has to route through this one predicate.
+pub(crate) fn global_system_dns_required(app: &AppConfig) -> bool {
     !app.internet_source.is_direct()
+        || matches!(
+            app.network_dns_route(),
+            nostr_vpn_core::config::NetworkDnsRoute::Nameserver(_)
+                | nostr_vpn_core::config::NetworkDnsRoute::Unavailable
+        )
 }
 
 fn split_magic_dns_should_start(app: &AppConfig, runtime_present: bool) -> bool {
-    !secure_exit_dns_required(app) && !runtime_present
+    !global_system_dns_required(app) && !runtime_present
 }
 
 fn start_split_magic_dns(app: &AppConfig) -> Option<ConnectMagicDnsRuntime> {
@@ -448,7 +457,7 @@ fn refresh_or_start_split_magic_dns(
     runtime: &mut Option<ConnectMagicDnsRuntime>,
     app: &AppConfig,
 ) {
-    if secure_exit_dns_required(app) {
+    if global_system_dns_required(app) {
         runtime.take();
         return;
     }
