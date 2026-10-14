@@ -466,20 +466,11 @@ fn note_mobile_peer_pong(
     }
 }
 
-fn mobile_peer_ping_due(
-    last_seen_at: Option<u64>,
-    last_ping_sent_at: Option<u64>,
-    configured_transit: bool,
-    now: u64,
-) -> bool {
+fn mobile_peer_ping_due(last_ping_sent_at: Option<u64>, configured_transit: bool, now: u64) -> bool {
     let interval = if configured_transit {
         MOBILE_CONFIGURED_TRANSIT_PING_INTERVAL_SECS
-    } else if last_seen_at.is_some_and(|last_seen_at| {
-        mobile_timestamp_within_grace(now, last_seen_at, MOBILE_PEER_ONLINE_GRACE_SECS)
-    }) {
-        MOBILE_PEER_ACTIVE_PING_INTERVAL_SECS
     } else {
-        MOBILE_PEER_DISCOVERY_PROBE_INTERVAL_SECS
+        MOBILE_PEER_ACTIVE_PING_INTERVAL_SECS
     };
     last_ping_sent_at.is_none_or(|sent_at| mobile_elapsed_at_least(now, sent_at, interval))
 }
@@ -528,7 +519,6 @@ async fn mobile_ping_peers(
             .filter(|(participant, configured_transit)| {
                 let peer_presence = presence.get(participant);
                 mobile_peer_ping_due(
-                    peer_presence.and_then(|value| value.last_seen_at),
                     peer_presence.and_then(|value| value.last_ping_sent_at),
                     *configured_transit,
                     now,
