@@ -113,6 +113,10 @@ pub(crate) async fn update_active_network_roster(
         .id
         .clone();
 
+    if args.dns_backup && !matches!(action, RosterEditAction::AddDevice) {
+        return Err(anyhow!("--dns-backup only applies to add-device"));
+    }
+
     let mut changed = Vec::new();
     for device in &args.devices {
         let normalized = match action {
@@ -130,6 +134,16 @@ pub(crate) async fn update_active_network_roster(
             }
         };
         changed.push(normalized);
+    }
+    // Before the join roster below is signed, so the new box's very first
+    // roster already lists it as a backup and it never runs as a plain member.
+    if args.dns_backup {
+        let mut backups = app
+            .network_by_id(&active_network_id)
+            .map(|network| network.dns_backup_nodes.clone())
+            .unwrap_or_default();
+        backups.extend(changed.iter().cloned());
+        app.set_network_dns_backups(&active_network_id, &backups)?;
     }
 
     app.ensure_defaults();
@@ -277,6 +291,7 @@ mod tests {
                 network_id: Some(network_id),
                 devices: vec![recipient.clone()],
                 publish: true,
+                dns_backup: false,
                 json: true,
             },
             RosterEditAction::AddDevice,
@@ -290,6 +305,66 @@ mod tests {
 
         fs::remove_file(&queued[0].0).expect("remove queued roster");
         fs::remove_dir(join_roster_outbox_directory(&config_path)).expect("remove outbox");
+        fs::remove_file(config_path).expect("remove config");
+    }
+
+    /// The joining box's first roster must already name it a backup DNS box.
+    /// Admitted as a plain member first, it would install the nvpn DNS stub
+    /// beside its own Pi-hole and send its lookups to the primary.
+    #[tokio::test]
+    async fn add_device_as_dns_backup_lists_it_in_the_first_join_roster() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let config_path = std::env::temp_dir().join(format!(
+            "nvpn-cli-dns-backup-join-{}-{nonce}.toml",
+            std::process::id()
+        ));
+        let mut app = AppConfig::generated();
+        let network_id = app.networks[0].id.clone();
+        let admin = app.own_nostr_pubkey_hex().expect("admin identity");
+        app.add_admin_to_network(&network_id, &admin)
+            .expect("make local device an admin");
+        let earlier = Keys::generate().public_key().to_hex();
+        app.add_device_to_network(&network_id, &earlier)
+            .expect("add an earlier backup");
+        app.set_network_dns_backups(&network_id, std::slice::from_ref(&earlier))
+            .expect("list the earlier backup");
+        app.save(&config_path).expect("save admin config");
+        let recipient = Keys::generate().public_key().to_hex();
+
+        update_active_network_roster(
+            UpdateRosterArgs {
+                config: Some(config_path.clone()),
+                network_id: Some(network_id),
+                devices: vec![recipient.clone()],
+                publish: false,
+                dns_backup: true,
+                json: true,
+            },
+            RosterEditAction::AddDevice,
+        )
+        .await
+        .expect("add the backup box");
+
+        let queued = load_join_rosters(&config_path);
+        assert_eq!(queued.len(), 1);
+        let roster = queued[0]
+            .1
+            .join_roster
+            .signed_roster
+            .roster()
+            .expect("decode join roster");
+        assert_eq!(
+            roster.dns_backup_nodes,
+            vec![earlier, recipient],
+            "the new box must be appended to, not replace, the existing backups"
+        );
+
+        fs::remove_file(&queued[0].0).expect("remove queued roster");
+        fs::remove_dir(join_roster_outbox_directory(&config_path)).expect("remove outbox");
+        AppConfig::delete_persisted_secrets_for_path(&config_path).ok();
         fs::remove_file(config_path).expect("remove config");
     }
 }
