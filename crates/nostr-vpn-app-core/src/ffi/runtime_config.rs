@@ -349,6 +349,7 @@ impl NativeAppRuntime {
     }
 
     fn connect_vpn(&mut self) -> Result<()> {
+        self.forget_last_known_daemon_status();
         if network_setup_required_for_config(&self.config)
             && self.config.pending_nostr_join_request.is_none()
             && self.current_join_request_link().is_empty()
@@ -410,6 +411,7 @@ impl NativeAppRuntime {
     }
 
     fn disconnect_vpn(&mut self) -> Result<()> {
+        self.forget_last_known_daemon_status();
         self.vpn_enabled = false;
         if self.mobile_runtime {
             self.vpn_enabled = false;
@@ -489,19 +491,24 @@ impl NativeAppRuntime {
     fn refresh_status(&mut self) -> Result<()> {
         self.reload_config_from_disk()?;
         self.refresh_service_status_if_due();
-        let output = self.run_nvpn([
-            "status",
-            "--json",
-            "--include-join-request",
-            "--discover-secs",
-            "0",
-            "--config",
-            self.config_path_str()?,
-        ]);
+        let output = self.run_nvpn_with_timeout(
+            [
+                "status",
+                "--json",
+                "--include-join-request",
+                "--discover-secs",
+                "0",
+                "--config",
+                self.config_path_str()?,
+            ],
+            DAEMON_STATUS_TIMEOUT,
+        );
 
         match output {
             Ok(output) if output.status.success() => {
                 self.clear_daemon_status_grace();
+                self.daemon_status_ok_at = Some(Instant::now());
+                self.daemon_status_delayed = false;
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let json_text = extract_json_document(&stdout)?;
                 let parsed = serde_json::from_str::<CliStatusResponse>(json_text)
@@ -529,7 +536,13 @@ impl NativeAppRuntime {
                 );
                 Ok(())
             }
+            Ok(_) | Err(_) if self.keep_last_known_daemon_status() => {
+                self.daemon_status_delayed = true;
+                self.vpn_status = "Status delayed, showing last known peers".to_string();
+                Ok(())
+            }
             Ok(output) => {
+                self.forget_last_known_daemon_status();
                 self.join_request_qr_code_or_link.clear();
                 self.daemon_state = None;
                 self.daemon_running = false;
@@ -543,6 +556,7 @@ impl NativeAppRuntime {
                 Err(command_failure("nvpn status", &output))
             }
             Err(error) => {
+                self.forget_last_known_daemon_status();
                 self.daemon_state = None;
                 self.daemon_running = false;
                 self.vpn_enabled = false;
@@ -551,6 +565,22 @@ impl NativeAppRuntime {
                 Err(error)
             }
         }
+    }
+
+    /// A daemon that answered recently keeps its peer list through a failed
+    /// or timed-out poll, so one bad poll does not mark every peer offline.
+    fn keep_last_known_daemon_status(&self) -> bool {
+        self.daemon_state.is_some()
+            && self
+                .daemon_status_ok_at
+                .is_some_and(|ok_at| ok_at.elapsed() < DAEMON_STATUS_LAST_KNOWN_KEEP)
+    }
+
+    /// Any deliberate action must read fresh daemon state: Connect must not
+    /// send `resume` to a daemon that died inside the keep window.
+    fn forget_last_known_daemon_status(&mut self) {
+        self.daemon_status_ok_at = None;
+        self.daemon_status_delayed = false;
     }
 
     fn save_reload_and_refresh(&mut self) -> Result<()> {

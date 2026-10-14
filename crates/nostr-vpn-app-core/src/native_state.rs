@@ -454,6 +454,9 @@ pub struct NativeAppState {
     pub vpn_enabled: bool,
     pub vpn_active: bool,
     pub vpn_status: String,
+    /// The last status poll failed; peers and VPN state are the last known
+    /// values, not live ones.
+    pub daemon_status_delayed: bool,
     pub daemon_binary_version: String,
     pub service_binary_version: String,
     pub expected_service_binary_version: String,

@@ -184,22 +184,34 @@
 
     #[test]
     fn mobile_peer_ping_due_recovers_from_future_timestamps() {
-        assert!(!mobile_peer_ping_due(Some(122), Some(115), false, 120));
-        assert!(!mobile_peer_ping_due(Some(180), Some(1), false, 120));
-        assert!(!mobile_peer_ping_due(None, Some(122), false, 120));
-        assert!(mobile_peer_ping_due(None, Some(180), false, 120));
+        assert!(!mobile_peer_ping_due(Some(122), false, 120));
+        assert!(mobile_peer_ping_due(Some(180), false, 120));
     }
 
     #[test]
-    fn offline_peer_probe_uses_battery_safe_fallback_interval() {
-        assert!(!mobile_peer_ping_due(None, Some(0), false, 299));
-        assert!(mobile_peer_ping_due(None, Some(0), false, 300));
+    fn offline_roster_peer_keeps_the_active_ping_cadence() {
+        // Last heard long ago: the next probe must not wait behind a
+        // multi-minute back-off, or one lost round delays recovery for all.
+        assert!(!mobile_peer_ping_due(Some(0), false, 29));
+        assert!(mobile_peer_ping_due(Some(0), false, 30));
+    }
+
+    #[test]
+    fn one_missed_ping_round_keeps_roster_peers_online() {
+        // Heard at t=0, the t=30 pong is lost, the t=60 round is in flight.
+        let last_seen_at = 0;
+        for now in [30, 60, 75, 89] {
+            assert!(
+                mobile_timestamp_within_grace(now, last_seen_at, MOBILE_PEER_ONLINE_GRACE_SECS),
+                "peer dropped offline at t={now} after one missed ping round"
+            );
+        }
     }
 
     #[test]
     fn configured_transit_is_pinged_before_the_fips_link_can_expire() {
-        assert!(!mobile_peer_ping_due(None, Some(0), true, 9));
-        assert!(mobile_peer_ping_due(None, Some(0), true, 10));
+        assert!(!mobile_peer_ping_due(Some(0), true, 9));
+        assert!(mobile_peer_ping_due(Some(0), true, 10));
     }
 
     #[test]

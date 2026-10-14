@@ -3,7 +3,7 @@ use std::env;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -48,6 +48,11 @@ const NVPN_BIN_ENV: &str = "NVPN_CLI_PATH";
 const EXTERNAL_DAEMON_ENV: &str = "NVPN_EXTERNAL_DAEMON";
 const SERVICE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const DAEMON_STARTUP_STATUS_GRACE: Duration = Duration::from_secs(20);
+// A hung `nvpn status` must not stall the dashboard refresh loop.
+const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+// One failed or slow status poll keeps the last good peer list (marked
+// delayed) instead of blanking every peer; a longer outage clears it.
+const DAEMON_STATUS_LAST_KNOWN_KEEP: Duration = Duration::from_mins(1);
 const MOBILE_RUNTIME_STATE_FILE: &str = "mobile-runtime-state.json";
 const MOBILE_RUNTIME_STATE_STALE_SECS: u64 = 10;
 const MOBILE_RUNTIME_STATE_MAX_FUTURE_SKEW_SECS: u64 = 2;
@@ -195,6 +200,8 @@ struct NativeAppRuntime {
     service_binary_version: String,
     expected_service_binary_version: String,
     daemon_status_grace_until: Option<Instant>,
+    daemon_status_ok_at: Option<Instant>,
+    daemon_status_delayed: bool,
     last_service_status_refresh_at: Option<Instant>,
     paid_route_market_filter: NativePaidRouteMarketFilterState,
     paid_route_wallet_last_action: NativePaidRouteWalletActionState,
