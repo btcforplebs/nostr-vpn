@@ -19,6 +19,8 @@ pub struct NativeParticipantState {
     pub rx_bytes: u64,
     pub advertised_routes: Vec<String>,
     pub offers_exit_node: bool,
+    /// This participant is the network's DNS nameserver (`dns_node`).
+    pub serves_network_dns: bool,
     pub fips_endpoint_npub: String,
     pub fips_endpoint_hints: Vec<String>,
     pub fips_transport_addr: String,

@@ -4807,6 +4807,10 @@ public struct NativeParticipantState {
     public var rxBytes: UInt64
     public var advertisedRoutes: [String]
     public var offersExitNode: Bool
+    /**
+     * This participant is the network's DNS nameserver (`dns_node`).
+     */
+    public var servesNetworkDns: Bool
     public var fipsEndpointNpub: String
     public var fipsEndpointHints: [String]
     public var fipsTransportAddr: String
@@ -4831,7 +4835,10 @@ public struct NativeParticipantState {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(npub: String, pubkeyHex: String, alias: String, magicDnsAlias: String, magicDnsName: String, tunnelIp: String, isAdmin: Bool, rosterAccepted: Bool, reachable: Bool, txBytes: UInt64, rxBytes: UInt64, advertisedRoutes: [String], offersExitNode: Bool, fipsEndpointNpub: String, fipsEndpointHints: [String], fipsTransportAddr: String, fipsTransportType: String, fipsSrttMs: UInt64, fipsSrttAgeMs: UInt64, fipsPacketsSent: UInt64, fipsPacketsRecv: UInt64, fipsBytesSent: UInt64, fipsBytesRecv: UInt64, fipsDirectProbePending: Bool, fipsDirectProbeAfterMs: UInt64, fipsDirectProbeRetryCount: UInt32, fipsDirectProbeAutoReconnect: Bool, fipsDirectProbeExpiresAtMs: UInt64, state: String, meshState: String, statusText: String, lastFipsControlSeenText: String, lastFipsDataSeenText: String, lastSeenText: String) {
+    public init(npub: String, pubkeyHex: String, alias: String, magicDnsAlias: String, magicDnsName: String, tunnelIp: String, isAdmin: Bool, rosterAccepted: Bool, reachable: Bool, txBytes: UInt64, rxBytes: UInt64, advertisedRoutes: [String], offersExitNode: Bool,
+        /**
+         * This participant is the network's DNS nameserver (`dns_node`).
+         */servesNetworkDns: Bool, fipsEndpointNpub: String, fipsEndpointHints: [String], fipsTransportAddr: String, fipsTransportType: String, fipsSrttMs: UInt64, fipsSrttAgeMs: UInt64, fipsPacketsSent: UInt64, fipsPacketsRecv: UInt64, fipsBytesSent: UInt64, fipsBytesRecv: UInt64, fipsDirectProbePending: Bool, fipsDirectProbeAfterMs: UInt64, fipsDirectProbeRetryCount: UInt32, fipsDirectProbeAutoReconnect: Bool, fipsDirectProbeExpiresAtMs: UInt64, state: String, meshState: String, statusText: String, lastFipsControlSeenText: String, lastFipsDataSeenText: String, lastSeenText: String) {
         self.npub = npub
         self.pubkeyHex = pubkeyHex
         self.alias = alias
@@ -4845,6 +4852,7 @@ public struct NativeParticipantState {
         self.rxBytes = rxBytes
         self.advertisedRoutes = advertisedRoutes
         self.offersExitNode = offersExitNode
+        self.servesNetworkDns = servesNetworkDns
         self.fipsEndpointNpub = fipsEndpointNpub
         self.fipsEndpointHints = fipsEndpointHints
         self.fipsTransportAddr = fipsTransportAddr
@@ -4913,6 +4921,9 @@ extension NativeParticipantState: Equatable, Hashable {
             return false
         }
         if lhs.offersExitNode != rhs.offersExitNode {
+            return false
+        }
+        if lhs.servesNetworkDns != rhs.servesNetworkDns {
             return false
         }
         if lhs.fipsEndpointNpub != rhs.fipsEndpointNpub {
@@ -4995,6 +5006,7 @@ extension NativeParticipantState: Equatable, Hashable {
         hasher.combine(rxBytes)
         hasher.combine(advertisedRoutes)
         hasher.combine(offersExitNode)
+        hasher.combine(servesNetworkDns)
         hasher.combine(fipsEndpointNpub)
         hasher.combine(fipsEndpointHints)
         hasher.combine(fipsTransportAddr)
@@ -5041,6 +5053,7 @@ public struct FfiConverterTypeNativeParticipantState: FfiConverterRustBuffer {
                 rxBytes: FfiConverterUInt64.read(from: &buf),
                 advertisedRoutes: FfiConverterSequenceString.read(from: &buf),
                 offersExitNode: FfiConverterBool.read(from: &buf),
+                servesNetworkDns: FfiConverterBool.read(from: &buf),
                 fipsEndpointNpub: FfiConverterString.read(from: &buf),
                 fipsEndpointHints: FfiConverterSequenceString.read(from: &buf),
                 fipsTransportAddr: FfiConverterString.read(from: &buf),
@@ -5079,6 +5092,7 @@ public struct FfiConverterTypeNativeParticipantState: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.rxBytes, into: &buf)
         FfiConverterSequenceString.write(value.advertisedRoutes, into: &buf)
         FfiConverterBool.write(value.offersExitNode, into: &buf)
+        FfiConverterBool.write(value.servesNetworkDns, into: &buf)
         FfiConverterString.write(value.fipsEndpointNpub, into: &buf)
         FfiConverterSequenceString.write(value.fipsEndpointHints, into: &buf)
         FfiConverterString.write(value.fipsTransportAddr, into: &buf)

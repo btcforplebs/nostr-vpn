@@ -71,6 +71,10 @@ struct ParticipantRow: View {
                                     tint: exitNodeBadgeTint(participant, state: model.state)
                                 )
                             }
+                            if participant.servesNetworkDns {
+                                Pill("DNS server", tint: AppColors.dns)
+                                    .accessibilityIdentifier("dns-server-badge")
+                            }
                             if isFipsRouted(participant, state: model.state) {
                                 Pill("via mesh", tint: .secondary)
                             }
@@ -141,6 +145,9 @@ struct DeviceDetailSheet: View {
                                 exitNodeBadgeText(participant, state: model.state),
                                 tint: exitNodeBadgeTint(participant, state: model.state)
                             )
+                        }
+                        if participant.servesNetworkDns {
+                            Pill("DNS server", tint: AppColors.dns)
                         }
                     }
                 }

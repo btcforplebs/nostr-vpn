@@ -82,6 +82,7 @@ extension RootView {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                        networkDnsStatusLine
                     }
                     Spacer()
                     deviceHeaderActions(network)
@@ -129,6 +130,27 @@ extension RootView {
                 .padding(.bottom, 24)
             }
         }
+    }
+
+    /// Where this Mac's DNS answers come from: the network nameserver, a
+    /// warning when the override is on but lookups will fail, or the network
+    /// default. Icon and text carry the state, not color alone.
+    @ViewBuilder
+    var networkDnsStatusLine: some View {
+        if !state.networkDnsStatusText.isEmpty {
+            Label(state.networkDnsStatusText, systemImage: networkDnsStatusSymbol)
+                .font(.caption)
+                .foregroundStyle(state.networkDnsBlocked ? Color.red : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("devices-network-dns-status")
+        }
+    }
+
+    var networkDnsStatusSymbol: String {
+        if state.networkDnsBlocked {
+            return "exclamationmark.triangle.fill"
+        }
+        return state.networkDnsStatusText.hasPrefix("DNS via") ? "server.rack" : "globe"
     }
 
     func deviceHeaderActions(_ network: NativeNetworkState) -> some View {
@@ -206,6 +228,9 @@ extension RootView {
                     if participant.offersExitNode {
                         badge(exitNodeBadgeText(participant), style: selected ? .selected : exitNodeBadgeStyle(participant))
                     }
+                    if participant.servesNetworkDns {
+                        badge("DNS server", style: selected ? .selected : .dns)
+                    }
                     if isFipsRouted(participant) {
                         badge("via mesh", style: selected ? .selected : .muted)
                     }
@@ -276,7 +301,8 @@ extension RootView {
                     Text(deviceName(participant))
                         .font(.system(size: 24, weight: .semibold))
                         .lineLimit(2)
-                    if isSelf(participant) || participant.isAdmin || participant.offersExitNode || participant.reachable {
+                    if isSelf(participant) || participant.isAdmin || participant.offersExitNode
+                        || participant.servesNetworkDns || participant.reachable {
                         HStack(spacing: 6) {
                             if isSelf(participant) {
                                 badge("This device", style: .ok)
@@ -286,6 +312,9 @@ extension RootView {
                             }
                             if participant.offersExitNode {
                                 badge(exitNodeBadgeText(participant), style: exitNodeBadgeStyle(participant))
+                            }
+                            if participant.servesNetworkDns {
+                                badge("DNS server", style: .dns)
                             }
                             if isDirectFipsPeer(participant) {
                                 badge("direct connection", style: .ok)

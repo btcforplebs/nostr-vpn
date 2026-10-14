@@ -48,6 +48,30 @@ extension AppManager {
         return ["1", "true", "yes", "on"].contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
+    /// DNS state shown by fixture mode: `--nvpn-fixture-dns ok|unreachable|off`.
+    enum FixtureDns: String {
+        case ok
+        case unreachable
+        case off
+
+        static func requested() -> FixtureDns {
+            let arguments = CommandLine.arguments
+            guard let index = arguments.firstIndex(of: "--nvpn-fixture-dns"),
+                  arguments.indices.contains(index + 1) else {
+                return .ok
+            }
+            return FixtureDns(rawValue: arguments[index + 1]) ?? .ok
+        }
+
+        var statusText: String {
+            switch self {
+            case .ok: "DNS via ubuntu.nvpn"
+            case .unreachable: "DNS via ubuntu.nvpn is unreachable. Lookups will fail."
+            case .off: "DNS: network default"
+            }
+        }
+    }
+
     static func screenshotFixtureState() -> NativeAppState {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "4.0.31"
         let selfNpub = "npub12mh8r6uetvj9fptwua9gtng0ycz8uvzn0vmxsaddk7vfegeu29ts3qngt3"
@@ -65,6 +89,7 @@ extension AppManager {
         let fixtureNow = UInt64(Date().timeIntervalSince1970)
         let automaticExit = CommandLine.arguments.contains("--nvpn-screenshot-paid-automatic")
         let networkId = "demo-mesh"
+        let fixtureDns = FixtureDns.requested()
 
         let local = NativeParticipantState(
             npub: selfNpub,
@@ -80,6 +105,7 @@ extension AppManager {
             rxBytes: 1_302_804,
             advertisedRoutes: [],
             offersExitNode: false,
+            servesNetworkDns: false,
             fipsEndpointNpub: selfNpub,
             fipsEndpointHints: [],
             fipsTransportAddr: "192.0.2.57:51820",
@@ -116,6 +142,7 @@ extension AppManager {
             rxBytes: 211_776,
             advertisedRoutes: [],
             offersExitNode: false,
+            servesNetworkDns: false,
             fipsEndpointNpub: macbookNpub,
             fipsEndpointHints: [],
             fipsTransportAddr: "",
@@ -152,6 +179,7 @@ extension AppManager {
             rxBytes: 91_440,
             advertisedRoutes: [],
             offersExitNode: false,
+            servesNetworkDns: false,
             fipsEndpointNpub: iphoneNpub,
             fipsEndpointHints: [],
             fipsTransportAddr: "192.0.2.74:52283",
@@ -188,6 +216,7 @@ extension AppManager {
             rxBytes: 64_928,
             advertisedRoutes: [],
             offersExitNode: false,
+            servesNetworkDns: false,
             fipsEndpointNpub: androidNpub,
             fipsEndpointHints: [],
             fipsTransportAddr: "192.0.2.92:47120",
@@ -219,11 +248,12 @@ extension AppManager {
             tunnelIp: "10.44.202.44",
             isAdmin: false,
             rosterAccepted: true,
-            reachable: true,
+            reachable: fixtureDns != .unreachable,
             txBytes: 5_820_192,
             rxBytes: 4_911_240,
             advertisedRoutes: ["10.88.0.0/16"],
             offersExitNode: true,
+            servesNetworkDns: true,
             fipsEndpointNpub: ubuntuNpub,
             fipsEndpointHints: [],
             fipsTransportAddr: "203.0.113.44:51820",
@@ -239,9 +269,9 @@ extension AppManager {
             fipsDirectProbeRetryCount: 0,
             fipsDirectProbeAutoReconnect: false,
             fipsDirectProbeExpiresAtMs: 0,
-            state: "online",
-            meshState: "direct",
-            statusText: "direct, 22 ms",
+            state: fixtureDns == .unreachable ? "offline" : "online",
+            meshState: fixtureDns == .unreachable ? "offline" : "direct",
+            statusText: fixtureDns == .unreachable ? "last seen 4m ago" : "direct, 22 ms",
             lastFipsControlSeenText: "seen 3s ago",
             lastFipsDataSeenText: "seen 3s ago",
             lastSeenText: "3s ago"
@@ -258,8 +288,8 @@ extension AppManager {
             enabled: true,
             networkId: networkId,
             localIsAdmin: true,
-            dnsNodeNpub: "",
-            dnsOverride: false,
+            dnsNodeNpub: ubuntuNpub,
+            dnsOverride: fixtureDns != .off,
             localIsDnsNode: false,
             joinRequestsEnabled: true,
             joinRequestAdminNpub: "",
@@ -267,7 +297,7 @@ extension AppManager {
             outboundJoinRequest: nil,
             joinRequestQrCodeOrLink: "",
             inboundJoinRequests: [joinRequest],
-            onlineCount: 5,
+            onlineCount: fixtureDns == .unreachable ? 4 : 5,
             expectedCount: 5,
             admins: [selfNpub],
             participants: [local, macbook, iphone, android, ubuntu]
@@ -328,8 +358,8 @@ extension AppManager {
             exitNodeStatusText: automaticExit
                 ? "Automatic paid exit · FI · ≈ $0.02/GB · 198.51.100.42 · Active"
                 : sellerScreenshot ? "" : "Using paid internet: FI",
-            networkDnsStatusText: "",
-            networkDnsBlocked: false,
+            networkDnsStatusText: fixtureDns.statusText,
+            networkDnsBlocked: fixtureDns == .unreachable,
             exitDnsMode: "automatic",
             exitDnsDohProvider: "cloudflare",
             exitDnsCustomDohUrl: "",

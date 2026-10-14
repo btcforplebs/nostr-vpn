@@ -391,7 +391,30 @@ struct QrCodeView: View {
     }
 }
 
+/// Where this device's DNS answers come from: the network nameserver, a
+/// warning when the override is on but lookups will fail, or the network's
+/// default resolver. Icon and text carry the state, not color alone.
+struct NetworkDnsStatusLabel: View {
+    let state: AppState
+
+    var body: some View {
+        Label(state.networkDnsStatusText, systemImage: networkDnsStatusSymbol(state))
+            .font(.footnote)
+            .foregroundStyle(state.networkDnsBlocked ? Color.red : Color.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("network-dns-status")
+    }
+}
+
+func networkDnsStatusSymbol(_ state: AppState) -> String {
+    if state.networkDnsBlocked {
+        return "exclamationmark.triangle.fill"
+    }
+    return state.networkDnsStatusText.hasPrefix("DNS via") ? "server.rack" : "globe"
+}
+
 enum AppColors {
+    static let dns = Color.teal
     static let background = Color(uiColor: .systemGroupedBackground)
     static let accent = Color.purple
     static let create = Color.green
@@ -409,6 +432,11 @@ func sortedParticipants(_ participants: [ParticipantState], state: AppState) -> 
         let rhsSelf = isSelf(rhs, state: state)
         if lhsSelf != rhsSelf {
             return lhsSelf
+        }
+        // The nameserver stays next to this device so a DNS warning always
+        // has its device on screen, even while that device is offline.
+        if lhs.servesNetworkDns != rhs.servesNetworkDns {
+            return lhs.servesNetworkDns
         }
         if lhs.reachable != rhs.reachable {
             return lhs.reachable && !rhs.reachable
