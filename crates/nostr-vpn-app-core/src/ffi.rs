@@ -202,6 +202,7 @@ struct NativeAppRuntime {
     expected_service_binary_version: String,
     daemon_status_grace_until: Option<Instant>,
     daemon_status_ok_at: Option<Instant>,
+    daemon_status_delayed: bool,
     last_service_status_refresh_at: Option<Instant>,
     paid_route_market_filter: NativePaidRouteMarketFilterState,
     paid_route_wallet_last_action: NativePaidRouteWalletActionState,

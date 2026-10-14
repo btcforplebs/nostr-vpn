@@ -231,6 +231,8 @@ extension RootView {
                 in: RoundedRectangle(cornerRadius: 7)
             )
             .contentShape(Rectangle())
+            // Last known values while the status poll is delayed, not live ones.
+            .opacity(state.daemonStatusDelayed ? 0.55 : 1)
         }
         .accessibilityIdentifier(
             "roster-participant-\(participant.rosterAccepted ? "accepted" : "pending")-\(participant.npub)"

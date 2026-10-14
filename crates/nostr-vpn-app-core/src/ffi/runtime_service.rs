@@ -81,7 +81,7 @@ impl NativeAppRuntime {
         self.last_service_status_refresh_at = None;
         // A deliberate service change must read fresh daemon state, never the
         // last-known list kept across a transient status failure.
-        self.daemon_status_ok_at = None;
+        self.forget_last_known_daemon_status();
     }
 
     /// Cache the version of the bundled `nvpn` CLI — i.e. the version that

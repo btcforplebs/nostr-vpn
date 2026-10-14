@@ -1069,6 +1069,7 @@ exit 0
         assert!(runtime.daemon_state.is_some());
         assert!(runtime.vpn_active);
         assert_eq!(runtime.vpn_status, "Status delayed, showing last known peers");
+        assert!(runtime.state().daemon_status_delayed);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1128,6 +1129,77 @@ exit 0
 
         assert!(result.is_err_and(|error| error.to_string().contains("timed out")));
         assert!(started.elapsed() < Duration::from_secs(5));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn log_fake_nvpn_calls(runtime: &mut NativeAppRuntime, dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let log_path = dir.join("calls.log");
+        let script_path = dir.join("nvpn-logging");
+        fs::write(
+            &script_path,
+            format!(
+                r#"#!/bin/sh
+echo "$1" >> '{}'
+if [ "$1" = "service" ] && [ "$2" = "status" ]; then
+  cat <<'JSON'
+{{"supported":true,"installed":true,"disabled":false,"loaded":true,"running":true,"pid":123,"label":"fi.siriusbusiness.nvpn.test","binary_version":"test"}}
+JSON
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  echo "control socket not ready" >&2
+  exit 7
+fi
+exit 0
+"#,
+                log_path.display()
+            ),
+        )
+        .expect("write logging fake nvpn");
+        let mut permissions = fs::metadata(&script_path)
+            .expect("fake nvpn metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("make fake nvpn executable");
+        runtime.nvpn_bin = Some(script_path);
+        log_path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_after_a_daemon_death_starts_the_daemon_instead_of_resuming() {
+        let (mut runtime, dir) =
+            runtime_with_reachable_peer_and_failing_status("nvpn-app-core-status-connect");
+        runtime.daemon_status_ok_at = Some(Instant::now());
+        runtime.daemon_status_delayed = true;
+        let log_path = log_fake_nvpn_calls(&mut runtime, &dir);
+
+        let _ = runtime.connect_vpn();
+
+        let calls = fs::read_to_string(&log_path).expect("fake nvpn was called");
+        assert!(!calls.lines().any(|call| call == "resume"), "{calls}");
+        assert!(calls.lines().any(|call| call == "start"), "{calls}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnect_reads_fresh_daemon_state() {
+        let (mut runtime, dir) =
+            runtime_with_reachable_peer_and_failing_status("nvpn-app-core-status-disconnect");
+        runtime.daemon_status_ok_at = Some(Instant::now());
+        runtime.daemon_status_delayed = true;
+        let _ = log_fake_nvpn_calls(&mut runtime, &dir);
+
+        let _ = runtime.disconnect_vpn();
+
+        assert!(runtime.daemon_state.is_none());
+        assert!(!runtime.state().daemon_status_delayed);
 
         let _ = fs::remove_dir_all(&dir);
     }
