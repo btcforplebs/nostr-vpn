@@ -42,6 +42,14 @@ pub enum NativeAppAction {
         network_id: String,
         enabled: bool,
     },
+    /// Point the network at one of its devices for DNS. Admin only. An empty
+    /// `npub` clears the selection; `dns_override` decides whether members are
+    /// forced to use it.
+    SetNetworkDns {
+        network_id: String,
+        npub: String,
+        dns_override: bool,
+    },
     AddParticipant {
         network_id: String,
         npub: String,
@@ -620,5 +628,19 @@ mod tests {
             }
             other => panic!("unexpected action: {other:?}"),
         }
+    }
+
+    /// The JSON shape is the wire format for the Android and web shells, so it
+    /// is pinned rather than left to derive drift.
+    #[test]
+    fn set_network_dns_action_json_roundtrips() {
+        assert_action_json_roundtrip(
+            &NativeAppAction::SetNetworkDns {
+                network_id: "network-1".to_string(),
+                npub: "npub1pihole".to_string(),
+                dns_override: true,
+            },
+            r#"{"type":"set_network_dns","networkId":"network-1","npub":"npub1pihole","dnsOverride":true}"#,
+        );
     }
 }
