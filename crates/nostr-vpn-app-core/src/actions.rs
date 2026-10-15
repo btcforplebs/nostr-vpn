@@ -2,6 +2,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::SettingsPatch;
 
+/// The part one device plays in its network's DNS.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeNetworkDnsRole {
+    Primary,
+    Backup,
+    None,
+}
+
 #[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(clippy::large_enum_variant)]
 #[serde(
@@ -49,6 +58,13 @@ pub enum NativeAppAction {
         network_id: String,
         npub: String,
         dns_override: bool,
+    },
+    /// Make one device the network's DNS box, a backup DNS box, or neither,
+    /// leaving the other boxes in place. Admin only.
+    SetNetworkDnsRole {
+        network_id: String,
+        npub: String,
+        role: NativeNetworkDnsRole,
     },
     AddParticipant {
         network_id: String,
@@ -641,6 +657,18 @@ mod tests {
                 dns_override: true,
             },
             r#"{"type":"set_network_dns","networkId":"network-1","npub":"npub1pihole","dnsOverride":true}"#,
+        );
+    }
+
+    #[test]
+    fn set_network_dns_role_action_json_roundtrips() {
+        assert_action_json_roundtrip(
+            &NativeAppAction::SetNetworkDnsRole {
+                network_id: "network-1".to_string(),
+                npub: "npub1mac".to_string(),
+                role: NativeNetworkDnsRole::Backup,
+            },
+            r#"{"type":"set_network_dns_role","networkId":"network-1","npub":"npub1mac","role":"backup"}"#,
         );
     }
 }

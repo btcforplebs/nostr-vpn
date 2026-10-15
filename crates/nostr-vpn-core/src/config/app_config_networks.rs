@@ -484,6 +484,73 @@ impl AppConfig {
         Ok(stored)
     }
 
+    /// Give one device a DNS role without disturbing the other boxes, in one
+    /// step so the roster never passes through a half-changed state.
+    ///
+    /// - `Primary`: the device becomes the primary. The old primary, if any,
+    ///   becomes the first backup rather than dropping out.
+    /// - `Backup`: the device goes to the end of the backup list. If it was
+    ///   the primary, the first backup takes its place; with no other box to
+    ///   take it, the change is refused rather than leaving backups with no
+    ///   primary.
+    /// - `None`: the device stops serving DNS. If it was the primary, the
+    ///   first backup takes its place; with no backup left the selection is
+    ///   cleared, as in [`Self::set_network_dns`].
+    ///
+    /// The override setting is kept. Admin-only, and the device must be a
+    /// member; both checks come from the two setters this calls.
+    pub fn set_network_dns_role(
+        &mut self,
+        network_id: &str,
+        device: &str,
+        role: NetworkDnsRole,
+    ) -> Result<()> {
+        let device = normalize_nostr_pubkey(device)?;
+        let (mut primary, dns_override, mut backups) = {
+            let network = self
+                .network_by_id(network_id)
+                .ok_or_else(|| anyhow::anyhow!("network not found"))?;
+            (
+                network.dns_node.clone(),
+                network.dns_override,
+                network.dns_backup_nodes.clone(),
+            )
+        };
+        backups.retain(|backup| backup != &device);
+        let was_primary = primary == device;
+        if role == NetworkDnsRole::Backup && was_primary && backups.is_empty() {
+            return Err(anyhow::anyhow!(
+                "this is the only DNS device; a backup with no primary has nothing to back up"
+            ));
+        }
+        match role {
+            NetworkDnsRole::Primary => {
+                if !primary.is_empty() && !was_primary {
+                    backups.insert(0, primary);
+                }
+                primary = device;
+            }
+            NetworkDnsRole::Backup | NetworkDnsRole::None => {
+                if was_primary {
+                    primary = if backups.is_empty() {
+                        String::new()
+                    } else {
+                        backups.remove(0)
+                    };
+                }
+                if role == NetworkDnsRole::Backup {
+                    backups.push(device);
+                }
+            }
+        }
+        // Apply to a copy so a refused change leaves the config untouched.
+        let mut next = self.clone();
+        next.set_network_dns(network_id, &primary, dns_override)?;
+        next.set_network_dns_backups(network_id, &backups)?;
+        *self = next;
+        Ok(())
+    }
+
     pub fn network_admin_pubkeys_hex(&self, network_id: &str) -> Result<Vec<String>> {
         let network = self
             .network_by_id(network_id)

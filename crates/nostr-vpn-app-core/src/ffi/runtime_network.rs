@@ -394,6 +394,10 @@ impl NativeAppRuntime {
             advertised_routes,
             offers_exit_node,
             serves_network_dns: !network.dns_node.is_empty() && network.dns_node == participant,
+            serves_network_dns_backup: network
+                .dns_backup_nodes
+                .iter()
+                .any(|backup| backup == participant),
             fips_endpoint_npub: daemon_peer
                 .map(|peer| peer.fips_endpoint_npub.clone())
                 .unwrap_or_default(),

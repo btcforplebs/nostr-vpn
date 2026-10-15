@@ -202,6 +202,16 @@ extension AppManager {
         )
     }
 
+    func setNetworkDnsRole(networkId: String, participant: NativeParticipantState, role: NativeNetworkDnsRole) {
+        let status: String
+        switch role {
+        case .primary: status = "Making DNS box"
+        case .backup: status = "Making backup DNS box"
+        case .none: status = "Removing DNS"
+        }
+        dispatch(.setNetworkDnsRole(networkId: networkId, npub: participant.npub, role: role), status: status)
+    }
+
     func toggleAdmin(networkId: String, participant: NativeParticipantState) {
         if participant.isAdmin {
             dispatch(.removeAdmin(networkId: networkId, npub: participant.npub), status: "Removing admin")

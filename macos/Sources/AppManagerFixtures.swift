@@ -48,11 +48,14 @@ extension AppManager {
         return ["1", "true", "yes", "on"].contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
-    /// DNS state shown by fixture mode: `--nvpn-fixture-dns ok|unreachable|off`.
+    /// DNS state shown by fixture mode:
+    /// `--nvpn-fixture-dns ok|unreachable|off|backup`. `backup` lists the
+    /// macbook as a backup DNS box after ubuntu.
     enum FixtureDns: String {
         case ok
         case unreachable
         case off
+        case backup
 
         static func requested() -> FixtureDns {
             let arguments = CommandLine.arguments
@@ -68,6 +71,7 @@ extension AppManager {
             case .ok: "DNS via ubuntu.nvpn"
             case .unreachable: "DNS via ubuntu.nvpn is unreachable. Lookups will fail."
             case .off: "DNS: network default"
+            case .backup: "DNS via ubuntu.nvpn, macbook.nvpn"
             }
         }
     }
@@ -106,6 +110,7 @@ extension AppManager {
             advertisedRoutes: [],
             offersExitNode: false,
             servesNetworkDns: false,
+            servesNetworkDnsBackup: false,
             fipsEndpointNpub: selfNpub,
             fipsEndpointHints: [],
             fipsTransportAddr: "192.0.2.57:51820",
@@ -143,6 +148,7 @@ extension AppManager {
             advertisedRoutes: [],
             offersExitNode: false,
             servesNetworkDns: false,
+            servesNetworkDnsBackup: fixtureDns == .backup,
             fipsEndpointNpub: macbookNpub,
             fipsEndpointHints: [],
             fipsTransportAddr: "",
@@ -180,6 +186,7 @@ extension AppManager {
             advertisedRoutes: [],
             offersExitNode: false,
             servesNetworkDns: false,
+            servesNetworkDnsBackup: false,
             fipsEndpointNpub: iphoneNpub,
             fipsEndpointHints: [],
             fipsTransportAddr: "192.0.2.74:52283",
@@ -217,6 +224,7 @@ extension AppManager {
             advertisedRoutes: [],
             offersExitNode: false,
             servesNetworkDns: false,
+            servesNetworkDnsBackup: false,
             fipsEndpointNpub: androidNpub,
             fipsEndpointHints: [],
             fipsTransportAddr: "192.0.2.92:47120",
@@ -254,6 +262,7 @@ extension AppManager {
             advertisedRoutes: ["10.88.0.0/16"],
             offersExitNode: true,
             servesNetworkDns: true,
+            servesNetworkDnsBackup: false,
             fipsEndpointNpub: ubuntuNpub,
             fipsEndpointHints: [],
             fipsTransportAddr: "203.0.113.44:51820",

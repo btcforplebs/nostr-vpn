@@ -21,6 +21,9 @@ pub struct NativeParticipantState {
     pub offers_exit_node: bool,
     /// This participant is the network's DNS nameserver (`dns_node`).
     pub serves_network_dns: bool,
+    /// This participant is one of the network's backup DNS nameservers
+    /// (`dns_backup_nodes`).
+    pub serves_network_dns_backup: bool,
     pub fips_endpoint_npub: String,
     pub fips_endpoint_hints: Vec<String>,
     pub fips_transport_addr: String,
