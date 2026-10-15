@@ -415,29 +415,33 @@ extension RootView {
     }
 
     func deviceActionButtons(_ participant: NativeParticipantState, network: NativeNetworkState) -> some View {
-        HStack(spacing: 6) {
-            Button {
-                manager.toggleAdmin(networkId: network.id, participant: participant)
-            } label: {
-                Label(
-                    participant.isAdmin ? "Remove admin" : "Make admin",
-                    systemImage: participant.isAdmin ? "star.slash" : "star"
-                )
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Button {
+                    manager.toggleAdmin(networkId: network.id, participant: participant)
+                } label: {
+                    Label(
+                        participant.isAdmin ? "Remove admin" : "Make admin",
+                        systemImage: participant.isAdmin ? "star.slash" : "star"
+                    )
+                }
+                .disabled(manager.actionInFlight)
+                .help(participant.isAdmin ? "Remove admin" : "Make admin")
+                Button(role: .destructive) {
+                    pendingParticipantRemoval = PendingParticipantRemoval(
+                        networkId: network.id,
+                        npub: participant.npub,
+                        deviceName: deviceName(participant)
+                    )
+                } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+                .disabled(isSelf(participant) || manager.actionInFlight)
+                .help("Remove device")
             }
-            .disabled(manager.actionInFlight)
-            .help(participant.isAdmin ? "Remove admin" : "Make admin")
-            deviceDnsButtons(participant, network: network)
-            Button(role: .destructive) {
-                pendingParticipantRemoval = PendingParticipantRemoval(
-                    networkId: network.id,
-                    npub: participant.npub,
-                    deviceName: deviceName(participant)
-                )
-            } label: {
-                Label("Remove", systemImage: "trash")
+            HStack(spacing: 6) {
+                deviceDnsButtons(participant, network: network)
             }
-            .disabled(isSelf(participant) || manager.actionInFlight)
-            .help("Remove device")
         }
         .controlSize(.small)
         .confirmationDialog(
