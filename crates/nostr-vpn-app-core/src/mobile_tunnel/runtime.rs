@@ -226,6 +226,21 @@ impl MobileTunnel {
         let network_dns_nat = exit_dns_nat
             .clone()
             .filter(|_| !config.network_dns_servers.is_empty());
+        if let Some(nat) = exit_dns_nat.clone() {
+            // The forwarder holds a fast negative answer for a real one from
+            // another box; it is packet-driven, so something has to let the
+            // hold run out when no further packet arrives.
+            let inbound_tx = inbound_tx.clone();
+            tasks.push(tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(MOBILE_DNS_HOLD_RELEASE_INTERVAL).await;
+                    let released = nat.release_expired_holds();
+                    if !released.is_empty() && inbound_tx.send(released).await.is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
         if let Some(wg_config) = config.wireguard_exit.as_ref() {
             wg_address_ipv4 = parse_ipv4(&wg_config.address);
             let (send_tx, send_rx) =

@@ -734,7 +734,10 @@ async fn dispatch_mobile_outbound_packets(
         // Plain DNS to a sinkholed resolver is redirected to the nameserver
         // rather than refused; see `redirect_public_resolver_query`.
         // A lookup is copied to every DNS box; `copies` holds the ones for
-        // the other boxes, which are routed exactly like `packet`.
+        // the other boxes, which are routed exactly like `packet`. Only one
+        // of the two translations below can produce them: the redirect
+        // rewrites the destination to a box, so the stub check in
+        // `rewrite_query` cannot also match the same packet.
         let mut copies = Vec::new();
         let mut redirected = false;
         if dns_sinkhole
@@ -811,6 +814,8 @@ async fn dispatch_mobile_outbound_packets(
             copies = siblings;
         }
 
+        // Last thing in the batch loop body, so `continue` below means the
+        // same for a copy as it did for the packet.
         for packet in std::iter::once(packet).chain(copies) {
             let outgoing_peer = mesh.as_ref().and_then(|mesh| {
                 mesh.route_outbound_packet_peer(&packet).map(|peer| {

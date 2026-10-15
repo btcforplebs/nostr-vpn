@@ -1,3 +1,69 @@
+    const LOOKUP_NAME: &str = "example.com";
+
+    /// What a box says back.
+    #[derive(Clone, Copy)]
+    enum DnsReply {
+        /// NOERROR with one A record.
+        Real,
+        /// NOERROR, no records.
+        Empty,
+        NxDomain,
+        ServFail,
+        Refused,
+    }
+
+    /// A query for `name` (type A) with a question section, unlike the
+    /// header-only `dns_query_with_id`, so answers can carry an rcode and
+    /// records and the forwarder can tell questions apart.
+    fn dns_question_message(query_id: u16, name: &str) -> Vec<u8> {
+        let mut message = query_id.to_be_bytes().to_vec();
+        message.extend_from_slice(&[0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]);
+        for label in name.split('.') {
+            message.push(u8::try_from(label.len()).unwrap());
+            message.extend_from_slice(label.as_bytes());
+        }
+        message.push(0);
+        message.extend_from_slice(&[0, 1, 0, 1]);
+        message
+    }
+
+    fn dns_reply_message(query_id: u16, name: &str, reply: DnsReply) -> Vec<u8> {
+        let mut message = dns_question_message(query_id, name);
+        message[2] = 0x81;
+        message[3] = 0x80
+            | match reply {
+                DnsReply::Real | DnsReply::Empty => 0,
+                DnsReply::NxDomain => 3,
+                DnsReply::ServFail => 2,
+                DnsReply::Refused => 5,
+            };
+        if matches!(reply, DnsReply::Real) {
+            message[7] = 1;
+            // Pointer to the question name, type A, class IN, TTL 60, 93.184.216.34.
+            message.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 93, 184, 216, 34]);
+        }
+        message
+    }
+
+    fn stub_lookup(client_port: u16, query_id: u16, name: &str) -> Vec<u8> {
+        let stub = parse_ipv4(nostr_vpn_core::MESH_MAGIC_DNS_SERVER).unwrap();
+        build_ipv4_udp_packet(CLIENT_V4, stub, client_port, 53, &dns_question_message(query_id, name))
+            .unwrap()
+    }
+
+    fn box_reply(server: Ipv4Addr, client_port: u16, query_id: u16, name: &str, reply: DnsReply) -> Vec<u8> {
+        build_ipv4_udp_packet(server, CLIENT_V4, 53, client_port, &dns_reply_message(query_id, name, reply))
+            .unwrap()
+    }
+
+    fn rcode_of(packet: &[u8]) -> u8 {
+        packet[28 + 3] & 0x0f
+    }
+
+    fn packet_source(packet: &[u8]) -> Ipv4Addr {
+        Ipv4Addr::from(<[u8; 4]>::try_from(&packet[12..16]).unwrap())
+    }
+
     /// A DNS box on the far side of the tunnel: answers every query after
     /// `latency`, or never (asleep, off, unplugged).
     struct FakeDnsBox {
@@ -44,7 +110,7 @@
     ) -> Option<(Duration, Ipv4Addr)> {
         let local_dns = parse_ipv4(nostr_vpn_core::MESH_MAGIC_DNS_SERVER).unwrap();
         let start = Instant::now();
-        let mut query = stub_query(client_port, query_id);
+        let mut query = stub_lookup(client_port, query_id, LOOKUP_NAME);
         let copies = nat.rewrite_query(&mut query)?;
         let (tx, rx) = std::sync::mpsc::channel();
         for packet in std::iter::once(query).chain(copies) {
@@ -57,7 +123,7 @@
                 continue;
             };
             let tx = tx.clone();
-            let answer = dns_answer_v4(destination, client_port, query_id);
+            let answer = box_reply(destination, client_port, query_id, LOOKUP_NAME, DnsReply::Real);
             std::thread::spawn(move || {
                 std::thread::sleep(latency);
                 let _ = tx.send(answer);
@@ -154,18 +220,18 @@
     #[test]
     fn a_late_duplicate_answer_is_dropped() {
         let nat = fan_out_nat(&[MAC, PI]);
-        let mut query = stub_query(50_004, 0x0401);
+        let mut query = stub_lookup(50_004, 0x0401, LOOKUP_NAME);
         let copies = nat.rewrite_query(&mut query).expect("stub query");
         assert_eq!(packet_destination(&query), MAC);
         assert_eq!(copies.len(), 1);
         assert_eq!(packet_destination(&copies[0]), PI);
         assert_eq!(flow_count(&nat), 2, "one flow per box");
 
-        let mut first = dns_answer_v4(PI, 50_004, 0x0401);
+        let mut first = box_reply(PI, 50_004, 0x0401, LOOKUP_NAME, DnsReply::Real);
         assert!(nat.deliver_response(&mut first), "the first answer is delivered");
         assert_eq!(flow_count(&nat), 0, "the answer consumed its siblings too");
 
-        let mut late = dns_answer_v4(MAC, 50_004, 0x0401);
+        let mut late = box_reply(MAC, 50_004, 0x0401, LOOKUP_NAME, DnsReply::Real);
         let untouched = late.clone();
         assert!(!nat.deliver_response(&mut late), "the late copy is dropped");
         assert_eq!(late, untouched, "and not rewritten");
@@ -188,9 +254,9 @@
         assert_eq!(nat.rewrite_query(&mut syn), Some(Vec::new()), "TCP is never copied");
         assert_eq!(packet_destination(&syn), MAC, "nothing answered yet: the first box");
 
-        let mut query = stub_query(50_005, 0x0501);
+        let mut query = stub_lookup(50_005, 0x0501, LOOKUP_NAME);
         nat.rewrite_query(&mut query).unwrap();
-        let mut answer = dns_answer_v4(PI, 50_005, 0x0501);
+        let mut answer = box_reply(PI, 50_005, 0x0501, LOOKUP_NAME, DnsReply::Real);
         assert!(nat.rewrite_response(&mut answer));
 
         let mut syn = dns_tcp_v4(local_dns, CLIENT_V4, 40_001, 53, TCP_SYN);
@@ -218,4 +284,188 @@
         assert!(nat.rewrite_query(&mut aaaa).is_some(), "the newcomer's AAAA lookup");
         let mut third = stub_query(60_000, 3);
         assert!(nat.rewrite_query(&mut third).is_none(), "past the floor it shares the rest");
+    }
+
+    /// Logen's pick A: a fast "no such site" (or failure, or empty answer)
+    /// from one box is held while another box's copy is still out, and a
+    /// real answer that arrives inside the hold is what the phone gets.
+    /// Before this, the first datagram won whatever it said, so a box that
+    /// is up but broken beat the good box every time.
+    #[test]
+    fn a_fast_negative_answer_waits_for_a_real_one_from_another_box() {
+        for negative in [DnsReply::NxDomain, DnsReply::ServFail, DnsReply::Refused, DnsReply::Empty] {
+            let nat = fan_out_nat(&[MAC, PI]);
+            let now = Instant::now();
+            let mut query = stub_lookup(50_100, 0x1001, LOOKUP_NAME);
+            nat.rewrite_query(&mut query).unwrap();
+
+            let mut fast = box_reply(MAC, 50_100, 0x1001, LOOKUP_NAME, negative);
+            assert!(
+                !nat.rewrite_response_at(&mut fast, now),
+                "the negative answer is held, not delivered"
+            );
+            assert_eq!(nat.unanswered_since(), 0, "a negative answer still proves the box is up");
+
+            let mut real = box_reply(PI, 50_100, 0x1001, LOOKUP_NAME, DnsReply::Real);
+            assert!(
+                nat.rewrite_response_at(&mut real, now + Duration::from_millis(300)),
+                "the real answer inside the hold is delivered"
+            );
+            assert_eq!(rcode_of(&real), 0);
+            assert_eq!(packet_source(&real), parse_ipv4(nostr_vpn_core::MESH_MAGIC_DNS_SERVER).unwrap());
+        }
+    }
+
+    /// Once the real answer went out, the held negative one is forgotten.
+    #[test]
+    fn a_real_answer_discards_the_held_negative_one() {
+        let nat = fan_out_nat(&[MAC, PI]);
+        let now = Instant::now();
+        let mut query = stub_lookup(50_104, 0x1005, LOOKUP_NAME);
+        nat.rewrite_query(&mut query).unwrap();
+        let mut fast = box_reply(MAC, 50_104, 0x1005, LOOKUP_NAME, DnsReply::NxDomain);
+        assert_eq!(nat.inbound_at(&mut fast, now), MobileDnsInbound::Drop);
+        assert!(
+            nat.release_expired_holds_at(now + Duration::from_millis(300)).is_empty(),
+            "nothing is released inside the hold"
+        );
+        let mut real = box_reply(PI, 50_104, 0x1005, LOOKUP_NAME, DnsReply::Real);
+        assert_eq!(
+            nat.inbound_at(&mut real, now + Duration::from_millis(300)),
+            MobileDnsInbound::Deliver
+        );
+        assert!(nat.release_expired_holds_at(now + MOBILE_DNS_NEGATIVE_ANSWER_HOLD).is_empty());
+        assert_eq!(flow_count(&nat), 0);
+    }
+
+    /// With the other box silent, the negative answer is released once the
+    /// hold runs out, and the silent box's late answer is then dropped.
+    #[test]
+    fn a_held_negative_answer_is_released_after_the_hold() {
+        let nat = fan_out_nat(&[MAC, PI]);
+        let now = Instant::now();
+        let mut query = stub_lookup(50_101, 0x1002, LOOKUP_NAME);
+        nat.rewrite_query(&mut query).unwrap();
+        let mut fast = box_reply(MAC, 50_101, 0x1002, LOOKUP_NAME, DnsReply::NxDomain);
+        assert_eq!(nat.inbound_at(&mut fast, now), MobileDnsInbound::Drop);
+
+        let just_before = now + MOBILE_DNS_NEGATIVE_ANSWER_HOLD.checked_sub(Duration::from_millis(1)).unwrap();
+        assert!(nat.release_expired_holds_at(just_before).is_empty());
+        let released = nat.release_expired_holds_at(now + MOBILE_DNS_NEGATIVE_ANSWER_HOLD);
+        assert_eq!(released.len(), 1, "the negative answer goes to the phone after the hold");
+        assert_eq!(rcode_of(&released[0]), 3);
+        assert_eq!(
+            packet_source(&released[0]),
+            parse_ipv4(nostr_vpn_core::MESH_MAGIC_DNS_SERVER).unwrap(),
+            "rewritten so the phone sees it from its stub"
+        );
+        assert_eq!(flow_count(&nat), 0, "the silent box's copy is retired");
+        assert!(nat.release_expired_holds_at(now + Duration::from_secs(10)).is_empty(), "released once");
+
+        let mut late = box_reply(PI, 50_101, 0x1002, LOOKUP_NAME, DnsReply::Real);
+        assert_eq!(
+            nat.inbound_at(&mut late, now + Duration::from_secs(3)),
+            MobileDnsInbound::Drop,
+            "an answer to a question the phone already has an answer for is dropped"
+        );
+    }
+
+    /// When every box says no there is nothing to wait for.
+    #[test]
+    fn every_box_saying_no_is_delivered_at_once() {
+        let nat = fan_out_nat(&[MAC, PI]);
+        let now = Instant::now();
+        let mut query = stub_lookup(50_102, 0x1003, LOOKUP_NAME);
+        nat.rewrite_query(&mut query).unwrap();
+        let mut first = box_reply(MAC, 50_102, 0x1003, LOOKUP_NAME, DnsReply::NxDomain);
+        assert_eq!(nat.inbound_at(&mut first, now), MobileDnsInbound::Drop);
+        let mut second = box_reply(PI, 50_102, 0x1003, LOOKUP_NAME, DnsReply::ServFail);
+        assert_eq!(
+            nat.inbound_at(&mut second, now + Duration::from_millis(50)),
+            MobileDnsInbound::Deliver,
+            "the last box to answer completes the lookup"
+        );
+        assert_eq!(rcode_of(&second), 3, "the phone gets the first negative answer, not the later one");
+        assert!(nat.release_expired_holds_at(now + MOBILE_DNS_NEGATIVE_ANSWER_HOLD).is_empty());
+        assert_eq!(flow_count(&nat), 0);
+    }
+
+    /// The phone's resolver retransmits a lost first packet after about a
+    /// second. The hold has to outlast that retransmit plus a mesh round
+    /// trip, or the real answer to the retransmit arrives to find the
+    /// negative one already delivered.
+    #[test]
+    fn a_real_answer_to_the_resolvers_retransmit_still_wins() {
+        let retransmit_after = Duration::from_secs(1);
+        let mesh_round_trip = Duration::from_millis(300);
+        let nat = fan_out_nat(&[MAC, PI]);
+        let now = Instant::now();
+        let mut query = stub_lookup(50_103, 0x1004, LOOKUP_NAME);
+        nat.rewrite_query(&mut query).unwrap();
+        let mut fast = box_reply(MAC, 50_103, 0x1004, LOOKUP_NAME, DnsReply::NxDomain);
+        assert_eq!(nat.inbound_at(&mut fast, now), MobileDnsInbound::Drop);
+
+        // The first copy to the Pi was lost; the phone asks again.
+        let mut retransmit = stub_lookup(50_103, 0x1004, LOOKUP_NAME);
+        assert!(nat.rewrite_query(&mut retransmit).is_some());
+        assert!(
+            nat.release_expired_holds_at(now + retransmit_after).is_empty(),
+            "the hold must not expire as the retransmit goes out"
+        );
+        let answered_at = now + retransmit_after + mesh_round_trip;
+        assert!(nat.release_expired_holds_at(answered_at).is_empty());
+        let mut real = box_reply(PI, 50_103, 0x1004, LOOKUP_NAME, DnsReply::Real);
+        assert_eq!(nat.inbound_at(&mut real, answered_at), MobileDnsInbound::Deliver);
+        assert_eq!(rcode_of(&real), 0);
+    }
+
+    /// Tron's sequence: port 1234 / txid 0x5555 asks name 1, box A answers,
+    /// the phone reuses the same port and txid for name 2, and box B's late
+    /// answer to name 1 arrives. It must not be delivered as the answer to
+    /// name 2.
+    #[test]
+    fn a_stale_answer_never_lands_on_a_new_question() {
+        let nat = fan_out_nat(&[MAC, PI]);
+        let now = Instant::now();
+        let mut first = stub_lookup(1234, 0x5555, "one.example");
+        nat.rewrite_query(&mut first).unwrap();
+        let mut answer = box_reply(MAC, 1234, 0x5555, "one.example", DnsReply::Real);
+        assert!(nat.rewrite_response_at(&mut answer, now));
+
+        let mut second = stub_lookup(1234, 0x5555, "two.example");
+        nat.rewrite_query(&mut second).unwrap();
+        let mut stale = box_reply(PI, 1234, 0x5555, "one.example", DnsReply::NxDomain);
+        let untouched = stale.clone();
+        assert!(
+            !nat.rewrite_response_at(&mut stale, now + Duration::from_millis(10)),
+            "box B's answer to the first question is not the answer to the second"
+        );
+        assert_eq!(stale, untouched);
+
+        // A port-53 datagram that matches a live flow's port and id but not
+        // its question is not the forwarder's answer either way.
+        let mut never_asked = box_reply(PI, 1234, 0x5555, "three.example", DnsReply::Real);
+        let untouched = never_asked.clone();
+        assert!(!nat.rewrite_response_at(&mut never_asked, now + Duration::from_millis(20)));
+        assert_eq!(never_asked, untouched);
+
+        let mut real = box_reply(PI, 1234, 0x5555, "two.example", DnsReply::Real);
+        assert!(nat.rewrite_response_at(&mut real, now + Duration::from_millis(30)));
+        assert_eq!(rcode_of(&real), 0);
+        assert_eq!(flow_count(&nat), 0);
+    }
+
+    /// A lookup the phone sends straight to a box's mesh address records no
+    /// flow. Its answer is not the forwarder's to drop.
+    #[test]
+    fn a_direct_query_to_a_box_keeps_its_answer() {
+        let nat = fan_out_nat(&[MAC, PI]);
+        // Something else is in flight through the stub from the same port.
+        let mut other = stub_lookup(40_000, 0x7777, LOOKUP_NAME);
+        nat.rewrite_query(&mut other).unwrap();
+
+        let mut direct = box_reply(MAC, 40_000, 0x7778, "direct.example", DnsReply::Real);
+        let untouched = direct.clone();
+        assert!(nat.deliver_response(&mut direct), "a direct query's answer reaches the phone");
+        assert_eq!(direct, untouched, "and is not rewritten");
     }
