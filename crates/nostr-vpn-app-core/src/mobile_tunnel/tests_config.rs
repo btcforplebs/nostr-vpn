@@ -789,8 +789,7 @@
         assert!(endpoint
             .peers
             .iter()
-            .all(|peer| peer.auto_reconnect == FIPS_MOBILE_AUTO_RECONNECT));
-        assert!(!FIPS_MOBILE_AUTO_RECONNECT);
+            .all(|peer| !peer.auto_reconnect));
 
         let config_json = serde_json::to_string(&config).expect("mobile config JSON");
         let tunnel = MobileTunnel::start(&config_json).expect("mobile tunnel should start");
