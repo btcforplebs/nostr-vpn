@@ -131,6 +131,11 @@ final class AppManager: ObservableObject {
         if !actionStatus.isEmpty {
             return actionStatus
         }
+        // Exit-node and VPN state below come from the last good poll; say so
+        // before repeating them as if they were live.
+        if state.daemonStatusDelayed {
+            return state.vpnStatus.isEmpty ? "Status delayed" : state.vpnStatus
+        }
         if state.exitNodeBlocked {
             return state.exitNodeStatusText.isEmpty ? "Internet blocked" : state.exitNodeStatusText
         }

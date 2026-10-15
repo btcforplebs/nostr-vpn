@@ -297,6 +297,7 @@ extension AppManager {
             vpnEnabled: true,
             vpnActive: true,
             vpnStatus: "Connected",
+            daemonStatusDelayed: false,
             daemonBinaryVersion: version,
             serviceBinaryVersion: version,
             expectedServiceBinaryVersion: version,
