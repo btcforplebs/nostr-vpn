@@ -342,19 +342,22 @@ impl WireGuardDnsResolver {
             });
         }
         let result = self.race(&mut lookups).await;
-        self.let_losers_linger(lookups);
+        self.let_losers_linger(lookups, now + WIREGUARD_DNS_TIMEOUT);
         result
     }
 
     /// Lets the lookups that lost the race run a little longer, so a late
     /// answer still clears its server's silence. Cancelling them at once
     /// would mark a server that is merely slower than the winner as silent.
-    /// They linger for the negative-answer hold, so any server that could
-    /// have won a hold is still heard, and only for a bounded number of
-    /// races; past that they are cancelled.
+    /// They linger until `deadline`, the query's own UDP deadline, not for a
+    /// span after the race: a race against a silent server ends at once,
+    /// and that server's answer must still be heard when it comes back.
+    /// Only a bounded number of races may linger; past that the losers are
+    /// cancelled.
     fn let_losers_linger(
         &self,
         mut losers: tokio::task::JoinSet<(usize, Result<Vec<u8>, SecureDnsError>)>,
+        deadline: tokio::time::Instant,
     ) {
         if losers.is_empty() {
             return;
@@ -365,7 +368,7 @@ impl WireGuardDnsResolver {
         };
         tokio::spawn(async move {
             let _permit = permit;
-            let _ = tokio::time::timeout(WIREGUARD_DNS_NEGATIVE_ANSWER_HOLD, async {
+            let _ = tokio::time::timeout_at(deadline, async {
                 while losers.join_next().await.is_some() {}
             })
             .await;
@@ -1212,10 +1215,104 @@ mod tests {
             lingering <= 2 * WIREGUARD_DNS_MAX_LINGERING_RACES,
             "{lingering} lookups outlived their races"
         );
-        tokio::time::sleep(WIREGUARD_DNS_NEGATIVE_ANSWER_HOLD + Duration::from_millis(300)).await;
+        tokio::time::sleep(WIREGUARD_DNS_TIMEOUT + Duration::from_millis(300)).await;
         let left = alive_tasks() - before;
         assert_eq!(left, 0, "lookups still running after the losers' grace");
         fixture.abort();
+    }
+
+    #[tokio::test]
+    async fn through_exit_dns_hears_a_silent_server_coming_back_before_its_deadline() {
+        let (returning, returning_fixture) = dns_fixture(Reply {
+            delay: Duration::from_millis(2_500),
+            ..REAL
+        })
+        .await;
+        let (broken, broken_fixture) = dns_fixture(negative(ResponseCode::NXDomain)).await;
+        let resolver =
+            WireGuardDnsResolver::with_servers(vec![returning, broken]).expect("exit DNS");
+        resolver.silence.sent(
+            0,
+            tokio::time::Instant::now() - 2 * WIREGUARD_DNS_SERVER_SILENT_AFTER,
+        );
+        // The server is silent, so the race ends with the instant NXDOMAIN.
+        let response = tokio::time::timeout(
+            Duration::from_millis(500),
+            resolver.resolve_query(&dns_query(931)),
+        )
+        .await
+        .expect("a silent server must not hold the negative answer")
+        .expect("NXDOMAIN");
+        assert_eq!(response_code(&response), ResponseCode::NXDomain);
+        tokio::time::sleep(WIREGUARD_DNS_TIMEOUT).await;
+        assert_eq!(
+            unanswered_since(&resolver, 0),
+            None,
+            "an answer inside the query's own deadline must clear the silence"
+        );
+        returning_fixture.abort();
+        broken_fixture.abort();
+    }
+
+    /// Answers every UDP query with an empty truncated reply after `delay`,
+    /// then accepts the TCP retry and never answers it.
+    async fn truncating_server(delay: Duration) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("TCP DNS fixture");
+        let address = tcp.local_addr().expect("DNS fixture address");
+        let udp = tokio::net::UdpSocket::bind(address)
+            .await
+            .expect("UDP DNS fixture on the TCP port");
+        let task = tokio::spawn(async move {
+            let mut packet = [0_u8; SECURE_DNS_MAX_MESSAGE_BYTES];
+            let mut stalled = Vec::new();
+            loop {
+                tokio::select! {
+                    received = udp.recv_from(&mut packet) => {
+                        let (length, peer) = received.expect("DNS query");
+                        let request = Message::from_vec(&packet[..length]).expect("query");
+                        let mut response = Message::from_vec(
+                            &dns_response(&packet[..length], request.id),
+                        )
+                        .expect("response");
+                        response.metadata.truncation = true;
+                        tokio::time::sleep(delay).await;
+                        udp.send_to(&encode(response), peer).await.expect("TC answer");
+                    }
+                    accepted = tcp.accept() => {
+                        stalled.push(accepted.expect("TCP retry").0);
+                    }
+                }
+            }
+        });
+        (address, task)
+    }
+
+    #[tokio::test]
+    async fn through_exit_dns_a_losing_tcp_retry_ends_by_the_query_deadline() {
+        let (healthy, healthy_fixture) = dns_fixture(REAL).await;
+        // Its truncated answer comes late in the query's deadline, so its own
+        // TCP retry would run well past it.
+        let (truncating, truncating_fixture) =
+            truncating_server(Duration::from_millis(1_500)).await;
+        let resolver =
+            WireGuardDnsResolver::with_servers(vec![healthy, truncating]).expect("exit DNS");
+        let before = alive_tasks();
+        let started = tokio::time::Instant::now();
+        resolver
+            .resolve_query(&dns_query(932))
+            .await
+            .expect("DNS response");
+        tokio::time::sleep_until(started + WIREGUARD_DNS_TIMEOUT + Duration::from_millis(300))
+            .await;
+        assert_eq!(
+            alive_tasks() - before,
+            0,
+            "a losing lookup outlived its query's deadline"
+        );
+        healthy_fixture.abort();
+        truncating_fixture.abort();
     }
 
     #[tokio::test]
