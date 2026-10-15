@@ -225,7 +225,28 @@ impl MobileTunnel {
         };
         let network_dns_nat = exit_dns_nat
             .clone()
-            .filter(|_| !config.network_dns.is_empty());
+            .filter(|_| !config.network_dns_servers.is_empty());
+        if let Some(nat) = exit_dns_nat.clone().filter(|nat| nat.fans_out()) {
+            // The forwarder holds a fast negative answer for a real one from
+            // another box; it is packet-driven, so something has to let the
+            // hold run out when no further packet arrives. Sleeps until a
+            // hold exists, then until it is due; with one box nothing can
+            // ever be held, so no task at all.
+            let inbound_tx = inbound_tx.clone();
+            tasks.push(tokio::spawn(async move {
+                loop {
+                    let Some(wait) = nat.next_hold_due() else {
+                        nat.hold_notify.notified().await;
+                        continue;
+                    };
+                    tokio::time::sleep(wait).await;
+                    let released = nat.release_expired_holds();
+                    if !released.is_empty() && inbound_tx.send(released).await.is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
         if let Some(wg_config) = config.wireguard_exit.as_ref() {
             wg_address_ipv4 = parse_ipv4(&wg_config.address);
             let (send_tx, send_rx) =
@@ -329,7 +350,8 @@ impl MobileTunnel {
             let app_config_for_dns = Arc::clone(&app_config);
             let outbound_exit_dns_nat = exit_dns_nat.clone();
             let mut secure_dns_dispatch = secure_dns_dispatch;
-            let dns_sinkhole = !config.network_dns.is_empty() || config.network_dns_unavailable;
+            let dns_sinkhole =
+                !config.network_dns_servers.is_empty() || config.network_dns_unavailable;
             tokio::spawn(async move {
                 while let Some(packets) = outbound_rx.recv().await {
                     if !dispatch_mobile_outbound_packets(
@@ -580,9 +602,8 @@ impl MobileTunnel {
                                 }
                             }
                             if let Some(exit_dns_nat) = inbound_exit_dns_nat.as_deref() {
-                                for packet in &mut inbound_packets {
-                                    exit_dns_nat.rewrite_response(packet);
-                                }
+                                inbound_packets
+                                    .retain_mut(|packet| exit_dns_nat.deliver_response(packet));
                             }
                             if !inbound_packets.is_empty()
                                 && !flush_mobile_inbound_packets(&inbound_tx, &mut inbound_packets).await

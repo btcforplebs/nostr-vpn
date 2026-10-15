@@ -824,20 +824,23 @@
             &dns_query("example.net", 1),
         );
 
-        assert_eq!(
-            dns_nat.rewrite_query(&mut first),
-            Some(profile_dns[0])
-        );
+        // Every listed server gets a copy of each lookup: the packet is
+        // rewritten for the first and one copy comes back per further server.
+        let first_copies = dns_nat.rewrite_query(&mut first).expect("stub query");
         assert_eq!(&first[16..20], &profile_dns[0].octets());
-        assert_eq!(
-            dns_nat.rewrite_query(&mut second),
-            Some(profile_dns[1])
-        );
-        assert_eq!(&second[16..20], &profile_dns[1].octets());
+        assert_eq!(first_copies.len(), 1);
+        assert_eq!(&first_copies[0][16..20], &profile_dns[1].octets());
+        assert_eq!(&first_copies[0][28..], &first[28..], "the copy carries the same query");
+        let second_copies = dns_nat.rewrite_query(&mut second).expect("stub query");
+        assert_eq!(&second[16..20], &profile_dns[0].octets());
+        assert_eq!(&second_copies[0][16..20], &profile_dns[1].octets());
 
-        // A real answer echoes the query's message ID.
-        let mut response =
-            ipv4_udp_packet(profile_dns[1], mesh, 53, 53001, &dns_query("example.net", 1));
+        // A real answer echoes the query's message ID and question.
+        let mut answer = dns_query("example.net", 1);
+        answer[2] = 0x81;
+        answer[7] = 1;
+        answer.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 93, 184, 216, 34]);
+        let mut response = ipv4_udp_packet(profile_dns[1], mesh, 53, 53001, &answer);
         assert!(dns_nat.rewrite_response(&mut response));
         assert_eq!(&response[12..16], &local_dns.octets());
 

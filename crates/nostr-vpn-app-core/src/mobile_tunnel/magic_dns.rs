@@ -52,14 +52,85 @@ struct MobileDnsFlowEntry {
     last_seen: Instant,
     /// A FIN went by; the stream gets a short grace period, not the idle one.
     closing: bool,
+    /// Fingerprint of the UDP query's question section (0 for TCP). The
+    /// message ID alone is 16 bits and a stub reuses its port, so a slower
+    /// box's answer to an earlier question could otherwise match a fresh flow
+    /// and be handed to the phone as the answer to a different question.
+    question: u64,
 }
+
+/// A UDP lookup the forwarder has finished with, by box: the answer it
+/// delivered, or the copies it gave up on. A later datagram matching one of
+/// these is a slower box's answer to a question already answered, and is
+/// dropped rather than handed to the phone. Only keys the forwarder itself
+/// sent are here, so a lookup the phone sends straight to a box's address
+/// still gets its answer.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct MobileRetiredLookup {
+    flow: MobileWireGuardDnsFlow,
+    question: u64,
+}
+
+/// One lookup, across the boxes it was copied to.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct MobileDnsLookupKey {
+    client_port: u16,
+    query_id: u16,
+    question: u64,
+}
+
+/// What the forwarder knows about one box's liveness.
+struct MobileDnsBoxState {
+    address: Ipv4Addr,
+    /// When the oldest query still unanswered by this box was sent; `None`
+    /// once it has answered everything sent so far.
+    unanswered_since: Option<Instant>,
+}
+
+impl MobileDnsBoxState {
+    fn silent(&self, now: Instant) -> bool {
+        self.unanswered_since
+            .is_some_and(|since| now.saturating_duration_since(since) >= MOBILE_DNS_BOX_SILENT_AFTER)
+    }
+}
+
+/// A negative answer waiting for a real one from another box.
+struct MobileHeldAnswer {
+    /// Already rewritten for the phone; delivered as-is when released.
+    packet: Vec<u8>,
+    since: Instant,
+    flow: MobileWireGuardDnsFlow,
+}
+
+/// How long a fast negative answer (NXDOMAIN, SERVFAIL, REFUSED, or NOERROR
+/// with no records) from one box waits for a real answer from another.
+/// Returning nothing is faster than recursing, so without the hold a box
+/// that is up but broken wins every lookup because it is broken. The hold
+/// only runs while another box's copy is still outstanding: when every box
+/// has answered negatively the answer goes straight through.
+///
+/// 2 s: the phone's resolver retransmits a lost first packet after about 1 s
+/// (the same interval the desktop stub uses), and the real answer to that
+/// retransmit needs a mesh round trip on top. A hold equal to the retry
+/// interval expires just as the retransmit goes out, so the real answer
+/// always loses. Keep this equal to the desktop value.
+const MOBILE_DNS_NEGATIVE_ANSWER_HOLD: Duration = Duration::from_secs(2);
+/// A box with a query unanswered for this long is silent: off, asleep or
+/// unreachable. A silent box's copies no longer keep a negative answer
+/// waiting, so switching a box off costs the hold once and then nothing,
+/// instead of 2 s on every negative lookup (every AAAA for an IPv4-only
+/// host, which iOS asks for everything). Longer than a cold recursion takes
+/// on a healthy box, so a slow answer does not read as silence.
+const MOBILE_DNS_BOX_SILENT_AFTER: Duration = Duration::from_secs(3);
 
 /// Bounded: a nameserver that is off answers nothing, and any app can spray
 /// UDP/53 at a listed resolver, so entries must expire on their own.
 const MOBILE_DNS_FLOW_CAPACITY: usize = 1024;
-/// Most one socket may hold. A resolver pipelines a handful of lookups.
+/// Most one socket may hold, per DNS box. A resolver pipelines a handful of
+/// lookups, and every lookup takes one flow per box it is sent to.
 const MOBILE_DNS_FLOWS_PER_PORT: usize = 32;
-/// What every port may hold however full the table is: an A and an AAAA.
+/// What every port may hold however full the table is: an A and an AAAA,
+/// per DNS box.
 const MOBILE_DNS_FLOWS_PER_PORT_FLOOR: usize = 2;
 /// Kept for ports still under their floor. Flows past a port's floor share
 /// only the rest, so filling the table takes hundreds of sockets, not 32.
@@ -83,16 +154,49 @@ struct MobileDnsFlowTable {
     per_port: HashMap<u16, usize>,
     redirected: usize,
     last_sweep: Instant,
+    /// Finished lookups, by box, with when they finished. Swept with the
+    /// flows; never larger than one entry per box per flow the table has
+    /// held in the last TTL, and capped so a flood cannot grow it past that.
+    retired: HashMap<MobileRetiredLookup, Instant>,
+    /// Negative answers waiting out their hold. One per lookup at most, and
+    /// only while that lookup still has a copy outstanding.
+    held: HashMap<MobileDnsLookupKey, MobileHeldAnswer>,
+    /// Per-box liveness, in list order.
+    boxes: Vec<MobileDnsBoxState>,
+    /// How many boxes each UDP lookup is sent to, so the per-port limits
+    /// count lookups rather than copies.
+    fan_out: usize,
 }
 
 impl MobileDnsFlowTable {
-    fn new(now: Instant) -> Self {
+    fn new(now: Instant, servers: &[Ipv4Addr]) -> Self {
         Self {
             entries: HashMap::new(),
             per_port: HashMap::new(),
             redirected: 0,
             last_sweep: now,
+            retired: HashMap::new(),
+            held: HashMap::new(),
+            boxes: servers
+                .iter()
+                .map(|server| MobileDnsBoxState {
+                    address: *server,
+                    unanswered_since: None,
+                })
+                .collect(),
+            fan_out: servers.len().max(1),
         }
+    }
+
+    fn box_state(&mut self, server: Ipv4Addr) -> Option<&mut MobileDnsBoxState> {
+        self.boxes.iter_mut().find(|state| state.address == server)
+    }
+
+    fn box_silent(&self, server: Ipv4Addr, now: Instant) -> bool {
+        self.boxes
+            .iter()
+            .find(|state| state.address == server)
+            .is_some_and(|state| state.silent(now))
     }
 
     fn expired(flow: &MobileWireGuardDnsFlow, entry: &MobileDnsFlowEntry, now: Instant) -> bool {
@@ -175,6 +279,15 @@ impl MobileDnsFlowTable {
             }
             keep
         });
+        self.retired.retain(|_, retired_at| {
+            now.saturating_duration_since(*retired_at) < MOBILE_DNS_UDP_FLOW_TTL
+        });
+        // A held answer outlives its flows only until they would have
+        // expired; past that the stub has given up and may have reused the
+        // port and id, so it is dropped rather than released.
+        self.held.retain(|_, held| {
+            now.saturating_duration_since(held.since) < MOBILE_DNS_UDP_FLOW_TTL
+        });
         self.last_sweep = now;
     }
 
@@ -185,6 +298,7 @@ impl MobileDnsFlowTable {
         &mut self,
         flow: MobileWireGuardDnsFlow,
         origin: MobileDnsFlowOrigin,
+        question: u64,
         tcp_flags: u8,
         now: Instant,
     ) -> bool {
@@ -206,6 +320,7 @@ impl MobileDnsFlowTable {
                         origin,
                         last_seen: now,
                         closing,
+                        question,
                     },
                 );
             }
@@ -230,8 +345,12 @@ impl MobileDnsFlowTable {
                 origin,
                 last_seen: now,
                 closing: tcp_flags & TCP_FIN != 0,
+                question,
             },
         );
+        if let Some(state) = self.box_state(flow.server) {
+            state.unanswered_since.get_or_insert(now);
+        }
         true
     }
 
@@ -257,10 +376,10 @@ impl MobileDnsFlowTable {
             return false;
         }
         let held = self.per_port.get(&client_port).copied().unwrap_or(0);
-        if held < MOBILE_DNS_FLOWS_PER_PORT_FLOOR {
+        if held < MOBILE_DNS_FLOWS_PER_PORT_FLOOR * self.fan_out {
             return true;
         }
-        held < MOBILE_DNS_FLOWS_PER_PORT
+        held < MOBILE_DNS_FLOWS_PER_PORT * self.fan_out
             && total < MOBILE_DNS_FLOW_CAPACITY - MOBILE_DNS_NEWCOMER_RESERVE
     }
 
@@ -285,17 +404,24 @@ impl MobileDnsFlowTable {
         })
     }
 
-    /// The origin for an answer. A UDP answer consumes its flow, so a
-    /// duplicate finds nothing; a TCP flow lives until RST, FIN grace or idle.
+    /// The origin for an answer. A UDP answer consumes its own flow (the
+    /// copies to the other boxes are retired by the caller once it decides
+    /// the lookup is done); a TCP flow lives until RST, FIN grace or idle.
+    /// `None` for a flow that does not exist, has expired, or was recorded
+    /// for a different question than the one this answer carries.
     fn answer(
         &mut self,
         flow: &MobileWireGuardDnsFlow,
+        question: u64,
         tcp_flags: u8,
         now: Instant,
     ) -> Option<MobileDnsFlowOrigin> {
         let entry = self.entries.get_mut(flow)?;
         if Self::expired(flow, entry, now) {
             self.remove(flow);
+            return None;
+        }
+        if flow.protocol != 6 && entry.question != question {
             return None;
         }
         let origin = entry.origin;
@@ -307,12 +433,89 @@ impl MobileDnsFlowTable {
         }
         Some(origin)
     }
+
+    /// Whether a box that is still answering has a copy of this UDP lookup
+    /// outstanding. A silent box's copy never comes back, so it does not
+    /// count: waiting on it would charge every negative lookup the full hold
+    /// for as long as that box is off.
+    fn copies_outstanding(
+        &self,
+        flow: &MobileWireGuardDnsFlow,
+        servers: &[Ipv4Addr],
+        now: Instant,
+    ) -> bool {
+        servers.iter().any(|server| {
+            !self.box_silent(*server, now)
+                && self.entries.contains_key(&MobileWireGuardDnsFlow {
+                    server: *server,
+                    ..*flow
+                })
+        })
+    }
+
+    /// The lookup is done: drop every box's copy and remember the keys, so a
+    /// slower box's answer is dropped instead of reaching the phone.
+    fn retire(
+        &mut self,
+        flow: &MobileWireGuardDnsFlow,
+        question: u64,
+        servers: &[Ipv4Addr],
+        now: Instant,
+    ) {
+        if self.retired.len() >= MOBILE_DNS_FLOW_CAPACITY * self.fan_out {
+            self.sweep(now);
+        }
+        for server in servers {
+            let flow = MobileWireGuardDnsFlow {
+                server: *server,
+                ..*flow
+            };
+            self.remove(&flow);
+            if self.retired.len() < MOBILE_DNS_FLOW_CAPACITY * self.fan_out {
+                self.retired
+                    .insert(MobileRetiredLookup { flow, question }, now);
+            }
+        }
+    }
+
+    fn is_retired(&self, flow: &MobileWireGuardDnsFlow, question: u64, now: Instant) -> bool {
+        self.retired
+            .get(&MobileRetiredLookup {
+                flow: *flow,
+                question,
+            })
+            .is_some_and(|retired_at| {
+                now.saturating_duration_since(*retired_at) < MOBILE_DNS_UDP_FLOW_TTL
+            })
+    }
 }
 
+/// What to do with a packet arriving from the direction of the boxes.
+#[derive(Debug, PartialEq, Eq)]
+enum MobileDnsInbound {
+    /// Rewritten in place: hand it to the phone.
+    Deliver,
+    /// Consumed by the forwarder: a slower box's answer to a question the
+    /// phone already has an answer for, or a negative answer being held.
+    Drop,
+    /// Not an answer to anything the forwarder sent: pass it through as is.
+    Unrelated,
+}
+
+/// Rewrites in-tunnel DNS to the upstream boxes and the answers back. Every
+/// UDP lookup is copied to every box and the first real answer wins, so no
+/// box is primary and one that is asleep costs nothing. The price is paid
+/// always, not just while a box sleeps: the phone sends one copy per box
+/// over the mesh (cellular included), and every box sees every lookup in
+/// its log. TCP cannot be copied: a stream goes to one box, the one that
+/// answered most recently; it stays pointed there until some UDP answer
+/// arrives from another box.
 struct MobileExitDnsNat {
     local_dns_server: Ipv4Addr,
     servers: Vec<Ipv4Addr>,
-    next_server: AtomicUsize,
+    /// Index of the box whose answer arrived last: the one a new TCP stream
+    /// is sent to, since it is known to be awake.
+    answering_server: AtomicUsize,
     /// The tunnel's own IPv4 address: the source for IPv6 queries carried to
     /// the nameserver over IPv4. Without it IPv6 resolvers are refused, not
     /// redirected.
@@ -325,19 +528,29 @@ struct MobileExitDnsNat {
     /// query so far has been answered. A box that is off or unreachable never
     /// answers, so this is how status tells "connected" from "resolving".
     unanswered_since: AtomicU64,
+    /// Woken when a negative answer is put on hold, so the release task
+    /// sleeps until there is something to release.
+    hold_notify: tokio::sync::Notify,
 }
 
 impl MobileExitDnsNat {
     fn new(local_dns_server: Ipv4Addr, servers: Vec<Ipv4Addr>) -> Option<Self> {
         (!servers.is_empty()).then_some(Self {
             local_dns_server,
+            flows: Mutex::new(MobileDnsFlowTable::new(Instant::now(), &servers)),
             servers,
-            next_server: AtomicUsize::new(0),
+            answering_server: AtomicUsize::new(0),
             ipv4_source: None,
             ipv6_answer_budget: ipv6_dns_answer_budget(DEFAULT_MOBILE_MTU),
-            flows: Mutex::new(MobileDnsFlowTable::new(Instant::now())),
             unanswered_since: AtomicU64::new(0),
+            hold_notify: tokio::sync::Notify::new(),
         })
+    }
+
+    /// Whether lookups are copied to more than one box, which is the only
+    /// case a negative answer can ever be held.
+    fn fans_out(&self) -> bool {
+        self.servers.len() > 1
     }
 
     fn with_ipv4_source(mut self, ipv4_source: Option<Ipv4Addr>) -> Self {
@@ -350,12 +563,20 @@ impl MobileExitDnsNat {
         self
     }
 
-    fn rewrite_query(&self, packet: &mut [u8]) -> Option<Ipv4Addr> {
+    /// Rewrite a query to the stub so it reaches the boxes. `packet` is
+    /// rewritten for the first box; the returned copies, one per further box,
+    /// have to be sent too. `None` when it is not a query for the stub or
+    /// the flow table refuses it.
+    fn rewrite_query(&self, packet: &mut [u8]) -> Option<Vec<Vec<u8>>> {
+        self.rewrite_query_at(packet, Instant::now())
+    }
+
+    fn rewrite_query_at(&self, packet: &mut [u8], now: Instant) -> Option<Vec<Vec<u8>>> {
         let (_, destination, _, destination_port, _) = ipv4_transport_endpoints(packet)?;
         if destination != self.local_dns_server || destination_port != 53 {
             return None;
         }
-        self.translate_query(packet, destination, Instant::now())
+        self.translate_query(packet, destination, now)
     }
 
     /// Plain DNS sent straight to a sinkholed public resolver, redirected to
@@ -369,7 +590,7 @@ impl MobileExitDnsNat {
     /// to the nameserver as IPv4 and its answer translated back. TCP to an
     /// IPv6 resolver is left to the sinkhole's immediate reset; clients retry
     /// over UDP or the system resolver.
-    fn redirect_public_resolver_query(&self, packet: &mut Vec<u8>) -> Option<Ipv4Addr> {
+    fn redirect_public_resolver_query(&self, packet: &mut Vec<u8>) -> Option<Vec<Vec<u8>>> {
         self.redirect_public_resolver_query_at(packet, Instant::now())
     }
 
@@ -377,7 +598,7 @@ impl MobileExitDnsNat {
         &self,
         packet: &mut Vec<u8>,
         now: Instant,
-    ) -> Option<Ipv4Addr> {
+    ) -> Option<Vec<Vec<u8>>> {
         if packet.first()? >> 4 == 6 {
             return self.redirect_ipv6_udp_query(packet, now);
         }
@@ -391,37 +612,67 @@ impl MobileExitDnsNat {
         self.translate_query(packet, destination, now)
     }
 
-    fn redirect_ipv6_udp_query(&self, packet: &mut Vec<u8>, now: Instant) -> Option<Ipv4Addr> {
+    fn redirect_ipv6_udp_query(
+        &self,
+        packet: &mut Vec<u8>,
+        now: Instant,
+    ) -> Option<Vec<Vec<u8>>> {
         let source_v4 = self.ipv4_source?;
         let (client, resolver, client_port, payload) = ipv6_udp_dns_query(packet)?;
         if !is_dns_sinkhole_address(IpAddr::V6(resolver)) {
             return None;
         }
         let query_id = dns_message_id(17, payload);
-        let server = self.pick_server();
-        let flow = MobileWireGuardDnsFlow {
-            server,
-            protocol: 17,
-            client_port,
-            query_id,
-        };
+        let question = dns_question_fingerprint(payload);
         let origin = MobileDnsFlowOrigin::V6 { resolver, client };
-        if !self.flows.lock().ok()?.record(flow, origin, 0, now) {
-            return None;
-        }
+        let servers = self.record_udp_flows(client_port, query_id, question, origin, now)?;
         // The answer grows by 20 bytes on the way back. Asking the nameserver
         // for no more than fits makes it truncate (TC) instead of sending an
         // answer the tun would have to drop.
         let mut payload = payload.to_vec();
         clamp_edns_udp_size(&mut payload, self.ipv6_answer_budget);
-        let translated = build_ipv4_udp_packet(source_v4, server, client_port, 53, &payload)?;
-        *packet = translated;
+        let (first, rest) = servers.split_first()?;
+        let copies = rest
+            .iter()
+            .map(|server| build_ipv4_udp_packet(source_v4, *server, client_port, 53, &payload))
+            .collect::<Option<Vec<_>>>()?;
+        *packet = build_ipv4_udp_packet(source_v4, *first, client_port, 53, &payload)?;
         self.mark_unanswered();
-        Some(server)
+        Some(copies)
     }
 
-    fn pick_server(&self) -> Ipv4Addr {
-        let index = self.next_server.fetch_add(1, Ordering::Relaxed) % self.servers.len();
+    /// Record one UDP flow per box for this lookup. The boxes that admitted
+    /// it, in list order; `None` when none did.
+    fn record_udp_flows(
+        &self,
+        client_port: u16,
+        query_id: u16,
+        question: u64,
+        origin: MobileDnsFlowOrigin,
+        now: Instant,
+    ) -> Option<Vec<Ipv4Addr>> {
+        let mut flows = self.flows.lock().ok()?;
+        let servers = self
+            .servers
+            .iter()
+            .copied()
+            .filter(|server| {
+                let flow = MobileWireGuardDnsFlow {
+                    server: *server,
+                    protocol: 17,
+                    client_port,
+                    query_id,
+                };
+                flows.record(flow, origin, question, 0, now)
+            })
+            .collect::<Vec<_>>();
+        (!servers.is_empty()).then_some(servers)
+    }
+
+    /// The box a new TCP stream goes to: the one that answered last, so a
+    /// box that is asleep is not asked to open a stream it never will.
+    fn answering_server(&self) -> Ipv4Addr {
+        let index = self.answering_server.load(Ordering::Relaxed) % self.servers.len();
         self.servers[index]
     }
 
@@ -439,68 +690,93 @@ impl MobileExitDnsNat {
         packet: &mut [u8],
         destination: Ipv4Addr,
         now: Instant,
-    ) -> Option<Ipv4Addr> {
+    ) -> Option<Vec<Vec<u8>>> {
         let (_, _, source_port, _, protocol) = ipv4_transport_endpoints(packet)?;
         let header_len = usize::from(packet[0] & 0x0f) * 4;
-        let (query_id, tcp_flags) = match protocol {
-            17 => (dns_message_id(17, packet.get(header_len + 8..)?), 0),
-            _ => (0, tcp_flags_at(packet, header_len)?),
+        let origin = MobileDnsFlowOrigin::V4(destination);
+        let servers = if protocol == 17 {
+            let payload = packet.get(header_len + 8..)?;
+            let query_id = dns_message_id(17, payload);
+            let question = dns_question_fingerprint(payload);
+            self.record_udp_flows(source_port, query_id, question, origin, now)?
+        } else {
+            let tcp_flags = tcp_flags_at(packet, header_len)?;
+            let mut flows = self.flows.lock().ok()?;
+            // A TCP stream keeps the box it started on.
+            let server = flows
+                .tcp_stream_server(&self.servers, source_port, origin)
+                .unwrap_or_else(|| self.answering_server());
+            let flow = MobileWireGuardDnsFlow {
+                server,
+                protocol,
+                client_port: source_port,
+                query_id: 0,
+            };
+            if !flows.record(flow, origin, 0, tcp_flags, now) {
+                return None;
+            }
+            vec![server]
         };
-        let mut flows = self.flows.lock().ok()?;
-        // A TCP stream keeps the server it started on; a new stream or UDP
-        // query rotates.
-        let server = (protocol == 6)
-            .then(|| {
-                flows.tcp_stream_server(
-                    &self.servers,
-                    source_port,
-                    MobileDnsFlowOrigin::V4(destination),
-                )
+        let (first, rest) = servers.split_first()?;
+        let copies = rest
+            .iter()
+            .map(|server| {
+                let mut copy = packet.to_vec();
+                rewrite_ipv4_destination(&mut copy, destination, *server);
+                nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(&mut copy);
+                copy
             })
-            .flatten()
-            .unwrap_or_else(|| self.pick_server());
-        let flow = MobileWireGuardDnsFlow {
-            server,
-            protocol,
-            client_port: source_port,
-            query_id,
-        };
-        if !flows.record(flow, MobileDnsFlowOrigin::V4(destination), tcp_flags, now) {
-            return None;
-        }
-        drop(flows);
-        rewrite_ipv4_destination(packet, destination, server);
+            .collect::<Vec<_>>();
+        rewrite_ipv4_destination(packet, destination, *first);
         nostr_vpn_core::packet_checksums::finalize_ipv4_transport_checksum(packet);
         self.mark_unanswered();
-        Some(server)
+        Some(copies)
     }
 
     fn unanswered_since(&self) -> u64 {
         self.unanswered_since.load(Ordering::Relaxed)
     }
 
+    /// `true` when `packet` answered a forwarded lookup and was rewritten
+    /// for the phone.
     fn rewrite_response(&self, packet: &mut Vec<u8>) -> bool {
         self.rewrite_response_at(packet, Instant::now())
     }
 
     fn rewrite_response_at(&self, packet: &mut Vec<u8>, now: Instant) -> bool {
+        self.inbound_at(packet, now) == MobileDnsInbound::Deliver
+    }
+
+    /// `false` when the packet must not reach the phone. Everything the
+    /// forwarder did not send is passed through untouched, including a
+    /// lookup the phone made straight to a box's address.
+    fn deliver_response(&self, packet: &mut Vec<u8>) -> bool {
+        self.inbound_at(packet, Instant::now()) != MobileDnsInbound::Drop
+    }
+
+    fn inbound_at(&self, packet: &mut Vec<u8>, now: Instant) -> MobileDnsInbound {
         let Some((source, _, source_port, destination_port, protocol)) =
             ipv4_transport_endpoints(packet)
         else {
-            return false;
+            return MobileDnsInbound::Unrelated;
         };
         if source_port != 53 {
-            return false;
+            return MobileDnsInbound::Unrelated;
         }
         let header_len = usize::from(packet[0] & 0x0f) * 4;
-        let (query_id, tcp_flags) = match protocol {
+        let (query_id, question, real_answer, tcp_flags) = match protocol {
             17 => match packet.get(header_len + 8..) {
-                Some(payload) => (dns_message_id(17, payload), 0),
-                None => return false,
+                Some(payload) => (
+                    dns_message_id(17, payload),
+                    dns_question_fingerprint(payload),
+                    dns_answer_has_records(payload),
+                    0,
+                ),
+                None => return MobileDnsInbound::Unrelated,
             },
             _ => match tcp_flags_at(packet, header_len) {
-                Some(flags) => (0, flags),
-                None => return false,
+                Some(flags) => (0, 0, true, flags),
+                None => return MobileDnsInbound::Unrelated,
             },
         };
         let flow = MobileWireGuardDnsFlow {
@@ -509,15 +785,166 @@ impl MobileExitDnsNat {
             client_port: destination_port,
             query_id,
         };
-        let Some(origin) = self
-            .flows
-            .lock()
-            .ok()
-            .and_then(|mut flows| flows.answer(&flow, tcp_flags, now))
-        else {
-            return false;
+        let Ok(mut flows) = self.flows.lock() else {
+            return MobileDnsInbound::Unrelated;
+        };
+        // Any DNS datagram from a listed box proves it is up, whether or not
+        // it still matches a flow: a real answer that arrives after the hold
+        // released and retired its flow, or one whose copy was lost on the
+        // mesh, must still clear the box's silence. Otherwise one slow or
+        // lost lookup marks the good box silent, the broken box's instant
+        // negative then goes out with no hold, and the good box never gets
+        // to clear it because clearing needed it to win that race.
+        if let Some(state) = flows.box_state(source) {
+            state.unanswered_since = None;
+        }
+        let Some(origin) = flows.answer(&flow, question, tcp_flags, now) else {
+            return if protocol == 17 && flows.is_retired(&flow, question, now) {
+                MobileDnsInbound::Drop
+            } else {
+                MobileDnsInbound::Unrelated
+            };
         };
         self.unanswered_since.store(0, Ordering::Relaxed);
+        // A new TCP stream follows the box that last gave a real answer. A
+        // negative one must not steer it: a box answering empty+TC to
+        // everything would otherwise win every race and then be the phone's
+        // only DNS over TCP, where nothing can be held.
+        if protocol == 17
+            && real_answer
+            && let Some(index) = self.servers.iter().position(|server| *server == source)
+        {
+            self.answering_server.store(index, Ordering::Relaxed);
+        }
+        if protocol == 6 {
+            drop(flows);
+            return if self.rewrite_to_origin(packet, source, origin, header_len, destination_port)
+            {
+                MobileDnsInbound::Deliver
+            } else {
+                MobileDnsInbound::Unrelated
+            };
+        }
+        let lookup = MobileDnsLookupKey {
+            client_port: destination_port,
+            query_id,
+            question,
+        };
+        if !real_answer && flows.copies_outstanding(&flow, &self.servers, now) {
+            // Another box may still produce a real answer: hold this one.
+            // A second negative while one is held adds nothing. The lock is
+            // kept across the rewrite so a real answer cannot slip in
+            // between and leave a stale negative behind to be released.
+            if flows.held.contains_key(&lookup) {
+                return MobileDnsInbound::Drop;
+            }
+            let mut held = packet.clone();
+            if !self.rewrite_to_origin(&mut held, source, origin, header_len, destination_port) {
+                return MobileDnsInbound::Unrelated;
+            }
+            flows.held.insert(
+                lookup,
+                MobileHeldAnswer {
+                    packet: held,
+                    since: now,
+                    flow,
+                },
+            );
+            drop(flows);
+            self.hold_notify.notify_one();
+            return MobileDnsInbound::Drop;
+        }
+        // The lookup is done: a real answer, or every box said no. The first
+        // negative, if one is held, is the one the phone gets in the latter
+        // case; this later one is dropped.
+        let held = flows.held.remove(&lookup);
+        flows.retire(&flow, question, &self.servers, now);
+        drop(flows);
+        match held {
+            Some(held) if !real_answer => {
+                *packet = held.packet;
+                MobileDnsInbound::Deliver
+            }
+            _ => {
+                if self.rewrite_to_origin(packet, source, origin, header_len, destination_port) {
+                    MobileDnsInbound::Deliver
+                } else {
+                    MobileDnsInbound::Unrelated
+                }
+            }
+        }
+    }
+
+    /// Negative answers whose hold has run out with no real answer from any
+    /// other box, rewritten for the phone and ready to hand over. The caller
+    /// polls this: the forwarder is packet-driven and has no clock of its
+    /// own.
+    fn release_expired_holds(&self) -> Vec<Vec<u8>> {
+        self.release_expired_holds_at(Instant::now())
+    }
+
+    fn release_expired_holds_at(&self, now: Instant) -> Vec<Vec<u8>> {
+        let Ok(mut flows) = self.flows.lock() else {
+            return Vec::new();
+        };
+        let due = flows
+            .held
+            .iter()
+            .filter(|(_, held)| {
+                now.saturating_duration_since(held.since) >= MOBILE_DNS_NEGATIVE_ANSWER_HOLD
+                    || !flows.copies_outstanding(&held.flow, &self.servers, now)
+            })
+            .map(|(lookup, _)| *lookup)
+            .collect::<Vec<_>>();
+        due.into_iter()
+            .filter_map(|lookup| {
+                let held = flows.held.remove(&lookup)?;
+                flows.retire(&held.flow, lookup.question, &self.servers, now);
+                // Older than its flows would have lived: the stub gave up
+                // long ago and may have reused the port and id. Dropped.
+                (now.saturating_duration_since(held.since) < MOBILE_DNS_UDP_FLOW_TTL)
+                    .then_some(held.packet)
+            })
+            .collect()
+    }
+
+    /// How long until a held answer is due, counting both the hold running
+    /// out and the box it is waiting on going silent; `None` with nothing
+    /// held.
+    fn next_hold_due(&self) -> Option<Duration> {
+        self.next_hold_due_at(Instant::now())
+    }
+
+    fn next_hold_due_at(&self, now: Instant) -> Option<Duration> {
+        let flows = self.flows.lock().ok()?;
+        if flows.held.is_empty() {
+            return None;
+        }
+        let hold_due = flows
+            .held
+            .values()
+            .map(|held| held.since + MOBILE_DNS_NEGATIVE_ANSWER_HOLD)
+            .min()?;
+        let silence_due = flows
+            .boxes
+            .iter()
+            .filter_map(|state| state.unanswered_since)
+            .map(|since| since + MOBILE_DNS_BOX_SILENT_AFTER)
+            .filter(|at| *at > now)
+            .min();
+        let due = silence_due.map_or(hold_due, |at| at.min(hold_due));
+        Some(due.saturating_duration_since(now))
+    }
+
+    /// Make the answer look like it came from where the phone sent the query.
+    fn rewrite_to_origin(
+        &self,
+        packet: &mut Vec<u8>,
+        source: Ipv4Addr,
+        origin: MobileDnsFlowOrigin,
+        header_len: usize,
+        destination_port: u16,
+    ) -> bool {
         match origin {
             MobileDnsFlowOrigin::V4(original) => {
                 rewrite_ipv4_source(packet, source, original);
@@ -543,6 +970,36 @@ impl MobileExitDnsNat {
             }
         }
     }
+}
+
+/// A fingerprint of a DNS message's question section, case-folded (a stub
+/// may randomize the case of the name; the answer echoes it). 0 when the
+/// message has no parsable question.
+fn dns_question_fingerprint(message: &[u8]) -> u64 {
+    let Some(end) = dns_questions_end(message) else {
+        return 0;
+    };
+    // FNV-1a: cheap, no allocation, and the value is never exposed.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in &message[12.min(end)..end] {
+        hash ^= u64::from(byte.to_ascii_lowercase());
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// Whether an answer is worth delivering over a possible real one from
+/// another box: NOERROR with at least one answer record. NXDOMAIN, SERVFAIL,
+/// REFUSED and an empty NOERROR are negative, truncated or not: an empty
+/// answer with TC set tells the phone nothing but "ask me again over TCP",
+/// and a broken box emits exactly that.
+fn dns_answer_has_records(message: &[u8]) -> bool {
+    if message.len() < 12 {
+        return false;
+    }
+    let rcode = message[3] & 0x0f;
+    let answers = u16::from_be_bytes([message[6], message[7]]);
+    rcode == 0 && answers > 0
 }
 
 fn ipv6_dns_answer_budget(mtu: u16) -> u16 {
@@ -920,7 +1377,7 @@ fn empty_config() -> MobileTunnelConfig {
         excluded_routes: Vec::new(),
         dns_servers: Vec::new(),
         magic_dns_server: String::new(),
-        network_dns: String::new(),
+        network_dns_servers: Vec::new(),
         network_dns_unavailable: false,
         dns_match_domains: Vec::new(),
         exit_dns: ExitDnsConfig::default(),

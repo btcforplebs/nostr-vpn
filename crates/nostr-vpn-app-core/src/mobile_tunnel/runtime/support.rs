@@ -167,8 +167,8 @@ async fn push_mobile_wg_inbound_batch(
     exit_dns_nat: Option<&MobileExitDnsNat>,
 ) -> bool {
     for mut packet in batch {
-        if let Some(exit_dns_nat) = exit_dns_nat {
-            exit_dns_nat.rewrite_response(&mut packet);
+        if exit_dns_nat.is_some_and(|nat| !nat.deliver_response(&mut packet)) {
+            continue;
         }
         if let (Some(wg), Some(mesh)) = (wg_addr, mesh_addr) {
             rewrite_ipv4_destination(&mut packet, wg, mesh);

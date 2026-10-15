@@ -318,7 +318,11 @@
         let google = Ipv4Addr::new(8, 8, 8, 8);
         let mut query = udp_packet_v4(google, 53);
 
-        assert_eq!(nat.redirect_public_resolver_query(&mut query), Some(nameserver));
+        assert_eq!(
+            nat.redirect_public_resolver_query(&mut query),
+            Some(Vec::new()),
+            "one box, so no further copies"
+        );
         assert_eq!(&query[16..20], &nameserver.octets());
         assert_ne!(nat.unanswered_since(), 0, "a forwarded query is awaiting its answer");
 
@@ -372,7 +376,7 @@
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
 
         assert!(config.network_dns_unavailable);
-        assert!(config.network_dns.is_empty(), "there is no nameserver to forward to");
+        assert!(config.network_dns_servers.is_empty(), "there is no nameserver to forward to");
         assert_eq!(config.dns_match_domains, vec![String::new()], "all domains stay in the tunnel");
         assert_eq!(config.dns_servers, vec![nostr_vpn_core::MESH_MAGIC_DNS_SERVER.to_string()]);
         for route in dns_sinkhole_route_targets() {
@@ -739,7 +743,11 @@
             nat64(Ipv4Addr::new(8, 8, 8, 8)),
         ] {
             let mut query = dns_udp_v6(resolver, 51_000, 0x4242);
-            assert_eq!(nat.redirect_public_resolver_query(&mut query), Some(nameserver));
+            assert_eq!(
+            nat.redirect_public_resolver_query(&mut query),
+            Some(Vec::new()),
+            "one box, so no further copies"
+        );
             assert_eq!(query[0] >> 4, 4, "carried to the nameserver over IPv4");
             assert_eq!(&query[12..16], &CLIENT_V4.octets());
             assert_eq!(&query[16..20], &nameserver.octets());

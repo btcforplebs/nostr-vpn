@@ -177,15 +177,17 @@ pub(crate) struct MobileTunnelConfig {
     /// `MagicDNS` requires nvpn to own DNS resolution.
     #[serde(default)]
     pub(crate) magic_dns_server: String,
-    /// Mesh address of the network's nameserver when the admin has turned the
-    /// network DNS override on, empty otherwise. Mirrors `network_dns` on the
-    /// daemon's `FipsPrivateTunnelConfig`: without it, a mobile device is a
-    /// full roster member that silently ignores the network's DNS policy.
-    /// Already empty on the nameserver itself, so it never points at us.
+    /// Mesh addresses of every DNS box in the network when the admin has
+    /// turned the network DNS override on, empty otherwise. Mirrors
+    /// `network_dns` on the daemon's `FipsPrivateTunnelConfig`: without it, a
+    /// mobile device is a full roster member that silently ignores the
+    /// network's DNS policy. No box is primary: every lookup goes to all of
+    /// them and the first answer wins, so one box asleep costs nothing.
+    /// Already empty on a box itself, so it never points at us.
     #[serde(default)]
-    pub(crate) network_dns: String,
+    pub(crate) network_dns_servers: Vec<String>,
     /// The network DNS override is on but names no usable nameserver. The
-    /// tunnel then owns DNS exactly as with `network_dns` set, and answers
+    /// tunnel then owns DNS exactly as with `network_dns_servers` set, and answers
     /// every lookup it cannot serve locally with a failure: falling back to
     /// the local network's resolver is the silent leak the override prevents.
     #[serde(default)]
@@ -357,9 +359,15 @@ fn mobile_exit_dns_resolver_config(
     // Admin network policy outranks this device's own exit DNS preference, and
     // it applies with no exit node at all, so this branch comes first — same
     // precedence the daemon uses in FipsPrivateTunnelConfig.
-    if let Some(nameserver) = parse_ipv4(&config.network_dns) {
+    let nameservers = config
+        .network_dns_servers
+        .iter()
+        .filter_map(|server| parse_ipv4(server))
+        .map(IpAddr::V4)
+        .collect::<Vec<_>>();
+    if !nameservers.is_empty() {
         return Ok(ExitDnsResolverConfig::ThroughExit {
-            servers: vec![IpAddr::V4(nameserver)],
+            servers: nameservers,
         });
     }
     let exit_active = config.wireguard_exit.is_some()
@@ -531,16 +539,18 @@ impl MobileTunnelConfig {
         } else {
             app.network_dns_route()
         };
-        // The mobile DNS NAT rewrites to one address: the first usable
-        // nameserver, which is the primary whenever it is still a member.
-        let network_dns = match &network_dns_route {
-            NetworkDnsRoute::Nameservers(nameservers) => nameservers.first().copied(),
-            _ => None,
+        // Every usable box, not just the first: the forwarder sends each
+        // lookup to all of them, so a phone keeps resolving while one sleeps.
+        let network_dns_servers = match &network_dns_route {
+            NetworkDnsRoute::Nameservers(nameservers) => nameservers.clone(),
+            _ => Vec::new(),
         };
         let network_dns_unavailable = network_dns_route == NetworkDnsRoute::Unavailable;
         // Unavailable owns DNS the same way, it just has nowhere to forward.
-        let network_dns_enforced = network_dns.is_some() || network_dns_unavailable;
-        if let Some(nameserver) = network_dns {
+        let network_dns_enforced = !network_dns_servers.is_empty() || network_dns_unavailable;
+        // Each box needs its own /32: a copy of the query NATed to a box whose
+        // address is not in the tunnel's route set never leaves the phone.
+        for nameserver in &network_dns_servers {
             route_targets.push(format!("{nameserver}/32"));
         }
         if network_dns_enforced {
@@ -683,9 +693,10 @@ impl MobileTunnelConfig {
             excluded_routes,
             dns_servers,
             magic_dns_server,
-            network_dns: network_dns
-                .map(|nameserver| nameserver.to_string())
-                .unwrap_or_default(),
+            network_dns_servers: network_dns_servers
+                .iter()
+                .map(Ipv4Addr::to_string)
+                .collect(),
             network_dns_unavailable,
             dns_match_domains,
             exit_dns: app.exit_dns.clone(),

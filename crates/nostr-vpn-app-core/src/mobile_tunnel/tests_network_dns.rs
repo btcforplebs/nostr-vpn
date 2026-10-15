@@ -43,7 +43,7 @@
                 .any(|route| route == "0.0.0.0/0" || route == "::/0"),
             "the override alone must not select an exit"
         );
-        assert_eq!(config.network_dns, nameserver.to_string());
+        assert_eq!(config.network_dns_servers, vec![nameserver.to_string()]);
         assert_eq!(
             mobile_exit_dns_resolver_config(&config).expect("resolver config"),
             ExitDnsResolverConfig::ThroughExit {
@@ -123,7 +123,7 @@
 
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
 
-        assert!(config.network_dns.is_empty());
+        assert!(config.network_dns_servers.is_empty());
         assert_eq!(
             mobile_exit_dns_resolver_config(&config).expect("resolver config"),
             ExitDnsConfig::default()
@@ -167,8 +167,64 @@
         let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
 
         assert!(
-            config.network_dns.is_empty(),
+            config.network_dns_servers.is_empty(),
             "a device serving network DNS must not NAT its own queries to itself"
         );
         assert_eq!(config.dns_match_domains, vec!["nvpn"]);
+    }
+
+    /// Two boxes, neither primary: the phone is handed both, routes both
+    /// into the tunnel, and the forwarder is built with both.
+    #[test]
+    fn network_dns_override_hands_the_phone_every_box() {
+        let (mut app, pihole) = mobile_network_dns_app(true);
+        let mac = Keys::generate().public_key().to_hex();
+        app.networks[0].devices.push(mac.clone());
+        let network_entry_id = app.networks[0].id.clone();
+        app.set_network_dns_backups(&network_entry_id, std::slice::from_ref(&mac))
+            .expect("list a second box");
+
+        let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
+        let first = expected_mobile_nameserver(&app, &pihole);
+        let second = expected_mobile_nameserver(&app, &mac);
+
+        assert_eq!(
+            config.network_dns_servers,
+            vec![first.to_string(), second.to_string()]
+        );
+        for nameserver in [first, second] {
+            assert!(
+                config.route_targets.contains(&format!("{nameserver}/32")),
+                "{nameserver} must be routed into the tunnel, got {:?}",
+                config.route_targets
+            );
+        }
+        assert_eq!(
+            active_mobile_exit_dns_servers(&config).expect("exit dns servers"),
+            vec![first, second],
+            "every lookup is NATed to every box"
+        );
+        assert_eq!(
+            mobile_dns_upstream(&config).expect("dns upstream"),
+            MobileDnsUpstream::Nat(vec![first, second])
+        );
+    }
+
+    /// The list field is new; a config written before it still loads with
+    /// the override off rather than failing to parse.
+    #[test]
+    fn mobile_config_without_the_box_list_still_loads() {
+        let (app, _) = mobile_network_dns_app(false);
+        let config = MobileTunnelConfig::from_app(&app).expect("mobile config");
+        let mut json: serde_json::Value = serde_json::from_str(
+            &serde_json::to_string(&config).expect("encode"),
+        )
+        .expect("decode");
+        json.as_object_mut()
+            .expect("object")
+            .remove("networkDnsServers")
+            .expect("the field is serialized");
+        let loaded: MobileTunnelConfig =
+            serde_json::from_value(json).expect("a config without the list still loads");
+        assert!(loaded.network_dns_servers.is_empty());
     }
