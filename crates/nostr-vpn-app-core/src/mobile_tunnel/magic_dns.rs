@@ -68,7 +68,7 @@ const MOBILE_DNS_NEWCOMER_RESERVE: usize = MOBILE_DNS_FLOW_CAPACITY / 2;
 const MOBILE_DNS_REDIRECT_CAPACITY: usize = MOBILE_DNS_FLOW_CAPACITY / 2;
 /// Resolvers retry long before this; an unanswered UDP flow is dead by then.
 const MOBILE_DNS_UDP_FLOW_TTL: Duration = Duration::from_secs(15);
-const MOBILE_DNS_TCP_FLOW_IDLE: Duration = Duration::from_secs(60);
+const MOBILE_DNS_TCP_FLOW_IDLE: Duration = Duration::from_mins(1);
 const MOBILE_DNS_TCP_FLOW_CLOSING: Duration = Duration::from_secs(5);
 const MOBILE_DNS_FLOW_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 /// A refused query may sweep early, but no more often than this: a sweep is a
