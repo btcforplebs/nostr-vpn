@@ -50,7 +50,9 @@ use crate::config_secrets::{
     SecretPersistence, config_file_needs_secret_migration, delete_config_secrets,
     hydrate_config_secrets, prepare_config_secrets_for_save,
 };
-use crate::fips_control::{PeerEndpointHint, SignedRoster, peer_endpoint_hint_addr};
+use crate::fips_control::{
+    PeerEndpointHint, SignedRoster, normalize_dns_backup_nodes, peer_endpoint_hint_addr,
+};
 use crate::identity_bridge::NostrIdentityId;
 use crate::join_requests::PendingNostrJoinRequest;
 use crate::network_roster::{

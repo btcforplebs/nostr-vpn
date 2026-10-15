@@ -57,6 +57,7 @@ impl AppConfig {
             admins,
             aliases,
             dns_node: network.dns_node.clone(),
+            dns_backup_nodes: network.dns_backup_nodes.clone(),
             dns_override: network.dns_override,
             updated_at: network.shared_roster_updated_at,
             signed_by: network.shared_roster_signed_by.clone(),
@@ -74,6 +75,7 @@ impl AppConfig {
             admins,
             aliases,
             dns_node,
+            dns_backup_nodes,
             dns_override,
             signed_at,
             signed_by,
@@ -177,6 +179,18 @@ impl AppConfig {
         } else {
             String::new()
         };
+        // Backups pass the same membership and tombstone checks as the primary.
+        let dns_backup_nodes = normalize_dns_backup_nodes(
+            dns_backup_nodes
+                .iter()
+                .filter_map(|backup| normalize_nostr_pubkey(backup).ok()),
+            &network.dns_node,
+            |backup| {
+                !removed_devices.contains(backup)
+                    && network_has_member(network, backup, own_pubkey.as_deref())
+            },
+        );
+        network.dns_backup_nodes = dns_backup_nodes;
         network.dns_override = dns_override;
         if !network_name.trim().is_empty() {
             network.name = network_name.trim().to_string();
@@ -261,6 +275,7 @@ impl AppConfig {
             admins: roster.admins,
             aliases: roster.aliases,
             dns_node: roster.dns_node,
+            dns_backup_nodes: roster.dns_backup_nodes,
             dns_override: roster.dns_override,
             signed_at: roster.signed_at,
             signed_by,

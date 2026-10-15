@@ -22,6 +22,10 @@ pub struct NetworkRoster {
     /// Empty when the admin has not selected one.
     #[serde(default)]
     pub dns_node: String,
+    /// Further members that also serve DNS, in preference order after
+    /// `dns_node`.
+    #[serde(default)]
+    pub dns_backup_nodes: Vec<String>,
     /// Force every member to resolve through `dns_node` instead of its local
     /// network's DNS. Stays on when `dns_node` is empty or gone, and members
     /// then fail closed rather than resolve locally.
@@ -188,6 +192,15 @@ fn signed_roster_tags(network_id: &str, roster: &NetworkRoster) -> Result<Vec<Ta
     if let Ok(dns_node) = normalize_roster_pubkey(roster.dns_node.trim(), "dns node") {
         tags.push(roster_tag(&["dns-node", &dns_node])?);
     }
+    // A tag of its own, not a repeated `dns-node`: a client that predates
+    // backups keeps the last `dns-node` it sees, so repeating that tag would
+    // silently move it onto a backup. Unknown tags are ignored, so older
+    // clients keep resolving through the primary. Order is preference order.
+    for backup in &roster.dns_backup_nodes {
+        if let Ok(backup) = normalize_roster_pubkey(backup.trim(), "dns backup node") {
+            tags.push(roster_tag(&["dns-node-backup", &backup])?);
+        }
+    }
     // Published even with no nameserver: members fail closed on it instead of
     // quietly dropping back to their local network's DNS.
     if roster.dns_override {
@@ -206,6 +219,7 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
     let mut admins = Vec::new();
     let mut aliases = HashMap::new();
     let mut dns_node = String::new();
+    let mut dns_backup_nodes = Vec::new();
     let mut dns_override = false;
 
     for tag in tags {
@@ -250,6 +264,14 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
                     dns_node = normalize_roster_pubkey(value, "dns node").unwrap_or_default();
                 }
             }
+            "dns-node-backup" => {
+                if let Some(Ok(value)) = parts
+                    .get(1)
+                    .map(|value| normalize_roster_pubkey(value, "dns backup node"))
+                {
+                    dns_backup_nodes.push(value);
+                }
+            }
             "dns-override" => {
                 dns_override |= parts.get(1).is_some_and(|value| value == "1");
             }
@@ -275,6 +297,12 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
     if !dns_node.is_empty() && !devices.contains(&dns_node) && !admins.contains(&dns_node) {
         dns_node.clear();
     }
+    let dns_backup_nodes = normalize_dns_backup_nodes(dns_backup_nodes, &dns_node, |backup| {
+        devices
+            .iter()
+            .chain(admins.iter())
+            .any(|member| member == backup)
+    });
 
     let network_id = network_id
         .filter(|value| !value.is_empty())
@@ -287,10 +315,30 @@ fn signed_roster_from_tags(tags: &[Tag], signed_at: u64) -> Result<(String, Netw
             admins,
             aliases,
             dns_node,
+            dns_backup_nodes,
             dns_override,
             signed_at,
         },
     ))
+}
+
+/// The one definition of a usable backup nameserver list: members only, in the
+/// admin's order, each once, and never the primary itself. Shared by the
+/// roster decoder, roster apply, local config normalisation and the admin
+/// setter so the four cannot disagree about which backups survive.
+pub fn normalize_dns_backup_nodes(
+    backups: impl IntoIterator<Item = String>,
+    primary: &str,
+    is_member: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for backup in backups {
+        if backup.is_empty() || backup == primary || kept.contains(&backup) || !is_member(&backup) {
+            continue;
+        }
+        kept.push(backup);
+    }
+    kept
 }
 
 fn roster_tag(parts: &[&str]) -> Result<Tag> {

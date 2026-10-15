@@ -65,6 +65,14 @@ fn removing_the_dns_device_clears_the_selection_and_fails_closed() {
     assert_eq!(config.network_dns_route(), NetworkDnsRoute::Unavailable);
 }
 
+/// The first address this device forwards to, primary first.
+fn first_nameserver(config: &AppConfig) -> Option<std::net::Ipv4Addr> {
+    match config.network_dns_route() {
+        NetworkDnsRoute::Nameservers(nameservers) => nameservers.first().copied(),
+        _ => None,
+    }
+}
+
 fn network_dns_fixture(dns_override: bool) -> (AppConfig, String, String) {
     let own = Keys::generate();
     let pihole = Keys::generate().public_key().to_hex();
@@ -91,9 +99,7 @@ fn network_dns_nameserver_resolves_to_the_selected_device_mesh_address() {
 
     let expected = derive_mesh_tunnel_ip(&config.effective_network_id(), &pihole)
         .expect("derive nameserver tunnel ip");
-    let nameserver = config
-        .network_dns_nameserver_ipv4()
-        .expect("override is active");
+    let nameserver = first_nameserver(&config).expect("override is active");
 
     assert_eq!(format!("{nameserver}/32"), expected);
 }
@@ -102,7 +108,7 @@ fn network_dns_nameserver_resolves_to_the_selected_device_mesh_address() {
 fn network_dns_nameserver_is_unset_while_the_override_is_off() {
     let (config, _own, _pihole) = network_dns_fixture(false);
 
-    assert!(config.network_dns_nameserver_ipv4().is_none());
+    assert!(first_nameserver(&config).is_none());
 }
 
 /// The nameserver device must never point its own stub at itself: the stub
@@ -118,7 +124,7 @@ fn network_dns_nameserver_is_unset_on_the_nameserver_device_itself() {
         .expect("point the network at this device");
 
     assert!(
-        config.network_dns_nameserver_ipv4().is_none(),
+        first_nameserver(&config).is_none(),
         "the nameserver device must not install the override on itself"
     );
 }
@@ -132,7 +138,7 @@ fn ensure_defaults_drops_a_network_dns_node_that_left_the_roster() {
 
     assert!(config.networks[0].dns_node.is_empty());
     assert!(config.networks[0].dns_override);
-    assert!(config.network_dns_nameserver_ipv4().is_none());
+    assert!(first_nameserver(&config).is_none());
     assert_eq!(config.network_dns_route(), NetworkDnsRoute::Unavailable);
 }
 
@@ -141,10 +147,14 @@ fn network_dns_route_names_each_state() {
     let (config, _own, pihole) = network_dns_fixture(true);
     let expected = derive_mesh_tunnel_ip(&config.effective_network_id(), &pihole)
         .expect("derive nameserver tunnel ip");
-    let NetworkDnsRoute::Nameserver(nameserver) = config.network_dns_route() else {
+    let NetworkDnsRoute::Nameservers(nameservers) = config.network_dns_route() else {
         panic!("a member nameserver must be forwarded to");
     };
-    assert_eq!(format!("{nameserver}/32"), expected);
+    let nameservers = nameservers
+        .iter()
+        .map(|nameserver| format!("{nameserver}/32"))
+        .collect::<Vec<_>>();
+    assert_eq!(nameservers, vec![expected]);
 
     let (config, _own, _pihole) = network_dns_fixture(false);
     assert_eq!(config.network_dns_route(), NetworkDnsRoute::Off);
@@ -202,11 +212,11 @@ fn saved_config_serializes_the_network_dns_node_as_an_npub() {
     let _ = fs::remove_file(&path);
 
     assert_eq!(
-        reloaded.network_dns_nameserver_ipv4(),
-        config.network_dns_nameserver_ipv4(),
+        first_nameserver(&reloaded),
+        first_nameserver(&config),
         "the override must survive a save/load round trip"
     );
-    assert!(reloaded.network_dns_nameserver_ipv4().is_some());
+    assert!(first_nameserver(&reloaded).is_some());
 }
 
 /// A device's own roster does not list itself, so a naive membership check
@@ -239,7 +249,7 @@ fn the_nameserver_device_keeps_the_selection_even_though_its_roster_omits_itself
     );
     assert!(config.networks[0].dns_override);
     assert!(
-        config.network_dns_nameserver_ipv4().is_none(),
+        first_nameserver(&config).is_none(),
         "it still must not point its own resolver stub at itself"
     );
 }
@@ -266,4 +276,137 @@ fn set_network_dns_rejects_a_non_admin() {
 
     assert!(error.to_string().contains("only a network admin"));
     assert!(config.networks[0].dns_node.is_empty());
+}
+
+/// The fixture plus a second member that the admin names as a backup.
+fn network_dns_backup_fixture() -> (AppConfig, String, String, String) {
+    let (mut config, own, pihole) = network_dns_fixture(true);
+    let backup = Keys::generate().public_key().to_hex();
+    config.networks[0].devices.push(backup.clone());
+    let network_id = config.networks[0].id.clone();
+    config
+        .set_network_dns_backups(&network_id, std::slice::from_ref(&backup))
+        .expect("name a backup nameserver");
+    (config, own, pihole, backup)
+}
+
+fn mesh_ipv4(config: &AppConfig, node: &str) -> std::net::Ipv4Addr {
+    let tunnel_ip =
+        derive_mesh_tunnel_ip(&config.effective_network_id(), node).expect("derive tunnel ip");
+    tunnel_ip
+        .split('/')
+        .next()
+        .expect("address")
+        .parse()
+        .expect("parse address")
+}
+
+#[test]
+fn a_member_resolves_through_the_primary_then_the_backups() {
+    let (config, _own, pihole, backup) = network_dns_backup_fixture();
+
+    assert_eq!(
+        config.network_dns_route(),
+        NetworkDnsRoute::Nameservers(vec![
+            mesh_ipv4(&config, &pihole),
+            mesh_ipv4(&config, &backup)
+        ])
+    );
+}
+
+/// A backup box runs its own Pi-hole, so like the primary it must install no
+/// stub and forward nowhere. Forwarding to the primary would make the backup
+/// stop resolving exactly when the primary sleeps.
+#[test]
+fn a_backup_dns_box_gets_no_nameservers_of_its_own() {
+    let (mut config, own, pihole, _backup) = network_dns_backup_fixture();
+    let network_id = config.networks[0].id.clone();
+    config
+        .set_network_dns_backups(&network_id, std::slice::from_ref(&own))
+        .expect("make this device the backup");
+    assert_eq!(config.networks[0].dns_node, pihole);
+
+    assert_eq!(config.network_dns_route(), NetworkDnsRoute::ServesNetwork);
+    assert!(first_nameserver(&config).is_none());
+}
+
+#[test]
+fn losing_the_primary_leaves_the_backup_serving() {
+    let (mut config, _own, pihole, backup) = network_dns_backup_fixture();
+    let network_id = config.networks[0].id.clone();
+
+    config
+        .remove_device_from_network(&network_id, &pihole)
+        .expect("remove the primary");
+    activate_first_network(&mut config);
+
+    assert!(config.networks[0].dns_node.is_empty());
+    assert_eq!(
+        config.network_dns_route(),
+        NetworkDnsRoute::Nameservers(vec![mesh_ipv4(&config, &backup)])
+    );
+}
+
+#[test]
+fn removing_a_backup_device_drops_it_from_the_backups() {
+    let (mut config, _own, _pihole, backup) = network_dns_backup_fixture();
+    let network_id = config.networks[0].id.clone();
+
+    config
+        .remove_device_from_network(&network_id, &backup)
+        .expect("remove the backup");
+
+    assert!(config.networks[0].dns_backup_nodes.is_empty());
+}
+
+#[test]
+fn set_network_dns_backups_rejects_strangers_and_the_primary() {
+    let (mut config, _own, pihole, backup) = network_dns_backup_fixture();
+    let network_id = config.networks[0].id.clone();
+    let stranger = Keys::generate().public_key().to_bech32().expect("npub");
+
+    let error = config
+        .set_network_dns_backups(&network_id, &[stranger])
+        .expect_err("a non-member cannot be a backup");
+    assert!(error.to_string().contains("must be a member"));
+
+    let error = config
+        .set_network_dns_backups(&network_id, std::slice::from_ref(&pihole))
+        .expect_err("the primary cannot be its own backup");
+    assert!(error.to_string().contains("primary"));
+
+    assert_eq!(
+        config.networks[0].dns_backup_nodes,
+        vec![backup],
+        "a rejected call must leave the stored backups alone"
+    );
+}
+
+#[test]
+fn promoting_a_backup_to_primary_removes_it_from_the_backups() {
+    let (mut config, _own, _pihole, backup) = network_dns_backup_fixture();
+    let network_id = config.networks[0].id.clone();
+
+    config
+        .set_network_dns(&network_id, &backup, true)
+        .expect("promote the backup");
+
+    assert_eq!(config.networks[0].dns_node, backup);
+    assert!(config.networks[0].dns_backup_nodes.is_empty());
+}
+
+#[test]
+fn dns_backups_survive_a_save_and_load() {
+    let (config, _own, _pihole, backup) = network_dns_backup_fixture();
+    let path = std::env::temp_dir().join(format!(
+        "nvpn-dns-backups-{}.toml",
+        Keys::generate().public_key().to_hex()
+    ));
+
+    config.save(&path).expect("save config");
+    let reloaded = AppConfig::load(&path).expect("reload config");
+    let _ = fs::remove_file(&path);
+
+    assert_eq!(reloaded.networks[0].dns_backup_nodes, vec![backup]);
+    assert_eq!(reloaded.network_dns_route(), config.network_dns_route());
 }

@@ -486,6 +486,10 @@ pub struct NetworkConfig {
     /// set by an admin and distributed through the signed roster.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub dns_node: String,
+    /// Further roster members that also run a nameserver, in the order members
+    /// should prefer them after `dns_node`. Never contains `dns_node` itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns_backup_nodes: Vec<String>,
     /// Force every member to resolve through `dns_node` instead of its local
     /// network's DNS. Stays on when `dns_node` is empty or gone, and members
     /// then fail closed rather than resolve locally.
@@ -541,13 +545,15 @@ pub struct EnabledNetworkMesh {
 }
 
 /// How a device resolves under its network's DNS override.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkDnsRoute {
     /// No override: the device keeps its own DNS policy.
     Off,
-    /// Forward every lookup to this nameserver's mesh address.
-    Nameserver(Ipv4Addr),
-    /// This device is the nameserver and already runs the resolver.
+    /// Forward lookups to these nameservers' mesh addresses: the primary
+    /// first, then the backups in the admin's order. Never empty.
+    Nameservers(Vec<Ipv4Addr>),
+    /// This device is the nameserver, or one of its backups, and already runs
+    /// the resolver.
     ServesNetwork,
     /// The override is on but names no usable nameserver. Lookups must fail
     /// rather than fall back to local DNS.
@@ -563,6 +569,7 @@ pub struct SharedNetworkRoster {
     pub admins: Vec<String>,
     pub aliases: HashMap<String, String>,
     pub dns_node: String,
+    pub dns_backup_nodes: Vec<String>,
     pub dns_override: bool,
     pub updated_at: u64,
     pub signed_by: String,
@@ -576,6 +583,7 @@ pub struct AdminSignedSharedRosterUpdate {
     pub admins: Vec<String>,
     pub aliases: HashMap<String, String>,
     pub dns_node: String,
+    pub dns_backup_nodes: Vec<String>,
     pub dns_override: bool,
     pub signed_at: u64,
     pub signed_by: String,
@@ -645,6 +653,7 @@ impl Default for NetworkConfig {
             removed_devices: Vec::new(),
             admins: Vec::new(),
             dns_node: String::new(),
+            dns_backup_nodes: Vec::new(),
             dns_override: false,
             listen_for_join_requests: default_listen_for_join_requests(),
             join_request_admin: String::new(),

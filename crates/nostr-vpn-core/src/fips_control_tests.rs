@@ -323,9 +323,108 @@ mod tests {
             admins: Vec::new(),
             aliases: HashMap::new(),
             dns_node,
+            dns_backup_nodes: Vec::new(),
             dns_override,
             signed_at: 123,
         }
+    }
+
+    fn roster_tag_rows(signed: &SignedRoster) -> Vec<Vec<String>> {
+        signed
+            .event
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn signed_roster_round_trips_dns_backups_in_preference_order() {
+        let admin = Keys::generate();
+        let pihole = Keys::generate().public_key().to_hex();
+        let second = Keys::generate().public_key().to_hex();
+        let third = Keys::generate().public_key().to_hex();
+        let mut roster = dns_roster(
+            pihole.clone(),
+            true,
+            vec![pihole.clone(), second.clone(), third.clone()],
+        );
+        roster.admins = vec![admin.public_key().to_hex()];
+        // Deliberately not sorted, so a sort anywhere on the path shows up.
+        roster.dns_backup_nodes = vec![third.clone(), second.clone()];
+
+        let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
+        let backup_tags = roster_tag_rows(&signed)
+            .into_iter()
+            .filter(|tag| tag[0] == "dns-node-backup")
+            .map(|tag| tag[1].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(backup_tags, vec![third.clone(), second.clone()]);
+
+        let decoded = signed.roster().expect("decode roster");
+        assert_eq!(decoded.dns_node, pihole);
+        assert_eq!(decoded.dns_backup_nodes, vec![third, second]);
+    }
+
+    /// A client from before backups existed knows only `dns-node` and keeps
+    /// the last one it sees. It must still land on the primary, so the
+    /// backups cannot travel as extra `dns-node` tags.
+    #[test]
+    fn a_client_that_predates_dns_backups_keeps_the_primary() {
+        let admin = Keys::generate();
+        let pihole = Keys::generate().public_key().to_hex();
+        let backup = Keys::generate().public_key().to_hex();
+        let mut roster = dns_roster(pihole.clone(), true, vec![pihole.clone(), backup.clone()]);
+        roster.admins = vec![admin.public_key().to_hex()];
+        roster.dns_backup_nodes = vec![backup.clone()];
+        let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
+
+        // The pre-backup rule: every `dns-node` tag overwrites the last.
+        let mut old_client_dns_node = String::new();
+        for tag in roster_tag_rows(&signed) {
+            if tag[0] == "dns-node" {
+                old_client_dns_node = tag[1].clone();
+            }
+        }
+        assert_eq!(old_client_dns_node, pihole);
+
+        // And the decoder, fed only the tags an old client understands,
+        // agrees.
+        let old_tags = signed
+            .event
+            .tags
+            .iter()
+            .filter(|tag| tag.as_slice().first().map(String::as_str) != Some("dns-node-backup"))
+            .cloned()
+            .collect::<Vec<_>>();
+        let (_, decoded) = signed_roster_from_tags(&old_tags, 123).expect("decode old tags");
+        assert_eq!(decoded.dns_node, pihole);
+        assert!(decoded.dns_backup_nodes.is_empty());
+    }
+
+    #[test]
+    fn signed_roster_drops_dns_backups_that_are_not_usable() {
+        let admin = Keys::generate();
+        let pihole = Keys::generate().public_key().to_hex();
+        let backup = Keys::generate().public_key().to_hex();
+        let stranger = Keys::generate().public_key().to_hex();
+        let mut roster = dns_roster(pihole.clone(), true, vec![pihole.clone(), backup.clone()]);
+        roster.admins = vec![admin.public_key().to_hex()];
+        roster.dns_backup_nodes = vec![
+            stranger,
+            pihole.clone(),
+            backup.clone(),
+            backup.clone(),
+        ];
+
+        let signed = SignedRoster::sign("mesh", roster, &admin).expect("sign roster");
+        let decoded = signed.roster().expect("decode roster");
+
+        assert_eq!(
+            decoded.dns_backup_nodes,
+            vec![backup],
+            "non-members, the primary itself and repeats must all be dropped"
+        );
     }
 
     #[test]

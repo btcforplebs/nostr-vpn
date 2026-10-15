@@ -610,6 +610,17 @@ async fn run_command(command: Command) -> Result<()> {
                 let dns_override = args.network_dns_override.unwrap_or(current_override);
                 app.set_network_dns(&network_id, dns_node.trim(), dns_override)?;
             }
+            // After the primary, so a device moved from backup to primary in one
+            // call is checked against the new primary.
+            if let Some(backups) = &args.network_dns_backup {
+                let network_id = app
+                    .active_network_opt()
+                    .ok_or_else(|| anyhow!("activate a network before changing network DNS"))?
+                    .id
+                    .clone();
+                let backups = backups.split(',').map(str::to_string).collect::<Vec<_>>();
+                app.set_network_dns_backups(&network_id, &backups)?;
+            }
             if let Some(value) = args.fips_advertise_public_endpoint {
                 app.fips_advertise_public_endpoint = value;
             }

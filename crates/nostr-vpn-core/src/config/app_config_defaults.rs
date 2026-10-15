@@ -138,6 +138,10 @@ impl AppConfig {
             network.join_request_admin =
                 normalize_nostr_pubkey(&network.join_request_admin).unwrap_or_default();
             network.dns_node = normalize_nostr_pubkey(&network.dns_node).unwrap_or_default();
+            network.dns_backup_nodes = std::mem::take(&mut network.dns_backup_nodes)
+                .iter()
+                .filter_map(|backup| normalize_nostr_pubkey(backup).ok())
+                .collect();
 
             network.devices = network
                 .devices
@@ -275,6 +279,10 @@ impl AppConfig {
             network.join_request_admin =
                 canonical_npub_key(&network.join_request_admin).unwrap_or_default();
             network.dns_node = canonical_npub_key(&network.dns_node).unwrap_or_default();
+            network.dns_backup_nodes = std::mem::take(&mut network.dns_backup_nodes)
+                .iter()
+                .filter_map(|backup| canonical_npub_key(backup))
+                .collect();
             network.outbound_join_request =
                 canonicalize_outbound_join_request(network.outbound_join_request.take());
             network.inbound_join_requests = canonicalize_inbound_join_requests(std::mem::take(

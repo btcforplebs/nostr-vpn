@@ -172,11 +172,11 @@ impl NativeAppRuntime {
                 blocked: true,
                 text: "DNS: No network nameserver. Lookups will be blocked.".to_string(),
             },
-            NetworkDnsRoute::Nameserver(_) if !vpn_active => NetworkDnsUiStatus {
+            NetworkDnsRoute::Nameservers(_) if !vpn_active => NetworkDnsUiStatus {
                 blocked: false,
                 text: format!("DNS via {} when connected", name()),
             },
-            NetworkDnsRoute::Nameserver(_) => {
+            NetworkDnsRoute::Nameservers(_) => {
                 let unanswered_since =
                     daemon_state.map_or(0, |state| state.network_dns_unanswered_since);
                 let not_answering = unanswered_since != 0

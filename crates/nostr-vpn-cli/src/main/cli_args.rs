@@ -576,6 +576,13 @@ struct SetArgs {
     /// only. Pass an empty value to clear it.
     #[arg(long)]
     network_dns_node: Option<String>,
+    /// Comma-separated roster devices (npub or hex) that also serve DNS, in
+    /// the order members should try them after the network DNS device. Admin
+    /// only. Replaces the whole list, so name every backup each time; pass an
+    /// empty value to clear them. Every admin device must run an nvpn that
+    /// knows backups, or the next roster an older admin publishes drops them.
+    #[arg(long)]
+    network_dns_backup: Option<String>,
     /// Force every device on this network to resolve through the network DNS
     /// device instead of its local network's DNS. Admin only.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
@@ -620,6 +627,12 @@ struct UpdateRosterArgs {
     devices: Vec<String>,
     #[arg(long)]
     publish: bool,
+    /// add-device only: also list the new devices as backup DNS boxes, after
+    /// any existing backups, in the same roster that admits them. Use this
+    /// rather than add-device then --network-dns-backup: in between, the new
+    /// box is an ordinary member and points its own resolver at the primary.
+    #[arg(long)]
+    dns_backup: bool,
     #[arg(long)]
     json: bool,
 }

@@ -313,6 +313,9 @@ impl AppConfig {
             if network.dns_node == normalized {
                 network.dns_node = String::new();
             }
+            network
+                .dns_backup_nodes
+                .retain(|backup| backup != &normalized);
         }
 
         self.note_network_roster_local_change(network_id)?;
@@ -420,9 +423,65 @@ impl AppConfig {
             }
             network.dns_override = dns_override && !normalized.is_empty();
             network.dns_node = normalized.clone();
+            // A device promoted to primary stops being its own backup.
+            network
+                .dns_backup_nodes
+                .retain(|backup| backup != &normalized);
         }
         self.note_network_roster_local_change(network_id)?;
         Ok(normalized)
+    }
+
+    /// Replace a network's backup nameservers, in the order members should
+    /// try them after the primary. An empty list clears them.
+    ///
+    /// Admin-only, like [`Self::set_network_dns`]. Every backup must already be
+    /// a member, and the primary cannot also be a backup. Returns the stored
+    /// list.
+    pub fn set_network_dns_backups(
+        &mut self,
+        network_id: &str,
+        backups: &[String],
+    ) -> Result<Vec<String>> {
+        let normalized = backups
+            .iter()
+            .map(|backup| backup.trim())
+            .filter(|backup| !backup.is_empty())
+            .map(normalize_nostr_pubkey)
+            .collect::<Result<Vec<_>>>()?;
+        let own_pubkey = self.own_nostr_pubkey_hex().ok();
+        let stored = {
+            let network = self
+                .network_by_id_mut(network_id)
+                .ok_or_else(|| anyhow::anyhow!("network not found"))?;
+            if own_pubkey
+                .as_deref()
+                .is_none_or(|own| !network.admins.iter().any(|admin| admin == own))
+            {
+                return Err(anyhow::anyhow!(
+                    "only a network admin can change the network DNS settings"
+                ));
+            }
+            if let Some(stranger) = normalized
+                .iter()
+                .find(|backup| !network_has_member(network, backup, own_pubkey.as_deref()))
+            {
+                return Err(anyhow::anyhow!(
+                    "backup DNS device {} must be a member of this network",
+                    npub_for_pubkey_hex(stranger)
+                ));
+            }
+            if !network.dns_node.is_empty() && normalized.contains(&network.dns_node) {
+                return Err(anyhow::anyhow!(
+                    "the primary DNS device cannot also be a backup"
+                ));
+            }
+            network.dns_backup_nodes =
+                normalize_dns_backup_nodes(normalized, &network.dns_node, |_| true);
+            network.dns_backup_nodes.clone()
+        };
+        self.note_network_roster_local_change(network_id)?;
+        Ok(stored)
     }
 
     pub fn network_admin_pubkeys_hex(&self, network_id: &str) -> Result<Vec<String>> {

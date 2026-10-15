@@ -62,6 +62,28 @@
     }
 
     #[test]
+    fn network_dns_override_hands_the_stub_the_primary_then_the_backups() {
+        let (mut app, own_pubkey, pihole) = network_dns_app(true);
+        let backup = Keys::generate().public_key().to_hex();
+        app.networks[0].devices.push(backup.clone());
+        let network_entry_id = app.networks[0].id.clone();
+        app.set_network_dns_backups(&network_entry_id, std::slice::from_ref(&backup))
+            .expect("name a backup nameserver");
+
+        let config = network_dns_config(&app, &own_pubkey);
+
+        assert_eq!(
+            config.exit_dns_resolver_config(false).unwrap(),
+            ExitDnsResolverConfig::ThroughExit {
+                servers: vec![
+                    expected_nameserver(&app, &pihole),
+                    expected_nameserver(&app, &backup),
+                ]
+            }
+        );
+    }
+
+    #[test]
     fn network_dns_selection_without_override_changes_nothing() {
         let (app, own_pubkey, _pihole) = network_dns_app(false);
 
