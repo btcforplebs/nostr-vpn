@@ -36,6 +36,13 @@ const WIREGUARD_DNS_NEGATIVE_ANSWER_HOLD: Duration = Duration::from_secs(2);
 /// waiting, so switching a server off costs the hold once and then nothing.
 /// Keep this equal to the phone forwarder's `MOBILE_DNS_BOX_SILENT_AFTER`.
 const WIREGUARD_DNS_SERVER_SILENT_AFTER: Duration = Duration::from_secs(3);
+/// How many finished races may keep their losing lookups running at once.
+/// Each loser holds a socket, and the lookups outlive the caller's in-flight
+/// permit, so without a cap a fast client sets how many sockets are open.
+/// Losers of races beyond the cap are cancelled. Equal to the CLI stub's
+/// `SECURE_DNS_MAX_IN_FLIGHT`, so lingering losers at most double its
+/// sockets.
+const WIREGUARD_DNS_MAX_LINGERING_RACES: usize = 64;
 pub const SECURE_DNS_MAX_MESSAGE_BYTES: usize = 4_096;
 
 #[derive(Clone)]
@@ -63,6 +70,7 @@ struct SecureDnsAtomicCounters {
 pub struct WireGuardDnsResolver {
     servers: Vec<SocketAddr>,
     silence: ServerSilence,
+    lingering_races: Arc<tokio::sync::Semaphore>,
 }
 
 /// Per server, when its oldest unanswered query was sent; `None` once any
@@ -303,7 +311,13 @@ impl WireGuardDnsResolver {
             return Err(SecureDnsError::NoWireGuardDnsServers);
         }
         let silence = ServerSilence(Arc::new(Mutex::new(vec![None; servers.len()])));
-        Ok(Self { servers, silence })
+        Ok(Self {
+            servers,
+            silence,
+            lingering_races: Arc::new(tokio::sync::Semaphore::new(
+                WIREGUARD_DNS_MAX_LINGERING_RACES,
+            )),
+        })
     }
 
     /// Asks every server at once and returns the first real answer, so a
@@ -328,11 +342,34 @@ impl WireGuardDnsResolver {
             });
         }
         let result = self.race(&mut lookups).await;
-        // The losers run out their own deadlines, so a late answer still
-        // clears its server's silence. Cancelling them would mark a server
-        // that is merely slower than the winner as silent.
-        lookups.detach_all();
+        self.let_losers_linger(lookups);
         result
+    }
+
+    /// Lets the lookups that lost the race run a little longer, so a late
+    /// answer still clears its server's silence. Cancelling them at once
+    /// would mark a server that is merely slower than the winner as silent.
+    /// They linger for the negative-answer hold, so any server that could
+    /// have won a hold is still heard, and only for a bounded number of
+    /// races; past that they are cancelled.
+    fn let_losers_linger(
+        &self,
+        mut losers: tokio::task::JoinSet<(usize, Result<Vec<u8>, SecureDnsError>)>,
+    ) {
+        if losers.is_empty() {
+            return;
+        }
+        // Dropping the set when the cap is reached cancels the losers.
+        let Ok(permit) = Arc::clone(&self.lingering_races).try_acquire_owned() else {
+            return;
+        };
+        tokio::spawn(async move {
+            let _permit = permit;
+            let _ = tokio::time::timeout(WIREGUARD_DNS_NEGATIVE_ANSWER_HOLD, async {
+                while losers.join_next().await.is_some() {}
+            })
+            .await;
+        });
     }
 
     async fn race(
@@ -1139,6 +1176,46 @@ mod tests {
         );
         unrelated_fixture.abort();
         healthy_fixture.abort();
+    }
+
+    /// Tasks alive on this test's own runtime. Every lookup is a task that
+    /// owns its socket, so this counts the resolver's sockets without other
+    /// tests in the process skewing it.
+    fn alive_tasks() -> usize {
+        tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks()
+    }
+
+    #[tokio::test]
+    async fn through_exit_dns_losers_are_bounded_in_number_and_time() {
+        let silent = silent_server().await;
+        let (healthy, fixture) = dns_fixture(REAL).await;
+        let resolver = WireGuardDnsResolver::with_servers(vec![
+            healthy,
+            silent.local_addr().expect("silent address"),
+        ])
+        .expect("exit DNS");
+        let before = alive_tasks();
+        // Far more races than may linger, each leaving the silent server's
+        // lookup behind.
+        for id in 0..300 {
+            resolver
+                .resolve_query(&dns_query(id))
+                .await
+                .expect("DNS response");
+        }
+        tokio::task::yield_now().await;
+        // A lingering race is its one loser plus the task that ends it.
+        let lingering = alive_tasks() - before;
+        assert!(
+            lingering <= 2 * WIREGUARD_DNS_MAX_LINGERING_RACES,
+            "{lingering} lookups outlived their races"
+        );
+        tokio::time::sleep(WIREGUARD_DNS_NEGATIVE_ANSWER_HOLD + Duration::from_millis(300)).await;
+        let left = alive_tasks() - before;
+        assert_eq!(left, 0, "lookups still running after the losers' grace");
+        fixture.abort();
     }
 
     #[tokio::test]
