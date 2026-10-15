@@ -226,14 +226,20 @@ impl MobileTunnel {
         let network_dns_nat = exit_dns_nat
             .clone()
             .filter(|_| !config.network_dns_servers.is_empty());
-        if let Some(nat) = exit_dns_nat.clone() {
+        if let Some(nat) = exit_dns_nat.clone().filter(|nat| nat.fans_out()) {
             // The forwarder holds a fast negative answer for a real one from
             // another box; it is packet-driven, so something has to let the
-            // hold run out when no further packet arrives.
+            // hold run out when no further packet arrives. Sleeps until a
+            // hold exists, then until it is due; with one box nothing can
+            // ever be held, so no task at all.
             let inbound_tx = inbound_tx.clone();
             tasks.push(tokio::spawn(async move {
                 loop {
-                    tokio::time::sleep(MOBILE_DNS_HOLD_RELEASE_INTERVAL).await;
+                    let Some(wait) = nat.next_hold_due() else {
+                        nat.hold_notify.notified().await;
+                        continue;
+                    };
+                    tokio::time::sleep(wait).await;
                     let released = nat.release_expired_holds();
                     if !released.is_empty() && inbound_tx.send(released).await.is_err() {
                         break;
