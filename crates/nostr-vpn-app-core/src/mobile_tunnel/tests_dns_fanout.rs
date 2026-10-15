@@ -679,3 +679,88 @@
         assert_eq!(nat.next_hold_due_at(now), None);
         assert!(fan_out_nat(&[MAC, PI]).fans_out());
     }
+
+    /// Tron's latch: both boxes up, the Mac broken (instant NXDOMAIN), the
+    /// Pi healthy but once slower than the hold. The Pi's late answer arrives
+    /// after the hold released and retired its flow. It must still count as
+    /// proof the Pi is up, or 3 s later the Pi reads as silent, every later
+    /// NXDOMAIN goes out unheld, and the Pi can never win again.
+    #[test]
+    fn a_late_answer_after_release_still_proves_the_box_is_up() {
+        let nat = fan_out_nat(&[MAC, PI]);
+        let now = Instant::now();
+        let mut slow = stub_lookup(50_700, 0x7001, LOOKUP_NAME);
+        nat.rewrite_query_at(&mut slow, now).unwrap();
+        let mut fast = box_reply(MAC, 50_700, 0x7001, LOOKUP_NAME, DnsReply::NxDomain);
+        assert!(!nat.rewrite_response_at(&mut fast, now + Duration::from_millis(20)));
+        assert_eq!(
+            nat.release_expired_holds_at(now + MOBILE_DNS_NEGATIVE_ANSWER_HOLD + Duration::from_millis(20)).len(),
+            1,
+            "the hold runs out before the Pi answers"
+        );
+        let mut late = box_reply(PI, 50_700, 0x7001, LOOKUP_NAME, DnsReply::Real);
+        assert!(
+            !nat.rewrite_response_at(&mut late, now + Duration::from_millis(2500)),
+            "the late answer is dropped, the phone already has one"
+        );
+
+        // Twenty more lookups, the Pi answering correctly in 20 ms every time
+        // and the Mac answering NXDOMAIN in 5 ms every time: the phone must
+        // get the Pi's answer every time.
+        let mut correct = 0;
+        for index in 0..20_u16 {
+            let at = now + MOBILE_DNS_BOX_SILENT_AFTER + Duration::from_secs(1) * u32::from(index);
+            let port = 50_710 + index;
+            let id = 0x7100 + index;
+            let mut query = stub_lookup(port, id, LOOKUP_NAME);
+            nat.rewrite_query_at(&mut query, at).unwrap();
+            let mut nx = box_reply(MAC, port, id, LOOKUP_NAME, DnsReply::NxDomain);
+            assert!(
+                !nat.rewrite_response_at(&mut nx, at + Duration::from_millis(5)),
+                "lookup {index}: the Mac's instant NXDOMAIN is still held"
+            );
+            let mut real = box_reply(PI, port, id, LOOKUP_NAME, DnsReply::Real);
+            if nat.rewrite_response_at(&mut real, at + Duration::from_millis(20)) && rcode_of(&real) == 0 {
+                correct += 1;
+            }
+        }
+        assert_eq!(correct, 20, "correct answers that reached the phone");
+    }
+
+    /// The cheaper trigger: one copy lost on the mesh arms that box's
+    /// silence, and nothing but a datagram from the box can disarm it. The
+    /// next lookup's answer from it, matching or not, does.
+    #[test]
+    fn one_lost_copy_does_not_make_the_box_silent_for_good() {
+        let nat = fan_out_nat(&[MAC, PI]);
+        let now = Instant::now();
+        // The Pi's copy of this lookup is lost; the Mac answers, the lookup
+        // completes, and the Pi has an unanswered query on the books.
+        let mut lost = stub_lookup(50_800, 0x8001, LOOKUP_NAME);
+        nat.rewrite_query_at(&mut lost, now).unwrap();
+        let mut answer = box_reply(MAC, 50_800, 0x8001, LOOKUP_NAME, DnsReply::Real);
+        assert!(nat.rewrite_response_at(&mut answer, now + Duration::from_millis(20)));
+
+        // The Pi answers the next lookup, late enough that the Mac's
+        // negative for it was already released: still proof of life.
+        let t1 = now + Duration::from_secs(1);
+        let mut next = stub_lookup(50_801, 0x8002, LOOKUP_NAME);
+        nat.rewrite_query_at(&mut next, t1).unwrap();
+        let mut nx = box_reply(MAC, 50_801, 0x8002, LOOKUP_NAME, DnsReply::NxDomain);
+        assert!(!nat.rewrite_response_at(&mut nx, t1 + Duration::from_millis(5)));
+        nat.release_expired_holds_at(t1 + MOBILE_DNS_NEGATIVE_ANSWER_HOLD);
+        let mut late = box_reply(PI, 50_801, 0x8002, LOOKUP_NAME, DnsReply::Real);
+        assert!(!nat.rewrite_response_at(&mut late, t1 + Duration::from_millis(2100)));
+
+        let t2 = now + Duration::from_secs(5);
+        let mut third = stub_lookup(50_802, 0x8003, LOOKUP_NAME);
+        nat.rewrite_query_at(&mut third, t2).unwrap();
+        let mut nx = box_reply(MAC, 50_802, 0x8003, LOOKUP_NAME, DnsReply::NxDomain);
+        assert!(
+            !nat.rewrite_response_at(&mut nx, t2 + Duration::from_millis(5)),
+            "the Pi is not silent: its datagram at 3.1 s proved it up"
+        );
+        let mut real = box_reply(PI, 50_802, 0x8003, LOOKUP_NAME, DnsReply::Real);
+        assert!(nat.rewrite_response_at(&mut real, t2 + Duration::from_millis(20)));
+        assert_eq!(rcode_of(&real), 0);
+    }

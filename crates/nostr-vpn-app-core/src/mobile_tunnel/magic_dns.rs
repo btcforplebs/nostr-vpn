@@ -431,9 +431,6 @@ impl MobileDnsFlowTable {
         } else {
             self.remove(flow);
         }
-        if let Some(state) = self.box_state(flow.server) {
-            state.unanswered_since = None;
-        }
         Some(origin)
     }
 
@@ -791,6 +788,16 @@ impl MobileExitDnsNat {
         let Ok(mut flows) = self.flows.lock() else {
             return MobileDnsInbound::Unrelated;
         };
+        // Any DNS datagram from a listed box proves it is up, whether or not
+        // it still matches a flow: a real answer that arrives after the hold
+        // released and retired its flow, or one whose copy was lost on the
+        // mesh, must still clear the box's silence. Otherwise one slow or
+        // lost lookup marks the good box silent, the broken box's instant
+        // negative then goes out with no hold, and the good box never gets
+        // to clear it because clearing needed it to win that race.
+        if let Some(state) = flows.box_state(source) {
+            state.unanswered_since = None;
+        }
         let Some(origin) = flows.answer(&flow, question, tcp_flags, now) else {
             return if protocol == 17 && flows.is_retired(&flow, question, now) {
                 MobileDnsInbound::Drop
