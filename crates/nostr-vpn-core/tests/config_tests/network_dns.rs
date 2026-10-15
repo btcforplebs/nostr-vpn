@@ -457,6 +457,20 @@ fn removing_dns_from_the_last_box_clears_the_selection() {
 }
 
 #[test]
+fn the_only_dns_box_cannot_become_a_backup() {
+    let (mut config, _, pihole) = network_dns_fixture(true);
+    let network_id = config.networks[0].id.clone();
+
+    let error = config
+        .set_network_dns_role(&network_id, &pihole, NetworkDnsRole::Backup)
+        .expect_err("a backup needs a primary to back up");
+    assert!(error.to_string().contains("no primary"), "{error}");
+    assert_eq!(config.networks[0].dns_node, pihole);
+    assert!(config.networks[0].dns_backup_nodes.is_empty());
+    assert!(config.networks[0].dns_override);
+}
+
+#[test]
 fn a_new_backup_goes_after_the_existing_ones() {
     let (mut config, _, pihole, backup) = network_dns_backup_fixture();
     let third = Keys::generate().public_key().to_hex();
@@ -503,7 +517,10 @@ fn a_refused_dns_role_change_leaves_the_config_untouched() {
     let error = config
         .set_network_dns_role(&network_id, &backup, NetworkDnsRole::Primary)
         .expect_err("only an admin can change DNS");
-    assert!(error.to_string().contains("only a network admin"), "{error}");
+    assert!(
+        error.to_string().contains("only a network admin"),
+        "{error}"
+    );
     assert_eq!(config.networks[0].dns_node, pihole);
     assert_eq!(config.networks[0].dns_backup_nodes, vec![backup]);
 }

@@ -490,7 +490,9 @@ impl AppConfig {
     /// - `Primary`: the device becomes the primary. The old primary, if any,
     ///   becomes the first backup rather than dropping out.
     /// - `Backup`: the device goes to the end of the backup list. If it was
-    ///   the primary, the first backup takes its place.
+    ///   the primary, the first backup takes its place; with no other box to
+    ///   take it, the change is refused rather than leaving backups with no
+    ///   primary.
     /// - `None`: the device stops serving DNS. If it was the primary, the
     ///   first backup takes its place; with no backup left the selection is
     ///   cleared, as in [`Self::set_network_dns`].
@@ -516,6 +518,11 @@ impl AppConfig {
         };
         backups.retain(|backup| backup != &device);
         let was_primary = primary == device;
+        if role == NetworkDnsRole::Backup && was_primary && backups.is_empty() {
+            return Err(anyhow::anyhow!(
+                "this is the only DNS device; a backup with no primary has nothing to back up"
+            ));
+        }
         match role {
             NetworkDnsRole::Primary => {
                 if !primary.is_empty() && !was_primary {
