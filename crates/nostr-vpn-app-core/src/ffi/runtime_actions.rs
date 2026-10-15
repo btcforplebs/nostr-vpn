@@ -159,6 +159,19 @@ impl NativeAppRuntime {
                     .set_network_dns(&network_id, &npub, dns_override)?;
                 self.save_reload_and_refresh()
             }
+            NativeAppAction::SetNetworkDnsRole {
+                network_id,
+                npub,
+                role,
+            } => {
+                let role = match role {
+                    NativeNetworkDnsRole::Primary => NetworkDnsRole::Primary,
+                    NativeNetworkDnsRole::Backup => NetworkDnsRole::Backup,
+                    NativeNetworkDnsRole::None => NetworkDnsRole::None,
+                };
+                self.config.set_network_dns_role(&network_id, &npub, role)?;
+                self.save_reload_and_refresh()
+            }
             NativeAppAction::SetNetworkJoinRequestsEnabled {
                 network_id,
                 enabled,

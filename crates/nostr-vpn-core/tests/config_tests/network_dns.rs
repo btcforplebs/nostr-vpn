@@ -410,3 +410,100 @@ fn dns_backups_survive_a_save_and_load() {
     assert_eq!(reloaded.networks[0].dns_backup_nodes, vec![backup]);
     assert_eq!(reloaded.network_dns_route(), config.network_dns_route());
 }
+
+#[test]
+fn making_a_backup_the_dns_box_keeps_the_old_primary_as_a_backup() {
+    let (mut config, _, pihole, backup) = network_dns_backup_fixture();
+    let network_id = config.networks[0].id.clone();
+
+    config
+        .set_network_dns_role(&network_id, &backup, NetworkDnsRole::Primary)
+        .expect("promote the backup");
+
+    assert_eq!(config.networks[0].dns_node, backup);
+    assert_eq!(config.networks[0].dns_backup_nodes, vec![pihole]);
+    assert!(config.networks[0].dns_override);
+}
+
+#[test]
+fn removing_dns_from_the_primary_hands_it_to_the_first_backup() {
+    let (mut config, _, pihole, backup) = network_dns_backup_fixture();
+    let network_id = config.networks[0].id.clone();
+
+    config
+        .set_network_dns_role(&network_id, &pihole, NetworkDnsRole::None)
+        .expect("remove DNS from the primary");
+
+    assert_eq!(config.networks[0].dns_node, backup);
+    assert!(config.networks[0].dns_backup_nodes.is_empty());
+    assert!(
+        config.networks[0].dns_override,
+        "the override outlives the box"
+    );
+}
+
+#[test]
+fn removing_dns_from_the_last_box_clears_the_selection() {
+    let (mut config, _, pihole) = network_dns_fixture(true);
+    let network_id = config.networks[0].id.clone();
+
+    config
+        .set_network_dns_role(&network_id, &pihole, NetworkDnsRole::None)
+        .expect("remove the only box");
+
+    assert!(config.networks[0].dns_node.is_empty());
+    assert!(config.networks[0].dns_backup_nodes.is_empty());
+    assert!(!config.networks[0].dns_override);
+}
+
+#[test]
+fn a_new_backup_goes_after_the_existing_ones() {
+    let (mut config, _, pihole, backup) = network_dns_backup_fixture();
+    let third = Keys::generate().public_key().to_hex();
+    config.networks[0].devices.push(third.clone());
+    let network_id = config.networks[0].id.clone();
+
+    config
+        .set_network_dns_role(&network_id, &third, NetworkDnsRole::Backup)
+        .expect("add a second backup");
+    assert_eq!(config.networks[0].dns_node, pihole);
+    assert_eq!(
+        config.networks[0].dns_backup_nodes,
+        vec![backup.clone(), third.clone()]
+    );
+
+    config
+        .set_network_dns_role(&network_id, &backup, NetworkDnsRole::None)
+        .expect("remove the first backup");
+    assert_eq!(config.networks[0].dns_backup_nodes, vec![third]);
+}
+
+#[test]
+fn a_refused_dns_role_change_leaves_the_config_untouched() {
+    let (mut config, _, pihole, backup) = network_dns_backup_fixture();
+    let network_id = config.networks[0].id.clone();
+    let stranger = Keys::generate().public_key().to_hex();
+
+    config
+        .set_network_dns_role(&network_id, &stranger, NetworkDnsRole::Primary)
+        .expect_err("a stranger cannot serve DNS");
+    assert_eq!(config.networks[0].dns_node, pihole);
+    assert_eq!(config.networks[0].dns_backup_nodes, vec![backup.clone()]);
+
+    // The primary moves first and the backup list second. When the second
+    // step is refused, the first must not stick.
+    config.networks[0].dns_backup_nodes.push(stranger);
+    config
+        .set_network_dns_role(&network_id, &backup, NetworkDnsRole::Primary)
+        .expect_err("a stale stranger in the backups refuses the new list");
+    assert_eq!(config.networks[0].dns_node, pihole);
+    config.networks[0].dns_backup_nodes.pop();
+
+    config.networks[0].admins.clear();
+    let error = config
+        .set_network_dns_role(&network_id, &backup, NetworkDnsRole::Primary)
+        .expect_err("only an admin can change DNS");
+    assert!(error.to_string().contains("only a network admin"), "{error}");
+    assert_eq!(config.networks[0].dns_node, pihole);
+    assert_eq!(config.networks[0].dns_backup_nodes, vec![backup]);
+}

@@ -544,6 +544,15 @@ pub struct EnabledNetworkMesh {
     pub devices: Vec<String>,
 }
 
+/// The part one device plays in its network's DNS, as set from that
+/// device's row: the primary box, a backup box, or neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkDnsRole {
+    Primary,
+    Backup,
+    None,
+}
+
 /// How a device resolves under its network's DNS override.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkDnsRoute {

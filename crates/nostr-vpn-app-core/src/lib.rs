@@ -14,7 +14,7 @@ pub mod platform;
 pub mod state;
 mod wg_upstream_nat;
 
-pub use actions::NativeAppAction;
+pub use actions::{NativeAppAction, NativeNetworkDnsRole};
 pub use ffi::FfiApp;
 pub use native_state::{NativeAppState, NativeNetworkState, NativeParticipantState};
 #[cfg(feature = "updater")]

@@ -231,6 +231,9 @@ extension RootView {
                     if participant.servesNetworkDns {
                         badge("DNS server", style: selected ? .selected : .dns)
                     }
+                    if participant.servesNetworkDnsBackup {
+                        badge("Backup DNS", style: selected ? .selected : .dns)
+                    }
                     if isFipsRouted(participant) {
                         badge("via mesh", style: selected ? .selected : .muted)
                     }
@@ -302,7 +305,8 @@ extension RootView {
                         .font(.system(size: 24, weight: .semibold))
                         .lineLimit(2)
                     if isSelf(participant) || participant.isAdmin || participant.offersExitNode
-                        || participant.servesNetworkDns || participant.reachable {
+                        || participant.servesNetworkDns || participant.servesNetworkDnsBackup
+                        || participant.reachable {
                         HStack(spacing: 6) {
                             if isSelf(participant) {
                                 badge("This device", style: .ok)
@@ -315,6 +319,9 @@ extension RootView {
                             }
                             if participant.servesNetworkDns {
                                 badge("DNS server", style: .dns)
+                            }
+                            if participant.servesNetworkDnsBackup {
+                                badge("Backup DNS", style: .dns)
                             }
                             if isDirectFipsPeer(participant) {
                                 badge("direct connection", style: .ok)
@@ -419,6 +426,7 @@ extension RootView {
             }
             .disabled(manager.actionInFlight)
             .help(participant.isAdmin ? "Remove admin" : "Make admin")
+            deviceDnsButtons(participant, network: network)
             Button(role: .destructive) {
                 pendingParticipantRemoval = PendingParticipantRemoval(
                     networkId: network.id,
@@ -448,6 +456,50 @@ extension RootView {
             Button("Cancel", role: .cancel) { pendingParticipantRemoval = nil }
         } message: { _ in
             Text("This removes the device from the network's roster. They keep the network locally but won't be in this roster anymore.")
+        }
+    }
+
+    /// Make DNS box / Make backup DNS box / Remove DNS, showing only the moves
+    /// that change something for this device.
+    @ViewBuilder
+    func deviceDnsButtons(_ participant: NativeParticipantState, network: NativeNetworkState) -> some View {
+        let primaryName = network.participants
+            .first { $0.servesNetworkDns && $0.pubkeyHex != participant.pubkeyHex }
+            .map(deviceName)
+        if !participant.servesNetworkDns {
+            Button {
+                manager.setNetworkDnsRole(networkId: network.id, participant: participant, role: .primary)
+            } label: {
+                Label("Make DNS box", systemImage: "server.rack")
+            }
+            .disabled(manager.actionInFlight)
+            .help(primaryName.map { "Make this the network's DNS box. \($0) stays on as a backup." }
+                ?? "Make this the network's DNS box.")
+            .accessibilityIdentifier("device-make-dns-box")
+        }
+        if !participant.servesNetworkDns && !participant.servesNetworkDnsBackup {
+            Button {
+                manager.setNetworkDnsRole(networkId: network.id, participant: participant, role: .backup)
+            } label: {
+                Label("Make backup DNS box", systemImage: "server.rack")
+            }
+            .disabled(manager.actionInFlight || network.dnsNodeNpub.isEmpty)
+            .help(network.dnsNodeNpub.isEmpty
+                ? "Choose a DNS box first, then add backups."
+                : "Add this device as a backup DNS box.")
+            .accessibilityIdentifier("device-make-backup-dns-box")
+        }
+        if participant.servesNetworkDns || participant.servesNetworkDnsBackup {
+            Button {
+                manager.setNetworkDnsRole(networkId: network.id, participant: participant, role: .none)
+            } label: {
+                Label("Remove DNS", systemImage: "xmark.circle")
+            }
+            .disabled(manager.actionInFlight)
+            .help(participant.servesNetworkDns
+                ? "Stop using this device for DNS. The first backup, if any, takes over."
+                : "Stop using this device as a backup DNS box.")
+            .accessibilityIdentifier("device-remove-dns")
         }
     }
 

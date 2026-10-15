@@ -233,3 +233,88 @@
             "DNS via pihole.nvpn, mac.nvpn aren't answering. Lookups are blocked."
         );
     }
+
+    /// A runtime with a second member "mac" that saves to a temp dir, so the
+    /// DNS button actions can run end to end without touching real config.
+    fn dns_buttons_runtime(name: &str) -> (NativeAppRuntime, PathBuf, String, String) {
+        let (mut runtime, pihole) = network_dns_status_runtime(true);
+        let nonce = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("nvpn-app-core-{name}-{nonce}"));
+        fs::create_dir_all(&dir).expect("create test dir");
+        runtime.config_path = dir.join("config.toml");
+        runtime.mobile_runtime = true;
+        let mac = "3a1f7c2e9d4b6a8f0c5e1d2b3a4f5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b";
+        runtime.config.networks[0].devices.push(mac.to_string());
+        (runtime, dir, pihole, mac.to_string())
+    }
+
+    fn dns_role_of(runtime: &NativeAppRuntime, pubkey: &str) -> (bool, bool) {
+        let state = runtime.state();
+        let participant = state.networks[0]
+            .participants
+            .iter()
+            .find(|participant| participant.pubkey_hex == pubkey)
+            .cloned()
+            .expect("device row");
+        (participant.serves_network_dns, participant.serves_network_dns_backup)
+    }
+
+    fn press_dns_button(runtime: &mut NativeAppRuntime, pubkey: &str, role: NativeNetworkDnsRole) {
+        let network_id = runtime.config.networks[0].id.clone();
+        runtime.dispatch(NativeAppAction::SetNetworkDnsRole {
+            network_id,
+            npub: npub_for_pubkey_hex(pubkey),
+            role,
+        });
+        assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
+    }
+
+    /// Make backup, promote, remove: the rows follow each step, the old
+    /// primary is kept as a backup instead of dropping out, and removing the
+    /// primary hands the job to the backup with the override still on.
+    #[test]
+    fn dns_buttons_move_devices_between_primary_backup_and_none() {
+        let (mut runtime, dir, pihole, mac) = dns_buttons_runtime("dns-buttons");
+
+        press_dns_button(&mut runtime, &mac, NativeNetworkDnsRole::Backup);
+        assert_eq!(dns_role_of(&runtime, &mac), (false, true));
+        assert_eq!(dns_role_of(&runtime, &pihole), (true, false));
+
+        press_dns_button(&mut runtime, &mac, NativeNetworkDnsRole::Primary);
+        assert_eq!(dns_role_of(&runtime, &mac), (true, false));
+        assert_eq!(dns_role_of(&runtime, &pihole), (false, true));
+        assert!(runtime.config.networks[0].dns_override);
+
+        press_dns_button(&mut runtime, &mac, NativeNetworkDnsRole::None);
+        assert_eq!(dns_role_of(&runtime, &mac), (false, false));
+        assert_eq!(dns_role_of(&runtime, &pihole), (true, false));
+        assert!(runtime.config.networks[0].dns_override);
+
+        press_dns_button(&mut runtime, &pihole, NativeNetworkDnsRole::None);
+        assert_eq!(dns_role_of(&runtime, &pihole), (false, false));
+
+        let saved = AppConfig::load(&runtime.config_path).expect("load persisted config");
+        assert!(saved.networks[0].dns_node.is_empty());
+        assert!(saved.networks[0].dns_backup_nodes.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dns_button_refuses_a_non_admin_and_changes_nothing() {
+        let (mut runtime, dir, pihole, mac) = dns_buttons_runtime("dns-buttons-admin");
+        runtime.config.networks[0].admins = vec![mac.clone()];
+        let network_id = runtime.config.networks[0].id.clone();
+
+        runtime.dispatch(NativeAppAction::SetNetworkDnsRole {
+            network_id,
+            npub: npub_for_pubkey_hex(&mac),
+            role: NativeNetworkDnsRole::Primary,
+        });
+        assert!(runtime.last_error.contains("only a network admin"), "{}", runtime.last_error);
+        assert_eq!(runtime.config.networks[0].dns_node, pihole);
+        assert!(runtime.config.networks[0].dns_backup_nodes.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
