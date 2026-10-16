@@ -173,6 +173,55 @@
         assert_eq!(admin.addresses[0].seen_at_ms, Some(123_000));
     }
 
+    #[test]
+    fn tunnel_config_keeps_peer_lan_hints_on_the_advertised_endpoint_lan() {
+        // A box in a container sees only its bridge subnet, but its advertised
+        // endpoint is the host's LAN address. A peer's hint on that same LAN
+        // is reachable through the host, so it must survive the filter.
+        let alice_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let alice_pubkey = alice_keys.public_key().to_hex();
+        let bob_pubkey = bob_keys.public_key().to_hex();
+        let bob_npub = bob_keys.public_key().to_bech32().expect("bob npub");
+        let network_id = "fips-advertised-lan-hints-test";
+
+        let mut app = AppConfig::default();
+        app.nostr.secret_key = alice_keys.secret_key().to_bech32().expect("alice nsec");
+        app.networks[0].enabled = true;
+        app.networks[0].network_id = network_id.to_string();
+        app.networks[0].devices = vec![alice_pubkey.clone(), bob_pubkey.clone()];
+        app.fips_webrtc_enabled = false;
+        app.node.endpoint = "10.231.77.82:51820".to_string();
+
+        let config = FipsPrivateTunnelConfig::from_app(
+            &app,
+            network_id,
+            "utun-test",
+            Some(&alice_pubkey),
+            None,
+            &[(
+                bob_pubkey.clone(),
+                vec![
+                    ("10.231.77.70:51820".to_string(), 123_000),
+                    ("10.231.78.70:51820".to_string(), 123_000),
+                ],
+            )],
+        )
+        .expect("fips tunnel config");
+
+        let bob = config
+            .endpoint_peers
+            .iter()
+            .find(|peer| peer.npub == bob_npub)
+            .expect("bob endpoint peer");
+        let addrs = bob
+            .addresses
+            .iter()
+            .map(|hint| hint.addr.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(addrs, vec!["10.231.77.70:51820"]);
+    }
+
     #[cfg(feature = "paid-exit")]
     #[test]
     fn tunnel_config_applies_live_endpoint_hints_for_selected_paid_exit() {

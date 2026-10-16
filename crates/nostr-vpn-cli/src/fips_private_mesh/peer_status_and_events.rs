@@ -531,10 +531,28 @@ where
         .collect()
 }
 
+/// The /24 of this node's own advertised private endpoint. A node in a
+/// container sees only its bridge subnet, but its host routes this LAN, so
+/// peer hints on it are reachable even though no local interface carries it.
+fn advertised_endpoint_lan_subnets(endpoint: &str) -> Vec<Ipv4Subnet> {
+    match endpoint_addr_ip(endpoint) {
+        Some(IpAddr::V4(ip)) if ip.is_private() => vec![Ipv4Subnet::new(ip, 24)],
+        _ => Vec::new(),
+    }
+}
+
+fn endpoint_on_advertised_lan(addr: &str, advertised_lan_subnets: &[Ipv4Subnet]) -> bool {
+    matches!(
+        endpoint_addr_ip(addr),
+        Some(IpAddr::V4(ip)) if advertised_lan_subnets.iter().any(|subnet| subnet.contains(ip))
+    )
+}
+
 fn filter_stamped_tunnel_endpoints(
     groups: Vec<(String, Vec<(String, u64)>)>,
     tunnel_ips: &HashSet<IpAddr>,
     local_subnets: &[Ipv4Subnet],
+    advertised_lan_subnets: &[Ipv4Subnet],
 ) -> Vec<(String, Vec<(String, u64)>)> {
     groups
         .into_iter()
@@ -543,7 +561,8 @@ fn filter_stamped_tunnel_endpoints(
                 .into_iter()
                 .filter(|(addr, _)| {
                     !endpoint_uses_tunnel_ip(addr, tunnel_ips)
-                        && static_endpoint_allowed_on_current_underlay(addr, local_subnets)
+                        && (endpoint_on_advertised_lan(addr, advertised_lan_subnets)
+                            || static_endpoint_allowed_on_current_underlay(addr, local_subnets))
                 })
                 .collect::<Vec<_>>();
             (!addrs.is_empty()).then_some((participant, addrs))
