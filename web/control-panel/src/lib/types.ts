@@ -44,6 +44,10 @@ export type ParticipantView = {
   rxBytes: number;
   advertisedRoutes: string[];
   offersExitNode: boolean;
+  /** The network's DNS box. */
+  servesNetworkDns?: boolean;
+  /** One of the network's backup DNS boxes. */
+  servesNetworkDnsBackup?: boolean;
   reachable: boolean;
   fipsEndpointNpub: string;
   fipsEndpointHints: string[];

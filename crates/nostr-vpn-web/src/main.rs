@@ -12,6 +12,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
+#[cfg(test)]
+use nostr_vpn_app_core::NativeNetworkDnsRole;
 use nostr_vpn_app_core::{FfiApp, NativeAppAction, NativeAppState, SettingsPatch};
 use nostr_vpn_core::config::{AppConfig, maybe_autoconfigure_node};
 use qrcode::QrCode;
@@ -22,8 +24,9 @@ mod ui_types;
 
 use crate::ui_types::{
     AliasRequest, EndpointHintsRequest, ImportJoinRequest, JoinRequestAction, ManualNetworkRequest,
-    NameRequest, NetworkDnsRequest, NetworkEnabledRequest, NetworkIdRequest, NetworkMeshRequest,
-    NetworkNameRequest, NetworkPeerRequest, ParticipantRequest, QrMatrixRequest, QrMatrixResponse,
+    NameRequest, NetworkDnsRequest, NetworkDnsRoleRequest, NetworkEnabledRequest, NetworkIdRequest,
+    NetworkMeshRequest, NetworkNameRequest, NetworkPeerRequest, ParticipantRequest,
+    QrMatrixRequest, QrMatrixResponse,
 };
 
 const NVPN_BIN_ENV: &str = "NVPN_CLI_PATH";
@@ -131,6 +134,7 @@ async fn main() -> Result<()> {
         .route("/api/remove_network", post(remove_network))
         .route("/api/set_network_enabled", post(set_network_enabled))
         .route("/api/set_network_dns", post(set_network_dns))
+        .route("/api/set_network_dns_role", post(set_network_dns_role))
         .route(
             "/api/set_network_join_requests_enabled",
             post(set_network_join_requests_enabled),
@@ -352,6 +356,22 @@ async fn set_network_dns(
             network_id: request.network_id,
             npub: request.npub,
             dns_override: request.dns_override,
+        },
+    )
+}
+
+/// Make one device the network's DNS box, a backup DNS box, or neither: the
+/// Mac app's Make DNS box / Make backup DNS box / Remove DNS buttons.
+async fn set_network_dns_role(
+    State(state): State<ServerState>,
+    Json(request): Json<NetworkDnsRoleRequest>,
+) -> ApiResult<UiStateResponse> {
+    dispatch(
+        &state,
+        NativeAppAction::SetNetworkDnsRole {
+            network_id: request.network_id,
+            npub: request.npub,
+            role: request.role,
         },
     )
 }
@@ -705,6 +725,31 @@ fn internal_error(error: impl std::fmt::Display) -> ApiError {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn dns_role_request_takes_the_three_roles_and_nothing_else() {
+        for (text, role) in [
+            ("primary", NativeNetworkDnsRole::Primary),
+            ("backup", NativeNetworkDnsRole::Backup),
+            ("none", NativeNetworkDnsRole::None),
+        ] {
+            let request: NetworkDnsRoleRequest = serde_json::from_str(&format!(
+                r#"{{"networkId":"network-1","npub":"npub1x","role":"{text}"}}"#
+            ))
+            .expect("role request");
+            assert_eq!(request.role, role);
+            assert_eq!(request.network_id, "network-1");
+        }
+        for bad in ["Primary", "dns", ""] {
+            assert!(
+                serde_json::from_str::<NetworkDnsRoleRequest>(&format!(
+                    r#"{{"networkId":"network-1","npub":"npub1x","role":"{bad}"}}"#
+                ))
+                .is_err(),
+                "accepted role {bad:?}"
+            );
+        }
+    }
 
     async fn boundary_response(behind_trusted_proxy: bool, headers: &str) -> String {
         let app = Router::new()
