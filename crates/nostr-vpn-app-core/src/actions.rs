@@ -71,6 +71,14 @@ pub enum NativeAppAction {
         npub: String,
         alias: Option<String>,
     },
+    /// Add a device and make it a backup DNS box in the same signed roster,
+    /// so it is never a plain member in between. Refused, with nothing
+    /// changed, when the network has no DNS box to back up. Admin only.
+    AddParticipantAsDnsBackup {
+        network_id: String,
+        npub: String,
+        alias: Option<String>,
+    },
     AddAdmin {
         network_id: String,
         npub: String,
@@ -669,6 +677,18 @@ mod tests {
                 role: NativeNetworkDnsRole::Backup,
             },
             r#"{"type":"set_network_dns_role","networkId":"network-1","npub":"npub1mac","role":"backup"}"#,
+        );
+    }
+
+    #[test]
+    fn add_participant_as_dns_backup_action_json_roundtrips() {
+        assert_action_json_roundtrip(
+            &NativeAppAction::AddParticipantAsDnsBackup {
+                network_id: "network-1".to_string(),
+                npub: "npub1pi".to_string(),
+                alias: Some("Pi".to_string()),
+            },
+            r#"{"type":"add_participant_as_dns_backup","networkId":"network-1","npub":"npub1pi","alias":"Pi"}"#,
         );
     }
 }

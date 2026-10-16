@@ -47,6 +47,9 @@ pub(crate) struct ParticipantRequest {
     pub network_id: String,
     pub npub: String,
     pub alias: Option<String>,
+    /// Also make the device a backup DNS box, in the same roster as the add.
+    #[serde(default)]
+    pub dns_backup: bool,
 }
 
 #[derive(Debug, Deserialize)]

@@ -15,7 +15,8 @@ use clap::Parser;
 #[cfg(test)]
 use nostr_vpn_app_core::NativeNetworkDnsRole;
 use nostr_vpn_app_core::{FfiApp, NativeAppAction, NativeAppState, SettingsPatch};
-use nostr_vpn_core::config::{AppConfig, maybe_autoconfigure_node};
+use nostr_vpn_core::build_info::version_with_build_commit;
+use nostr_vpn_core::config::{AppConfig, maybe_autoconfigure_node, npub_for_pubkey_hex};
 use qrcode::QrCode;
 use serde_json::{Value, json};
 use tower_http::services::{ServeDir, ServeFile};
@@ -117,7 +118,7 @@ async fn main() -> Result<()> {
     let state = ServerState {
         core: FfiApp::new_with_config_path(
             config_path,
-            env!("CARGO_PKG_VERSION").to_string(),
+            version_with_build_commit(env!("CARGO_PKG_VERSION")),
             Some(nvpn_bin),
         ),
     };
@@ -393,14 +394,26 @@ async fn add_participant(
     State(state): State<ServerState>,
     Json(request): Json<ParticipantRequest>,
 ) -> ApiResult<UiStateResponse> {
-    dispatch(
-        &state,
+    let ParticipantRequest {
+        network_id,
+        npub,
+        alias,
+        dns_backup,
+    } = request;
+    let action = if dns_backup {
+        NativeAppAction::AddParticipantAsDnsBackup {
+            network_id,
+            npub,
+            alias,
+        }
+    } else {
         NativeAppAction::AddParticipant {
-            network_id: request.network_id,
-            npub: request.npub,
-            alias: request.alias,
-        },
-    )
+            network_id,
+            npub,
+            alias,
+        }
+    };
+    dispatch(&state, action)
 }
 
 async fn add_admin(
@@ -527,7 +540,46 @@ fn dispatch(state: &ServerState, action: NativeAppAction) -> ApiResult<UiStateRe
 }
 
 fn state_response(state: NativeAppState) -> ApiResult<UiStateResponse> {
-    Ok(Json(umbrel_state_value(state)?))
+    let config = AppConfig::load(Path::new(&state.config_path)).ok();
+    let mut value = umbrel_state_value(state)?;
+    if let Some(config) = config {
+        attach_removed_devices(&mut value, &config);
+    }
+    Ok(Json(value))
+}
+
+/// Add `removedDevices` to each network: the devices this admin removed, so
+/// a dashboard can offer them back. The app state
+/// has no such list (the removals are local tombstones, not roster data).
+/// Left out entirely when the config cannot be read, so a reader can tell
+/// "none removed" from "unknown".
+fn attach_removed_devices(value: &mut Value, config: &AppConfig) {
+    let Some(networks) = value.get_mut("networks").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for network in networks {
+        let Some(object) = network.as_object_mut() else {
+            continue;
+        };
+        let Some(entry) = object
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| config.network_by_id(id))
+        else {
+            continue;
+        };
+        let removed = entry
+            .removed_devices
+            .iter()
+            .map(|pubkey| {
+                json!({
+                    "npub": npub_for_pubkey_hex(pubkey),
+                    "alias": config.peer_alias(pubkey).unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>();
+        object.insert("removedDevices".to_string(), Value::Array(removed));
+    }
 }
 
 fn umbrel_state_value(state: NativeAppState) -> ApiResult<Value> {
@@ -884,6 +936,42 @@ mod tests {
         assert!(matrix.width > 0);
         assert_eq!(matrix.cells.len(), matrix.width * matrix.width);
         assert!(matrix.cells.iter().any(|cell| *cell));
+    }
+
+    #[test]
+    fn add_participant_request_reads_dns_backup_and_defaults_it_off() {
+        let plain: ParticipantRequest =
+            serde_json::from_str(r#"{"networkId":"n","npub":"npub1x","alias":null}"#)
+                .expect("plain add");
+        assert!(!plain.dns_backup);
+        let backup: ParticipantRequest = serde_json::from_str(
+            r#"{"networkId":"n","npub":"npub1x","alias":"pi","dnsBackup":true}"#,
+        )
+        .expect("backup add");
+        assert!(backup.dns_backup);
+    }
+
+    #[test]
+    fn removed_devices_are_listed_per_network_by_entry_id() {
+        let mut config = AppConfig::generated_without_networks();
+        config.add_network("Home");
+        config.add_network("Work");
+        let gone = "26525c442dd039de4e728b41ee8d7f717b267ab25b7c219d53a3249e1c9174cc";
+        config.networks[0].removed_devices = vec![gone.to_string()];
+        let home = config.networks[0].id.clone();
+        let work = config.networks[1].id.clone();
+        let mut value = json!({
+            "networks": [{ "id": work }, { "id": home }, { "id": "not-in-config" }],
+        });
+
+        attach_removed_devices(&mut value, &config);
+
+        assert_eq!(value["networks"][0]["removedDevices"], json!([]));
+        assert_eq!(
+            value["networks"][1]["removedDevices"][0]["npub"],
+            npub_for_pubkey_hex(gone)
+        );
+        assert!(value["networks"][2].get("removedDevices").is_none());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+pub mod build_info;
 pub mod config;
 mod config_defaults;
 mod config_magic_dns;

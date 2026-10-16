@@ -184,41 +184,12 @@ impl NativeAppRuntime {
                 network_id,
                 npub,
                 alias,
-            } => {
-                let was_participant = normalize_nostr_pubkey(&npub).is_ok_and(|candidate| {
-                    self.config
-                        .network_by_id(&network_id)
-                        .is_some_and(|network| {
-                            network
-                                .devices
-                                .iter()
-                                .chain(network.admins.iter())
-                                .any(|participant| participant == &candidate)
-                        })
-                });
-                let normalized = self.config.add_participant_to_network(&network_id, &npub)?;
-                if let Some(alias) = alias
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                {
-                    self.config.set_peer_alias(&normalized, alias)?;
-                }
-                if !was_participant {
-                    let delivery =
-                        prepare_manual_join_delivery(&self.config, &network_id, &normalized)?;
-                    self.queue_join_roster_delivery_to(&normalized, &delivery)?;
-                }
-                let should_start_networking = !was_participant && !self.vpn_enabled;
-                if should_start_networking {
-                    self.config.autoconnect = true;
-                }
-                self.save_reload_and_refresh()?;
-                if should_start_networking && !self.vpn_enabled {
-                    self.connect_vpn()?;
-                }
-                Ok(())
-            }
+            } => self.add_participant(&network_id, &npub, alias.as_deref(), false),
+            NativeAppAction::AddParticipantAsDnsBackup {
+                network_id,
+                npub,
+                alias,
+            } => self.add_participant(&network_id, &npub, alias.as_deref(), true),
             NativeAppAction::AddAdmin { network_id, npub } => {
                 self.config.add_admin_to_network(&network_id, &npub)?;
                 self.save_reload_and_refresh()
@@ -471,6 +442,64 @@ impl NativeAppRuntime {
                 self.save_reload_and_refresh()
             }
         }
+    }
+
+    /// Add a device to a network, optionally as a backup DNS box. Every step
+    /// is applied to a copy first, so a refused step (not an admin, no DNS
+    /// box to back up, a bad alias) leaves the config as it was, and the
+    /// device's role reaches the roster in the same save as the device.
+    fn add_participant(
+        &mut self,
+        network_id: &str,
+        npub: &str,
+        alias: Option<&str>,
+        dns_backup: bool,
+    ) -> Result<()> {
+        let was_participant = normalize_nostr_pubkey(npub).is_ok_and(|candidate| {
+            self.config
+                .network_by_id(network_id)
+                .is_some_and(|network| {
+                    network
+                        .devices
+                        .iter()
+                        .chain(network.admins.iter())
+                        .any(|participant| participant == &candidate)
+                })
+        });
+        let mut next = self.config.clone();
+        let normalized = next.add_participant_to_network(network_id, npub)?;
+        if dns_backup {
+            let primary = next
+                .network_by_id(network_id)
+                .map(|network| network.dns_node.clone())
+                .unwrap_or_default();
+            if primary.is_empty() {
+                return Err(anyhow!(
+                    "this network has no DNS box yet, so there is nothing to back up; add the device, then make it the DNS box"
+                ));
+            }
+            if primary == normalized {
+                return Err(anyhow!("this device is already the network's DNS box"));
+            }
+            next.set_network_dns_role(network_id, &normalized, NetworkDnsRole::Backup)?;
+        }
+        if let Some(alias) = alias.map(str::trim).filter(|value| !value.is_empty()) {
+            next.set_peer_alias(&normalized, alias)?;
+        }
+        self.config = next;
+        if !was_participant {
+            let delivery = prepare_manual_join_delivery(&self.config, network_id, &normalized)?;
+            self.queue_join_roster_delivery_to(&normalized, &delivery)?;
+        }
+        let should_start_networking = !was_participant && !self.vpn_enabled;
+        if should_start_networking {
+            self.config.autoconnect = true;
+        }
+        self.save_reload_and_refresh()?;
+        if should_start_networking && !self.vpn_enabled {
+            self.connect_vpn()?;
+        }
+        Ok(())
     }
 
     fn import_join_request(&mut self, request: &str) -> Result<()> {
