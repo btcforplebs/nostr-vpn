@@ -265,7 +265,7 @@ fn web_origin_allowed(origin: Option<&str>, host: Option<&str>) -> bool {
 }
 
 async fn tick(State(state): State<ServerState>) -> ApiResult<UiStateResponse> {
-    state_response(state.core.refresh())
+    state_response(&state, NativeAppAction::Tick, false)
 }
 
 async fn connect_vpn(State(state): State<ServerState>) -> ApiResult<UiStateResponse> {
@@ -531,28 +531,34 @@ async fn qr_matrix(Json(request): Json<QrMatrixRequest>) -> ApiResult<Json<QrMat
 }
 
 fn dispatch(state: &ServerState, action: NativeAppAction) -> ApiResult<UiStateResponse> {
-    let next = state.core.dispatch(action);
-    let error = next.error.trim();
-    if !error.is_empty() {
-        return Err(ApiError::bad_request(error));
-    }
-    state_response(next)
+    state_response(state, action, true)
 }
 
-fn state_response(state: NativeAppState) -> ApiResult<UiStateResponse> {
-    let config = AppConfig::load(Path::new(&state.config_path)).ok();
-    let mut value = umbrel_state_value(state)?;
-    if let Some(config) = config {
-        attach_removed_devices(&mut value, &config);
-    }
+/// Runs `action` and encodes the resulting state. The removed devices come
+/// from the runtime's in-memory config, so every network the state lists
+/// carries `removedDevices` and no poll reads the config (or its secrets)
+/// off disk.
+fn state_response(
+    state: &ServerState,
+    action: NativeAppAction,
+    fail_on_error: bool,
+) -> ApiResult<UiStateResponse> {
+    let value = state.core.dispatch_with_config(action, |next, config| {
+        let error = next.error.trim();
+        if fail_on_error && !error.is_empty() {
+            return Err(ApiError::bad_request(error));
+        }
+        let mut value = umbrel_state_value(next)?;
+        attach_removed_devices(&mut value, config);
+        Ok(value)
+    })?;
     Ok(Json(value))
 }
 
 /// Add `removedDevices` to each network: the devices this admin removed, so
 /// a dashboard can offer them back. The app state
 /// has no such list (the removals are local tombstones, not roster data).
-/// Left out entirely when the config cannot be read, so a reader can tell
-/// "none removed" from "unknown".
+/// A network the config does not know gets no key.
 fn attach_removed_devices(value: &mut Value, config: &AppConfig) {
     let Some(networks) = value.get_mut("networks").and_then(Value::as_array_mut) else {
         return;
@@ -972,6 +978,41 @@ mod tests {
             npub_for_pubkey_hex(gone)
         );
         assert!(value["networks"][2].get("removedDevices").is_none());
+    }
+
+    /// The removed devices come from the runtime, not a reload: with the
+    /// config file gone from disk, every network still carries the key.
+    #[test]
+    fn state_response_lists_removed_devices_without_reading_the_config_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "nvpn-web-removed-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("create test dir");
+        let config_path = dir.join("config.toml");
+        let state = ServerState {
+            core: FfiApp::new_with_config_path(config_path.clone(), String::new(), None),
+        };
+        let _ = dispatch(
+            &state,
+            NativeAppAction::AddNetwork {
+                name: "Home".to_string(),
+            },
+        )
+        .expect("add network");
+        let _ = fs::remove_file(&config_path);
+
+        let Json(value) = state_response(&state, NativeAppAction::Tick, false).expect("tick");
+
+        let networks = value["networks"].as_array().expect("networks");
+        assert!(!networks.is_empty());
+        for network in networks {
+            assert_eq!(network["removedDevices"], json!([]), "{network}");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

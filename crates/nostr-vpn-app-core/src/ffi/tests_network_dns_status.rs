@@ -422,3 +422,29 @@
         assert!(runtime.queued_join_rosters.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
+
+    /// A failure while preparing the new device's roster comes after every
+    /// check has passed, and still leaves the config as it was: the add is
+    /// not left in memory for the next action's save to write.
+    #[test]
+    fn add_participant_failing_delivery_leaves_the_config_alone() {
+        let (mut runtime, dir, _, _) = dns_buttons_runtime("add-delivery-fails");
+        let network_id = runtime.config.networks[0].id.clone();
+        // The public key still names this device as admin; only signing fails.
+        runtime.config.nostr.secret_key = "not-a-key".to_string();
+        let before = roster_of(&runtime);
+        let joiner = Keys::generate().public_key().to_bech32().expect("npub");
+
+        for dns_backup in [false, true] {
+            let (npub, alias) = (joiner.clone(), Some("pi".to_string()));
+            runtime.dispatch(if dns_backup {
+                NativeAppAction::AddParticipantAsDnsBackup { network_id: network_id.clone(), npub, alias }
+            } else {
+                NativeAppAction::AddParticipant { network_id: network_id.clone(), npub, alias }
+            });
+            assert!(runtime.last_error.contains("invalid nostr secret key"), "{}", runtime.last_error);
+            assert_eq!(roster_of(&runtime), before);
+            assert!(runtime.queued_join_rosters.is_empty());
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }

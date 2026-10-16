@@ -486,9 +486,16 @@ impl NativeAppRuntime {
         if let Some(alias) = alias.map(str::trim).filter(|value| !value.is_empty()) {
             next.set_peer_alias(&normalized, alias)?;
         }
+        // Prepared from `next` before it is committed: a failure here must
+        // leave `self.config` untouched, or the next action's save would
+        // write an add this one reported as refused.
+        let delivery = if was_participant {
+            None
+        } else {
+            Some(prepare_manual_join_delivery(&next, network_id, &normalized)?)
+        };
         self.config = next;
-        if !was_participant {
-            let delivery = prepare_manual_join_delivery(&self.config, network_id, &normalized)?;
+        if let Some(delivery) = delivery {
             self.queue_join_roster_delivery_to(&normalized, &delivery)?;
         }
         let should_start_networking = !was_participant && !self.vpn_enabled;
