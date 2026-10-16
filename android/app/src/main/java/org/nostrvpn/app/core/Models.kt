@@ -105,6 +105,10 @@ data class ParticipantState(
     val rosterAccepted: Boolean = false,
     val reachable: Boolean = false,
     val offersExitNode: Boolean = false,
+    /** This participant is the network's DNS box (`dns_node`). */
+    val servesNetworkDns: Boolean = false,
+    /** This participant is one of the network's backup DNS boxes (`dns_backup_nodes`). */
+    val servesNetworkDnsBackup: Boolean = false,
     val fipsEndpointNpub: String = "",
     val fipsEndpointHints: List<String> = emptyList(),
     val fipsTransportAddr: String = "",
@@ -488,6 +492,8 @@ private fun JSONArray?.toParticipantList(): List<ParticipantState> = mapObjects 
         rosterAccepted = item.optBoolean("rosterAccepted"),
         reachable = item.optBoolean("reachable"),
         offersExitNode = item.optBoolean("offersExitNode"),
+        servesNetworkDns = item.optBoolean("servesNetworkDns"),
+        servesNetworkDnsBackup = item.optBoolean("servesNetworkDnsBackup"),
         fipsEndpointNpub = item.optString("fipsEndpointNpub"),
         fipsEndpointHints = item.optJSONArray("fipsEndpointHints").toStringList(),
         fipsTransportAddr = item.optString("fipsTransportAddr"),

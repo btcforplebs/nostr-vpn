@@ -75,6 +75,10 @@ struct ParticipantRow: View {
                                 Pill("DNS server", tint: AppColors.dns)
                                     .accessibilityIdentifier("dns-server-badge")
                             }
+                            if participant.servesNetworkDnsBackup {
+                                Pill("DNS backup", tint: AppColors.dns)
+                                    .accessibilityIdentifier("dns-backup-badge")
+                            }
                             if isFipsRouted(participant, state: model.state) {
                                 Pill("via mesh", tint: .secondary)
                             }
@@ -148,6 +152,9 @@ struct DeviceDetailSheet: View {
                         }
                         if participant.servesNetworkDns {
                             Pill("DNS server", tint: AppColors.dns)
+                        }
+                        if participant.servesNetworkDnsBackup {
+                            Pill("DNS backup", tint: AppColors.dns)
                         }
                     }
                 }

@@ -98,6 +98,7 @@ internal fun ParticipantRow(
                             participant.exitNodeTint(state),
                         )
                     }
+                    DnsPills(participant)
                     if (participant.isFipsRouted(state)) Pill("via mesh", Color(0xFFF1F5F9), Muted)
                 }
                 Text(participant.subtitle(isSelf), color = Muted, maxLines = 1)
@@ -153,6 +154,7 @@ private fun DeviceDetailDialog(
                             participant.exitNodeTint(state),
                         )
                     }
+                    DnsPills(participant)
                 }
                 if (participant.magicDnsName.isNotBlank()) {
                     Text("Magic DNS", style = MaterialTheme.typography.labelMedium, color = Muted)
@@ -889,6 +891,15 @@ internal fun Pill(text: String, background: Color, foreground: Color) {
     )
 }
 
+// The DNS box and its backups, the same two badges as the iOS and Mac apps.
+@Composable
+internal fun DnsPills(participant: ParticipantState) {
+    if (participant.servesNetworkDns) Pill("DNS server", DnsBackground, Dns)
+    if (participant.servesNetworkDnsBackup) Pill("DNS backup", DnsBackground, Dns)
+}
+
+internal val Dns = Color(0xFF2563EB)
+internal val DnsBackground = Color(0xFFEFF6FF)
 internal val Accent = Color(0xFF7C3AED)
 internal val Ok = Color(0xFF16A34A)
 internal val Muted = Color(0xFF68717C)

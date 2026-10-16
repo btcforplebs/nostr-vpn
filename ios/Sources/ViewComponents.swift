@@ -438,6 +438,10 @@ func sortedParticipants(_ participants: [ParticipantState], state: AppState) -> 
         if lhs.servesNetworkDns != rhs.servesNetworkDns {
             return lhs.servesNetworkDns
         }
+        // Backup DNS boxes right after it, for the same reason.
+        if lhs.servesNetworkDnsBackup != rhs.servesNetworkDnsBackup {
+            return lhs.servesNetworkDnsBackup
+        }
         if lhs.reachable != rhs.reachable {
             return lhs.reachable && !rhs.reachable
         }

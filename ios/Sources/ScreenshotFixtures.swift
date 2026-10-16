@@ -9,6 +9,7 @@ enum ScreenshotFixtures {
         let androidNpub = fakeNpub("t")
         let ipadNpub = fakeNpub("v")
         let dnsBoxNpub = fakeNpub("d")
+        let backupBoxNpub = fakeNpub("b")
         let dns = FixtureDns.requested()
 
         var state = AppState()
@@ -81,6 +82,7 @@ enum ScreenshotFixtures {
                 androidNpub: androidNpub,
                 ipadNpub: ipadNpub,
                 dnsBoxNpub: dnsBoxNpub,
+                backupBoxNpub: backupBoxNpub,
                 dns: dns
             )
         ]
@@ -153,6 +155,7 @@ enum ScreenshotFixtures {
         androidNpub: String,
         ipadNpub: String,
         dnsBoxNpub: String,
+        backupBoxNpub: String,
         dns: FixtureDns
     ) -> NetworkState {
         var network = NetworkState()
@@ -187,6 +190,17 @@ enum ScreenshotFixtures {
                 state: dns == .unreachable ? "offline" : "online",
                 transport: dns == .unreachable ? "" : "LAN direct",
                 status: dns == .unreachable ? "Last seen 4 min ago" : "Online via LAN"
+            ),
+            participant(
+                npub: backupBoxNpub,
+                alias: "Backup DNS box",
+                magicDns: "backup-box.home.mesh",
+                ip: "10.44.0.54/32",
+                reachable: true,
+                servesNetworkDnsBackup: true,
+                state: "online",
+                transport: "LAN direct",
+                status: "Online via LAN"
             ),
             participant(
                 npub: macNpub,
@@ -250,6 +264,7 @@ enum ScreenshotFixtures {
         reachable: Bool,
         offersExitNode: Bool = false,
         servesNetworkDns: Bool = false,
+        servesNetworkDnsBackup: Bool = false,
         state: String,
         meshState: String = "",
         transport: String = "",
@@ -267,6 +282,7 @@ enum ScreenshotFixtures {
         participant.reachable = reachable
         participant.offersExitNode = offersExitNode
         participant.servesNetworkDns = servesNetworkDns
+        participant.servesNetworkDnsBackup = servesNetworkDnsBackup
         participant.fipsEndpointNpub = fakeNpub("s")
         participant.fipsTransportAddr = transport
         participant.fipsTransportType = transport.isEmpty ? "" : "udp"

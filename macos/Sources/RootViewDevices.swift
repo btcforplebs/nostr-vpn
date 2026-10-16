@@ -232,7 +232,7 @@ extension RootView {
                         badge("DNS server", style: selected ? .selected : .dns)
                     }
                     if participant.servesNetworkDnsBackup {
-                        badge("Backup DNS", style: selected ? .selected : .dns)
+                        badge("DNS backup", style: selected ? .selected : .dns)
                     }
                     if isFipsRouted(participant) {
                         badge("via mesh", style: selected ? .selected : .muted)
@@ -321,7 +321,7 @@ extension RootView {
                                 badge("DNS server", style: .dns)
                             }
                             if participant.servesNetworkDnsBackup {
-                                badge("Backup DNS", style: .dns)
+                                badge("DNS backup", style: .dns)
                             }
                             if isDirectFipsPeer(participant) {
                                 badge("direct connection", style: .ok)
