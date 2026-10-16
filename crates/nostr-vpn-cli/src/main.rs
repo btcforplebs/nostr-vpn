@@ -223,6 +223,14 @@ const MAJOR_LINK_CHANGE_TIME_JUMP_SECS: u64 = 30;
 const WAITING_FOR_PARTICIPANTS_STATUS: &str = "Waiting for participants";
 const PRODUCT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The version this binary reports for itself, in `nvpn version` and in the
+/// daemon state alike. Both must say the same thing: the desktop apps compare
+/// the installed service's version (read from either) against `nvpn version`
+/// of the binary they ship, and call any difference an update.
+fn product_build_version() -> String {
+    nostr_vpn_core::build_info::version_with_build_commit(PRODUCT_VERSION)
+}
+
 pub(crate) struct DaemonJoinRequestIpcRequest {
     pub(crate) reset: bool,
     pub(crate) response: tokio::sync::oneshot::Sender<Result<String, String>>,

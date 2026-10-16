@@ -14,7 +14,7 @@ pub(crate) fn uninstall_cli(args: UninstallCliArgs) -> Result<()> {
 
 pub(crate) fn print_version(args: VersionArgs) -> Result<()> {
     let info = VersionInfoView {
-        version: PRODUCT_VERSION.to_string(),
+        version: product_build_version(),
         fips_core_version: fips_core_build_version(),
     };
 
