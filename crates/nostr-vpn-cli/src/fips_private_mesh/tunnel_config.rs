@@ -294,6 +294,7 @@ impl FipsPrivateTunnelConfig {
             websocket_listener && !app.fips_websocket_public_url.trim().is_empty();
         let tunnel_endpoint_hosts = fips_tunnel_endpoint_hosts(app, network_id);
         let local_private_subnets = local_private_ipv4_subnets();
+        let advertised_lan_subnets = advertised_endpoint_lan_subnets(&app.node.endpoint);
         // In static-only mode, the configured endpoint is the user's only path.
         // Keep routed private addresses such as VM/container host-only networks
         // even when they are not on a directly attached subnet.
@@ -365,6 +366,7 @@ impl FipsPrivateTunnelConfig {
             recent_peer_endpoints,
             &tunnel_endpoint_hosts,
             &local_private_subnets,
+            &advertised_lan_subnets,
         );
         // Roster endpoint hints are always retained. Recent authenticated
         // non-roster peers are transport-only transit seeds; cap them so they
@@ -399,6 +401,7 @@ impl FipsPrivateTunnelConfig {
                         .collect(),
                     &tunnel_endpoint_hosts,
                     &local_private_subnets,
+                    &advertised_lan_subnets,
                 )
                 .into_iter()
                 .filter(|(participant, _)| {

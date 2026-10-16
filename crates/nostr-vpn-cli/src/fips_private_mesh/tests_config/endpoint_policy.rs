@@ -330,6 +330,7 @@ destination: 192.168.178.57
             )],
             &tunnel_ips,
             &local_subnets,
+            &[],
         );
 
         assert_eq!(
