@@ -423,6 +423,36 @@
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The outbox write is the last step that can fail before the save. When
+    /// it does, the add is rolled back rather than left live in memory for
+    /// the next action's save to write.
+    #[test]
+    fn add_participant_failing_outbox_write_leaves_the_config_alone() {
+        let (mut runtime, dir, _, _) = dns_buttons_runtime("add-outbox-fails");
+        let network_id = runtime.config.networks[0].id.clone();
+        // A file where the outbox directory should be makes the write fail.
+        fs::write(
+            nostr_vpn_core::join_delivery::join_roster_outbox_directory(&runtime.config_path),
+            b"",
+        )
+        .expect("block the outbox directory");
+        let before = roster_of(&runtime);
+        let joiner = Keys::generate().public_key().to_bech32().expect("npub");
+
+        for dns_backup in [false, true] {
+            let (npub, alias) = (joiner.clone(), Some("pi".to_string()));
+            runtime.dispatch(if dns_backup {
+                NativeAppAction::AddParticipantAsDnsBackup { network_id: network_id.clone(), npub, alias }
+            } else {
+                NativeAppAction::AddParticipant { network_id: network_id.clone(), npub, alias }
+            });
+            assert!(runtime.last_error.contains("failed to create"), "{}", runtime.last_error);
+            assert_eq!(roster_of(&runtime), before);
+            assert!(runtime.queued_join_rosters.is_empty());
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// A failure while preparing the new device's roster comes after every
     /// check has passed, and still leaves the config as it was: the add is
     /// not left in memory for the next action's save to write.

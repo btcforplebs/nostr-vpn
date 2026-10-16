@@ -494,9 +494,15 @@ impl NativeAppRuntime {
         } else {
             Some(prepare_manual_join_delivery(&next, network_id, &normalized)?)
         };
-        self.config = next;
+        // The outbox entry is written before the save so the daemon's reload
+        // can start delivery; if that write fails, put the old config back
+        // so the add is not left live in memory and missing from disk.
+        let previous = std::mem::replace(&mut self.config, next);
         if let Some(delivery) = delivery {
-            self.queue_join_roster_delivery_to(&normalized, &delivery)?;
+            if let Err(error) = self.queue_join_roster_delivery_to(&normalized, &delivery) {
+                self.config = previous;
+                return Err(error);
+            }
         }
         let should_start_networking = !was_participant && !self.vpn_enabled;
         if should_start_networking {
