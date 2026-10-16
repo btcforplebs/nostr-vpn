@@ -186,6 +186,28 @@
         assert!(!state.network_dns_blocked);
     }
 
+    /// The iOS and Android apps draw their DNS badges from these two keys of the
+    /// state JSON (ios/Sources/Models.swift, android/.../core/Models.kt).
+    #[test]
+    fn state_json_marks_the_dns_box_and_its_backup_for_the_apps() {
+        let (mut runtime, pihole) = network_dns_status_runtime(true);
+        let mac = with_second_box(&mut runtime);
+        let json = serde_json::to_value(runtime.state()).expect("state as JSON");
+        let participants = json["networks"][0]["participants"]
+            .as_array()
+            .expect("participants");
+        let row = |hex: &str| {
+            participants
+                .iter()
+                .find(|participant| participant["pubkeyHex"] == hex)
+                .unwrap_or_else(|| panic!("no row for {hex}"))
+        };
+        assert_eq!(row(&pihole)["servesNetworkDns"], true);
+        assert_eq!(row(&pihole)["servesNetworkDnsBackup"], false);
+        assert_eq!(row(&mac)["servesNetworkDns"], false);
+        assert_eq!(row(&mac)["servesNetworkDnsBackup"], true);
+    }
+
     /// Lookups go to every box, so one box out of reach changes nothing.
     #[test]
     fn network_dns_status_stays_green_while_one_box_is_unreachable() {
