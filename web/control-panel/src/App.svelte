@@ -511,6 +511,11 @@
     if (participant.isAdmin) {
       roles.push('Admin');
     }
+    if (participant.servesNetworkDns) {
+      roles.push('DNS server');
+    } else if (participant.servesNetworkDnsBackup) {
+      roles.push('DNS backup');
+    }
     const exitRole = exitNodeBadgeText(participant);
     if (exitRole) {
       roles.push(exitRole);
@@ -779,6 +784,23 @@
       '/api/set_network_dns',
       { networkId: network.id, npub, dnsOverride },
       'Saving network DNS',
+    );
+  }
+
+  // Make DNS box / Make backup DNS box / Remove DNS, as in the Mac app. The
+  // core keeps the other boxes in place: a new DNS box demotes the old one
+  // to a backup, and removing the DNS box promotes the first backup.
+  async function setDnsRole(
+    network: NetworkView,
+    participant: ParticipantView,
+    role: 'primary' | 'backup' | 'none',
+  ) {
+    const label =
+      role === 'primary' ? 'Making DNS box' : role === 'backup' ? 'Adding backup DNS box' : 'Removing DNS';
+    await run(
+      '/api/set_network_dns_role',
+      { networkId: network.id, npub: participant.npub, role },
+      label,
     );
   }
 
@@ -1260,6 +1282,11 @@
                         {#if participant.isAdmin}
                           <span class="badge muted">Admin</span>
                         {/if}
+                        {#if participant.servesNetworkDns}
+                          <span class="badge">DNS server</span>
+                        {:else if participant.servesNetworkDnsBackup}
+                          <span class="badge">DNS backup</span>
+                        {/if}
                         {#if exitNodeBadgeText(participant)}
                           <span
                             class="badge"
@@ -1303,13 +1330,18 @@
                   </button>
                   <div>
                     <h2>{participantName(selectedParticipant)}</h2>
-                    {#if isSelf(selectedParticipant) || selectedParticipant.isAdmin || exitNodeBadgeText(selectedParticipant) || fipsPathBadgeText(selectedParticipant)}
+                    {#if isSelf(selectedParticipant) || selectedParticipant.isAdmin || selectedParticipant.servesNetworkDns || selectedParticipant.servesNetworkDnsBackup || exitNodeBadgeText(selectedParticipant) || fipsPathBadgeText(selectedParticipant)}
                       <div class="badge-row">
                         {#if isSelf(selectedParticipant)}
                           <span class="badge active">Self</span>
                         {/if}
                         {#if selectedParticipant.isAdmin}
                           <span class="badge muted">Admin</span>
+                        {/if}
+                        {#if selectedParticipant.servesNetworkDns}
+                          <span class="badge">DNS server</span>
+                        {:else if selectedParticipant.servesNetworkDnsBackup}
+                          <span class="badge">DNS backup</span>
                         {/if}
                         {#if exitNodeBadgeText(selectedParticipant)}
                           <span
@@ -1360,6 +1392,45 @@
                       >
                         Save
                       </button>
+                    </div>
+                    <div class="button-row" data-testid="device-dns-buttons">
+                      {#if !selectedParticipant.servesNetworkDns}
+                        <button
+                          type="button"
+                          class="small-button"
+                          disabled={Boolean(busyAction)}
+                          title="Make this the network's DNS box. The current one stays on as a backup."
+                          on:click={() => setDnsRole(shownNetwork, selectedParticipant, 'primary')}
+                        >
+                          Make DNS box
+                        </button>
+                      {/if}
+                      {#if !selectedParticipant.servesNetworkDns && !selectedParticipant.servesNetworkDnsBackup}
+                        <button
+                          type="button"
+                          class="small-button"
+                          disabled={Boolean(busyAction) || !shownNetwork.dnsNodeNpub}
+                          title={shownNetwork.dnsNodeNpub
+                            ? 'Add this device as a backup DNS box.'
+                            : 'Choose a DNS box first, then add backups.'}
+                          on:click={() => setDnsRole(shownNetwork, selectedParticipant, 'backup')}
+                        >
+                          Make backup DNS box
+                        </button>
+                      {/if}
+                      {#if selectedParticipant.servesNetworkDns || selectedParticipant.servesNetworkDnsBackup}
+                        <button
+                          type="button"
+                          class="small-button"
+                          disabled={Boolean(busyAction)}
+                          title={selectedParticipant.servesNetworkDns
+                            ? 'Stop using this device for DNS. The first backup, if any, takes over.'
+                            : 'Stop using this device as a backup DNS box.'}
+                          on:click={() => setDnsRole(shownNetwork, selectedParticipant, 'none')}
+                        >
+                          Remove DNS
+                        </button>
+                      {/if}
                     </div>
                     {#if !isSelf(selectedParticipant)}
                       <div class="inline-form">

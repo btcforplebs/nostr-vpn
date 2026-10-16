@@ -145,6 +145,28 @@ impl FfiApp {
 }
 
 impl FfiApp {
+    /// Runs `action`, then hands `read` the resulting state together with
+    /// the runtime's in-memory config, under one lock. For callers that need
+    /// config the app state does not carry (the web panel's removed devices)
+    /// without reloading it, and its secrets, from disk on every poll.
+    pub fn dispatch_with_config<T>(
+        &self,
+        action: NativeAppAction,
+        read: impl FnOnce(NativeAppState, &AppConfig) -> T,
+    ) -> T {
+        let mut runtime = match self.runtime.lock() {
+            Ok(runtime) => runtime,
+            Err(poisoned) => {
+                let mut runtime = poisoned.into_inner();
+                runtime.set_error("native app state lock was poisoned");
+                runtime
+            }
+        };
+        runtime.dispatch(action);
+        let state = runtime.state();
+        read(state, &runtime.config)
+    }
+
     #[must_use]
     pub fn new_with_config_path(
         config_path: PathBuf,

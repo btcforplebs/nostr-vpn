@@ -340,3 +340,111 @@
         assert!(runtime.config.networks[0].dns_backup_nodes.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
+
+    /// The second-box add: one action puts the new device in the roster and
+    /// in the backups, and the roster it is handed already says so, so it is
+    /// never a plain member in between.
+    #[test]
+    fn add_as_dns_backup_admits_and_backs_up_in_one_roster() {
+        let (mut runtime, dir, pihole, _) = dns_buttons_runtime("add-dns-backup");
+        let network_id = runtime.config.networks[0].id.clone();
+        let joiner = Keys::generate();
+        let joiner_hex = joiner.public_key().to_hex();
+
+        runtime.dispatch(NativeAppAction::AddParticipantAsDnsBackup {
+            network_id,
+            npub: joiner.public_key().to_bech32().expect("joiner npub"),
+            alias: Some("pi".to_string()),
+        });
+
+        assert!(runtime.last_error.is_empty(), "{}", runtime.last_error);
+        assert_eq!(dns_role_of(&runtime, &joiner_hex), (false, true));
+        assert_eq!(dns_role_of(&runtime, &pihole), (true, false));
+        assert_eq!(runtime.queued_join_rosters.len(), 1);
+        let handed = runtime.queued_join_rosters[0]
+            .signed_roster
+            .roster()
+            .expect("join roster");
+        assert!(handed.devices.contains(&joiner_hex));
+        assert_eq!(handed.dns_node, pihole);
+        assert_eq!(handed.dns_backup_nodes, vec![joiner_hex.clone()]);
+        let saved = AppConfig::load(&runtime.config_path).expect("load persisted config");
+        assert_eq!(saved.networks[0].dns_backup_nodes, vec![joiner_hex.clone()]);
+        assert_eq!(saved.peer_alias(&joiner_hex).as_deref(), Some("pi"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn roster_of(runtime: &NativeAppRuntime) -> (Vec<String>, Vec<String>, String, Vec<String>) {
+        let network = &runtime.config.networks[0];
+        (
+            network.devices.clone(),
+            network.admins.clone(),
+            network.dns_node.clone(),
+            network.dns_backup_nodes.clone(),
+        )
+    }
+
+
+    /// Refusals change nothing: no DNS box to back up, the DNS box itself,
+    /// or a device that is not an admin asking.
+    #[test]
+    fn add_as_dns_backup_refuses_and_leaves_the_roster_alone() {
+        let (mut runtime, dir, pihole, mac) = dns_buttons_runtime("add-dns-backup-refused");
+        let network_id = runtime.config.networks[0].id.clone();
+        let add = |runtime: &mut NativeAppRuntime, npub: String| {
+            runtime.dispatch(NativeAppAction::AddParticipantAsDnsBackup {
+                network_id: network_id.clone(),
+                npub,
+                alias: None,
+            });
+            runtime.last_error.clone()
+        };
+        let before = roster_of(&runtime);
+
+        let error = add(&mut runtime, npub_for_pubkey_hex(&pihole));
+        assert!(error.contains("already the network's DNS box"), "{error}");
+        assert_eq!(roster_of(&runtime), before);
+
+        let stranger = Keys::generate().public_key().to_bech32().expect("npub");
+        runtime.config.networks[0].dns_node = String::new();
+        let before = roster_of(&runtime);
+        let error = add(&mut runtime, stranger.clone());
+        assert!(error.contains("no DNS box yet"), "{error}");
+        assert_eq!(roster_of(&runtime), before);
+        assert!(runtime.queued_join_rosters.is_empty());
+
+        runtime.config.networks[0].dns_node = pihole.clone();
+        runtime.config.networks[0].admins = vec![mac.clone()];
+        let before = roster_of(&runtime);
+        let error = add(&mut runtime, stranger);
+        assert!(error.contains("only a network admin"), "{error}");
+        assert_eq!(roster_of(&runtime), before);
+        assert!(runtime.queued_join_rosters.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A failure while preparing the new device's roster comes after every
+    /// check has passed, and still leaves the config as it was: the add is
+    /// not left in memory for the next action's save to write.
+    #[test]
+    fn add_participant_failing_delivery_leaves_the_config_alone() {
+        let (mut runtime, dir, _, _) = dns_buttons_runtime("add-delivery-fails");
+        let network_id = runtime.config.networks[0].id.clone();
+        // The public key still names this device as admin; only signing fails.
+        runtime.config.nostr.secret_key = "not-a-key".to_string();
+        let before = roster_of(&runtime);
+        let joiner = Keys::generate().public_key().to_bech32().expect("npub");
+
+        for dns_backup in [false, true] {
+            let (npub, alias) = (joiner.clone(), Some("pi".to_string()));
+            runtime.dispatch(if dns_backup {
+                NativeAppAction::AddParticipantAsDnsBackup { network_id: network_id.clone(), npub, alias }
+            } else {
+                NativeAppAction::AddParticipant { network_id: network_id.clone(), npub, alias }
+            });
+            assert!(runtime.last_error.contains("invalid nostr secret key"), "{}", runtime.last_error);
+            assert_eq!(roster_of(&runtime), before);
+            assert!(runtime.queued_join_rosters.is_empty());
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }

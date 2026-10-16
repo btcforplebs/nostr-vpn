@@ -1,3 +1,4 @@
+use nostr_vpn_app_core::NativeNetworkDnsRole;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +47,9 @@ pub(crate) struct ParticipantRequest {
     pub network_id: String,
     pub npub: String,
     pub alias: Option<String>,
+    /// Also make the device a backup DNS box, in the same roster as the add.
+    #[serde(default)]
+    pub dns_backup: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +57,15 @@ pub(crate) struct ParticipantRequest {
 pub(crate) struct NetworkPeerRequest {
     pub network_id: String,
     pub npub: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NetworkDnsRoleRequest {
+    pub network_id: String,
+    pub npub: String,
+    /// "primary", "backup" or "none".
+    pub role: NativeNetworkDnsRole,
 }
 
 #[derive(Debug, Deserialize)]

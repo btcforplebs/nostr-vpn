@@ -6193,6 +6193,13 @@ public enum NativeAppAction {
     )
     case addParticipant(networkId: String, npub: String, alias: String?
     )
+    /**
+     * Add a device and make it a backup DNS box in the same signed roster,
+     * so it is never a plain member in between. Refused, with nothing
+     * changed, when the network has no DNS box to back up. Admin only.
+     */
+    case addParticipantAsDnsBackup(networkId: String, npub: String, alias: String?
+    )
     case addAdmin(networkId: String, npub: String
     )
     case importJoinRequest(request: String
@@ -6341,127 +6348,130 @@ public struct FfiConverterTypeNativeAppAction: FfiConverterRustBuffer {
         case 19: return .addParticipant(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf), alias: try FfiConverterOptionString.read(from: &buf)
         )
 
-        case 20: return .addAdmin(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf)
+        case 20: return .addParticipantAsDnsBackup(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf), alias: try FfiConverterOptionString.read(from: &buf)
         )
 
-        case 21: return .importJoinRequest(request: try FfiConverterString.read(from: &buf)
+        case 21: return .addAdmin(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf)
         )
 
-        case 22: return .manualAddNetwork(adminNpub: try FfiConverterString.read(from: &buf), meshNetworkId: try FfiConverterString.read(from: &buf)
+        case 22: return .importJoinRequest(request: try FfiConverterString.read(from: &buf)
         )
 
-        case 23: return .removeParticipant(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf)
+        case 23: return .manualAddNetwork(adminNpub: try FfiConverterString.read(from: &buf), meshNetworkId: try FfiConverterString.read(from: &buf)
         )
 
-        case 24: return .removeAdmin(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf)
+        case 24: return .removeParticipant(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf)
         )
 
-        case 25: return .acceptJoinRequest(networkId: try FfiConverterString.read(from: &buf), requesterNpub: try FfiConverterString.read(from: &buf)
+        case 25: return .removeAdmin(networkId: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf)
         )
 
-        case 26: return .rejectJoinRequest(networkId: try FfiConverterString.read(from: &buf), requesterNpub: try FfiConverterString.read(from: &buf)
+        case 26: return .acceptJoinRequest(networkId: try FfiConverterString.read(from: &buf), requesterNpub: try FfiConverterString.read(from: &buf)
         )
 
-        case 27: return .setParticipantAlias(npub: try FfiConverterString.read(from: &buf), alias: try FfiConverterString.read(from: &buf)
+        case 27: return .rejectJoinRequest(networkId: try FfiConverterString.read(from: &buf), requesterNpub: try FfiConverterString.read(from: &buf)
         )
 
-        case 28: return .setParticipantEndpointHints(npub: try FfiConverterString.read(from: &buf), endpointHints: try FfiConverterSequenceString.read(from: &buf)
+        case 28: return .setParticipantAlias(npub: try FfiConverterString.read(from: &buf), alias: try FfiConverterString.read(from: &buf)
         )
 
-        case 29: return .addPaidRouteWalletMint(url: try FfiConverterString.read(from: &buf), label: try FfiConverterOptionString.read(from: &buf)
+        case 29: return .setParticipantEndpointHints(npub: try FfiConverterString.read(from: &buf), endpointHints: try FfiConverterSequenceString.read(from: &buf)
         )
 
-        case 30: return .removePaidRouteWalletMint(url: try FfiConverterString.read(from: &buf)
+        case 30: return .addPaidRouteWalletMint(url: try FfiConverterString.read(from: &buf), label: try FfiConverterOptionString.read(from: &buf)
         )
 
-        case 31: return .setPaidRouteDefaultMint(url: try FfiConverterString.read(from: &buf)
+        case 31: return .removePaidRouteWalletMint(url: try FfiConverterString.read(from: &buf)
         )
 
-        case 32: return .refreshPaidRouteWallet(refresh: try FfiConverterBool.read(from: &buf)
+        case 32: return .setPaidRouteDefaultMint(url: try FfiConverterString.read(from: &buf)
         )
 
-        case 33: return .refreshPaidRouteWalletHistory
-
-        case 34: return .topUpPaidRouteWallet(mintUrl: try FfiConverterOptionString.read(from: &buf), amountSat: try FfiConverterUInt64.read(from: &buf)
+        case 33: return .refreshPaidRouteWallet(refresh: try FfiConverterBool.read(from: &buf)
         )
 
-        case 35: return .receivePaidRouteWalletToken(token: try FfiConverterString.read(from: &buf)
+        case 34: return .refreshPaidRouteWalletHistory
+
+        case 35: return .topUpPaidRouteWallet(mintUrl: try FfiConverterOptionString.read(from: &buf), amountSat: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 36: return .previewPaidRouteWalletToken(token: try FfiConverterString.read(from: &buf)
+        case 36: return .receivePaidRouteWalletToken(token: try FfiConverterString.read(from: &buf)
         )
 
-        case 37: return .sendPaidRouteWalletToken(mintUrl: try FfiConverterOptionString.read(from: &buf), amountSat: try FfiConverterUInt64.read(from: &buf)
+        case 37: return .previewPaidRouteWalletToken(token: try FfiConverterString.read(from: &buf)
         )
 
-        case 38: return .withdrawPaidRouteWalletLightning(mintUrl: try FfiConverterOptionString.read(from: &buf), invoice: try FfiConverterString.read(from: &buf)
+        case 38: return .sendPaidRouteWalletToken(mintUrl: try FfiConverterOptionString.read(from: &buf), amountSat: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 39: return .buyPaidRouteOffer(offerKey: try FfiConverterString.read(from: &buf), mintUrl: try FfiConverterOptionString.read(from: &buf), channelCapacitySat: try FfiConverterOptionUInt64.read(from: &buf)
+        case 39: return .withdrawPaidRouteWalletLightning(mintUrl: try FfiConverterOptionString.read(from: &buf), invoice: try FfiConverterString.read(from: &buf)
         )
 
-        case 40: return .buyBestPaidRouteOffer(mintUrl: try FfiConverterOptionString.read(from: &buf), channelCapacitySat: try FfiConverterOptionUInt64.read(from: &buf)
+        case 40: return .buyPaidRouteOffer(offerKey: try FfiConverterString.read(from: &buf), mintUrl: try FfiConverterOptionString.read(from: &buf), channelCapacitySat: try FfiConverterOptionUInt64.read(from: &buf)
         )
 
-        case 41: return .setManualPaidExitProvider(provider: try FfiConverterString.read(from: &buf)
+        case 41: return .buyBestPaidRouteOffer(mintUrl: try FfiConverterOptionString.read(from: &buf), channelCapacitySat: try FfiConverterOptionUInt64.read(from: &buf)
         )
 
-        case 42: return .clearManualPaidExitProvider
-
-        case 43: return .selectPaidRouteSession(sessionId: try FfiConverterString.read(from: &buf), connect: try FfiConverterBool.read(from: &buf)
+        case 42: return .setManualPaidExitProvider(provider: try FfiConverterString.read(from: &buf)
         )
 
-        case 44: return .reselectPaidExit
+        case 43: return .clearManualPaidExitProvider
 
-        case 45: return .ratePaidExit(sellerNpub: try FfiConverterString.read(from: &buf), rating: try FfiConverterInt64.read(from: &buf)
+        case 44: return .selectPaidRouteSession(sessionId: try FfiConverterString.read(from: &buf), connect: try FfiConverterBool.read(from: &buf)
         )
 
-        case 46: return .probePaidRouteSession(sessionId: try FfiConverterString.read(from: &buf), timeoutSecs: try FfiConverterUInt64.read(from: &buf)
+        case 45: return .reselectPaidExit
+
+        case 46: return .ratePaidExit(sellerNpub: try FfiConverterString.read(from: &buf), rating: try FfiConverterInt64.read(from: &buf)
         )
 
-        case 47: return .recordPaidRouteProbe(sessionId: try FfiConverterString.read(from: &buf), realizedExitIp: try FfiConverterOptionString.read(from: &buf), observedCountryCode: try FfiConverterOptionString.read(from: &buf), observedAsn: try FfiConverterOptionUInt32.read(from: &buf), latencyMs: try FfiConverterOptionUInt32.read(from: &buf), jitterMs: try FfiConverterOptionUInt32.read(from: &buf), packetLossPpm: try FfiConverterOptionUInt32.read(from: &buf), downBps: try FfiConverterOptionUInt64.read(from: &buf), upBps: try FfiConverterOptionUInt64.read(from: &buf), uptimeSecs: try FfiConverterOptionUInt64.read(from: &buf), lastSeenUnix: try FfiConverterOptionUInt64.read(from: &buf)
+        case 47: return .probePaidRouteSession(sessionId: try FfiConverterString.read(from: &buf), timeoutSecs: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 48: return .createPaidRoutePaymentEnvelope(sessionId: try FfiConverterString.read(from: &buf), kind: try FfiConverterString.read(from: &buf), paymentJson: try FfiConverterString.read(from: &buf), deliveredUnits: try FfiConverterOptionUInt64.read(from: &buf), paidMsat: try FfiConverterOptionUInt64.read(from: &buf)
+        case 48: return .recordPaidRouteProbe(sessionId: try FfiConverterString.read(from: &buf), realizedExitIp: try FfiConverterOptionString.read(from: &buf), observedCountryCode: try FfiConverterOptionString.read(from: &buf), observedAsn: try FfiConverterOptionUInt32.read(from: &buf), latencyMs: try FfiConverterOptionUInt32.read(from: &buf), jitterMs: try FfiConverterOptionUInt32.read(from: &buf), packetLossPpm: try FfiConverterOptionUInt32.read(from: &buf), downBps: try FfiConverterOptionUInt64.read(from: &buf), upBps: try FfiConverterOptionUInt64.read(from: &buf), uptimeSecs: try FfiConverterOptionUInt64.read(from: &buf), lastSeenUnix: try FfiConverterOptionUInt64.read(from: &buf)
         )
 
-        case 49: return .openPaidRouteChannelFromWallet(sessionId: try FfiConverterString.read(from: &buf), mintUrl: try FfiConverterOptionString.read(from: &buf), paidMsat: try FfiConverterOptionUInt64.read(from: &buf), maxAmountPerOutput: try FfiConverterOptionUInt64.read(from: &buf), keysetId: try FfiConverterOptionString.read(from: &buf)
+        case 49: return .createPaidRoutePaymentEnvelope(sessionId: try FfiConverterString.read(from: &buf), kind: try FfiConverterString.read(from: &buf), paymentJson: try FfiConverterString.read(from: &buf), deliveredUnits: try FfiConverterOptionUInt64.read(from: &buf), paidMsat: try FfiConverterOptionUInt64.read(from: &buf)
         )
 
-        case 50: return .signPaidRoutePaymentEnvelopeFromWallet(sessionId: try FfiConverterString.read(from: &buf), kind: try FfiConverterString.read(from: &buf), deliveredUnits: try FfiConverterOptionUInt64.read(from: &buf), paidMsat: try FfiConverterOptionUInt64.read(from: &buf)
+        case 50: return .openPaidRouteChannelFromWallet(sessionId: try FfiConverterString.read(from: &buf), mintUrl: try FfiConverterOptionString.read(from: &buf), paidMsat: try FfiConverterOptionUInt64.read(from: &buf), maxAmountPerOutput: try FfiConverterOptionUInt64.read(from: &buf), keysetId: try FfiConverterOptionString.read(from: &buf)
         )
 
-        case 51: return .closePaidRouteChannelFromWallet(sessionId: try FfiConverterString.read(from: &buf), publish: try FfiConverterBool.read(from: &buf)
+        case 51: return .signPaidRoutePaymentEnvelopeFromWallet(sessionId: try FfiConverterString.read(from: &buf), kind: try FfiConverterString.read(from: &buf), deliveredUnits: try FfiConverterOptionUInt64.read(from: &buf), paidMsat: try FfiConverterOptionUInt64.read(from: &buf)
         )
 
-        case 52: return .applyPaidRoutePaymentEnvelope(envelopeJson: try FfiConverterString.read(from: &buf)
+        case 52: return .closePaidRouteChannelFromWallet(sessionId: try FfiConverterString.read(from: &buf), publish: try FfiConverterBool.read(from: &buf)
         )
 
-        case 53: return .sendPaidRoutePaymentEnvelope(envelopeJson: try FfiConverterString.read(from: &buf)
+        case 53: return .applyPaidRoutePaymentEnvelope(envelopeJson: try FfiConverterString.read(from: &buf)
         )
 
-        case 54: return .streamPaidRoutePayments(publish: try FfiConverterBool.read(from: &buf), minIncrementMsat: try FfiConverterUInt64.read(from: &buf), limit: try FfiConverterUInt64.read(from: &buf)
+        case 54: return .sendPaidRoutePaymentEnvelope(envelopeJson: try FfiConverterString.read(from: &buf)
         )
 
-        case 55: return .clearPaidRouteActivity
-
-        case 56: return .receivePaidRoutePayments(durationSecs: try FfiConverterUInt64.read(from: &buf)
+        case 55: return .streamPaidRoutePayments(publish: try FfiConverterBool.read(from: &buf), minIncrementMsat: try FfiConverterUInt64.read(from: &buf), limit: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 57: return .collectPaidExitChannel(channelId: try FfiConverterString.read(from: &buf)
+        case 56: return .clearPaidRouteActivity
+
+        case 57: return .receivePaidRoutePayments(durationSecs: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 58: return .collectDuePaidExitChannels
-
-        case 59: return .publishPaidExitOffer
-
-        case 60: return .setPaidRouteMarketFilter(query: try FfiConverterString.read(from: &buf), countryCode: try FfiConverterString.read(from: &buf), mintUrl: try FfiConverterString.read(from: &buf), requireIpv4: try FfiConverterBool.read(from: &buf), requireIpv6: try FfiConverterBool.read(from: &buf), sort: try FfiConverterString.read(from: &buf)
+        case 58: return .collectPaidExitChannel(channelId: try FfiConverterString.read(from: &buf)
         )
 
-        case 61: return .discoverPaidRouteOffers(durationSecs: try FfiConverterUInt64.read(from: &buf)
+        case 59: return .collectDuePaidExitChannels
+
+        case 60: return .publishPaidExitOffer
+
+        case 61: return .setPaidRouteMarketFilter(query: try FfiConverterString.read(from: &buf), countryCode: try FfiConverterString.read(from: &buf), mintUrl: try FfiConverterString.read(from: &buf), requireIpv4: try FfiConverterBool.read(from: &buf), requireIpv6: try FfiConverterBool.read(from: &buf), sort: try FfiConverterString.read(from: &buf)
         )
 
-        case 62: return .updateSettings(patch: try FfiConverterTypeSettingsPatch.read(from: &buf)
+        case 62: return .discoverPaidRouteOffers(durationSecs: try FfiConverterUInt64.read(from: &buf)
+        )
+
+        case 63: return .updateSettings(patch: try FfiConverterTypeSettingsPatch.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -6567,158 +6577,165 @@ public struct FfiConverterTypeNativeAppAction: FfiConverterRustBuffer {
             FfiConverterOptionString.write(alias, into: &buf)
 
 
-        case let .addAdmin(networkId,npub):
+        case let .addParticipantAsDnsBackup(networkId,npub,alias):
             writeInt(&buf, Int32(20))
+            FfiConverterString.write(networkId, into: &buf)
+            FfiConverterString.write(npub, into: &buf)
+            FfiConverterOptionString.write(alias, into: &buf)
+
+
+        case let .addAdmin(networkId,npub):
+            writeInt(&buf, Int32(21))
             FfiConverterString.write(networkId, into: &buf)
             FfiConverterString.write(npub, into: &buf)
 
 
         case let .importJoinRequest(request):
-            writeInt(&buf, Int32(21))
+            writeInt(&buf, Int32(22))
             FfiConverterString.write(request, into: &buf)
 
 
         case let .manualAddNetwork(adminNpub,meshNetworkId):
-            writeInt(&buf, Int32(22))
+            writeInt(&buf, Int32(23))
             FfiConverterString.write(adminNpub, into: &buf)
             FfiConverterString.write(meshNetworkId, into: &buf)
 
 
         case let .removeParticipant(networkId,npub):
-            writeInt(&buf, Int32(23))
-            FfiConverterString.write(networkId, into: &buf)
-            FfiConverterString.write(npub, into: &buf)
-
-
-        case let .removeAdmin(networkId,npub):
             writeInt(&buf, Int32(24))
             FfiConverterString.write(networkId, into: &buf)
             FfiConverterString.write(npub, into: &buf)
 
 
-        case let .acceptJoinRequest(networkId,requesterNpub):
+        case let .removeAdmin(networkId,npub):
             writeInt(&buf, Int32(25))
             FfiConverterString.write(networkId, into: &buf)
-            FfiConverterString.write(requesterNpub, into: &buf)
+            FfiConverterString.write(npub, into: &buf)
 
 
-        case let .rejectJoinRequest(networkId,requesterNpub):
+        case let .acceptJoinRequest(networkId,requesterNpub):
             writeInt(&buf, Int32(26))
             FfiConverterString.write(networkId, into: &buf)
             FfiConverterString.write(requesterNpub, into: &buf)
 
 
-        case let .setParticipantAlias(npub,alias):
+        case let .rejectJoinRequest(networkId,requesterNpub):
             writeInt(&buf, Int32(27))
+            FfiConverterString.write(networkId, into: &buf)
+            FfiConverterString.write(requesterNpub, into: &buf)
+
+
+        case let .setParticipantAlias(npub,alias):
+            writeInt(&buf, Int32(28))
             FfiConverterString.write(npub, into: &buf)
             FfiConverterString.write(alias, into: &buf)
 
 
         case let .setParticipantEndpointHints(npub,endpointHints):
-            writeInt(&buf, Int32(28))
+            writeInt(&buf, Int32(29))
             FfiConverterString.write(npub, into: &buf)
             FfiConverterSequenceString.write(endpointHints, into: &buf)
 
 
         case let .addPaidRouteWalletMint(url,label):
-            writeInt(&buf, Int32(29))
+            writeInt(&buf, Int32(30))
             FfiConverterString.write(url, into: &buf)
             FfiConverterOptionString.write(label, into: &buf)
 
 
         case let .removePaidRouteWalletMint(url):
-            writeInt(&buf, Int32(30))
-            FfiConverterString.write(url, into: &buf)
-
-
-        case let .setPaidRouteDefaultMint(url):
             writeInt(&buf, Int32(31))
             FfiConverterString.write(url, into: &buf)
 
 
-        case let .refreshPaidRouteWallet(refresh):
+        case let .setPaidRouteDefaultMint(url):
             writeInt(&buf, Int32(32))
+            FfiConverterString.write(url, into: &buf)
+
+
+        case let .refreshPaidRouteWallet(refresh):
+            writeInt(&buf, Int32(33))
             FfiConverterBool.write(refresh, into: &buf)
 
 
         case .refreshPaidRouteWalletHistory:
-            writeInt(&buf, Int32(33))
+            writeInt(&buf, Int32(34))
 
 
         case let .topUpPaidRouteWallet(mintUrl,amountSat):
-            writeInt(&buf, Int32(34))
+            writeInt(&buf, Int32(35))
             FfiConverterOptionString.write(mintUrl, into: &buf)
             FfiConverterUInt64.write(amountSat, into: &buf)
 
 
         case let .receivePaidRouteWalletToken(token):
-            writeInt(&buf, Int32(35))
-            FfiConverterString.write(token, into: &buf)
-
-
-        case let .previewPaidRouteWalletToken(token):
             writeInt(&buf, Int32(36))
             FfiConverterString.write(token, into: &buf)
 
 
-        case let .sendPaidRouteWalletToken(mintUrl,amountSat):
+        case let .previewPaidRouteWalletToken(token):
             writeInt(&buf, Int32(37))
+            FfiConverterString.write(token, into: &buf)
+
+
+        case let .sendPaidRouteWalletToken(mintUrl,amountSat):
+            writeInt(&buf, Int32(38))
             FfiConverterOptionString.write(mintUrl, into: &buf)
             FfiConverterUInt64.write(amountSat, into: &buf)
 
 
         case let .withdrawPaidRouteWalletLightning(mintUrl,invoice):
-            writeInt(&buf, Int32(38))
+            writeInt(&buf, Int32(39))
             FfiConverterOptionString.write(mintUrl, into: &buf)
             FfiConverterString.write(invoice, into: &buf)
 
 
         case let .buyPaidRouteOffer(offerKey,mintUrl,channelCapacitySat):
-            writeInt(&buf, Int32(39))
+            writeInt(&buf, Int32(40))
             FfiConverterString.write(offerKey, into: &buf)
             FfiConverterOptionString.write(mintUrl, into: &buf)
             FfiConverterOptionUInt64.write(channelCapacitySat, into: &buf)
 
 
         case let .buyBestPaidRouteOffer(mintUrl,channelCapacitySat):
-            writeInt(&buf, Int32(40))
+            writeInt(&buf, Int32(41))
             FfiConverterOptionString.write(mintUrl, into: &buf)
             FfiConverterOptionUInt64.write(channelCapacitySat, into: &buf)
 
 
         case let .setManualPaidExitProvider(provider):
-            writeInt(&buf, Int32(41))
+            writeInt(&buf, Int32(42))
             FfiConverterString.write(provider, into: &buf)
 
 
         case .clearManualPaidExitProvider:
-            writeInt(&buf, Int32(42))
+            writeInt(&buf, Int32(43))
 
 
         case let .selectPaidRouteSession(sessionId,connect):
-            writeInt(&buf, Int32(43))
+            writeInt(&buf, Int32(44))
             FfiConverterString.write(sessionId, into: &buf)
             FfiConverterBool.write(connect, into: &buf)
 
 
         case .reselectPaidExit:
-            writeInt(&buf, Int32(44))
+            writeInt(&buf, Int32(45))
 
 
         case let .ratePaidExit(sellerNpub,rating):
-            writeInt(&buf, Int32(45))
+            writeInt(&buf, Int32(46))
             FfiConverterString.write(sellerNpub, into: &buf)
             FfiConverterInt64.write(rating, into: &buf)
 
 
         case let .probePaidRouteSession(sessionId,timeoutSecs):
-            writeInt(&buf, Int32(46))
+            writeInt(&buf, Int32(47))
             FfiConverterString.write(sessionId, into: &buf)
             FfiConverterUInt64.write(timeoutSecs, into: &buf)
 
 
         case let .recordPaidRouteProbe(sessionId,realizedExitIp,observedCountryCode,observedAsn,latencyMs,jitterMs,packetLossPpm,downBps,upBps,uptimeSecs,lastSeenUnix):
-            writeInt(&buf, Int32(47))
+            writeInt(&buf, Int32(48))
             FfiConverterString.write(sessionId, into: &buf)
             FfiConverterOptionString.write(realizedExitIp, into: &buf)
             FfiConverterOptionString.write(observedCountryCode, into: &buf)
@@ -6733,7 +6750,7 @@ public struct FfiConverterTypeNativeAppAction: FfiConverterRustBuffer {
 
 
         case let .createPaidRoutePaymentEnvelope(sessionId,kind,paymentJson,deliveredUnits,paidMsat):
-            writeInt(&buf, Int32(48))
+            writeInt(&buf, Int32(49))
             FfiConverterString.write(sessionId, into: &buf)
             FfiConverterString.write(kind, into: &buf)
             FfiConverterString.write(paymentJson, into: &buf)
@@ -6742,7 +6759,7 @@ public struct FfiConverterTypeNativeAppAction: FfiConverterRustBuffer {
 
 
         case let .openPaidRouteChannelFromWallet(sessionId,mintUrl,paidMsat,maxAmountPerOutput,keysetId):
-            writeInt(&buf, Int32(49))
+            writeInt(&buf, Int32(50))
             FfiConverterString.write(sessionId, into: &buf)
             FfiConverterOptionString.write(mintUrl, into: &buf)
             FfiConverterOptionUInt64.write(paidMsat, into: &buf)
@@ -6751,7 +6768,7 @@ public struct FfiConverterTypeNativeAppAction: FfiConverterRustBuffer {
 
 
         case let .signPaidRoutePaymentEnvelopeFromWallet(sessionId,kind,deliveredUnits,paidMsat):
-            writeInt(&buf, Int32(50))
+            writeInt(&buf, Int32(51))
             FfiConverterString.write(sessionId, into: &buf)
             FfiConverterString.write(kind, into: &buf)
             FfiConverterOptionUInt64.write(deliveredUnits, into: &buf)
@@ -6759,52 +6776,52 @@ public struct FfiConverterTypeNativeAppAction: FfiConverterRustBuffer {
 
 
         case let .closePaidRouteChannelFromWallet(sessionId,publish):
-            writeInt(&buf, Int32(51))
+            writeInt(&buf, Int32(52))
             FfiConverterString.write(sessionId, into: &buf)
             FfiConverterBool.write(publish, into: &buf)
 
 
         case let .applyPaidRoutePaymentEnvelope(envelopeJson):
-            writeInt(&buf, Int32(52))
-            FfiConverterString.write(envelopeJson, into: &buf)
-
-
-        case let .sendPaidRoutePaymentEnvelope(envelopeJson):
             writeInt(&buf, Int32(53))
             FfiConverterString.write(envelopeJson, into: &buf)
 
 
-        case let .streamPaidRoutePayments(publish,minIncrementMsat,limit):
+        case let .sendPaidRoutePaymentEnvelope(envelopeJson):
             writeInt(&buf, Int32(54))
+            FfiConverterString.write(envelopeJson, into: &buf)
+
+
+        case let .streamPaidRoutePayments(publish,minIncrementMsat,limit):
+            writeInt(&buf, Int32(55))
             FfiConverterBool.write(publish, into: &buf)
             FfiConverterUInt64.write(minIncrementMsat, into: &buf)
             FfiConverterUInt64.write(limit, into: &buf)
 
 
         case .clearPaidRouteActivity:
-            writeInt(&buf, Int32(55))
+            writeInt(&buf, Int32(56))
 
 
         case let .receivePaidRoutePayments(durationSecs):
-            writeInt(&buf, Int32(56))
+            writeInt(&buf, Int32(57))
             FfiConverterUInt64.write(durationSecs, into: &buf)
 
 
         case let .collectPaidExitChannel(channelId):
-            writeInt(&buf, Int32(57))
+            writeInt(&buf, Int32(58))
             FfiConverterString.write(channelId, into: &buf)
 
 
         case .collectDuePaidExitChannels:
-            writeInt(&buf, Int32(58))
-
-
-        case .publishPaidExitOffer:
             writeInt(&buf, Int32(59))
 
 
-        case let .setPaidRouteMarketFilter(query,countryCode,mintUrl,requireIpv4,requireIpv6,sort):
+        case .publishPaidExitOffer:
             writeInt(&buf, Int32(60))
+
+
+        case let .setPaidRouteMarketFilter(query,countryCode,mintUrl,requireIpv4,requireIpv6,sort):
+            writeInt(&buf, Int32(61))
             FfiConverterString.write(query, into: &buf)
             FfiConverterString.write(countryCode, into: &buf)
             FfiConverterString.write(mintUrl, into: &buf)
@@ -6814,12 +6831,12 @@ public struct FfiConverterTypeNativeAppAction: FfiConverterRustBuffer {
 
 
         case let .discoverPaidRouteOffers(durationSecs):
-            writeInt(&buf, Int32(61))
+            writeInt(&buf, Int32(62))
             FfiConverterUInt64.write(durationSecs, into: &buf)
 
 
         case let .updateSettings(patch):
-            writeInt(&buf, Int32(62))
+            writeInt(&buf, Int32(63))
             FfiConverterTypeSettingsPatch.write(patch, into: &buf)
 
         }
